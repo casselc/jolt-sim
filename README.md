@@ -9,6 +9,7 @@ and simulated worlds belong here.
 
 - a pure cooperative scheduler with virtual integer time;
 - seeded and scripted task selection;
+- immutable exactly-once operation completions with deterministic wakeups;
 - byte-stable, versioned EDN traces and exact replay;
 - a pure fold-based offline monitor API; and
 - a trace-grammar monitor for ordering, step, time, and terminal invariants.
@@ -17,20 +18,60 @@ The current kernel has no stream, socket, HTTP, database, runtime-thread, or
 OpenTelemetry integration yet. Its traces describe deterministic test runs,
 not arbitrary production execution.
 
+## Execution model
+
+The cooperative step API is the scheduler kernel and a low-level model-testing
+tool. It is not the intended way to author simulated applications.
+
+The public direction is a `defsim` scenario form whose configuration declares
+the controlled world while its body runs ordinary Jolt code:
+
+```clojure
+(defsim checkout-under-partition
+  {:seed 42
+   :clock {:start 0}
+   :effects {:net (sim-net/world topology)
+             :db (sim-db/sqlite)
+             :entropy (sim/random)}
+   :faults [[:partition :api :payments]]
+   :search {:preemptions 3}}
+  (let [system (app/start! production-config)]
+    (client/create-order! system order)
+    (is (= :pending (orders/status system (:id order))))))
+```
+
+`app/start!` and the application, protocol, codec, HTTP, and database
+namespaces must be the same code used outside simulation. `defsim` installs
+the controlled scheduler, clock, entropy, effect implementations, trace
+capture, and cleanup around that body.
+
+Core Jolt therefore needs disabled-by-default internal hooks for ordinary
+threads and synchronization, time, entropy, and FFI calls. Ecosystem libraries
+should retain their normal public APIs while native effects are intercepted
+underneath them. In simulation mode, a raw native call without a registered
+handler is an uncontrolled effect and must fail closed rather than reaching
+the real operating system.
+
 ## Roadmap
 
-1. Add operation/completion effects for connect, accept, read, write, close,
-   cancel, and deadlines, then deterministic network and storage fault models.
-2. Add Hegel generation and shrinking for workloads, scheduler choices, and
-   fault plans while accepting a shrink only when its trace replays exactly.
-3. Build canonical example systems that run through the same application logic
+1. Add test-only runtime hooks and `defsim`, then run one unchanged Jolt
+   namespace in normal and controlled modes through ordinary futures,
+   promises, clocks, and entropy.
+2. Intercept `jolt.ffi` binding calls before native symbol resolution, fail
+   closed on unregistered native effects, and add deterministic simulated
+   memory ownership.
+3. Add operation effects for connect, accept, read, write, close, cancel, and
+   deadlines, followed by deterministic network and storage fault models.
+4. Add Hegel generation and shrinking for workloads, scheduler choices, native
+   faults, and effect plans while accepting a shrink only when its trace
+   replays exactly.
+5. Build canonical example systems that run through the same application logic
    in real and simulated modes: a TCP protocol, an HTTP/API service, and a
    SQLite-backed application using the bytes, codec, FFI, net, HTTP, and DB
    libraries. Maintain an executed scenario-to-library coverage manifest.
-4. Add test-only Jolt runtime hooks at synchronization boundaries so ordinary
-   futures, promises, atoms, executors, locks, timers, and completion operations
-   can be controlled and replayed.
-5. Expand offline monitors from trace grammar into resource safety,
+6. Expand test-only runtime hooks across atoms, executors, locks, conditions,
+   timers, core.async, and completion operations.
+7. Expand offline monitors from trace grammar into resource safety,
    application models, bounded liveness, and explicit proof-assumption checks.
 
 Completion is not just a scheduler API. It requires end-to-end examples,
