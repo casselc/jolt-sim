@@ -5,4 +5,4 @@
          :main-opts ["-m" "jolt.sim.test-main"]}}
 
  :tasks
- {test "joltc -M:test"}}
+ {check "jolt -M:test"}}
