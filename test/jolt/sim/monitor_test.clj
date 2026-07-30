@@ -1,8 +1,9 @@
 (ns jolt.sim.monitor-test
   (:require [clojure.string :as string]
-            [clojure.test :refer [deftest is]]
+            [clojure.test :refer [deftest is testing]]
             [jolt.sim.kernel :as kernel]
             [jolt.sim.monitor :as monitor]
+            [jolt.sim.strategy :as strategy]
             [jolt.sim.trace :as trace]))
 
 (defn- caught-data [f]
@@ -153,3 +154,128 @@
     (is (= :violation (:status result)))
     (is (string/includes? printed ":jolt.sim.value/bytes"))
     (is (string/includes? printed "[0 255 128]"))))
+
+;; jolt.sim.monitor/check-trace-grammar
+
+(defn- run-events [config]
+  (:trace (kernel/run config)))
+
+(defn- initial-completed-events []
+  (run-events
+   {:tasks {0 (kernel/completed :done)}
+    :step (fn [_ _] (kernel/step-complete :unreachable))}))
+
+(defn- initial-failed-events []
+  (run-events
+   {:tasks {0 (kernel/failed (ex-info "already failed" {}))}
+    :step (fn [_ _] (kernel/step-complete :unreachable))}))
+
+(defn- initial-deadlock-events []
+  (run-events
+   {:tasks {0 (kernel/blocked :waiting)}
+    :step (fn [_ _] (kernel/step-complete :unreachable))}))
+
+(defn- same-tick-sleep-events []
+  (run-events
+   {:tasks {0 (kernel/runnable :sleep)}
+    :step (fn [{:keys [now]} state]
+            (if (= :sleep state)
+              (kernel/step-sleep :done now)
+              (kernel/step-complete :ok)))
+    :strategy (strategy/scripted [0 0])}))
+
+(defn- real-time-advance-events []
+  (run-events
+   {:tasks {0 (kernel/runnable :sleep)}
+    :now 10
+    :step (fn [_ state]
+            (if (= :sleep state)
+              (kernel/step-sleep :done 15)
+              (kernel/step-complete :ok)))
+    :strategy (strategy/scripted [0 0])}))
+
+(defn- thrown-task-events []
+  (run-events
+   {:tasks {0 (kernel/runnable :start)}
+    :step (fn [_ _] (throw (ex-info "boom" {:code 7})))}))
+
+(defn- two-task-events []
+  (run-events
+   {:tasks {0 (kernel/runnable :a)
+            1 (kernel/runnable :b)}
+    :step (fn [_ state] (kernel/step-complete state))
+    :strategy (strategy/scripted [0 1])}))
+
+(defn- grammar-result [events]
+  (monitor/check-trace-grammar (monitor/document events)))
+
+(deftest grammar-passes-valid-traces
+  (testing "normal completion"
+    (let [result (grammar-result (sample-events))]
+      (is (= :pass (:status result)))
+      (is (nil? (:index result)))))
+  (testing "initial completion (zero-step)"
+    (is (= :pass (:status (grammar-result (initial-completed-events))))))
+  (testing "initial failure (zero-step)"
+    (is (= :pass (:status (grammar-result (initial-failed-events))))))
+  (testing "initial deadlock (zero-step)"
+    (is (= :pass (:status (grammar-result (initial-deadlock-events))))))
+  (testing "same-tick sleep"
+    (is (= :pass (:status (grammar-result (same-tick-sleep-events))))))
+  (testing "real time advance with a learned non-zero initial time"
+    (is (= :pass (:status (grammar-result (real-time-advance-events))))))
+  (testing "a thrown task"
+    (is (= :pass (:status (grammar-result (thrown-task-events)))))))
+
+(deftest grammar-catches-duplicate-terminal
+  (let [events (sample-events)
+        mutated (conj events (last events))
+        result (grammar-result mutated)]
+    (is (= :violation (:status result)))
+    (is (= (count events) (:index result)))
+    (is (= :event-after-terminal (get-in result [:detail :reason])))))
+
+(deftest grammar-catches-orphan-transition
+  (let [events (sample-events)
+        mutated (vec (concat (subvec events 0 1) (subvec events 2)))
+        result (grammar-result mutated)]
+    (is (= :violation (:status result)))
+    (is (= 1 (:index result)))
+    (is (= :orphan-transition (get-in result [:detail :reason])))))
+
+(deftest grammar-catches-choice-transition-task-mismatch
+  (let [events (two-task-events)
+        mutated (update events 4 assoc 3 0)
+        result (grammar-result mutated)]
+    (is (= :violation (:status result)))
+    (is (= 4 (:index result)))
+    (is (= :choice-transition-mismatch (get-in result [:detail :reason])))))
+
+(deftest grammar-catches-missing-transition
+  (let [events (two-task-events)
+        mutated (vec (concat (subvec events 0 2) (subvec events 3)))
+        result (grammar-result mutated)]
+    (is (= :violation (:status result)))
+    (is (= 2 (:index result)))
+    (is (= :missing-transition (get-in result [:detail :reason])))))
+
+(deftest grammar-catches-time-reversal
+  (let [events (real-time-advance-events)
+        time-advance-index
+        (first (keep-indexed
+                (fn [index event]
+                  (when (= :time/advance (first event)) index))
+                events))
+        mutated (update events time-advance-index assoc 3 9)
+        result (grammar-result mutated)]
+    (is (= :violation (:status result)))
+    (is (= time-advance-index (:index result)))
+    (is (= :time-not-advancing (get-in result [:detail :reason])))))
+
+(deftest grammar-catches-missing-terminal
+  (let [events (sample-events)
+        mutated (vec (butlast events))
+        result (grammar-result mutated)]
+    (is (= :violation (:status result)))
+    (is (nil? (:index result)))
+    (is (= :missing-terminal (get-in result [:detail :reason])))))

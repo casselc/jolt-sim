@@ -188,3 +188,152 @@
              :status (:status result)
              :detail (:detail result)
              :index index}))))))
+
+(def ^:private terminal-tags
+  #{:run/completed :run/failed :run/deadlock :run/step-limit})
+
+(def ^:private trace-grammar-initial-state
+  {:step 0 :time nil :pending nil :terminated? false})
+
+(defn- grammar-violation [reason detail]
+  {:status :violation :detail (assoc detail :reason reason)})
+
+(defn- grammar-step [state index event]
+  (cond
+    (zero? index)
+    {:state state}
+
+    (:terminated? state)
+    (grammar-violation :event-after-terminal {:index index})
+
+    :else
+    (let [tag (nth event 0)
+          pending (:pending state)]
+      (cond
+        (some? pending)
+        (if (not= :task/transition tag)
+          (grammar-violation :missing-transition
+                              {:index index :pending pending :tag tag})
+          (let [actual {:step (nth event 1)
+                        :time (nth event 2)
+                        :task (nth event 3)}]
+            (if (not= actual pending)
+              (grammar-violation :choice-transition-mismatch
+                                  {:index index
+                                   :expected pending
+                                   :actual actual})
+              {:state (assoc state
+                             :pending nil
+                             :step (inc (:step state)))})))
+
+        (= :task/transition tag)
+        (grammar-violation :orphan-transition {:index index})
+
+        (= :schedule/choose tag)
+        (let [step (nth event 1)
+              time (nth event 2)
+              chosen (nth event 4)]
+          (cond
+            (not= step (:step state))
+            (grammar-violation :bad-step
+                                {:index index
+                                 :expected (:step state)
+                                 :actual step})
+
+            (and (some? (:time state)) (not= time (:time state)))
+            (grammar-violation :time-mismatch
+                                {:index index
+                                 :expected (:time state)
+                                 :actual time})
+
+            :else
+            {:state (assoc state
+                           :time (or (:time state) time)
+                           :pending {:step step :time time :task chosen})}))
+
+        (= :time/advance tag)
+        (let [step (nth event 1)
+              from (nth event 2)
+              to (nth event 3)
+              awakened (nth event 4)]
+          (cond
+            (not= step (:step state))
+            (grammar-violation :bad-step
+                                {:index index
+                                 :expected (:step state)
+                                 :actual step})
+
+            (and (some? (:time state)) (not= from (:time state)))
+            (grammar-violation :time-advance-from-mismatch
+                                {:index index
+                                 :expected (:time state)
+                                 :actual from})
+
+            (not (> to from))
+            (grammar-violation :time-not-advancing
+                                {:index index :from from :to to})
+
+            (empty? awakened)
+            (grammar-violation :empty-awakened {:index index})
+
+            :else
+            {:state (assoc state :time to)}))
+
+        (contains? terminal-tags tag)
+        (let [step (nth event 1)
+              time (nth event 2)]
+          (cond
+            (not= step (:step state))
+            (grammar-violation :bad-step
+                                {:index index
+                                 :expected (:step state)
+                                 :actual step})
+
+            (and (some? (:time state)) (not= time (:time state)))
+            (grammar-violation :terminal-time-mismatch
+                                {:index index
+                                 :expected (:time state)
+                                 :actual time})
+
+            :else
+            {:state (assoc state
+                           :time (or (:time state) time)
+                           :terminated? true)}))
+
+        :else
+        (grammar-violation :unknown-event-tag {:index index :tag tag})))))
+
+(defn- grammar-finish [state]
+  (cond
+    (some? (:pending state))
+    (grammar-violation :missing-transition {:pending (:pending state)})
+
+    (not (:terminated? state))
+    (grammar-violation :missing-terminal {})
+
+    :else
+    {:status :pass}))
+
+(def ^:private trace-grammar-spec
+  {:id ::trace-grammar
+   :initial trace-grammar-initial-state
+   :step grammar-step
+   :finish grammar-finish})
+
+(defn check-trace-grammar
+  "Checks the temporal grammar of a structurally validated trace `doc`,
+  beyond what `jolt.sim.kernel/validate-trace!` already enforces.
+
+  Verifies: exactly one terminal event and it is the trailing event; every
+  `:schedule/choose` is immediately followed by exactly one `:task/transition`
+  sharing its step, time, and chosen task; no `:task/transition` appears
+  without a pending choice; the shared step counter starts at 0 and advances
+  by exactly one per completed transition; virtual time never reverses;
+  `:time/advance` carries the current step, a `from` equal to the current
+  time, a strictly greater `to`, and a non-empty `awakened`; and the terminal
+  event's step and time match the tracked state. Initial virtual time is
+  learned from the first post-initial event rather than assumed to be zero.
+
+  Returns the standard `run-monitor` decision map."
+  [doc]
+  (run-monitor trace-grammar-spec doc))
