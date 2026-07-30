@@ -520,7 +520,16 @@
 
       (malformed-trace! index :unknown-event-tag))))
 
-(defn- validate-replay-trace! [expected-trace]
+(defn validate-trace!
+  "Validates a complete replay trace's event schema and returns it unchanged.
+
+  Checks every event's fixed-position shape (see `replay`), that the trace is
+  a non-empty vector starting with exactly one `:run/initial` event, and
+  throws `ex-info` tagged `replay-diverged` with reason `:malformed-trace` and
+  a specific `:detail` on any violation. This is the same schema check `replay`
+  runs before extracting choices, exposed so other callers can validate a
+  trace up front."
+  [expected-trace]
   (when-not (vector? expected-trace)
     (malformed-trace! 0 :trace-must-be-vector))
   (when (empty? expected-trace)
@@ -536,7 +545,8 @@
                       expected-trace)]
     (when-not (= [0] (vec initial-indices))
       (malformed-trace! (or (second initial-indices) 0)
-                        :duplicate-initial-event))))
+                        :duplicate-initial-event)))
+  expected-trace)
 
 (defn- first-difference-index [expected actual]
   (loop [index 0]
@@ -556,7 +566,7 @@
   and terminal projections make state or outcome drift visible even when the
   selected task and operation labels are unchanged."
   [config expected-trace]
-  (validate-replay-trace! expected-trace)
+  (validate-trace! expected-trace)
   (let [choices (trace/choice-events expected-trace)
         [result selector]
         (execute config {:mode :replay
