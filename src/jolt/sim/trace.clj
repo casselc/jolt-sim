@@ -5,7 +5,9 @@
   floating-point numbers, strings, characters, keywords, symbols, byte arrays,
   and finite acyclic combinations of vectors, lists, sequences, sets, and
   plain maps. Metadata, records, functions, and arbitrary host objects are
-  rejected. Byte arrays are projected explicitly as unsigned octets.
+  rejected. Byte arrays are projected explicitly as unsigned octets, but are
+  rejected recursively in map-key and set-member positions because mutable
+  arrays have identity equality and cannot be restored as stable keys.
 
   `canonical-value` tags every accepted value kind. The resulting EDN is a
   collision-free logical representation within this domain and never relies
@@ -13,6 +15,7 @@
   (:require [clojure.edn :as edn]))
 
 (def unsupported-value :jolt.sim.trace/unsupported-value)
+(def malformed-canonical-value :jolt.sim.trace/malformed-canonical-value)
 
 (def ^:private canonical-tags
   #{:jolt.sim.value/nil
@@ -49,6 +52,24 @@
 
 (declare canonical-value)
 
+(defn- contains-bytes? [value]
+  (cond
+    (bytes? value)
+    true
+
+    (map? value)
+    (boolean
+     (some (fn [[key entry-value]]
+             (or (contains-bytes? key)
+                 (contains-bytes? entry-value)))
+           value))
+
+    (or (set? value) (sequential? value))
+    (boolean (some contains-bytes? value))
+
+    :else
+    false))
+
 (defn- canonical-sequence [tag values path]
   [tag
    (mapv (fn [index value]
@@ -59,8 +80,12 @@
 (defn- canonical-set [values path]
   (let [projected
         (mapv (fn [value]
+                (when (contains-bytes? value)
+                  (unsupported! path :mutable-set-member value))
                 (canonical-value value (conj path :set-member)))
               values)]
+    (when-not (= (count projected) (count (set projected)))
+      (unsupported! path :canonical-member-collision values))
     [:jolt.sim.value/set
      (vec (sort-by canonical-order-key projected))]))
 
@@ -70,12 +95,17 @@
   (let [entries
         (reduce-kv
          (fn [result key entry-value]
+           (when (contains-bytes? key)
+             (unsupported! path :mutable-map-key key))
            (conj result
                  [(canonical-value key (conj path :map-key))
                   (canonical-value entry-value
                                    (conj path :map-value))]))
          []
          value)]
+    (when-not (= (count entries)
+                 (count (set (map first entries))))
+      (unsupported! path :canonical-key-collision value))
     [:jolt.sim.value/map
      (vec (sort-by (comp canonical-order-key first) entries))]))
 
@@ -145,6 +175,28 @@
 (defn- canonical-children? [values]
   (and (vector? values)
        (every? canonical-form? values)))
+
+(defn- canonical-contains-bytes? [value]
+  (and
+   (vector? value)
+   (case (first value)
+     :jolt.sim.value/bytes
+     true
+
+     (:jolt.sim.value/vector
+      :jolt.sim.value/list
+      :jolt.sim.value/sequence
+      :jolt.sim.value/set)
+     (boolean (some canonical-contains-bytes? (nth value 1 [])))
+
+     :jolt.sim.value/map
+     (boolean
+      (some (fn [entry]
+              (or (canonical-contains-bytes? (nth entry 0 nil))
+                  (canonical-contains-bytes? (nth entry 1 nil))))
+            (nth value 1 [])))
+
+     false)))
 
 (defn- sorted-canonical? [values key-fn]
   (= values (vec (sort-by key-fn values))))
@@ -265,15 +317,93 @@
      :jolt.sim.value/set
      (and (= 2 (count value))
           (canonical-children? (nth value 1))
+          (not-any? canonical-contains-bytes? (nth value 1))
           (sorted-canonical? (nth value 1) canonical-order-key)
           (= (count (nth value 1))
              (count (set (map pr-str (nth value 1))))))
 
      :jolt.sim.value/map
      (and (= 2 (count value))
-          (canonical-map-form? (nth value 1)))
+          (canonical-map-form? (nth value 1))
+          (not-any? (fn [entry]
+                      (canonical-contains-bytes? (nth entry 0)))
+                    (nth value 1)))
 
      false)))
+
+(defn restore-value
+  "Restores a fresh ordinary value from a `canonical-value` projection.
+
+  Byte arrays are newly allocated on every call. Persistent collection
+  containers are also rebuilt, so callers can safely receive a restored value
+  without gaining access to mutable storage retained by a simulator."
+  [value]
+  (when-not (canonical-form? value)
+    (throw
+     (ex-info
+      "Malformed jolt-sim canonical value"
+      {:type malformed-canonical-value
+       :value value})))
+  (let [tag (first value)]
+    (case tag
+      :jolt.sim.value/nil
+      nil
+
+      :jolt.sim.value/boolean
+      (nth value 1)
+
+      :jolt.sim.value/integer
+      (edn/read-string (nth value 1))
+
+      :jolt.sim.value/ratio
+      (edn/read-string (str (nth value 1) "/" (nth value 2)))
+
+      :jolt.sim.value/float
+      (edn/read-string (nth value 1))
+
+      :jolt.sim.value/string
+      (nth value 1)
+
+      :jolt.sim.value/character
+      (nth (nth value 1) 0)
+
+      :jolt.sim.value/keyword
+      (let [namespace-text (nth value 1)
+            name-text (nth value 2)]
+        (if namespace-text
+          (keyword namespace-text name-text)
+          (keyword name-text)))
+
+      :jolt.sim.value/symbol
+      (let [namespace-text (nth value 1)
+            name-text (nth value 2)]
+        (if namespace-text
+          (symbol namespace-text name-text)
+          (symbol name-text)))
+
+      :jolt.sim.value/bytes
+      (byte-array (nth value 1))
+
+      :jolt.sim.value/vector
+      (mapv restore-value (nth value 1))
+
+      :jolt.sim.value/list
+      (apply list (map restore-value (nth value 1)))
+
+      :jolt.sim.value/sequence
+      (map identity (mapv restore-value (nth value 1)))
+
+      :jolt.sim.value/set
+      (set (map restore-value (nth value 1)))
+
+      :jolt.sim.value/map
+      (reduce
+       (fn [result entry]
+         (assoc result
+                (restore-value (nth entry 0))
+                (restore-value (nth entry 1))))
+       {}
+       (nth value 1)))))
 
 (defn normalize-error
   "Recursively replaces raw exception values with ordinary immutable data.

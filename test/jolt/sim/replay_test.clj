@@ -37,6 +37,39 @@
                      index))
                  trace)))
 
+(deftest every-canonical-tag-restores-to-the-same-logical-form
+  (doseq [value
+          [nil
+           true
+           42
+           (/ 1 3)
+           1.5
+           "text"
+           \x
+           :sample/key
+           'sample/value
+           (byte-array [0 255])
+           [1 2]
+           (list 1 2)
+           (range 3)
+           #{1 2}
+           {:a 1 :b [2]}]]
+    (let [canonical (trace/canonical-value value)
+          restored (trace/restore-value canonical)]
+      (is (= canonical (trace/canonical-value restored))))))
+
+(deftest encoded-byte-keys-and-members-are-not-restorable
+  (let [encoded-byte [:jolt.sim.value/bytes [1]]
+        encoded-vector-key [:jolt.sim.value/vector [encoded-byte]]
+        encoded-nil [:jolt.sim.value/nil]
+        forms
+        [[:jolt.sim.value/map [[encoded-vector-key encoded-nil]]]
+         [:jolt.sim.value/set [encoded-vector-key]]]]
+    (doseq [form forms]
+      (is (false? (trace/canonical-form? form)))
+      (is (= trace/malformed-canonical-value
+             (:type (caught-data #(trace/restore-value form))))))))
+
 (deftest same-seed-produces-byte-identical-canonical-edn
   (let [world-a
         (array-map
