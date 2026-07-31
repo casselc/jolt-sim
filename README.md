@@ -17,7 +17,10 @@ and simulated worlds belong here.
   Jolt images depend on it; and
 - a `run-controlled`/`defsim` adapter that preserves the application body
   unchanged while gating ordinary future starts and, under ABI v2,
-  substituting registered FFI/native effects.
+  substituting registered FFI/native effects; and
+- a deterministic native-memory world with configurable ABI widths and byte
+  order, exact bounds/lifetime failures, copy-safe byte buffers, owned C
+  strings, and leak snapshots.
 
 The current runtime adapter supports two controller ABI versions discovered
 dynamically from a sim image. ABI v1 is lifecycle-only: an optional `:on-event`
@@ -59,6 +62,45 @@ describe kernel test runs, not arbitrary production execution.
   effects are recorded in separate ordered logs; correlating a future's task id
   across both logs is the caller's responsibility today.
 
+### Deterministic native memory
+
+`jolt.sim.ffi-memory` supplies handlers for all 13 ABI v2 native operations.
+It allocates aligned fake addresses backed only by immutable byte vectors, so
+an intercepted pointer can never reach Chez or the operating system. The
+default world is deterministic LP64 little-endian; `:pointer-size`,
+`:long-size`, `:byte-order`, `:base-address`, `:alignment`, and the set of
+available library names are explicit configuration.
+
+The application body remains ordinary Jolt code:
+
+```clojure
+(require '[jolt.sim.ffi-memory :as memory]
+         '[jolt.sim.runtime :as sim]
+         '[my.library :as library])
+
+(let [world (memory/world)
+      run (sim/run-controlled
+           {:ffi-handlers (memory/handlers world)}
+           library/exercise-native-api)]
+  {:result (:result run)
+   :effects (:effects run)
+   :leaks (memory/leaks world)})
+```
+
+`my.library` imports `jolt.ffi`, not `jolt.sim`. The test fixture
+`jolt.sim.fixtures.ffi-roundtrip` is executed unchanged against both real
+native memory and this world.
+
+This is intentionally a memory substrate, not a model of every C library.
+Foreign functions such as SQLite, sockets, and codecs still require
+library-specific handler packs that allocate or inspect buffers in the same
+world. Scalar `:float` and `:double` memory reads/writes fail with a distinct
+typed error in this first slice (their `sizeof` values are available).
+Simulated `loaded?` reports names successfully loaded in the world; it never
+re-probes the host loader. Bounds errors, invalid frees, double frees, use after
+free, unterminated strings, and leaked live allocations are explicit evidence
+rather than native undefined behavior.
+
 ## Execution model
 
 The cooperative step API is the scheduler kernel and a low-level model-testing
@@ -98,8 +140,9 @@ the real operating system.
 1. Drive the existing future controller adapter from scheduler choices, then
    run one unchanged Jolt namespace in normal and controlled modes through
    ordinary futures, promises, clocks, and entropy.
-2. Build deterministic simulated memory ownership and library-specific
-   provider packs on the current fail-closed FFI/native interception boundary.
+2. Expand the landed deterministic memory ownership substrate into
+   library-specific provider packs on the fail-closed FFI/native interception
+   boundary.
 3. Add operation effects for connect, accept, read, write, close, cancel, and
    deadlines, followed by deterministic network and storage fault models.
 4. Add Hegel generation and shrinking for workloads, scheduler choices, native
