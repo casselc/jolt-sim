@@ -10,6 +10,13 @@
   {:extra-paths ["test"]
    :main-opts ["-m" "jolt.sim.runtime-poison-test"]}
 
+  ;; Process-isolated because the scheduler makes no deadlock-recovery claim:
+  ;; this deliberately leaves a thread blocked forever and relies on process
+  ;; exit, not graceful unwinding, to reclaim it.
+  :future-schedule-poison-test
+  {:extra-paths ["test"]
+   :main-opts ["-m" "jolt.sim.future-schedule-poison-test"]}
+
   ;; Workspace integration lanes: the canonical db checkout is ../db.
   :sqlite-test
   {:extra-paths ["test"]

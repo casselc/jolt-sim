@@ -3,6 +3,7 @@
             [jolt.sim.completion-test]
             [jolt.sim.ffi-world-integration-test]
             [jolt.sim.ffi-memory-test]
+            [jolt.sim.future-schedule-test]
             [jolt.sim.kernel-test]
             [jolt.sim.monitor-test]
             [jolt.sim.replay-test]
@@ -14,6 +15,7 @@
         (test/run-tests 'jolt.sim.completion-test
                         'jolt.sim.ffi-world-integration-test
                         'jolt.sim.ffi-memory-test
+                        'jolt.sim.future-schedule-test
                         'jolt.sim.kernel-test
                         'jolt.sim.monitor-test
                         'jolt.sim.replay-test

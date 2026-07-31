@@ -64,13 +64,72 @@ regression is isolated from the reusable test session:
 /path/to/abi-v3/target/sim/jolt -M:runtime-poison-test
 ```
 
-The adapter still does not select an exhaustive schedule, reorder execution,
-advance virtual time, or inject faults. The first coarse scripted scheduler
-(driving ordinary futures from a finite spawn-ordinal script, gating at
-`:start` and advancing at `:exit`/`:abort`) is **not yet implemented** in this
-slice and is tracked as remaining work. The kernel has no stream, socket,
-HTTP, database, or OpenTelemetry integration. Its deterministic traces
-describe kernel test runs, not arbitrary production execution.
+The adapter still does not select an exhaustive schedule, advance virtual
+time, or inject faults. The kernel has no stream, socket, HTTP, database, or
+OpenTelemetry integration. Its deterministic traces describe kernel test
+runs, not arbitrary production execution.
+
+### First coarse scripted scheduler (ABI v3 `:future-schedule`)
+
+`run-controlled` accepts an optional `:future-schedule` under ABI v3: a
+nonempty vector that is an exact permutation of `0..N-1`, shape-validated
+before any controller is installed (so a malformed schedule fails closed on
+any image, including an ordinary released one) and rejected with
+`:jolt.sim.runtime/capability-unavailable` on v1/v2. It drives
+`jolt.sim.future-schedule`, the first coarse deterministic scheduler over
+**unchanged** ordinary futures, using only the existing ABI v3 lifecycle
+events -- no new controller hook.
+
+Ordinals are assigned, in arrival order, to accepted `:spawn` events whose
+`:parent` is `0`. ABI v3 also uses parent zero for a future created by any
+non-hooked raw thread; it does not expose enough identity to distinguish that
+thread from the thunk's thread. This first slice therefore requires a
+caller-enforced quiescent scope with exactly one parent-zero spawner. Nested
+hooked futures fail closed; competing raw-thread spawners are an explicit
+nonclaim. The schedule states the admission order for the accepted ordinals'
+*bodies*: an immutable single-use gate is created per ordinal at `:spawn` and
+its `:start` blocks on that gate; at most one ordinal's body is admitted at a
+time, and the next is released only after the current ordinal's `:finish`.
+`:exit` remains ABI v3 worker-ownership/drain evidence, never the advancement
+point.
+
+Any of the following aborts every undecided gate (so blocked `:start` calls
+fail fast and can still reach `:exit` for drainage) and fails with an `ex-info`
+tagged `:jolt.sim.runtime/schedule-error`: a nested spawn, a spawn
+beyond the schedule's length, fewer spawns than the schedule declares, a
+successfully registered spawn followed by pre-worker `:abort`, an out-of-order
+terminal event, or an application cancellation, which is **unsupported** in
+this first successful-schedule slice. The first schedule failure is retained
+even when application code catches its propagated callback exception.
+
+On success the result map gains `:schedule-events`, a deterministic logical
+vector containing only alternating `[:admit ordinal]` and
+`[:complete ordinal]` entries. It deliberately excludes racing raw
+spawn/start/exit arrival order and global task ids; those remain available in
+the unchanged compatibility `:events` field. Repeating one successful script
+therefore produces byte-identical scheduler evidence even though raw ids and
+worker exit order change.
+
+An optional user `:on-event` still composes. Scheduler validation and start
+admission run before the callback. A valid `:finish` reaches the user callback
+before releasing the next body, so a callback failure aborts every undecided
+gate instead of allowing or stranding later work. Such a user failure remains
+a controller-callback error rather than being mislabeled as a schedule
+violation.
+
+This scheduler makes **no deadlock-recovery claim**: if the schedule's
+admission order is incompatible with how the unchanged thunk's own thread
+actually depends on its futures (for example, blocking on an already-spawned
+future before the schedule ever lets the future it is waiting on run), the
+blocked `:start`/`deref` simply never returns, the same as it would in
+unchanged application code. That is a property of the requested order, not a
+failure this slice detects or recovers from, and still requires
+external/subprocess supervision -- exercised in isolation, not as an
+in-process test that would hang the suite:
+
+```sh
+/path/to/abi-v3/target/sim/jolt -M:future-schedule-poison-test
+```
 
 ### FFI interception caveats (ABI v2/v3)
 
@@ -225,9 +284,11 @@ the real operating system.
 
 ## Roadmap
 
-1. Drive the existing future controller adapter from scheduler choices, then
-   run one unchanged Jolt namespace in normal and controlled modes through
-   ordinary futures, promises, clocks, and entropy.
+1. Drive the existing future controller adapter from scheduler choices --
+   the first coarse slice (`:future-schedule`, a scripted top-level spawn
+   order, single-concurrency admission) has landed; still open is running
+   one unchanged Jolt namespace in normal and controlled modes through
+   nested spawns, promises, clocks, and entropy.
 2. Extend the landed memory and SQLite handler models with bounded error and
    cleanup plans, then add handler packs for codecs and socket operations on
    the same fail-closed FFI/native interception boundary.

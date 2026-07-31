@@ -178,7 +178,8 @@
       ;; :effects is returned only on FFI-capable images (v2/v3).
       (if (#{2 3} (abi-version))
         (is (vector? (:effects result)))
-        (is (nil? (:effects result)))))
+        (is (nil? (:effects result))))
+      (is (not (contains? result :schedule-events))))
     (ordinary-reports-unavailable #(rt/run-controlled {} (fn [] :done)))))
 
 (deftest on-event-may-gate-a-future-before-its-body-starts
@@ -574,8 +575,6 @@
       (is (= [:spawn :start :finish :exit]
              (mapv :event (:events result))))
       (is (apply = (map :task (:events result)))))
-      ;; The scripted scheduler (driving ordinary futures from a spawn-ordinal
-      ;; script) is intentionally not implemented in this slice.
     (rt/available?)
     (do (is (contains? #{1 2} (abi-version)))
         ;; v1/v2 never emit :exit/:abort; the contract is v3-only.
@@ -830,6 +829,464 @@
       (is (= :recovered
              (:result
               (rt/run-controlled {} (fn [] :recovered))))))
+    (rt/available?)
+    (is (contains? #{1 2} (abi-version)))
+    :else
+    (ordinary-reports-unavailable #(rt/run-controlled {} (fn [] :done)))))
+
+;; ---- ABI v3 :future-schedule scripted scheduler -----------------------
+;;
+;; A :future-schedule is a nonempty vector, an exact permutation of 0..N-1.
+;; Ordinals are assigned to accepted parent-zero :spawn events under the
+;; explicit single-spawner/quiescent-raw-thread restriction; the schedule
+;; declares the order in which those ordinals' bodies are admitted to run, one
+;; at a time, releasing the next only after the current ordinal's :finish.
+;; These tests are discriminating only on a v3 image; on v1/v2 (which never
+;; accept :future-schedule at all) and on an ordinary image they assert clean
+;; rejection/unavailability.
+
+(deftest future-schedule-malformed-permutations-fail-before-install
+  ;; Shape validation is pure config checking; it reports before ABI
+  ;; resolution on every image, including ordinary released Jolt.
+  (doseq [bad [[] '(0 1) #{0 1} [1 2] [0 0] [0 2] [-1 0] [0 1.0] [0 "1"] nil]]
+    (let [data (ex-data-of
+                #(rt/run-controlled
+                  {:future-schedule bad}
+                  (fn [] :uncontrolled)))]
+      (is (= :jolt.sim.runtime/invalid-config (:type data))
+          (pr-str bad))
+      (is (= bad (:future-schedule data))
+          (pr-str bad))))
+  (let [resolve-var (resolve 'jolt.sim.runtime/resolve-controller-ops!)
+        resolutions (atom 0)
+        data
+        (with-redefs-fn
+          {resolve-var
+           (fn []
+             (swap! resolutions inc)
+             (throw (ex-info "must not resolve" {})))}
+          #(ex-data-of
+            (fn []
+              (rt/run-controlled
+               {:future-schedule [1 2]}
+               (fn [] :uncontrolled)))))]
+    (is (= :jolt.sim.runtime/invalid-config (:type data)))
+    (is (zero? @resolutions)
+        "malformed schedule must fail before ABI resolution or installation")))
+
+(deftest future-schedule-requires-abi-v3
+  (cond
+    (= 3 (abi-version))
+    (is (= :ok (:result (rt/run-controlled {:future-schedule [0]}
+                                            (fn [] (let [a (future :ok)] @a))))))
+    (rt/available?)
+    (is (= :jolt.sim.runtime/capability-unavailable
+           (:type (ex-data-of
+                   #(rt/run-controlled {:future-schedule [0]}
+                                        (fn [] :uncontrolled))))))
+    :else
+    (ordinary-reports-unavailable
+     #(rt/run-controlled {:future-schedule [0]} (fn [] :uncontrolled)))))
+
+(deftest v3-future-schedule-drives-exact-body-start-order
+  (cond
+    (= 3 (abi-version))
+    (let [observed (atom [])
+          result
+          (rt/run-controlled
+           {:future-schedule [2 0 1]}
+           (fn []
+             (let [a (future (swap! observed conj :a) :a)
+                   b (future (swap! observed conj :b) :b)
+                   c (future (swap! observed conj :c) :c)]
+               [@a @b @c])))
+          schedule-events (:schedule-events result)]
+      (is (= [:a :b :c] (:result result)))
+      (is (= [:c :a :b] @observed))
+      (is (= [[:admit 2] [:complete 2]
+              [:admit 0] [:complete 0]
+              [:admit 1] [:complete 1]]
+             schedule-events)))
+    (rt/available?)
+    (is (contains? #{1 2} (abi-version)))
+    :else
+    (ordinary-reports-unavailable #(rt/run-controlled {} (fn [] :done)))))
+
+(deftest v3-future-schedule-releases-next-at-finish-before-exit
+  (cond
+    (= 3 (abi-version))
+    (let [first-task (atom nil)
+          first-exit-entered (promise)
+          release-first-exit (promise)
+          second-started (promise)
+          result
+          (rt/run-controlled
+           {:future-schedule [0 1]
+            :on-event
+            (fn [{:keys [event task]}]
+              (when (= :spawn event)
+                (compare-and-set! first-task nil task))
+              (when (and (= :exit event) (= task @first-task))
+                (deliver first-exit-entered true)
+                @release-first-exit))}
+           (fn []
+             (let [a (future :a)
+                   b (future (deliver second-started true) :b)
+                   exit-entered
+                   (deref first-exit-entered 5000 :timeout)
+                   second-before-release
+                   (deref second-started 500 :timeout)]
+               (deliver release-first-exit true)
+               {:values [@a @b]
+                :exit-entered exit-entered
+                :second-before-release second-before-release})))]
+      (is (= [:a :b] (get-in result [:result :values])))
+      (is (true? (get-in result [:result :exit-entered])))
+      (is (true? (get-in result [:result :second-before-release]))
+          "the second body must start while the first exit callback is blocked"))
+    (rt/available?)
+    (is (contains? #{1 2} (abi-version)))
+    :else
+    (ordinary-reports-unavailable #(rt/run-controlled {} (fn [] :done)))))
+
+(deftest v3-future-schedule-admits-at-most-one-body-at-a-time
+  (cond
+    (= 3 (abi-version))
+    (let [first-entered (promise)
+          second-entered (promise)
+          release-first (promise)
+          premature-second (atom nil)
+          concurrent (atom 0)
+          max-concurrent (atom 0)
+          run-body
+          (fn [tag entered block?]
+            (let [n (swap! concurrent inc)]
+              (swap! max-concurrent max n))
+            (deliver entered true)
+            (when block? @release-first)
+            (swap! concurrent dec)
+            tag)
+          result
+          (rt/run-controlled
+           {:future-schedule [1 0 2]}
+           (fn []
+             (let [a (future (run-body :a second-entered false))
+                   b (future (run-body :b first-entered true))
+                   c (future (run-body :c (promise) false))]
+               (when (= :timeout (deref first-entered 5000 :timeout))
+                 (throw (ex-info "first scheduled body did not start" {})))
+               ;; Body B cannot finish until release-first. If body A is
+               ;; admitted early, it causally signals second-entered while B
+               ;; is still running; no incidental OS serialization can hide
+               ;; the overlap.
+               (reset! premature-second
+                       (deref second-entered 200 :not-entered))
+               (deliver release-first true)
+               [@a @b @c])))]
+      (is (= [:a :b :c] (:result result)))
+      (is (= :not-entered @premature-second))
+      (is (= 1 @max-concurrent)))
+    (rt/available?)
+    (is (contains? #{1 2} (abi-version)))
+    :else
+    (ordinary-reports-unavailable #(rt/run-controlled {} (fn [] :done)))))
+
+(deftest v3-future-schedule-evidence-is-stable-across-runs-with-changing-raw-ids
+  (cond
+    (= 3 (abi-version))
+    (let [runs
+          (vec
+           (for [_ (range 20)]
+             (rt/run-controlled
+              {:future-schedule [0 1 2]}
+              (fn []
+                (let [a (future :a)
+                      b (future :b)
+                      c (future :c)]
+                  [@a @b @c])))))
+          first-run (first runs)
+          last-run (last runs)
+          evidence (mapv :schedule-events runs)]
+      (is (every? #(= [:a :b :c] (:result %)) runs))
+      (is (< (apply max (map :task (:events first-run)))
+             (apply min (map :task (:events last-run)))))
+      (is (= [[:admit 0] [:complete 0]
+              [:admit 1] [:complete 1]
+              [:admit 2] [:complete 2]]
+             (first evidence)))
+      (is (apply = evidence)
+          "the complete returned logical evidence must be replay-stable"))
+    (rt/available?)
+    (is (contains? #{1 2} (abi-version)))
+    :else
+    (ordinary-reports-unavailable #(rt/run-controlled {} (fn [] :done)))))
+
+(deftest v3-future-schedule-rejects-a-spawn-beyond-the-schedule
+  (cond
+    (= 3 (abi-version))
+    (let [thrown (ex-of
+                  #(rt/run-controlled
+                    {:future-schedule [0]}
+                    (fn []
+                      (let [a (future :a)]
+                        @a
+                        (future :b)))))
+          data (ex-data thrown)]
+      (is (= :jolt.sim.runtime/schedule-error (:type data)))
+      (is (= :extra-spawn (:reason data)))
+      (is (= :recovered (:result (rt/run-controlled {} (fn [] :recovered))))))
+    (rt/available?)
+    (is (contains? #{1 2} (abi-version)))
+    :else
+    (ordinary-reports-unavailable #(rt/run-controlled {} (fn [] :done)))))
+
+(deftest v3-future-schedule-retains-caught-extra-spawn-failure
+  (cond
+    (= 3 (abi-version))
+    (let [caught (atom nil)
+          data
+          (ex-data-of
+           #(rt/run-controlled
+             {:future-schedule [0]}
+             (fn []
+               (let [a (future :a)]
+                 @a
+                 (reset! caught
+                         (try
+                           (future :extra)
+                           :not-rejected
+                           (catch :default _ :caught)))
+                 :body-returned))))]
+      (is (= :caught @caught))
+      (is (= :jolt.sim.runtime/schedule-error (:type data)))
+      (is (= :extra-spawn (:reason data)))
+      (is (= :recovered (:result (rt/run-controlled {} (fn [] :recovered))))))
+    (rt/available?)
+    (is (contains? #{1 2} (abi-version)))
+    :else
+    (ordinary-reports-unavailable #(rt/run-controlled {} (fn [] :done)))))
+
+(deftest v3-future-schedule-rejects-fewer-spawns-than-scheduled
+  (cond
+    (= 3 (abi-version))
+    (let [thrown (ex-of
+                  #(rt/run-controlled
+                    {:future-schedule [0 1 2]}
+                    (fn [] (let [a (future :a)] @a))))
+          data (ex-data thrown)]
+      (is (= :jolt.sim.runtime/schedule-error (:type data)))
+      (is (= :missing-spawn (:reason data)))
+      (is (= 3 (:expected data)))
+      (is (= 1 (:spawned data)))
+      (is (= :recovered (:result (rt/run-controlled {} (fn [] :recovered))))))
+    (rt/available?)
+    (is (contains? #{1 2} (abi-version)))
+    :else
+    (ordinary-reports-unavailable #(rt/run-controlled {} (fn [] :done)))))
+
+(deftest v3-future-schedule-rejects-a-nested-spawn-even-when-app-catches-it
+  (cond
+    (= 3 (abi-version))
+    (let [parent (atom nil)
+          data (ex-data-of
+                #(rt/run-controlled
+                  {:future-schedule [0]}
+                  (fn []
+                    (reset! parent
+                            (future
+                              (try
+                                (future :nested)
+                                (catch :default _ :child-rejected))))
+                    @@parent)))]
+      (is (= :jolt.sim.runtime/schedule-error (:type data)))
+      (is (= :nested-spawn (:reason data)))
+      (is (= :child-rejected @@parent))
+      (is (= :recovered (:result (rt/run-controlled {} (fn [] :recovered))))))
+    (rt/available?)
+    (is (contains? #{1 2} (abi-version)))
+    :else
+    (ordinary-reports-unavailable #(rt/run-controlled {} (fn [] :done)))))
+
+(deftest v3-future-schedule-rejects-cancellation
+  (cond
+    (= 3 (abi-version))
+    (let [started (promise)
+          release (promise)
+          data
+          (ex-data-of
+           #(rt/run-controlled
+             {:future-schedule [0]}
+             (fn []
+               (let [worker
+                     (future
+                       (deliver started true)
+                       @release
+                       :unreachable)]
+                 (deref started 5000 :timeout)
+                 (let [cancelled? (future-cancel worker)]
+                   (deliver release true)
+                   cancelled?)))))]
+      (is (= :jolt.sim.runtime/schedule-error (:type data)))
+      (is (= :cancellation-unsupported (:reason data)))
+      (is (= :recovered (:result (rt/run-controlled {} (fn [] :recovered))))))
+    (rt/available?)
+    (is (contains? #{1 2} (abi-version)))
+    :else
+    (ordinary-reports-unavailable #(rt/run-controlled {} (fn [] :done)))))
+
+(deftest v3-future-schedule-cancel-before-start-skips-the-gated-body
+  (cond
+    (= 3 (abi-version))
+    (let [first-ran? (atom false)
+          second-started (promise)
+          release-second (promise)
+          cancelled? (atom nil)
+          data
+          (ex-data-of
+           #(rt/run-controlled
+             {:future-schedule [1 0]}
+             (fn []
+               (let [first (future (reset! first-ran? true) :first)
+                     second
+                     (future
+                       (deliver second-started true)
+                       @release-second
+                       :second)]
+                 (when (= :timeout (deref second-started 5000 :timeout))
+                   (throw (ex-info "selected body did not start" {})))
+                 (reset! cancelled? (future-cancel first))
+                 (deliver release-second true)
+                 @second))))]
+      (is (true? @cancelled?))
+      (is (false? @first-ran?))
+      (is (= :jolt.sim.runtime/schedule-error (:type data)))
+      (is (= :cancellation-unsupported (:reason data)))
+      (is (= :recovered (:result (rt/run-controlled {} (fn [] :recovered))))))
+    (rt/available?)
+    (is (contains? #{1 2} (abi-version)))
+    :else
+    (ordinary-reports-unavailable #(rt/run-controlled {} (fn [] :done)))))
+
+(deftest v3-future-schedule-user-spawn-callback-failure-aborts-later-gates
+  (cond
+    (= 3 (abi-version))
+    (let [spawn-count (atom 0)
+          bodies (atom [])
+          caught (atom [])
+          callback-error (ex-info "spawn observer failed" {:observer :spawn})
+          data
+          (ex-data-of
+           #(rt/run-controlled
+             {:future-schedule [1 0 2]
+              :on-event
+              (fn [{:keys [event]}]
+                (when (and (= :spawn event)
+                           (= 2 (swap! spawn-count inc)))
+                  (throw callback-error)))}
+             (fn []
+               (future (swap! bodies conj :zero))
+               (swap! caught conj
+                      (try
+                        (future (swap! bodies conj :one))
+                        :not-rejected
+                        (catch :default _ :caught-second)))
+               (swap! caught conj
+                      (try
+                        (future (swap! bodies conj :two))
+                        :not-rejected
+                        (catch :default _ :caught-third)))
+               :body-returned)))]
+      (is (= [:caught-second :caught-third] @caught))
+      (is (empty? @bodies))
+      (is (= :jolt.sim.runtime/controller-error (:type data)))
+      (is (some #(= "spawn observer failed"
+                    (get-in % [:error :message]))
+                (:errors data)))
+      (is (= :recovered (:result (rt/run-controlled {} (fn [] :recovered))))))
+    (rt/available?)
+    (is (contains? #{1 2} (abi-version)))
+    :else
+    (ordinary-reports-unavailable #(rt/run-controlled {} (fn [] :done)))))
+
+(deftest v3-future-schedule-user-finish-callback-failure-does-not-admit-next
+  (cond
+    (= 3 (abi-version))
+    (let [bodies (atom [])
+          failed? (atom false)
+          callback-error (ex-info "finish observer failed" {:observer :finish})
+          data
+          (ex-data-of
+           #(rt/run-controlled
+             {:future-schedule [0 1]
+              :on-event
+              (fn [{:keys [event]}]
+                (when (and (= :finish event)
+                           (compare-and-set! failed? false true))
+                  (throw callback-error)))}
+             (fn []
+               (let [a (future (swap! bodies conj :a) :a)
+                     b (future (swap! bodies conj :b) :b)]
+                 @a
+                 @b))))]
+      (is (= [:a] @bodies))
+      (is (= :jolt.sim.runtime/controller-error (:type data)))
+      (is (some #(= "finish observer failed"
+                    (get-in % [:error :message]))
+                (:errors data)))
+      (is (= :recovered (:result (rt/run-controlled {} (fn [] :recovered))))))
+    (rt/available?)
+    (is (contains? #{1 2} (abi-version)))
+    :else
+    (ordinary-reports-unavailable #(rt/run-controlled {} (fn [] :done)))))
+
+(deftest v3-future-schedule-body-failure-still-drains-and-restores
+  (cond
+    (= 3 (abi-version))
+    (let [closed (promise)
+          worker-started (promise)
+          worker (atom nil)
+          body-error (ex-info "scheduled body boom" {:phase :run})
+          thrown
+          (ex-of
+           #(with-close-signal
+              closed
+              (fn []
+                (rt/run-controlled
+                 {:future-schedule [0] :drain-timeout-ms 2000}
+                 (fn []
+                   (reset! worker
+                           (future
+                             (deliver worker-started true)
+                             @closed
+                             :released))
+                   (when (= :timeout (deref worker-started 5000 :timeout))
+                     (throw (ex-info "worker did not start" {})))
+                   (throw body-error))))))]
+      (is (identical? body-error thrown))
+      (is (= :released @@worker))
+      (is (= :recovered (:result (rt/run-controlled {} (fn [] :recovered))))))
+    (rt/available?)
+    (is (contains? #{1 2} (abi-version)))
+    :else
+    (ordinary-reports-unavailable #(rt/run-controlled {} (fn [] :done)))))
+
+(deftest v3-future-schedule-session-recovers-for-a-follow-up-run
+  (cond
+    (= 3 (abi-version))
+    (let [failed (ex-data-of
+                  #(rt/run-controlled
+                    {:future-schedule [0]}
+                    (fn []
+                      (let [a (future :a)]
+                        @a
+                        (future :b)))))
+          scheduled-again (rt/run-controlled
+                            {:future-schedule [0]}
+                            (fn [] (let [a (future :a)] @a)))
+          unscheduled (rt/run-controlled {} (fn [] :done))]
+      (is (= :jolt.sim.runtime/schedule-error (:type failed)))
+      (is (= :a (:result scheduled-again)))
+      (is (= :done (:result unscheduled))))
     (rt/available?)
     (is (contains? #{1 2} (abi-version)))
     :else

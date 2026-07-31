@@ -85,11 +85,16 @@
   errors and on tasks that outlive the controlled scope. Under v2/v3 it also
   records an ordered :effects log of every validated native interception in
   arrival order. Under v3 it drains lifecycle-owned future workers through
-  :exit/:abort before restoring controllers. It is NOT yet an exhaustive
-  deterministic scheduler: it does not reorder execution, advance virtual
-  time, inject faults, or bind a unified causal trace between lifecycle events
-  and native effects. Those remain future work tracked in the project README."
-  (:require [jolt.sim.trace :as trace]))
+  :exit/:abort before restoring controllers. Under v3 an optional
+  :future-schedule additionally drives the first coarse deterministic
+  scheduler (jolt.sim.future-schedule) over unchanged ordinary futures spawned
+  directly by the thunk, admitting one scripted ordinal's body at a time. It
+  is NOT yet an exhaustive deterministic scheduler: it does not search
+  schedules, support nested spawns or cancellation, advance virtual time,
+  inject faults, or bind a unified causal trace between lifecycle events and
+  native effects. Those remain future work tracked in the project README."
+  (:require [jolt.sim.future-schedule :as future-schedule]
+            [jolt.sim.trace :as trace]))
 
 (def ^:private v1-descriptor
   {:abi-version 1
@@ -737,7 +742,8 @@
   ;; here so malformed handler config is reported before ABI resolution, but its
   ;; availability is gated by ABI version after resolution.
   (let [unknown-keys
-        (vec (sort (remove #{:on-event :ffi-handlers :drain-timeout-ms}
+        (vec (sort (remove #{:on-event :ffi-handlers :drain-timeout-ms
+                             :future-schedule}
                            (keys config))))]
     (when (seq unknown-keys)
       (throw
@@ -762,7 +768,9 @@
                 {:type :jolt.sim.runtime/invalid-config
                  :drain-timeout-ms drain-timeout}))))
   (when (contains? config :ffi-handlers)
-    (validate-ffi-handlers! (:ffi-handlers config))))
+    (validate-ffi-handlers! (:ffi-handlers config)))
+  (when (contains? config :future-schedule)
+    (future-schedule/validate-schedule! (:future-schedule config))))
 
 (defn run-controlled
   "Runs thunk under the simulation controller described by config.
@@ -802,11 +810,30 @@
    scope but did not release worker ownership (v3: :exit/:abort; v1/v2:
    :finish/:cancel) before cleanup completed.
 
+   Under v3, an optional :future-schedule -- a nonempty vector that is an exact
+   permutation of 0..N-1 -- drives the first coarse deterministic scheduler
+   (see jolt.sim.future-schedule) over unchanged ordinary futures with parent
+   zero. Because ABI v3 cannot distinguish the thunk thread from another
+   non-hooked raw thread, this first slice requires a quiescent scope with one
+   caller-enforced parent-zero spawner. It assigns ordinals in arrival order
+   and admits at most one ordinal's body at a time, in the schedule's order,
+   releasing the next only after the current ordinal's :finish. A nested
+   spawn, a spawn beyond or short of the schedule's length, a pre-worker
+   :abort, an out-of-order terminal event, or a cancellation (unsupported in
+   this first slice) fails closed with a retained
+   :jolt.sim.runtime/schedule-error and still drains through ABI v3
+   :exit/:abort. It requires ABI v3 and is otherwise rejected with
+   :jolt.sim.runtime/capability-unavailable.
+
    On success returns {:result value :events vector-of-maps :capabilities
    descriptor}. Under v2/v3 the map also includes :effects, a vector of
    exact validated descriptors in interception-arrival order; their arguments
    are live in-memory evidence and may contain mutable objects such as byte
-   arrays. Under v1 :effects is omitted."
+   arrays. Under v1 :effects is omitted. When :future-schedule is supplied the
+   map also includes :schedule-events, the scheduler's deterministic logical
+   evidence log of alternating [:admit ordinal] and [:complete ordinal] pairs.
+   Raw lifecycle arrival order and task ids remain only in the unchanged
+   compatibility :events field."
   [config thunk]
   (validate-run-arguments! config thunk)
   (let [ops (resolve-controller-ops!)
@@ -823,7 +850,16 @@
        (ex-info
         "run-controlled :drain-timeout-ms requires an ABI v3 sim image"
         {:type :jolt.sim.runtime/capability-unavailable})))
+    (when (and (not= abi-version 3)
+               (contains? config :future-schedule))
+      (throw
+       (ex-info
+        "run-controlled :future-schedule requires an ABI v3 sim image"
+        {:type :jolt.sim.runtime/capability-unavailable})))
     (let [ffi-handlers (or (:ffi-handlers config) {})
+          schedule (when-let [future-schedule (:future-schedule config)]
+                     (future-schedule/scheduler future-schedule on-event))
+          effective-on-event (if schedule (:on-event schedule) on-event)
           state
           (atom {:events []
                  :seen #{}
@@ -838,7 +874,7 @@
                  :ffi-errors []
                  :closed? false})
           effects-log (atom [])
-          controller (make-controller on-event state abi-version)
+          controller (make-controller effective-on-event state abi-version)
           ffi-capable? (#{2 3} abi-version)
           ffi-controller (when ffi-capable?
                            (make-ffi-controller
@@ -865,9 +901,11 @@
           (when ffi-controller
             (vreset! ffi-token
                      ((:install-ffi-controller! ops) ffi-controller)))
-          (let [outcome
+          (let [effective-thunk
+                (if schedule ((:wrap-thunk schedule) thunk) thunk)
+                outcome
                 (try
-                  {:ok? true :value (thunk)}
+                  {:ok? true :value (effective-thunk)}
                   (catch :default error
                     {:ok? false :error error}))
                 _ (close-state! state)
@@ -885,20 +923,36 @@
                              (v3-drained? snapshot))
                 latched ((:controller-errors ops))
                 errors (controller-errors snapshot latched)
+                schedule-failure
+                (when schedule ((:failure schedule)))
+                gate-aborted-body?
+                (and (not (:ok? outcome))
+                     (future-schedule/gate-aborted? (:error outcome)))
                 outliving (outliving-tasks abi-version snapshot)]
             (cond
+              ;; A caught nested spawn, cancellation, pre-worker abort, or
+              ;; other scheduler violation remains the primary typed failure
+              ;; after every owned worker drains. Later gate-abort sentinels
+              ;; must not replace it.
+              (and schedule-failure drained?)
+              (throw schedule-failure)
+
               ;; Preserve the original body throw when v3 drainage and exact
               ;; controller restoration remain possible, matching the v1/v2
               ;; contract. v1/v2 retain their historical immediate body-error
-              ;; precedence because they have no worker-exit evidence.
+              ;; precedence because they have no worker-exit evidence. An
+              ;; internal gate-abort sentinel instead defers to the callback
+              ;; errors that caused the scheduler to abort.
               (and (not (:ok? outcome))
+                   (not gate-aborted-body?)
                    (or (not= abi-version 3) drained?))
               (throw (:error outcome))
 
               ;; A callback error still fails closed when the body itself
-              ;; returned normally (including when application code caught
-              ;; that callback's propagated error).
-              (and (:ok? outcome) (seq errors))
+              ;; returned normally or only observed the scheduler's internal
+              ;; gate-abort sentinel.
+              (and (or (:ok? outcome) gate-aborted-body?)
+                   (seq errors))
               (throw
                (ex-info
                 "A controller or native-effect callback failed"
@@ -906,6 +960,10 @@
                          :errors errors
                          :events (:events snapshot)}
                   ffi-capable? (assoc :effects @effects-log))))
+
+              (and (not (:ok? outcome))
+                   (or (not= abi-version 3) drained?))
+              (throw (:error outcome))
 
               (or (not drained?) (seq outliving))
               (throw
@@ -918,9 +976,9 @@
               (let [base {:result (:value outcome)
                           :events (:events snapshot)
                           :capabilities (:descriptor ops)}]
-                (if ffi-capable?
-                  (assoc base :effects @effects-log)
-                  base))))
+                (cond-> base
+                  ffi-capable? (assoc :effects @effects-log)
+                  schedule (assoc :schedule-events ((:evidence schedule)))))))
           (finally
             ;; Closing before restore rejects late lifecycle starts. Under v3
             ;; restoration is refused while any worker still owns or any
