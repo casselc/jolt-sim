@@ -10,6 +10,15 @@
   exactly as an explicit :schedule would, and a non-:completed outcome fails
   fast with a bounded typed error.
 
+  A second, direct path builds an exact permutation of 0..N-1 from Hegel-owned
+  bounded integer (Lehmer) digits over the remaining ordinals: no explicit
+  domain is supplied and the N! plan space is never enumerated or materialized.
+  All-zero digits decode to the identity permutation, and a regression against
+  the pinned engine demonstrates that an always-failing property minimizes to
+  it. This is direct structural generation only -- the pinned Hegel API does
+  not document a distribution for integer draws -- and is not high-utility,
+  PCT, or coverage-guided search.
+
   hegel.core and hegel.generator are optional consumer dependencies. This
   repository supplies them under :hegel-explore-test, while the ordinary
   compatibility suite does not load this namespace."
@@ -43,6 +52,52 @@
                              {:sizes (vec (sort sizes))}))))
   schedules)
 
+(defn- validate-future-count!
+  "Throws ::invalid-config unless `future-count` is a positive integer. Returns
+  `future-count` unchanged. Synchronous and property-independent, so a bad
+  count fails before any draw."
+  [future-count]
+  (when-not (and (integer? future-count) (pos? future-count))
+    (throw (invalid-config :not-a-positive-integer
+                           {:key :future-count :value future-count})))
+  future-count)
+
+(defn- decode-lehmer-digits
+  "Pure decoder: turns a vector of (dec n) Lehmer digits into the exact
+  permutation of 0..(dec n) they encode. Digit i selects and removes the
+  (digit i)-th remaining ordinal. The all-zero digit vector decodes to the
+  identity permutation. O(n^2) decoding; it never enumerates the N! plan space."
+  [digits]
+  (let [n (inc (count digits))]
+    (loop [remaining (vec (range n))
+           digits (seq digits)
+           result []]
+      (if-let [digit (first digits)]
+        (let [chosen (remaining digit)]
+          (recur (into (subvec remaining 0 digit)
+                       (subvec remaining (inc digit)))
+                 (next digits)
+                 (conj result chosen)))
+        (conj result (first remaining))))))
+
+(defn- permutation-generator
+  "Returns a Hegel generator over exact permutations of the ordinals 0..(dec n).
+
+  For n > 1 it composes (dec n) fixed bounded-integer Lehmer-digit generators
+  (max indices n-1 down to 1) with the documented variadic g/tuple, then g/fmaps
+  `decode-lehmer-digits` over the drawn tuple. That is exactly (dec n) integer
+  draws and one pure decode -- never an enumeration of the N! plan space, and
+  never a filtered or assumed digit. All-zero digits decode to the identity
+  permutation. For n = 1 it returns (g/just [0]) with no integer draw and no
+  composition span."
+  [n]
+  (if (= 1 n)
+    (g/just [0])
+    (let [digit-generators
+          (mapv (fn [max-index] (g/integer 0 max-index))
+                (range (dec n) 0 -1))]
+      (g/fmap decode-lehmer-digits (apply g/tuple digit-generators)))))
+
 (defn schedule-generator
   "Returns a Hegel generator that selects one schedule from `schedules`, an
   ordered nonempty vector of unique, same-size exact permutation schedules.
@@ -54,6 +109,28 @@
   (validate-schedule-domain! schedules)
   (g/sampled-from schedules))
 
+(defn direct-schedule-generator
+  "Returns a Hegel generator that produces an exact permutation of the integers
+  0..(dec future-count), built directly from Hegel-owned bounded integer
+  (Lehmer) digits over the remaining ordinals.
+
+  `future-count` must be a positive integer; anything else is rejected
+  synchronously with :jolt.sim.hegel/invalid-config and a stable
+  :not-a-positive-integer reason carrying the offending :future-count evidence.
+
+  No explicit schedule domain is supplied and the N! permutation space is never
+  enumerated or materialized: for future-count > 1 the generator makes exactly
+  (dec future-count) bounded integer draws via g/tuple plus one pure decode;
+  for future-count = 1 it returns the sole permutation [0] via g/just with no
+  integer draw. All-zero digits decode to the identity permutation, and an
+  always-failing regression against the pinned engine minimizes to it. This is
+  direct structural generation -- the pinned Hegel API does not document a
+  distribution for integer draws -- and is not high-utility/PCT/coverage-guided
+  search."
+  [future-count]
+  (validate-future-count! future-count)
+  (permutation-generator future-count))
+
 (def ^:private schedule-keys [:schedule :schedules])
 
 (defn draw-schedule!
@@ -62,6 +139,27 @@
   domain synchronously before drawing. Must be called within h/run-test!."
   [schedules]
   (h/draw! (schedule-generator schedules) "future-schedule"))
+
+(defn draw-direct-schedule!
+  "Draws one directly-generated permutation for the positive `future-count`
+  inside an active Hegel property, labeling the choice site \"future-schedule\".
+  Validates `future-count` synchronously before drawing. Must be called within
+  h/run-test!."
+  [future-count]
+  (h/draw! (direct-schedule-generator future-count) "future-schedule"))
+
+(defn- validate-base-config!
+  "Throws ::invalid-config unless `config` is a map carrying neither :schedule
+  nor :schedules, since this adapter owns schedule selection. Returns `config`
+  unchanged. Synchronous and property-independent, so a malformed base config
+  fails before any draw. Shared by run-schedule! and run-direct-schedule!."
+  [config]
+  (when-not (map? config)
+    (throw (invalid-config :config-not-a-map {:value config})))
+  (let [present (filter #(contains? config %) schedule-keys)]
+    (when (seq present)
+      (throw (invalid-config :schedule-already-present {:keys (vec present)}))))
+  config)
 
 (defn run-schedule!
   "Draws one schedule from the ordered `schedules` domain and runs it through
@@ -72,12 +170,23 @@
   adapter owns schedule selection. Must be called within h/run-test! so the
   single draw is engine-owned. Returns the supervisor outcome unchanged."
   [config schedules]
-  (when-not (map? config)
-    (throw (invalid-config :config-not-a-map {:value config})))
-  (let [present (filter #(contains? config %) schedule-keys)]
-    (when (seq present)
-      (throw (invalid-config :schedule-already-present {:keys (vec present)}))))
+  (validate-base-config! config)
   (let [schedule (draw-schedule! schedules)]
+    (process-explorer/run-schedule (assoc config :schedule schedule))))
+
+(defn run-direct-schedule!
+  "Draws one directly-generated permutation for the positive `future-count` and
+  runs it through the unchanged jolt.sim.process-explorer supervisor.
+
+  `config` is a process-explorer run-schedule base config without :schedule; it
+  must be a map and must not already carry :schedule or :schedules. Reuses the
+  same base-config validation boundary as run-schedule!, so a bad config or a
+  non-positive/non-integer future-count fails synchronously before any draw.
+  Must be called within h/run-test! so the single draw is engine-owned. Returns
+  the supervisor outcome unchanged."
+  [config future-count]
+  (validate-base-config! config)
+  (let [schedule (draw-direct-schedule! future-count)]
     (process-explorer/run-schedule (assoc config :schedule schedule))))
 
 (def ^:private bounded-outcome-keys

@@ -21,8 +21,9 @@ and simulated worlds belong here.
 - capped lexicographic enumeration of exact top-level future schedules and a
   fresh-process supervisor that runs each plan with a deadline, canonical
   result transport, and bounded termination/reaping;
-- an optional Hegel adapter that selects from an ordered schedule domain,
-  shrinks a failing choice, and exactly replays it in another fresh worker;
+- an optional Hegel adapter that either selects from an ordered schedule domain
+  or directly generates a count-based permutation, shrinks a failing choice,
+  and exactly replays it in another fresh worker;
 - a deterministic native-memory world with configurable ABI widths and byte
   order, exact bounds/lifetime failures, copy-safe byte buffers, owned C
   strings, and leak snapshots; and
@@ -227,12 +228,28 @@ worker process. A non-completed process outcome can be promoted to a stable
 property failure with `require-completed!`, while an application-specific
 invariant supplies its own stable failure origin and evidence.
 
-This is a shrinking selection seam, not yet a high-utility distribution.
-`g/sampled-from` shrinks toward earlier entries, so callers control the
-simplification order. Feeding it the bounded lexicographic prefix is
-deterministic but utility-neutral. Hegel runs cases sequentially; stateful
-swarm rules, coverage/resource-order scores, targeted sampling, workload and
-fault generation, and partial-order reduction remain separate later work.
+When the future count is known but materializing an explicit plan domain is
+undesirable, the property body can generate a schedule directly:
+
+```clojure
+(sim-hegel/run-direct-schedule! process-config 8)
+```
+
+For `N > 1`, this makes exactly `N - 1` bounded Hegel integer draws as Lehmer
+digits and decodes them into one exact permutation in `O(N²)` time. It never
+enumerates the `N!` schedule space. `N = 1` uses the constant `[0]` generator
+without an integer draw. All-zero digits decode to the identity permutation;
+the pinned-engine tests demonstrate an always-failing identity shrink and a
+specific real-process reduction from `[1 2 0]` to `[1 0 2]`.
+
+These remain structural shrinking seams, not high-utility distributions.
+For an explicit domain, `g/sampled-from` shrinks toward earlier entries, so
+callers control the simplification order; a bounded lexicographic prefix is
+deterministic but utility-neutral. The pinned Hegel API does not document a
+distribution for its integer draws, so the direct generator makes no uniform
+sampling claim. Hegel runs cases sequentially; stateful swarm rules,
+coverage/resource-order scores, targeted sampling, workload and fault
+generation, and partial-order reduction remain separate later work.
 
 ### FFI interception caveats (ABI v2/v3)
 
@@ -397,10 +414,10 @@ the real operating system.
    the same fail-closed FFI/native interception boundary.
 3. Add operation effects for connect, accept, read, write, close, cancel, and
    deadlines, followed by deterministic network and storage fault models.
-4. Extend the landed optional Hegel schedule-choice shrinker into generation
-   and shrinking for workloads, synchronization-boundary choices, native
-   faults, and effect plans, accepting a shrink only when its trace replays
-   exactly.
+4. Extend the landed optional explicit-domain and direct-count Hegel schedule
+   shrinkers into generation and shrinking for workloads,
+   synchronization-boundary choices, native faults, and effect plans,
+   accepting a shrink only when its trace replays exactly.
 5. Build canonical example systems that run through the same application logic
    in real and simulated modes: a TCP protocol, an HTTP/API service, and a
    SQLite-backed application using the bytes, codec, FFI, net, HTTP, and DB

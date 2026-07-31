@@ -84,6 +84,64 @@
     (is (= [:b :a :c] (-> final-exception ex-data :start-order)))
     (is (= [[1 0 2]] @final-schedules))))
 
+(deftest hegel-directly-generates-and-minimizes-a-real-future-start-order
+  ;; The direct, count-based generator drives the same ABI-v3 fresh-process
+  ;; independent-three scenario with no explicit schedule domain. Under the
+  ;; fixed seed below, exploration first fails on [1 2 0] (A does not start
+  ;; first), then shrinks the Lehmer digit draws toward 0 until the final
+  ;; replay re-throws on [1 0 2], and does so without flakiness. (Confirmed
+  ;; against the pinned Hegel build by an external probe of this tuple/fmap
+  ;; design.)
+  (let [failing-schedules (atom [])
+        final-schedules (atom [])
+        result
+        (h/run-test!
+         {:test-cases 20
+          :seed 3
+          :database ""
+          :report-multiple-failures? false
+          :verbosity :quiet}
+         (fn [_]
+           (let [outcome
+                 (sim-hegel/require-completed!
+                  (sim-hegel/run-direct-schedule!
+                   (merge
+                    (process-config)
+                    {:scenario
+                     'jolt.sim.fixtures.explore-scenarios/independent-three
+                     :timeout-ms 5000
+                     :kill-grace-ms 500})
+                   3))
+                 schedule (:schedule outcome)
+                 start-order
+                 (get-in outcome [:result :result :start-order])]
+             (when (h/final?)
+               (swap! final-schedules conj schedule))
+             (when-not (= :a (first start-order))
+               (swap! failing-schedules conj schedule)
+               (throw
+                (ex-info
+                 "future A did not start first"
+                 {:hegel/origin
+                  "jolt.sim.hegel-explore-test/direct-start-order"
+                  :schedule schedule
+                  :start-order start-order}))))))
+        failure (first (:failures result))
+        final-exception (-> result :final first :exception)]
+    (is (false? (:passed? result)))
+    (is (= :failed (:status result)))
+    (is (= 1 (:n-failures result)))
+    (is (= "jolt.sim.hegel-explore-test/direct-start-order"
+           (:origin failure)))
+    (is (true? (:reproduced? failure)))
+    (is (false? (:flaky? result)))
+    (is (= [1 2 0] (first @failing-schedules))
+        (str "expected the first failure to be [1 2 0]; saw "
+             (pr-str @failing-schedules)))
+    (is (= [1 0 2] (-> final-exception ex-data :schedule)))
+    (is (= [:b :a :c] (-> final-exception ex-data :start-order)))
+    (is (= [[1 0 2]] @final-schedules))))
+
 (defn -main [& _]
   (let [bin (required-environment "JOLT_SIM_BIN")
         project-dir (required-environment "JOLT_SIM_PROJECT_DIR")
