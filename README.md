@@ -77,6 +77,15 @@ regression is isolated from the reusable test session:
 /path/to/abi-v3/target/sim/jolt -M:runtime-poison-test
 ```
 
+Descriptor-version 3 also adds a scoped byte-array pointer loan. Its dedicated
+custom-image gate runs one ordinary `jolt.ffi` fixture first against real native
+memory and then unchanged against the deterministic memory handlers, including
+nested native access and exception cleanup:
+
+```sh
+/path/to/abi-v3/target/sim/jolt -M:ffi-pointer-loan-test
+```
+
 The adapter still does not discover future counts, choose high-utility
 interleavings, advance virtual time, or inject faults. `schedule-plans` can
 enumerate the first bounded lexicographic top-level permutations, but that is

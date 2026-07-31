@@ -975,8 +975,10 @@
     (is (identical? descriptor @seen))
     (is (= [descriptor] @effects))))
 
-(deftest v3-descriptor-version-2-is-accepted-when-advertised
+(deftest v3-nested-ffi-descriptor-version-is-accepted-when-advertised
   (cond
+    (= 3 (ffi-descriptor-version))
+    (is (= v3-descriptor3 (rt/capabilities)))
     (= 2 (ffi-descriptor-version))
     (is (= v3-descriptor2 (rt/capabilities)))
     (rt/available?)

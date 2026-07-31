@@ -20,7 +20,7 @@
   (assert-roundtrip (fixture/exercise-memory)))
 
 (deftest unchanged-ffi-namespace-runs-against-the-simulated-world
-  (when (= 2 (abi-version))
+  (when (contains? #{2 3} (abi-version))
     (let [real-result (fixture/exercise-memory)
           world
           (memory/world {:pointer-size (:pointer-size real-result)})

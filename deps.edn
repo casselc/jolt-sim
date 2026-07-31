@@ -10,6 +10,13 @@
   {:extra-paths ["test"]
    :main-opts ["-m" "jolt.sim.runtime-poison-test"]}
 
+  ;; Custom-image integration gate for the descriptor-v3 scoped byte-array
+  ;; pointer loan. Kept separate from :test so the compatibility suite remains
+  ;; loadable on released Jolt images that do not yet expose this fork API.
+  :ffi-pointer-loan-test
+  {:extra-paths ["test"]
+   :main-opts ["-m" "jolt.sim.ffi-pointer-loan-test-main"]}
+
   ;; Process-isolated because the scheduler makes no deadlock-recovery claim:
   ;; this deliberately leaves a thread blocked forever and relies on process
   ;; exit, not graceful unwinding, to reclaim it.
