@@ -65,6 +65,31 @@
                  :borrow-byte-array :release-byte-array
                  :ptr->string :string->ptr])))
 
+;; ABI v4 is the authoritative exact descriptor: the v3 descriptor-version 3 FFI
+;; interception plus an exact :proceed-routing sub-map and :abi-version 4. It is
+;; stated here as the full literal (not built from v3-descriptor3) so the test
+;; independently pins production's v4-descriptor to the authoritative shape.
+(def v4-descriptor
+  {:abi-version 4
+   :future-lifecycle true
+   :controller-errors true
+   :events [:spawn :start :finish :cancel :exit :abort]
+   :ffi-interception {:descriptor-version 3
+                      :kinds [:foreign-function :native-operation]
+                      :arguments :live
+                      :task-identity :future-lifecycle
+                      :native-operations [:load-library :loaded? :alloc :free
+                                          :read :write :sizeof :read-bytes
+                                          :write-bytes :read-array :write-array
+                                          :borrow-byte-array :release-byte-array
+                                          :ptr->string :string->ptr]
+                      :proceed-routing {:controller-arity 2
+                                        :proceed-arity 0
+                                        :single-use true
+                                        :dynamic-extent true
+                                        :owner-thread true
+                                        :scoped-byte-array-release :runtime-owned}}})
+
 ;; Binding is safe on every image because native symbol resolution is lazy.
 ;; Calling this nonexistent symbol is safe only under the ABI v2 controller,
 ;; where the emitted sim branch must intercept before resolution.
@@ -117,22 +142,23 @@
 ;; :finish, and a cancelled future emits :exit after :cancel. v1/v2 stop at the
 ;; future-settling event.
 (defn- expected-finish-events []
-  (if (= 3 (abi-version))
+  (if (#{3 4} (abi-version))
     [:spawn :start :finish :exit]
     [:spawn :start :finish]))
 
 (defn- expected-cancel-events []
-  (if (= 3 (abi-version))
+  (if (#{3 4} (abi-version))
     [:spawn :start :cancel :exit]
     [:spawn :start :cancel]))
 
 (defn- ffi-capable-version
-  "ABI version collapsed for FFI-interception tests: v2 and v3 are equally
-  FFI-capable (v3 is the v2 FFI descriptor plus worker-ownership events), so
-  both project to :ffi; v1 stays 1; an ordinary image stays nil."
+  "ABI version collapsed for FFI-interception tests: v2, v3, and v4 are equally
+  FFI-capable (each is the v2 FFI descriptor plus worker-ownership events, with
+  v4 additionally advertising proceed-routing), so all project to :ffi; v1
+  stays 1; an ordinary image stays nil."
   []
   (let [v (abi-version)]
-    (if (#{2 3} v) :ffi v)))
+    (if (#{2 3 4} v) :ffi v)))
 
 (defn- ffi-descriptor-version
   "Returns the running image's nested :ffi-interception :descriptor-version
@@ -167,8 +193,9 @@
     (do
       (is (true? (rt/available?)))
       (is (contains? #{v1-descriptor v2-descriptor
-                       v3-descriptor v3-descriptor2 v3-descriptor3}
-                     (rt/capabilities))))
+                       v3-descriptor v3-descriptor2 v3-descriptor3
+                       v4-descriptor}
+                      (rt/capabilities))))
     (ordinary-reports-unavailable rt/capabilities)))
 
 (deftest unimplemented-simulation-options-fail-closed
@@ -225,7 +252,8 @@
                   (fn [] (let [worker (future :spawned)] @worker) :done))]
       (is (= :done (:result result)))
       (is (contains? #{v1-descriptor v2-descriptor
-                       v3-descriptor v3-descriptor2 v3-descriptor3}
+                       v3-descriptor v3-descriptor2 v3-descriptor3
+                       v4-descriptor}
                       (:capabilities result)))
       (is (and (vector? (:events result))
                (seq (:events result))
@@ -234,8 +262,8 @@
       (is (= (expected-finish-events) (mapv :event (:events result))))
       (is (apply = (map :task (:events result))))
       (is (every? zero? (map :parent (:events result))))
-      ;; :effects is returned only on FFI-capable images (v2/v3).
-      (if (#{2 3} (abi-version))
+      ;; :effects is returned only on FFI-capable images (v2/v3/v4).
+      (if (#{2 3 4} (abi-version))
         (is (vector? (:effects result)))
         (is (nil? (:effects result))))
       (is (not (contains? result :schedule-events))))
@@ -364,7 +392,7 @@
   ;; v3, the v3 branch is skipped inline and exercised by the final test so no
   ;; later test inherits a poisoned session.
   (if (rt/available?)
-    (if (= 3 (abi-version))
+    (if (#{3 4} (abi-version))
       (is true "v3 outliving-detection is exercised by the final test")
       (let [latch (promise)
             worker (atom nil)
@@ -411,7 +439,7 @@
   (if (rt/available?)
     (let [result (sample-scenario)]
       (is (= :scenario-result (:result result)))
-      (is (contains? #{1 2 3} (:abi-version (:capabilities result)))))
+      (is (contains? #{1 2 3 4} (:abi-version (:capabilities result)))))
     (ordinary-reports-unavailable sample-scenario)))
 
 (deftest defsim-runtime-overrides-require-a-map-before-abi-resolution
@@ -422,7 +450,7 @@
 
 (deftest defsim-runtime-overrides-can-drive-the-v3-future-scheduler
   (cond
-    (= 3 (abi-version))
+    (#{3 4} (abi-version))
     (let [run (scheduled-scenario {:future-schedule [1 0]})]
       (is (= [:first :second] (get-in run [:result :values])))
       (is (= [:second :first] (get-in run [:result :start-order])))
@@ -454,7 +482,7 @@
         (is (= (mapv (fn [event] [:override event])
                      (expected-finish-events))
                @configurable-scenario-events)))
-      (when (= 3 (abi-version))
+      (when (#{3 4} (abi-version))
         (reset! configurable-scenario-events [])
         (let [run
               (configurable-scenario {:future-schedule [0]})]
@@ -702,6 +730,32 @@
   (is (= v3-descriptor (validate-descriptor-var v3-descriptor)))
   (is (= v3-descriptor2 (validate-descriptor-var v3-descriptor2)))
   (is (= v3-descriptor3 (validate-descriptor-var v3-descriptor3)))
+  ;; ABI v4 is accepted exactly, and production's private v4-descriptor equals
+  ;; the authoritative literal.
+  (is (= v4-descriptor (validate-descriptor-var v4-descriptor)))
+  (is (= v4-descriptor
+         @(resolve 'jolt.sim.runtime/v4-descriptor)))
+  ;; A v4-shaped descriptor missing :proceed-routing is not the exact v4 shape.
+  (let [bad (assoc v3-descriptor3 :abi-version 4)
+        data (ex-data-of #(validate-descriptor-var bad))]
+    (is (= :jolt.sim.runtime/abi-incompatible (:type data))))
+  ;; :abi-version 4 with descriptor-version 1 (not 3) is rejected even if a
+  ;; proceed-routing sub-map is attached.
+  (let [bad (-> v3-descriptor (assoc :abi-version 4)
+                (assoc-in [:ffi-interception :proceed-routing]
+                          (:proceed-routing (:ffi-interception v4-descriptor))))
+        data (ex-data-of #(validate-descriptor-var bad))]
+    (is (= :jolt.sim.runtime/abi-incompatible (:type data))))
+  ;; A malformed :proceed-routing field (wrong controller-arity) is rejected.
+  (let [bad (assoc-in v4-descriptor
+                      [:ffi-interception :proceed-routing :controller-arity] 3)
+        data (ex-data-of #(validate-descriptor-var bad))]
+    (is (= :jolt.sim.runtime/abi-incompatible (:type data))))
+  ;; An extra :proceed-routing key is rejected (exact-shape match).
+  (let [bad (assoc-in v4-descriptor
+                      [:ffi-interception :proceed-routing :extra] :nope)
+        data (ex-data-of #(validate-descriptor-var bad))]
+    (is (= :jolt.sim.runtime/abi-incompatible (:type data))))
   ;; descriptor-version 2 is a v3-only combination; v2 nesting it is rejected.
   (let [bad (assoc-in v2-descriptor [:ffi-interception :descriptor-version] 2)
         data (ex-data-of #(validate-descriptor-var bad))]
@@ -978,7 +1032,9 @@
 (deftest v3-nested-ffi-descriptor-version-is-accepted-when-advertised
   (cond
     (= 3 (ffi-descriptor-version))
-    (is (= v3-descriptor3 (rt/capabilities)))
+    ;; ABI v3 and v4 both advertise nested descriptor-version 3; v3 resolves to
+    ;; v3-descriptor3 while v4 resolves to its exact proceed-routing descriptor.
+    (is (contains? #{v3-descriptor3 v4-descriptor} (rt/capabilities)))
     (= 2 (ffi-descriptor-version))
     (is (= v3-descriptor2 (rt/capabilities)))
     (rt/available?)
@@ -995,13 +1051,14 @@
 
 (deftest v3-completed-future-releases-worker-at-exit
   (cond
-    (= 3 (abi-version))
+    (#{3 4} (abi-version))
     (let [result (rt/run-controlled
                   {}
                   (fn [] (let [worker (future :released)] @worker) :done))]
       (is (= :done (:result result)))
-      (is (contains? #{v3-descriptor v3-descriptor2 v3-descriptor3}
-                     (:capabilities result)))
+      (is (contains? #{v3-descriptor v3-descriptor2 v3-descriptor3
+                       v4-descriptor}
+                      (:capabilities result)))
       (is (= [:spawn :start :finish :exit]
              (mapv :event (:events result))))
       (is (apply = (map :task (:events result)))))
@@ -1019,7 +1076,7 @@
   ;; A cancelled running worker settles its future with :cancel but remains
   ;; owned until :exit; cleanup waits for that :exit and the run still succeeds.
   (cond
-    (= 3 (abi-version))
+    (#{3 4} (abi-version))
     (let [closed (promise)
           body-started (promise)
           result
@@ -1050,7 +1107,7 @@
   ;; After a successful v3 run every spawned task must have released worker
   ;; ownership via exactly one :exit or :abort; none may remain owned.
   (cond
-    (= 3 (abi-version))
+    (#{3 4} (abi-version))
     (let [result
           (rt/run-controlled
            {}
@@ -1074,7 +1131,7 @@
 
 (deftest drain-timeout-is-an-abi-v3-only-capability
   (cond
-    (= 3 (abi-version))
+    (#{3 4} (abi-version))
     (is (= :ok
            (:result
             (rt/run-controlled
@@ -1093,7 +1150,7 @@
 
 (deftest v3-cleanup-drains-a-worker-that-finishes-after-the-body
   (cond
-    (= 3 (abi-version))
+    (#{3 4} (abi-version))
     (let [closed (promise)
           worker-started (promise)
           worker (atom nil)
@@ -1122,7 +1179,7 @@
 
 (deftest v3-restoration-waits-for-an-exit-callback-to-return
   (cond
-    (= 3 (abi-version))
+    (#{3 4} (abi-version))
     (let [closed (promise)
           worker-started (promise)
           exit-entered (promise)
@@ -1173,7 +1230,7 @@
 
 (deftest v3-body-failure-drains-workers-before-restoring
   (cond
-    (= 3 (abi-version))
+    (#{3 4} (abi-version))
     (let [closed (promise)
           worker-started (promise)
           worker (atom nil)
@@ -1206,7 +1263,7 @@
 
 (deftest v3-spawn-callback-failure-is-balanced-by-abort
   (cond
-    (= 3 (abi-version))
+    (#{3 4} (abi-version))
     (let [data
           (ex-data-of
            #(rt/run-controlled
@@ -1230,7 +1287,7 @@
 
 (deftest v3-late-nested-spawn-is-rejected-balanced-and-drained
   (cond
-    (= 3 (abi-version))
+    (#{3 4} (abi-version))
     (let [closed (promise)
           parent-started (promise)
           parent (atom nil)
@@ -1306,7 +1363,7 @@
 
 (deftest future-schedule-requires-abi-v3
   (cond
-    (= 3 (abi-version))
+    (#{3 4} (abi-version))
     (is (= :ok (:result (rt/run-controlled {:future-schedule [0]}
                                             (fn [] (let [a (future :ok)] @a))))))
     (rt/available?)
@@ -1320,7 +1377,7 @@
 
 (deftest v3-future-schedule-drives-exact-body-start-order
   (cond
-    (= 3 (abi-version))
+    (#{3 4} (abi-version))
     (let [observed (atom [])
           result
           (rt/run-controlled
@@ -1344,7 +1401,7 @@
 
 (deftest v3-future-schedule-releases-next-at-finish-before-exit
   (cond
-    (= 3 (abi-version))
+    (#{3 4} (abi-version))
     (let [first-task (atom nil)
           first-exit-entered (promise)
           release-first-exit (promise)
@@ -1381,7 +1438,7 @@
 
 (deftest v3-future-schedule-admits-at-most-one-body-at-a-time
   (cond
-    (= 3 (abi-version))
+    (#{3 4} (abi-version))
     (let [first-entered (promise)
           second-entered (promise)
           release-first (promise)
@@ -1423,7 +1480,7 @@
 
 (deftest v3-future-schedule-evidence-is-stable-across-runs-with-changing-raw-ids
   (cond
-    (= 3 (abi-version))
+    (#{3 4} (abi-version))
     (let [runs
           (vec
            (for [_ (range 20)]
@@ -1453,7 +1510,7 @@
 
 (deftest v3-future-schedule-rejects-a-spawn-beyond-the-schedule
   (cond
-    (= 3 (abi-version))
+    (#{3 4} (abi-version))
     (let [thrown (ex-of
                   #(rt/run-controlled
                     {:future-schedule [0]}
@@ -1472,7 +1529,7 @@
 
 (deftest v3-future-schedule-retains-caught-extra-spawn-failure
   (cond
-    (= 3 (abi-version))
+    (#{3 4} (abi-version))
     (let [caught (atom nil)
           data
           (ex-data-of
@@ -1498,7 +1555,7 @@
 
 (deftest v3-future-schedule-rejects-fewer-spawns-than-scheduled
   (cond
-    (= 3 (abi-version))
+    (#{3 4} (abi-version))
     (let [thrown (ex-of
                   #(rt/run-controlled
                     {:future-schedule [0 1 2]}
@@ -1516,7 +1573,7 @@
 
 (deftest v3-future-schedule-rejects-a-nested-spawn-even-when-app-catches-it
   (cond
-    (= 3 (abi-version))
+    (#{3 4} (abi-version))
     (let [parent (atom nil)
           data (ex-data-of
                 #(rt/run-controlled
@@ -1539,7 +1596,7 @@
 
 (deftest v3-future-schedule-rejects-cancellation
   (cond
-    (= 3 (abi-version))
+    (#{3 4} (abi-version))
     (let [started (promise)
           release (promise)
           data
@@ -1566,7 +1623,7 @@
 
 (deftest v3-future-schedule-cancel-before-start-skips-the-gated-body
   (cond
-    (= 3 (abi-version))
+    (#{3 4} (abi-version))
     (let [first-ran? (atom false)
           second-started (promise)
           release-second (promise)
@@ -1599,7 +1656,7 @@
 
 (deftest v3-future-schedule-user-spawn-callback-failure-aborts-later-gates
   (cond
-    (= 3 (abi-version))
+    (#{3 4} (abi-version))
     (let [spawn-count (atom 0)
           bodies (atom [])
           caught (atom [])
@@ -1640,7 +1697,7 @@
 
 (deftest v3-future-schedule-user-finish-callback-failure-does-not-admit-next
   (cond
-    (= 3 (abi-version))
+    (#{3 4} (abi-version))
     (let [bodies (atom [])
           failed? (atom false)
           callback-error (ex-info "finish observer failed" {:observer :finish})
@@ -1671,7 +1728,7 @@
 
 (deftest v3-future-schedule-body-failure-still-drains-and-restores
   (cond
-    (= 3 (abi-version))
+    (#{3 4} (abi-version))
     (let [closed (promise)
           worker-started (promise)
           worker (atom nil)
@@ -1702,7 +1759,7 @@
 
 (deftest v3-future-schedule-session-recovers-for-a-follow-up-run
   (cond
-    (= 3 (abi-version))
+    (#{3 4} (abi-version))
     (let [failed (ex-data-of
                   #(rt/run-controlled
                     {:future-schedule [0]}
@@ -1721,3 +1778,95 @@
     (is (contains? #{1 2} (abi-version)))
     :else
     (ordinary-reports-unavailable #(rt/run-controlled {} (fn [] :done)))))
+
+;; ---- ABI v4 proceed-routing descriptor compatibility -------------------
+;;
+;; No v4 sim image is available in this worktree, so these are discriminating
+;; mock tests. They pin three v4-only properties directly: (1) a v4 image that
+;; omits the routing installer var is incompatible even though run-controlled
+;; never calls it; (2) a v4 image that exposes it resolves the v4 descriptor;
+;; and (3) run-controlled stays hermetic under v4, installing only the
+;; established one-argument FFI controller while the routing installer exists
+;; but is unused. Exact acceptance and malformed rejection are covered above in
+;; exact-capability-descriptors-are-accepted-and-mismatches-rejected.
+
+(defn- mock-resolved-abi-vars
+  "Returns a replacement value for jolt.sim.runtime/resolved-abi-vars whose
+  :capabilities yields descriptor and whose other slots are derefable stubs.
+  When omit-routing? is true the :install-ffi-routing-controller! slot is nil,
+  simulating a v4 image that lacks the routing installer var."
+  [descriptor omit-routing?]
+  (let [stub (atom (fn [& _] nil))]
+    (cond-> {:capabilities (atom (fn [] descriptor))
+             :install-controller! stub
+             :restore-controller! stub
+             :controller-errors stub
+             :clear-controller-errors! stub
+             :install-ffi-controller! stub
+             :restore-ffi-controller! stub}
+      (not omit-routing?) (assoc :install-ffi-routing-controller! stub))))
+
+(deftest v4-requires-the-ffi-routing-installer-var
+  (let [resolved-var (resolve 'jolt.sim.runtime/resolved-abi-vars)]
+    ;; A v4 image that advertises the exact v4 descriptor but omits the routing
+    ;; installer var is incompatible, even though run-controlled never invokes
+    ;; that installer. It shares restore-ffi-controller! for restoration.
+    (let [data
+          (with-redefs-fn
+            {resolved-var (fn [] (mock-resolved-abi-vars v4-descriptor true))}
+            #(ex-data-of rt/capabilities))]
+      (is (= :jolt.sim.runtime/abi-incompatible (:type data)))
+      (is (= [:install-ffi-routing-controller!] (:missing data))))
+    ;; A v4 image that exposes the routing installer resolves the v4 descriptor.
+    (let [caps
+          (with-redefs-fn
+            {resolved-var (fn [] (mock-resolved-abi-vars v4-descriptor false))}
+            #(rt/capabilities))]
+      (is (= v4-descriptor caps)))
+    ;; A v3 image never needs the routing installer, so omitting it is not an
+    ;; error and the v3 descriptor still resolves.
+    (let [caps
+          (with-redefs-fn
+            {resolved-var (fn [] (mock-resolved-abi-vars v3-descriptor3 true))}
+            #(rt/capabilities))]
+      (is (= v3-descriptor3 caps)))))
+
+(deftest v4-run-controlled-retains-the-established-ffi-controller
+  ;; Under ABI v4 run-controlled stays hermetic: it installs the established
+  ;; one-argument FFI controller (install-ffi-controller!) and never the routing
+  ;; installer (install-ffi-routing-controller!), which is required to exist on
+  ;; the image but unused by the controlled run. v4 lifecycle drainage behaves
+  ;; like v3, so a thunk that spawns nothing drains immediately and restores.
+  (let [established-ffi (atom nil)
+        routing (atom nil)
+        future-installed (atom nil)
+        ops {:descriptor v4-descriptor
+             :abi-version 4
+             :clear-controller-errors! (fn [])
+             :install-controller!
+             (fn [controller]
+               (reset! future-installed controller)
+               :future-token)
+             :install-ffi-controller!
+             (fn [controller]
+               (reset! established-ffi controller)
+               :ffi-token)
+             :install-ffi-routing-controller!
+             (fn [controller]
+               (reset! routing controller)
+               :routing-token)
+             :restore-controller! (fn [_])
+             :restore-ffi-controller! (fn [_])
+             :controller-errors (fn [])}
+        resolve-var (resolve 'jolt.sim.runtime/resolve-controller-ops!)]
+    (with-redefs-fn
+      {resolve-var (fn [] ops)}
+      #(let [result (rt/run-controlled {} (fn [] :done))]
+         (is (= :done (:result result)))
+         (is (= v4-descriptor (:capabilities result)))
+         (is (some? @established-ffi)
+             "the established one-argument FFI controller must be installed")
+         (is (nil? @routing)
+             "the routing installer must not be invoked by run-controlled")
+         (is (some? @future-installed)
+             "the future lifecycle controller must be installed")))))

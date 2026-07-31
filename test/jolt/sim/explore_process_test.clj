@@ -2,7 +2,7 @@
   "Process-isolated integration gate for exact future-schedule exploration.
 
   This namespace is intentionally absent from the shared test runner. Its
-  `-main` obtains the canonical ABI-v3 Jolt image and project directory from
+  `-main` obtains the canonical ABI-v3/v4 Jolt image and project directory from
   the environment, then launches one fresh worker for every schedule."
   (:require [clojure.test :as test :refer [deftest is testing]]
             [jolt.fs :as fs]
@@ -53,7 +53,7 @@
 (defn- child-abi-version [outcome]
   (get-in outcome [:result :capabilities :abi-version]))
 
-(deftest fresh-workers-explore-canonical-abi-v3-scenarios
+(deftest fresh-workers-explore-canonical-worker-lifecycle-scenarios
   (testing "independent futures complete in plan order and discriminate starts"
     (let [schedules
           (explore/schedule-plans
@@ -67,7 +67,9 @@
       (is (= [[0 1] [1 0]] schedules))
       (is (= schedules (mapv :schedule outcomes)))
       (is (= [:completed :completed] (mapv :status outcomes)))
-      (is (= [3 3] (mapv child-abi-version outcomes)))
+      ;; Both workers run the same canonical image (ABI v3 or v4); each reports
+      ;; its own abi-version, so the pair is uniformly one or the other.
+      (is (contains? #{[3 3] [4 4]} (mapv child-abi-version outcomes)))
       (is (= [[:a :b] [:b :a]]
              (mapv (fn [outcome]
                      (:start-order (body-result outcome)))
@@ -85,7 +87,7 @@
           timed-out (nth outcomes 1)]
       (is (= schedules (mapv :schedule outcomes)))
       (is (= [:completed :timeout] (mapv :status outcomes)))
-      (is (= 3 (child-abi-version completed)))
+      (is (contains? #{3 4} (child-abi-version completed)))
       (is (= {:a-result :a :b-result :b} (body-result completed)))
       (is (= :deadline (:reason timed-out)))
       (is (not= :deadlock (:status timed-out))
