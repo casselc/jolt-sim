@@ -2,11 +2,13 @@
   (:require [clojure.test :as test]
             [jolt.sim.completion-test]
             [jolt.sim.explore-test]
+            [jolt.sim.explore-worker-test]
             [jolt.sim.ffi-world-integration-test]
             [jolt.sim.ffi-memory-test]
             [jolt.sim.future-schedule-test]
             [jolt.sim.kernel-test]
             [jolt.sim.monitor-test]
+            [jolt.sim.process-explorer-test]
             [jolt.sim.replay-test]
             [jolt.sim.runtime-test]
             [jolt.sim.sqlite-test]))
@@ -15,11 +17,13 @@
   (let [result
         (test/run-tests 'jolt.sim.completion-test
                         'jolt.sim.explore-test
+                        'jolt.sim.explore-worker-test
                         'jolt.sim.ffi-world-integration-test
                         'jolt.sim.ffi-memory-test
                         'jolt.sim.future-schedule-test
                         'jolt.sim.kernel-test
                         'jolt.sim.monitor-test
+                        'jolt.sim.process-explorer-test
                         'jolt.sim.replay-test
                         'jolt.sim.runtime-test
                         'jolt.sim.sqlite-test)

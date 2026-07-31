@@ -17,6 +17,18 @@
   {:extra-paths ["test"]
    :main-opts ["-m" "jolt.sim.future-schedule-poison-test"]}
 
+  ;; One request/result protocol worker per exact future schedule. The parent
+  ;; process supplies the request and result paths after these main options.
+  :explore-worker-test
+  {:extra-paths ["test"]
+   :main-opts ["-m" "jolt.sim.explore-worker"]}
+
+  ;; Process-isolated integration gate for worker completion, timeout,
+  ;; termination/reaping, and canonical result transport.
+  :explore-process-test
+  {:extra-paths ["test"]
+   :main-opts ["-m" "jolt.sim.explore-process-test"]}
+
   ;; Workspace integration lanes: the canonical db checkout is ../db.
   :sqlite-test
   {:extra-paths ["test"]

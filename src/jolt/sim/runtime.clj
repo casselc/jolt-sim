@@ -996,11 +996,38 @@
                      ops @ffi-token @future-token)))))))))))
 
 (defmacro defsim
-  "Defines a no-arg scenario named name that runs body under run-controlled with
+  "Defines a marked scenario named name that runs body under run-controlled with
   config. The body is ordinary Jolt code; defsim only installs the controller,
-  event capture, and cleanup around it. The expansion references the fully
-  qualified run-controlled, so the scenario is callable from any namespace. Not
-  coupled to clojure.test."
+  event capture, and cleanup around it.
+
+  The generated function has two arities. `([] ...)` preserves the original
+  no-argument contract. `([runtime-overrides] ...)` requires a map and merges it
+  over the declared config before the run, allowing an external harness to
+  supply one `:future-schedule` without rewriting or wrapping the application
+  body. The var carries `:jolt.sim/scenario true` metadata so a process worker
+  can fail closed instead of invoking an arbitrary resolved function.
+
+  The expansion references the fully qualified run-controlled, so the scenario
+  is callable from any namespace. Not coupled to clojure.test."
   [name config & body]
-  `(defn ~name []
-     (jolt.sim.runtime/run-controlled ~config (fn [] ~@body))))
+  (let [scenario-name
+        (with-meta name (assoc (meta name) :jolt.sim/scenario true))]
+    `(defn ~scenario-name
+       ([]
+        (~scenario-name {}))
+       ([runtime-overrides#]
+        (when-not (map? runtime-overrides#)
+          (throw
+           (ex-info
+            "defsim runtime overrides must be a map"
+            {:type :jolt.sim.runtime/invalid-config
+             :scenario '~name
+             :runtime-overrides runtime-overrides#})))
+        (let [base-config# ~config]
+          ;; Keep run-controlled authoritative for malformed declared config.
+          ;; Passing it through unchanged preserves the original no-arg error.
+          (jolt.sim.runtime/run-controlled
+           (if (map? base-config#)
+             (merge base-config# runtime-overrides#)
+             base-config#)
+           (fn [] ~@body)))))))

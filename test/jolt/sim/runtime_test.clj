@@ -52,6 +52,32 @@
 ;; ordinary Jolt because run-controlled is resolved dynamically at call time.
 (rt/defsim sample-scenario {} :scenario-result)
 
+(def scheduled-scenario-order (atom []))
+
+(rt/defsim scheduled-scenario
+  {}
+  (reset! scheduled-scenario-order [])
+  (let [first-worker
+        (future
+          (swap! scheduled-scenario-order conj :first)
+          :first)
+        second-worker
+        (future
+          (swap! scheduled-scenario-order conj :second)
+          :second)]
+    {:values [@first-worker @second-worker]
+     :start-order @scheduled-scenario-order}))
+
+(def configurable-scenario-events (atom []))
+
+(rt/defsim configurable-scenario
+  {:on-event
+   (fn [event]
+     (swap! configurable-scenario-events
+            conj [:declared (:event event)]))}
+  (let [worker (future :configured)]
+    @worker))
+
 (defn- ex-data-of [f]
   (try (f) nil (catch :default error (ex-data error))))
 
@@ -348,11 +374,65 @@
      #(rt/run-controlled {:on-event (fn [_])} (fn [] :done)))))
 
 (deftest defsim-defines-a-callable-no-arg-scenario
+  (is (true? (:jolt.sim/scenario (meta #'sample-scenario))))
   (if (rt/available?)
     (let [result (sample-scenario)]
       (is (= :scenario-result (:result result)))
       (is (contains? #{1 2 3} (:abi-version (:capabilities result)))))
     (ordinary-reports-unavailable sample-scenario)))
+
+(deftest defsim-runtime-overrides-require-a-map-before-abi-resolution
+  (let [data (ex-data-of #(sample-scenario [:not-a-map]))]
+    (is (= :jolt.sim.runtime/invalid-config (:type data)))
+    (is (= 'sample-scenario (:scenario data)))
+    (is (= [:not-a-map] (:runtime-overrides data)))))
+
+(deftest defsim-runtime-overrides-can-drive-the-v3-future-scheduler
+  (cond
+    (= 3 (abi-version))
+    (let [run (scheduled-scenario {:future-schedule [1 0]})]
+      (is (= [:first :second] (get-in run [:result :values])))
+      (is (= [:second :first] (get-in run [:result :start-order])))
+      (is (= [[:admit 1] [:complete 1]
+              [:admit 0] [:complete 0]]
+             (:schedule-events run))))
+
+    (rt/available?)
+    (is (= :jolt.sim.runtime/capability-unavailable
+           (:type
+            (ex-data-of
+             #(scheduled-scenario {:future-schedule [1 0]})))))
+
+    :else
+    (ordinary-reports-unavailable
+     #(scheduled-scenario {:future-schedule [1 0]}))))
+
+(deftest defsim-runtime-overrides-merge-over-the-declared-config
+  (if (rt/available?)
+    (do
+      (reset! configurable-scenario-events [])
+      (let [run
+            (configurable-scenario
+             {:on-event
+              (fn [event]
+                (swap! configurable-scenario-events
+                       conj [:override (:event event)]))})]
+        (is (= :configured (:result run)))
+        (is (= (mapv (fn [event] [:override event])
+                     (expected-finish-events))
+               @configurable-scenario-events)))
+      (when (= 3 (abi-version))
+        (reset! configurable-scenario-events [])
+        (let [run
+              (configurable-scenario {:future-schedule [0]})]
+          (is (= :configured (:result run)))
+          (is (= (mapv (fn [event] [:declared event])
+                       (expected-finish-events))
+                 @configurable-scenario-events))
+          (is (= [[:admit 0] [:complete 0]]
+                 (:schedule-events run))))))
+    (ordinary-reports-unavailable
+     #(configurable-scenario {:on-event (fn [_])}))))
 
 ;; ---- ABI v2 FFI interception ------------------------------------------
 ;;

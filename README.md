@@ -18,6 +18,9 @@ and simulated worlds belong here.
 - a `run-controlled`/`defsim` adapter that preserves the application body
   unchanged while gating ordinary future starts and, under ABI v2/v3,
   substituting registered FFI/native effects;
+- capped lexicographic enumeration of exact top-level future schedules and a
+  fresh-process supervisor that runs each plan with a deadline, canonical
+  result transport, and bounded termination/reaping;
 - a deterministic native-memory world with configurable ABI widths and byte
   order, exact bounds/lifetime failures, copy-safe byte buffers, owned C
   strings, and leak snapshots; and
@@ -64,10 +67,12 @@ regression is isolated from the reusable test session:
 /path/to/abi-v3/target/sim/jolt -M:runtime-poison-test
 ```
 
-The adapter still does not select an exhaustive schedule, advance virtual
-time, or inject faults. The kernel has no stream, socket, HTTP, database, or
-OpenTelemetry integration. Its deterministic traces describe kernel test
-runs, not arbitrary production execution.
+The adapter still does not discover future counts, choose high-utility
+interleavings, advance virtual time, or inject faults. `schedule-plans` can
+enumerate the first bounded lexicographic top-level permutations, but that is
+not yet Hegel/swarm search or partial-order reduction. The kernel has no
+stream, socket, HTTP, database, or OpenTelemetry integration. Its deterministic
+traces describe kernel test runs, not arbitrary production execution.
 
 ### First coarse scripted scheduler (ABI v3 `:future-schedule`)
 
@@ -130,6 +135,55 @@ in-process test that would hang the suite:
 ```sh
 /path/to/abi-v3/target/sim/jolt -M:future-schedule-poison-test
 ```
+
+### Fresh-process schedule exploration
+
+`jolt.sim.process-explorer` now supplies the external supervision required by
+that nonclaim. `defsim` vars are marked and retain their original no-argument
+form; an additive one-map arity lets the worker merge in one exact
+`:future-schedule` while leaving the scenario body unchanged. A project can
+define a worker alias such as:
+
+```clojure
+{:aliases
+ {:sim-worker
+  {:main-opts ["-m" "jolt.sim.explore-worker"]}}}
+```
+
+The parent runs outside `run-controlled` and passes an explicit Jolt image,
+working directory, scenario var, schedule vector, and deadline:
+
+```clojure
+(require '[jolt.sim.explore :as explore]
+         '[jolt.sim.process-explorer :as process-explorer])
+
+(process-explorer/explore
+ {:worker-command ["/path/to/abi-v3/jolt" "-M:sim-worker"]
+  :dir "/absolute/path/to/project"
+  :scenario 'my.scenarios/checkout-race
+  :schedules (explore/schedule-plans
+              {:future-count 3 :max-schedules 6})
+  :timeout-ms 5000})
+```
+
+The worker command must name the Jolt executable directly or use an exec-style
+wrapper. The current Jolt process host reclaims that worker process, not an
+arbitrary descendant tree left behind by a shell wrapper.
+
+Each schedule gets a new operating-system process and a versioned EDN
+request/result file pair. Only a namespaced, `defsim`-marked var is invoked.
+Completed values and scenario failures cross the boundary through the
+canonical trace value domain; resolution, protocol, and encoding failures are
+reported as `:worker-error`. A child that misses its deadline is sent TERM,
+then KILL after a bounded grace period, and must be observed reaped before the
+supervisor returns `:timeout`. Failure to observe death is an infrastructure
+exception and retains the run directory for diagnosis.
+
+`:timeout` deliberately means only “the worker did not exit by its deadline.”
+It is not a deadlock proof. The current plan space is still just serial
+admission of a known number of top-level ordinary-future bodies; nested
+futures, competing raw spawners, clocks, synchronization-boundary choices,
+fault plans, shrinking, and coverage-guided sampling remain later work.
 
 ### FFI interception caveats (ABI v2/v3)
 
