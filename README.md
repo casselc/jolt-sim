@@ -11,12 +11,21 @@ and simulated worlds belong here.
 - seeded and scripted task selection;
 - immutable exactly-once operation completions with deterministic wakeups;
 - byte-stable, versioned EDN traces and exact replay;
-- a pure fold-based offline monitor API; and
-- a trace-grammar monitor for ordering, step, time, and terminal invariants.
+- a pure fold-based offline monitor API;
+- a trace-grammar monitor for ordering, step, time, and terminal invariants;
+- dynamic discovery of the sim-image controller ABI without making ordinary
+  Jolt images depend on it; and
+- a `run-controlled`/`defsim` adapter that observes and can gate ordinary Jolt
+  future starts while preserving the application body unchanged.
 
-The current kernel has no stream, socket, HTTP, database, runtime-thread, or
-OpenTelemetry integration yet. Its traces describe deterministic test runs,
-not arbitrary production execution.
+The current runtime adapter is deliberately narrower than the intended
+scenario form below. Its v1 configuration accepts only an optional `:on-event`
+callback and rejects unimplemented options rather than silently pretending
+that seed, time, fault, or effect control exists. It observes future lifecycle
+events and detects futures that outlive a controlled scope, but it does not yet
+select an exhaustive schedule. The kernel still has no stream, socket, HTTP,
+database, native-effect, or OpenTelemetry integration. Its deterministic
+traces describe kernel test runs, not arbitrary production execution.
 
 ## Execution model
 
@@ -41,9 +50,9 @@ the controlled world while its body runs ordinary Jolt code:
 ```
 
 `app/start!` and the application, protocol, codec, HTTP, and database
-namespaces must be the same code used outside simulation. `defsim` installs
-the controlled scheduler, clock, entropy, effect implementations, trace
-capture, and cleanup around that body.
+namespaces must be the same code used outside simulation. The completed
+scenario form will install the controlled scheduler, clock, entropy, effect
+implementations, trace capture, and cleanup around that body.
 
 Core Jolt therefore needs disabled-by-default internal hooks for ordinary
 threads and synchronization, time, entropy, and FFI calls. Ecosystem libraries
@@ -54,9 +63,9 @@ the real operating system.
 
 ## Roadmap
 
-1. Add test-only runtime hooks and `defsim`, then run one unchanged Jolt
-   namespace in normal and controlled modes through ordinary futures,
-   promises, clocks, and entropy.
+1. Drive the existing future controller adapter from scheduler choices, then
+   run one unchanged Jolt namespace in normal and controlled modes through
+   ordinary futures, promises, clocks, and entropy.
 2. Intercept `jolt.ffi` binding calls before native symbol resolution, fail
    closed on unregistered native effects, and add deterministic simulated
    memory ownership.
