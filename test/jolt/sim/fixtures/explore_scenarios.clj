@@ -20,6 +20,18 @@
      :b-result @b
      :start-order @observed}))
 
+(rt/defsim independent-three {}
+  ;; Three independent bodies give Hegel a six-plan ordered domain with
+  ;; multiple failing choices and a genuinely smaller failing index to find.
+  (let [observed (atom [])
+        a (future (swap! observed conj :a) :a)
+        b (future (swap! observed conj :b) :b)
+        c (future (swap! observed conj :c) :c)]
+    {:a-result @a
+     :b-result @b
+     :c-result @c
+     :start-order @observed}))
+
 (rt/defsim dependent {}
   ;; Future A is dereferenced before future B is even spawned. Schedule
   ;; [0 1] completes normally: A's ordinal is due first, its body runs, A's

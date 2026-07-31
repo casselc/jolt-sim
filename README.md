@@ -21,6 +21,8 @@ and simulated worlds belong here.
 - capped lexicographic enumeration of exact top-level future schedules and a
   fresh-process supervisor that runs each plan with a deadline, canonical
   result transport, and bounded termination/reaping;
+- an optional Hegel adapter that selects from an ordered schedule domain,
+  shrinks a failing choice, and exactly replays it in another fresh worker;
 - a deterministic native-memory world with configurable ABI widths and byte
   order, exact bounds/lifetime failures, copy-safe byte buffers, owned C
   strings, and leak snapshots; and
@@ -183,7 +185,54 @@ exception and retains the run directory for diagnosis.
 It is not a deadlock proof. The current plan space is still just serial
 admission of a known number of top-level ordinary-future bodies; nested
 futures, competing raw spawners, clocks, synchronization-boundary choices,
-fault plans, shrinking, and coverage-guided sampling remain later work.
+fault plans, workload/fault shrinking, and coverage-guided sampling remain
+later work.
+
+### Optional Hegel selection and shrinking
+
+The `jolt.sim.hegel` namespace is an optional adapter. Activate a
+`jolt-hegel` dependency before requiring it; the repository's
+`:hegel-explore-test` alias pins the peeled v0.1.2 commit and demonstrates the
+setup. A property can let Hegel select one ordered plan, run it in the
+fresh-process supervisor, and shrink a failure:
+
+```clojure
+(require '[hegel.core :as h]
+         '[jolt.sim.explore :as explore]
+         '[jolt.sim.hegel :as sim-hegel])
+
+(let [plans (explore/schedule-plans
+             {:future-count 3 :max-schedules 6})]
+  (h/run-test!
+   {:test-cases 100
+    :database ""
+    :derandomize? true
+    :name "checkout/future-schedules"
+    :verbosity :quiet}
+   (fn [_]
+     (let [outcome
+           (sim-hegel/require-completed!
+            (sim-hegel/run-schedule! process-config plans))]
+       (when-not (application-invariants-hold? outcome)
+         (throw
+          (ex-info
+           "checkout invariant failed"
+           {:hegel/origin "checkout/future-schedules"
+            :schedule (:schedule outcome)})))))))
+```
+
+The adapter validates the ordered plan set before generation. Hegel owns the
+choice and shrink spans; each generated or replayed case still gets a new
+worker process. A non-completed process outcome can be promoted to a stable
+property failure with `require-completed!`, while an application-specific
+invariant supplies its own stable failure origin and evidence.
+
+This is a shrinking selection seam, not yet a high-utility distribution.
+`g/sampled-from` shrinks toward earlier entries, so callers control the
+simplification order. Feeding it the bounded lexicographic prefix is
+deterministic but utility-neutral. Hegel runs cases sequentially; stateful
+swarm rules, coverage/resource-order scores, targeted sampling, workload and
+fault generation, and partial-order reduction remain separate later work.
 
 ### FFI interception caveats (ABI v2/v3)
 
@@ -348,9 +397,10 @@ the real operating system.
    the same fail-closed FFI/native interception boundary.
 3. Add operation effects for connect, accept, read, write, close, cancel, and
    deadlines, followed by deterministic network and storage fault models.
-4. Add Hegel generation and shrinking for workloads, scheduler choices, native
-   faults, and effect plans while accepting a shrink only when its trace
-   replays exactly.
+4. Extend the landed optional Hegel schedule-choice shrinker into generation
+   and shrinking for workloads, synchronization-boundary choices, native
+   faults, and effect plans, accepting a shrink only when its trace replays
+   exactly.
 5. Build canonical example systems that run through the same application logic
    in real and simulated modes: a TCP protocol, an HTTP/API service, and a
    SQLite-backed application using the bytes, codec, FFI, net, HTTP, and DB
