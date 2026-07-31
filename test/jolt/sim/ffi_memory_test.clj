@@ -5,6 +5,7 @@
 (def ^:private all-ops
   [:load-library :loaded? :alloc :free :read :write :sizeof
    :read-bytes :write-bytes :read-array :write-array
+   :borrow-byte-array :release-byte-array
    :ptr->string :string->ptr])
 
 (def ^:private expected-handler-keys
@@ -25,7 +26,7 @@
 
 ;; ---- handler shape ------------------------------------------------------
 
-(deftest handlers-cover-all-thirteen-native-operations
+(deftest handlers-cover-all-fifteen-native-operations
   (let [w (fm/world)
         h (fm/handlers w)]
     (is (= expected-handler-keys (set (keys h))))
@@ -349,6 +350,82 @@
       (is (not (identical? a b)))
       (aset a 0 99)
       (is (= 1 (first (vec b)))))))
+
+;; ---- scoped live byte-array loans --------------------------------------
+
+(deftest loan-aliases-one-live-array-window-in-both-directions
+  (let [w (fm/world)
+        h (fm/handlers w)
+        arr (byte-array [10 20 30 40])
+        p (call h :borrow-byte-array arr 1 2)]
+    (is (pos? p))
+    (is (= 20 (call h :read p :uint8)))
+    (call h :write p :uint8 0 77)
+    (is (= [10 77 30 40] (vec arr)))
+    ;; Ordinary Jolt mutation is visible to the next modeled native access.
+    (aset arr 2 99)
+    (is (= 99 (call h :read (+ p 1) :uint8)))
+    ;; Bulk writes snapshot their source and mutate only the loan window.
+    (is (= 2 (call h :write-array p (byte-array [7 8]))))
+    (is (= [10 7 8 40] (vec arr)))
+    (is (= [7 8] (vec (call h :read-array p 2))))
+    (is (= [{:base p :size 2}] (fm/leaks w)))
+    (call h :release-byte-array p)
+    (is (true? (fm/clean? w)))
+    (is (= :jolt.sim.ffi-memory/use-after-release
+           (:type (ex-data-of #(call h :read p :uint8)))))
+    (is (= [7 8] (:bytes (first (fm/snapshot w)))))))
+
+(deftest empty-and-nested-loans-have-distinct-balanced-lifetimes
+  (let [w (fm/world)
+        h (fm/handlers w)
+        arr (byte-array [1 2 3 4])
+        empty (call h :borrow-byte-array arr 4 0)
+        outer (call h :borrow-byte-array arr 0 4)
+        inner (call h :borrow-byte-array arr 1 2)]
+    (is (every? pos? [empty outer inner]))
+    (is (= 3 (count (set [empty outer inner]))))
+    (call h :write inner :uint8 0 55)
+    (is (= 55 (call h :read (+ outer 1) :uint8)))
+    (call h :release-byte-array inner)
+    ;; Releasing one alias does not retire the independent outer loan.
+    (is (= 55 (call h :read (+ outer 1) :uint8)))
+    (is (= :jolt.sim.ffi-memory/use-after-release
+           (:type (ex-data-of #(call h :read inner :uint8)))))
+    (call h :release-byte-array empty)
+    (call h :release-byte-array outer)
+    (is (true? (fm/clean? w)))))
+
+(deftest loan-validation-and-release-ownership-fail-closed
+  (let [w (fm/world)
+        h (fm/handlers w)
+        arr (byte-array [1 2 3])
+        owned (call h :alloc 3)
+        loan (call h :borrow-byte-array arr 0 3)]
+    (doseq [args [["not-bytes" 0 0]
+                  [arr -1 1]
+                  [arr 0 -1]
+                  [arr 2 2]
+                  [arr 4 0]]]
+      (is (contains?
+           #{:jolt.sim.ffi-memory/invalid-argument
+             :jolt.sim.ffi-memory/out-of-bounds}
+           (:type
+            (ex-data-of
+             #(apply call h :borrow-byte-array args))))))
+    (is (= :jolt.sim.ffi-memory/invalid-free
+           (:type (ex-data-of #(call h :free loan)))))
+    (is (= :jolt.sim.ffi-memory/invalid-release
+           (:type (ex-data-of #(call h :release-byte-array owned)))))
+    (is (= :jolt.sim.ffi-memory/invalid-release
+           (:type (ex-data-of #(call h :release-byte-array (inc loan))))))
+    (call h :release-byte-array loan)
+    (is (= :jolt.sim.ffi-memory/double-release
+           (:type (ex-data-of #(call h :release-byte-array loan)))))
+    (is (= :jolt.sim.ffi-memory/unknown-pointer
+           (:type (ex-data-of #(call h :release-byte-array 999999)))))
+    (call h :free owned)
+    (is (true? (fm/clean? w)))))
 
 ;; ---- strings -----------------------------------------------------------
 

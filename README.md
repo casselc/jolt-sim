@@ -281,9 +281,13 @@ generation, and partial-order reduction remain separate later work.
 
 ### Deterministic native memory
 
-`jolt.sim.ffi-memory` supplies handlers for all 13 ABI v2/v3 native operations.
-It allocates aligned fake addresses backed only by immutable byte vectors, so
-an intercepted pointer can never reach Chez or the operating system. The
+`jolt.sim.ffi-memory` supplies handlers for all 15 operations in the current
+ABI v3 FFI descriptor. Owned allocations use aligned fake addresses backed by
+immutable byte vectors, so an intercepted pointer can never reach Chez or the
+operating system. A staged `:borrow-byte-array`/`:release-byte-array` pair
+instead aliases a validated live Jolt byte-array window for exactly one
+`with-byte-array-pointer` callback; modeled native and ordinary array
+mutations remain mutually visible, and access after release fails closed. The
 default world is deterministic LP64 little-endian; `:pointer-size`,
 `:long-size`, `:byte-order`, `:base-address`, `:alignment`, and the set of
 available library names are explicit configuration.

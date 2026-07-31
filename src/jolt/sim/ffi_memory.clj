@@ -1,11 +1,14 @@
 (ns jolt.sim.ffi-memory
   "Deterministic simulated native memory exposed as jolt.sim.runtime
-  :ffi-handlers for the 13 ABI v2 native operations.
+  :ffi-handlers for the 15 ABI v3 native operations.
 
-  A world owns concurrency-safe immutable byte-vector state behind a single
-  atom: every mutation is a compare-and-set! that atomically replaces the
-  affected immutable allocation record. Incoming byte arrays are copied to
-  immutable vectors before mutation; byte-array results are always fresh.
+  Owned allocations use concurrency-safe immutable byte-vector records.
+  Scoped byte-array loans instead alias the caller's live array window between
+  :borrow-byte-array and :release-byte-array, so modeled native reads/writes and
+  ordinary Jolt array access observe one backing object. Each handler operation
+  is serialized on the world's monitor; the loan is never held across the user
+  callback. Incoming copies still snapshot before mutation and byte-array
+  results are always fresh.
 
   Allocation bases are deterministic: aligned to :alignment, monotonically
   increasing, with a :alignment-byte guard gap between successive payloads.
@@ -200,6 +203,24 @@
         v
         (recur (inc i) (assoc v (+ offset i) (nth new-bytes i)))))))
 
+(defn- record-uvec
+  "Returns the record's current unsigned bytes. Active loans read the SAME live
+  byte array on every operation; released loans retain only a final immutable
+  snapshot so the world does not keep the caller's array reachable."
+  [record]
+  (if (and (= :loan (:kind record)) (contains? record :array))
+    (let [arr (:array record)
+          start (:array-offset record)
+          n (:size record)]
+      (loop [i 0 out (transient [])]
+        (if (== i n)
+          (persistent! out)
+          (recur (inc i)
+                 (conj! out
+                        (bit-and 0xFF
+                                 (int (aget arr (+ start i)))))))))
+    (:bytes record)))
+
 (defn- decode-utf8 [uvec]
   (let [ba (uvec->byte-array uvec)
         s (String. ba "UTF-8")]
@@ -223,12 +244,13 @@
 
 (defn- find-allocation
   "Returns the allocation record whose [base, base+size) contains ptr,
-  including retained freed-allocation evidence, else nil."
+  including retained freed-allocation evidence, else nil. A zero-length loan
+  reserves one fake address while retaining logical size zero."
   [heap ptr]
   (loop [entries (seq heap)]
     (when-first [[_ rec] entries]
       (if (and (<= (:base rec) ptr)
-               (< ptr (+ (:base rec) (:size rec))))
+               (< ptr (+ (:base rec) (or (:span rec) (:size rec)))))
         rec
         (recur (next entries))))))
 
@@ -238,10 +260,14 @@
       record)))
 
 (defn- pointer-miss! [heap ptr]
-  (if (find-allocation heap ptr)
-    (fail! :jolt.sim.ffi-memory/use-after-free
-           "Pointer addresses an allocation that has been freed"
-           {:pointer ptr})
+  (if-let [record (find-allocation heap ptr)]
+    (if (= :loan (:kind record))
+      (fail! :jolt.sim.ffi-memory/use-after-release
+             "Pointer addresses a byte-array loan that has been released"
+             {:pointer ptr :base (:base record)})
+      (fail! :jolt.sim.ffi-memory/use-after-free
+             "Pointer addresses an allocation that has been freed"
+             {:pointer ptr}))
     (fail! :jolt.sim.ffi-memory/unknown-pointer
            "Pointer does not address a known allocation"
            {:pointer ptr})))
@@ -331,52 +357,82 @@
         (recur)))))
 
 (defn- write-uvec-at!
-  "Atomically writes the unsigned byte vector into the live allocation that
-  contains ptr. Zero length is a no-op. Throws typed errors without
-  committing on failure."
+  "Writes the unsigned byte vector into the live record containing ptr. Owned
+  records replace immutable state atomically; a loan mutates its live array
+  window while the enclosing handler holds the world monitor. Zero length is a
+  no-op. Throws typed errors without a partial owned-state commit."
   [world ptr uvec]
   (let [length (count uvec)]
     (if (zero? length)
       nil
-      (cas-update!
-       (:state world)
-       (fn [s]
-         (let [heap (:heap s)
-               rec (find-containing heap ptr)]
-           (when-not rec
-             (pointer-miss! heap ptr))
-           (let [offset (- ptr (:base rec))]
-             (when (> (+ offset length) (:size rec))
-               (fail! :jolt.sim.ffi-memory/out-of-bounds
-                      "Native write exceeds its allocation bounds"
-                      {:pointer ptr
-                       :base (:base rec)
-                       :size (:size rec)
-                       :offset offset
-                       :length length}))
-             (let [new-bytes (vec-assoc-range (:bytes rec) offset uvec)]
-               [(assoc-in s [:heap (:base rec) :bytes] new-bytes)
-                nil]))))))))
+      (let [s @(:state world)
+            heap (:heap s)
+            rec (find-containing heap ptr)]
+        (when-not rec
+          (pointer-miss! heap ptr))
+        (let [offset (- ptr (:base rec))]
+          (when (> (+ offset length) (:size rec))
+            (fail! :jolt.sim.ffi-memory/out-of-bounds
+                   "Native write exceeds its allocation bounds"
+                   {:pointer ptr
+                    :base (:base rec)
+                    :size (:size rec)
+                    :offset offset
+                    :length length}))
+          (if (= :loan (:kind rec))
+            (let [arr (:array rec)
+                  start (+ (:array-offset rec) offset)]
+              (doseq [i (range length)]
+                (aset arr (+ start i) (nth uvec i)))
+              nil)
+            (let [new-bytes
+                  (vec-assoc-range (:bytes rec) offset uvec)]
+              (cas-update!
+               (:state world)
+               (fn [current]
+                 ;; Handler serialization means this record is unchanged, but
+                 ;; retain an exact-state check rather than silently replacing
+                 ;; a record if an unsupported caller bypasses the monitor.
+                 (when-not (= rec (get-in current [:heap (:base rec)]))
+                   (fail! :jolt.sim.ffi-memory/concurrent-modification
+                          "Owned allocation changed outside its handler lock"
+                          {:pointer ptr :base (:base rec)}))
+                 [(assoc-in current
+                            [:heap (:base rec) :bytes] new-bytes)
+                  nil])))))))))
 
 (defn- write-uvec-relative-at!
   "Atomically writes bytes at signed relative-offset from ptr while retaining
   ptr's original allocation as the authority for the entire range."
   [world ptr relative-offset uvec]
-  (cas-update!
-   (:state world)
-   (fn [s]
-     (let [{:keys [record offset]}
-           (resolve-relative!
-            (:heap s) ptr relative-offset (count uvec))
-           new-bytes (vec-assoc-range (:bytes record) offset uvec)]
-       [(assoc-in s [:heap (:base record) :bytes] new-bytes)
-        nil]))))
+  (let [s @(:state world)
+        {:keys [record offset]}
+        (resolve-relative!
+         (:heap s) ptr relative-offset (count uvec))]
+    (if (= :loan (:kind record))
+      (let [arr (:array record)
+            start (+ (:array-offset record) offset)]
+        (doseq [i (range (count uvec))]
+          (aset arr (+ start i) (nth uvec i)))
+        nil)
+      (let [new-bytes (vec-assoc-range (:bytes record) offset uvec)]
+        (cas-update!
+         (:state world)
+         (fn [current]
+           (when-not (= record (get-in current [:heap (:base record)]))
+             (fail! :jolt.sim.ffi-memory/concurrent-modification
+                    "Owned allocation changed outside its handler lock"
+                    {:pointer ptr :base (:base record)}))
+           [(assoc-in current
+                      [:heap (:base record) :bytes] new-bytes)
+            nil]))))))
 
-(defn- allocate-uvec!
-  "Atomically allocates one non-empty unsigned byte vector and returns its
-  deterministic base address."
-  [world bytes]
-  (let [size (count bytes)
+(defn- allocate-record!
+  "Atomically allocates one owned or loan record and returns its deterministic
+  base address. Logical size zero is supported only by a loan and reserves one
+  address so its callback still receives a stable positive pointer."
+  [world size fields]
+  (let [span (max 1 size)
         config (:config world)
         alignment (:alignment config)
         address-limit (dec (width-modulus (:pointer-size config)))]
@@ -384,22 +440,29 @@
      (:state world)
      (fn [s]
        (let [base (:next-base s)
-             last-address (+ base (dec size))]
+             last-address (+ base (dec span))]
          (when (> last-address address-limit)
            (fail! :jolt.sim.ffi-memory/invalid-argument
                   "Allocation does not fit the configured pointer width"
                   {:base base
                    :size size
                    :pointer-size (:pointer-size config)}))
-         (let [rec {:base base
-                    :size size
-                    :bytes bytes
-                    :freed? false}
-               next-base (align-up (+ base size alignment) alignment)]
+         (let [rec (merge {:base base
+                           :size size
+                           :span span
+                           :freed? false}
+                          fields)
+               next-base (align-up (+ base span alignment) alignment)]
            [(-> s
                 (assoc :next-base next-base)
                 (assoc-in [:heap base] rec))
             base]))))))
+
+(defn- allocate-uvec!
+  "Atomically allocates one non-empty unsigned byte vector and returns its
+  deterministic base address."
+  [world bytes]
+  (allocate-record! world (count bytes) {:kind :owned :bytes bytes}))
 
 ;; ---- native operations --------------------------------------------------
 
@@ -455,6 +518,11 @@
          (let [heap (:heap s)
                exact (get heap ptr)]
            (cond
+             (and exact (= :loan (:kind exact)))
+             (fail! :jolt.sim.ffi-memory/invalid-free
+                    "A borrowed byte-array pointer must be released, not freed"
+                    {:pointer ptr})
+
              (and exact (not (:freed? exact)))
              [(assoc-in s [:heap ptr :freed?] true) nil]
 
@@ -491,11 +559,12 @@
         (let [s @(:state world)
               {:keys [record offset]}
               (resolve-relative! (:heap s) ptr relative-offset n)]
-          (char (nth (:bytes record) offset)))
+          (char (nth (record-uvec record) offset)))
         (let [s @(:state world)
               {:keys [record offset]}
               (resolve-relative! (:heap s) ptr relative-offset n)
-              u (decode-uint (:bytes record) offset n (:byte-order config))]
+              u (decode-uint
+                 (record-uvec record) offset n (:byte-order config))]
           (if (contains? signed-types type)
             (let [limit (signed-limit n)]
               (if (>= u limit) (- u (width-modulus n)) u))
@@ -556,7 +625,7 @@
       ""
       (let [s @(:state world)
             {:keys [record offset]} (resolve-live! (:heap s) ptr len)
-            uvec (subvec (:bytes record) offset (+ offset len))]
+            uvec (subvec (record-uvec record) offset (+ offset len))]
         (decode-utf8-with-latin1-fallback uvec)))))
 
 (defn- op-write-bytes [world descriptor]
@@ -581,7 +650,7 @@
       (byte-array 0)
       (let [s @(:state world)
             {:keys [record offset]} (resolve-live! (:heap s) ptr len)
-            uvec (subvec (:bytes record) offset (+ offset len))]
+            uvec (subvec (record-uvec record) offset (+ offset len))]
         (uvec->byte-array uvec)))))
 
 (defn- op-write-array [world descriptor]
@@ -595,6 +664,78 @@
       (write-uvec-at! world ptr uvec)
       (count uvec))))
 
+(defn- op-borrow-byte-array [world descriptor]
+  (let [[arr off len]
+        (validate-arity!
+         :borrow-byte-array (:arguments descriptor) 3)]
+    (when-not (bytes? arr)
+      (fail! :jolt.sim.ffi-memory/invalid-argument
+             "borrow-byte-array requires a byte array"
+             {:value arr}))
+    (when-not (and (integer? off) (integer? len))
+      (fail! :jolt.sim.ffi-memory/invalid-argument
+             "borrow-byte-array offset and length must be integers"
+             {:offset off :length len}))
+    (let [n (alength arr)]
+      (when (or (neg? off) (neg? len) (> off n) (> len (- n off)))
+        (fail! :jolt.sim.ffi-memory/out-of-bounds
+               "borrow-byte-array range exceeds the live array"
+               {:offset off :length len :array-length n}))
+      (allocate-record!
+       world len
+       {:kind :loan
+        :array arr
+        :array-offset off
+        :released? false}))))
+
+(defn- op-release-byte-array [world descriptor]
+  (let [[ptr]
+        (validate-arity!
+         :release-byte-array (:arguments descriptor) 1)]
+    (validate-pointer! :release-byte-array ptr)
+    (let [s @(:state world)
+          heap (:heap s)
+          exact (get heap ptr)]
+      (cond
+        (and exact (= :loan (:kind exact)) (:released? exact))
+        (fail! :jolt.sim.ffi-memory/double-release
+               "Byte-array loan has already been released"
+               {:pointer ptr})
+
+        (and exact (= :loan (:kind exact)) (not (:freed? exact)))
+        (let [final-bytes (record-uvec exact)]
+          (cas-update!
+           (:state world)
+           (fn [current]
+             (when-not (= exact (get-in current [:heap ptr]))
+               (fail! :jolt.sim.ffi-memory/concurrent-modification
+                      "Byte-array loan changed outside its handler lock"
+                      {:pointer ptr}))
+             [(-> current
+                  (assoc-in [:heap ptr]
+                            (-> exact
+                                (dissoc :array :array-offset)
+                                (assoc :bytes final-bytes
+                                       :freed? true
+                                       :released? true))))
+              nil])))
+
+        (and exact (not= :loan (:kind exact)))
+        (fail! :jolt.sim.ffi-memory/invalid-release
+               "release-byte-array requires a loan base pointer"
+               {:pointer ptr :record-kind (:kind exact)})
+
+        (find-allocation heap ptr)
+        (fail! :jolt.sim.ffi-memory/invalid-release
+               "release-byte-array requires the exact loan base pointer"
+               {:pointer ptr
+                :base (:base (find-allocation heap ptr))})
+
+        :else
+        (fail! :jolt.sim.ffi-memory/unknown-pointer
+               "release-byte-array pointer is not a known loan"
+               {:pointer ptr})))))
+
 (defn- op-ptr->string [world descriptor]
   (let [[ptr] (validate-arity! :ptr->string (:arguments descriptor) 1)]
     (validate-pointer! :ptr->string ptr)
@@ -607,7 +748,7 @@
         (when-not rec
           (pointer-miss! heap ptr))
         (let [offset (- ptr (:base rec))
-              bytes (:bytes rec)
+              bytes (record-uvec rec)
               nul (find-nul bytes offset (:size rec))]
           (when-not nul
             (fail! :jolt.sim.ffi-memory/unterminated-string
@@ -637,6 +778,8 @@
    :write-bytes op-write-bytes
    :read-array op-read-array
    :write-array op-write-array
+   :borrow-byte-array op-borrow-byte-array
+   :release-byte-array op-release-byte-array
    :ptr->string op-ptr->string
    :string->ptr op-string->ptr})
 
@@ -654,19 +797,23 @@
      {:state (atom {:next-base (:base-address cfg)
                     :heap {}
                     :loaded-libraries #{}})
+      :lock (Object.)
       :config cfg
       :type ::world})))
 
 (defn handlers
-  "Returns a map keyed by [:native-operation op] over all 13 ABI v2 native
+  "Returns a map keyed by [:native-operation op] over all 15 ABI v3 native
   operations, compatible with jolt.sim.runtime :ffi-handlers. Each handler fn
-  receives the exact descriptor and dispatches on its :arguments vector."
+  receives the exact descriptor and dispatches on its :arguments vector. One
+  operation holds the world monitor at a time; a byte-array loan does not hold
+  it across application callback code."
   [w]
   (into {}
         (map (fn [[op f]]
                [[:native-operation op]
                 (fn native-handler [descriptor]
-                  (f w descriptor))]))
+                  (locking (:lock w)
+                    (f w descriptor)))]))
         native-ops))
 
 (defn snapshot
@@ -674,15 +821,16 @@
   Each entry carries the unsigned byte vector of the allocation's current
   contents. Freed allocations are retained as evidence with :freed? true."
   [w]
-  (let [s @(:state w)]
-    (->> (:heap s)
-         vals
-         (sort-by :base)
-         (mapv (fn [r]
-                 {:base (:base r)
-                  :size (:size r)
-                  :freed? (:freed? r)
-                  :bytes (vec (:bytes r))})))))
+  (locking (:lock w)
+    (let [s @(:state w)]
+      (->> (:heap s)
+           vals
+           (sort-by :base)
+           (mapv (fn [r]
+                   {:base (:base r)
+                    :size (:size r)
+                    :freed? (:freed? r)
+                    :bytes (vec (record-uvec r))}))))))
 
 (defn leaks
   "Returns live (not freed) allocation summaries ordered by base address."
@@ -694,4 +842,5 @@
 (defn clean?
   "True when there are no live allocations."
   [w]
-  (every? :freed? (vals (:heap @(:state w)))))
+  (locking (:lock w)
+    (every? :freed? (vals (:heap @(:state w))))))
