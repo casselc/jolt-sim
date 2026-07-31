@@ -21,7 +21,9 @@
 
 (defn foreign-function-key
   "Builds and validates one canonical foreign-function handler key. capture?
-  defaults to false."
+  defaults to false. argument-types is a vector whose entries are primitive
+  keywords or recursive [:by-value [:struct [[field field-type] ...]]] struct
+  shapes; the runtime validates the full recursive identity."
   ([symbol argument-types return-type blocking?]
    (foreign-function-key symbol argument-types return-type blocking? false))
   ([symbol argument-types return-type blocking? capture?]

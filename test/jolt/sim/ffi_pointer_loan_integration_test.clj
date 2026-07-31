@@ -47,8 +47,8 @@
 (deftest unchanged-pointer-loan-fixture-runs-against-simulated-memory
   (is (true? (runtime/available?)))
   (when (runtime/available?)
-    (is (= 4 (:abi-version (runtime/capabilities))))
-    (is (= 3
+    (is (= 5 (:abi-version (runtime/capabilities))))
+    (is (= 4
            (get-in (runtime/capabilities)
                    [:ffi-interception :descriptor-version])))
     (let [world (memory/world)
@@ -76,7 +76,7 @@
   ;; Current routing lets the same ordinary body proceed through the exact real
   ;; borrow/callback/release path while jolt-sim records every native route.
   ;; Core Jolt, not a handler pack, remains responsible for unlock ownership.
-  (is (= 4 (:abi-version (runtime/capabilities))))
+  (is (= 5 (:abi-version (runtime/capabilities))))
   (let [controlled
         (runtime/run-controlled {:ffi-mode :observe} fixture/exercise-loan)]
     (is (= successful-result (:result controlled)))

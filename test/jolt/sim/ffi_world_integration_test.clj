@@ -17,7 +17,7 @@
 
 (deftest unchanged-ffi-namespace-runs-against-the-simulated-world
   (when (runtime/available?)
-    (is (= 4 (:abi-version (runtime/capabilities))))
+    (is (= 5 (:abi-version (runtime/capabilities))))
     (let [real-result (fixture/exercise-memory)
           world
           (memory/world {:pointer-size (:pointer-size real-result)})

@@ -32,7 +32,7 @@ and simulated worlds belong here.
   executes unchanged `jdbc.core` application code.
 
 The runtime adapter accepts one exact current controller contract, presently
-prerelease ABI 4. All current controller vars are required. If every var is
+prerelease ABI 5. All current controller vars are required. If every var is
 absent, `available?` returns false for an ordinary released Jolt image. A
 partial namespace, stale or future ABI number, or any descriptor that differs
 from the literal current shape fails closed as
@@ -50,16 +50,19 @@ than restored unsafely. Late terminal/drain events are accepted after closure;
 new `:spawn`/`:start` events fail closed. Body exceptions are rethrown unchanged
 only after drainage and restoration succeed.
 
-Every controlled run installs FFI interception. The exact nested descriptor is
-version 3: it requires Boolean `:capture-native-error?` on foreign calls and
-admits all 15 current native operations, including scoped
-`:borrow-byte-array`/`:release-byte-array`. Handlers are configured via
-`:ffi-handlers`, keyed by `[:native-operation operation]` or
-`[:foreign-function c-symbol-string argument-types return-type blocking?
-capture-native-error?]`. A five-element foreign-function key remains an
-unambiguous shorthand for final `false`; supplying both identities for the same
-scalar binding is rejected. Map membership, including a `nil` value, defines
-handled. A captured handler must return `[native-result error-code]`.
+Every controlled run installs FFI interception. Exact nested descriptor version
+4 requires Boolean `:capture-native-error?` on foreign calls and admits all 15
+current native operations, including scoped
+`:borrow-byte-array`/`:release-byte-array`. A foreign argument type is either a
+primitive keyword or the recursive form
+`[:by-value [:struct [[:field :type] ...]]]`; nested field types may themselves
+be `[:struct ...]`. Handlers are configured via `:ffi-handlers`, keyed by
+`[:native-operation operation]` or `[:foreign-function c-symbol-string
+argument-types return-type blocking? capture-native-error?]`. A five-element
+foreign-function key is an unambiguous configuration shorthand for final
+`false`; supplying both spellings for the same binding is rejected. Map
+membership, including a `nil` value, defines handled. A captured handler must
+return `[native-result error-code]`.
 
 The current contract also exposes a scoped, owner-thread, single-use native
 `proceed` continuation. `run-controlled` selects routing with `:ffi-mode`:
@@ -81,7 +84,7 @@ application semantics: unchanged code may catch it, and it is not relabeled as
 a controller failure. Handler, descriptor, and routing-policy failures remain
 latched fail closed even when application code catches their immediate throw.
 
-Controller numbering is explicitly prerelease-only. ABI 5, 6, 7, and later
+Controller numbering is explicitly prerelease-only. ABI 6, 7, and later
 development bumps replace the current contract in place; historical contracts
 remain available in Git but do not accumulate as supported runtime branches.
 At the first real public release, the externally visible controller and nested
@@ -135,7 +138,7 @@ regression is isolated from the reusable test session:
 /path/to/current-sim/target/sim/jolt -M:runtime-poison-test
 ```
 
-Descriptor-version 3 also adds a scoped byte-array pointer loan. Its dedicated
+Descriptor-version 4 retains the scoped byte-array pointer loan. Its dedicated
 custom-image gate runs one ordinary `jolt.ffi` fixture first against real native
 memory and then unchanged against the deterministic memory handlers, including
 nested native access and exception cleanup:
@@ -352,7 +355,7 @@ generation, and partial-order reduction remain separate later work.
 ### Deterministic native memory
 
 `jolt.sim.ffi-memory` supplies handlers for all 15 operations in the current
-descriptor-version 3 FFI contract. Owned allocations use aligned fake addresses
+descriptor-version 4 FFI contract. Owned allocations use aligned fake addresses
 backed by immutable byte vectors, so an intercepted pointer can never reach
 Chez or the operating system. A staged
 `:borrow-byte-array`/`:release-byte-array` pair

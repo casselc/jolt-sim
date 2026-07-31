@@ -3,7 +3,7 @@
   by a sim-enabled Jolt image.
 
   This unreleased adapter supports one exact current controller contract: ABI
-  v4 with worker-ownership lifecycle events, descriptor-version 3 FFI
+  v5 with worker-ownership lifecycle events, descriptor-version 4 FFI
   interception, and scoped native proceed routing. Until jolt-sim has a public
   release, a future ABI bump replaces this contract in place; intermediate
   development ABIs remain in Git history rather than accumulating compatibility
@@ -52,12 +52,12 @@
    :scoped-byte-array-release :runtime-owned})
 
 (def ^:private supported-descriptor
-  {:abi-version 4
+  {:abi-version 5
    :future-lifecycle true
    :controller-errors true
    :events [:spawn :start :finish :cancel :exit :abort]
    :ffi-interception
-   {:descriptor-version 3
+   {:descriptor-version 4
     :kinds [:foreign-function :native-operation]
     :arguments :live
     :task-identity :future-lifecycle
@@ -432,9 +432,54 @@
 (def ^:private native-operation-keys
   #{:kind :task :arguments :operation})
 
+;; Recursive foreign argument-type identity (descriptor-version 4). A public
+;; argument type is a primitive keyword or exactly
+;; [:by-value [:struct [[field-name field-type] ...]]]. Structs are nonempty,
+;; field names are unqualified keywords, nested field types are primitive
+;; keywords or a bare nested [:struct ...], and a nested :by-value wrapper is
+;; invalid. Struct shapes are ordinary immutable vectors, so they compare by
+;; Clojure equality and serve as handler identities without normalization.
+(declare valid-struct-shape? valid-struct-fields? valid-struct-field?
+         valid-field-type?)
+
+(defn- valid-struct-shape? [shape]
+  (and (vector? shape)
+       (= 2 (count shape))
+       (= :struct (nth shape 0))
+       (valid-struct-fields? (nth shape 1))))
+
+(defn- valid-struct-fields? [fields]
+  (and (vector? fields)
+       (pos? (count fields))
+       (every? valid-struct-field? fields)))
+
+(defn- valid-struct-field? [field]
+  (and (vector? field)
+       (= 2 (count field))
+       (let [field-name (nth field 0)
+             field-type (nth field 1)]
+         (and (keyword? field-name)
+              (nil? (namespace field-name))
+              (valid-field-type? field-type)))))
+
+(defn- valid-field-type? [field-type]
+  (or (keyword? field-type)
+      (valid-struct-shape? field-type)))
+
+(defn- valid-argument-type? [argument-type]
+  (or (keyword? argument-type)
+      (and (vector? argument-type)
+           (= 2 (count argument-type))
+           (= :by-value (nth argument-type 0))
+           (valid-struct-shape? (nth argument-type 1)))))
+
+(defn- valid-argument-types? [argument-types]
+  (and (vector? argument-types)
+       (every? valid-argument-type? argument-types)))
+
 (defn- validate-ffi-descriptor!
   "Validates one intercepted call against the exact current descriptor-version
-  3 shape. Every foreign descriptor carries Boolean :capture-native-error?;
+  4 shape. Every foreign descriptor carries Boolean :capture-native-error?;
   native descriptors admit the current 15-operation set."
   [descriptor]
   (when-not (map? descriptor)
@@ -453,8 +498,7 @@
           (invalid-ffi-descriptor! :foreign-function-key-mismatch descriptor))
         (when-not (string? (:symbol descriptor))
           (invalid-ffi-descriptor! :invalid-symbol descriptor))
-        (when-not (and (vector? (:argument-types descriptor))
-                       (every? keyword? (:argument-types descriptor)))
+        (when-not (valid-argument-types? (:argument-types descriptor))
           (invalid-ffi-descriptor! :invalid-argument-types descriptor))
         (when-not (= (count (:argument-types descriptor))
                      (count arguments))
@@ -957,18 +1001,17 @@
   (cond
     (and (vector? key)
          (= 2 (count key))
-          (= :native-operation (nth key 0))
-          (contains? config-native-operations (nth key 1)))
+         (= :native-operation (nth key 0))
+         (contains? config-native-operations (nth key 1)))
     nil
 
-    ;; Legacy five-element :foreign-function key, accepted for backward
-    ;; compatibility and canonicalized to capture? false.
+    ;; Five-element capture-disabled configuration shorthand. This is a current
+    ;; spelling convenience, not an older descriptor contract.
     (and (vector? key)
          (= 5 (count key))
          (= :foreign-function (nth key 0))
          (string? (nth key 1))
-         (vector? (nth key 2))
-         (every? keyword? (nth key 2))
+         (valid-argument-types? (nth key 2))
          (keyword? (nth key 3))
          (boolean? (nth key 4)))
     nil
@@ -978,8 +1021,7 @@
          (= 6 (count key))
          (= :foreign-function (nth key 0))
          (string? (nth key 1))
-         (vector? (nth key 2))
-         (every? keyword? (nth key 2))
+         (valid-argument-types? (nth key 2))
          (keyword? (nth key 3))
          (boolean? (nth key 4))
          (boolean? (nth key 5)))
@@ -995,7 +1037,7 @@
 (defn- canonical-handler-key
   "Canonicalizes a validated :ffi-handlers key to the six-element internal
   [:foreign-function symbol argument-types return-type blocking? capture?]
-  identity. A legacy five-element foreign-function key has no capture? term
+  identity. The five-element shorthand has no capture? term
   and canonicalizes to false; every other validated key (native-operation, or
   an already six-element foreign-function key) passes through unchanged."
   [key]
@@ -1006,7 +1048,7 @@
 (defn- validate-ffi-handlers!
   "Validates every :ffi-handlers key/value pair, then returns the map
   canonicalized to six-element :foreign-function keys. Rejects a config that
-  supplies both a legacy five-element key and its equivalent six-element
+  supplies both the five-element shorthand and its equivalent six-element
   capture?-false key for the same signature, since that config cannot express
   which handler applies without silently overwriting the other."
   [handlers]
@@ -1027,7 +1069,7 @@
     (when (seq ambiguous)
       (throw
        (ex-info
-        "run-controlled :ffi-handlers supplies both a legacy five-element key and its equivalent six-element key for the same signature"
+        "run-controlled :ffi-handlers supplies both the five-element shorthand and its equivalent six-element key for the same signature"
         {:type :jolt.sim.runtime/invalid-config
          :ambiguous-keys (vec (keys ambiguous))})))
     (into {}
@@ -1036,7 +1078,7 @@
 
 (defn normalize-ffi-handlers
   "Validates and canonicalizes an FFI handler map using run-controlled's exact
-  current contract. Legacy five-element foreign-function keys become canonical
+  current contract. Five-element foreign-function shorthands become canonical
   six-element keys with capture disabled. This pure helper is public so
   extension and handler-pack tooling cannot drift from runtime validation."
   [handlers]

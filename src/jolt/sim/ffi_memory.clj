@@ -813,7 +813,7 @@
 
 (defn handlers
   "Returns a map keyed by [:native-operation op] over all 15 native operations
-  in the current descriptor-version 3 contract, compatible with
+  in the current descriptor-version 4 contract, compatible with
   jolt.sim.runtime :ffi-handlers. Each handler fn
   receives the exact descriptor and dispatches on its :arguments vector. One
   operation holds the world monitor at a time; a byte-array loan does not hold

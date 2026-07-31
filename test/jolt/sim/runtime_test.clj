@@ -12,11 +12,11 @@
 ;; prerelease development a future ABI bump replaces this contract in place;
 ;; it does not add another accepted compatibility descriptor.
 (def supported-descriptor
-  {:abi-version 4
+  {:abi-version 5
    :future-lifecycle true
    :controller-errors true
    :events [:spawn :start :finish :cancel :exit :abort]
-   :ffi-interception {:descriptor-version 3
+   :ffi-interception {:descriptor-version 4
                       :kinds [:foreign-function :native-operation]
                       :arguments :live
                       :task-identity :future-lifecycle
@@ -338,7 +338,7 @@
   (if (rt/available?)
     (let [result (sample-scenario)]
       (is (= :scenario-result (:result result)))
-      (is (= 4 (:abi-version (:capabilities result)))))
+      (is (= 5 (:abi-version (:capabilities result)))))
     (ordinary-reports-unavailable sample-scenario)))
 
 (deftest defsim-runtime-overrides-require-a-map-before-abi-resolution
@@ -595,7 +595,7 @@
          @(resolve 'jolt.sim.runtime/supported-descriptor)))
   ;; Prerelease versions are exact: stale and future ABI numbers are rejected
   ;; rather than accumulating compatibility branches.
-  (doseq [version [3 5 6 7]]
+  (doseq [version [3 4 6 7]]
     (let [bad (assoc supported-descriptor :abi-version version)
           data (ex-data-of #(validate-descriptor-var bad))]
       (is (= :jolt.sim.runtime/abi-incompatible (:type data))
@@ -664,7 +664,7 @@
     (is (= :jolt.sim.runtime/invalid-ffi-descriptor (:type data)))
     (is (= :unknown-operation (:reason data)))))
 
-(deftest ffi-handler-keys-accept-legacy-five-element-and-canonical-six-element-forms
+(deftest ffi-handler-keys-accept-five-element-shorthand-and-canonical-six-element-forms
   (let [five-key [:foreign-function "s" [:int] :int false]
         handler (fn [_] :ok)
         canonical (validate-ffi-handlers-var {five-key handler})]
@@ -673,9 +673,9 @@
         handler (fn [_] :ok)]
     (is (= {six-key handler} (validate-ffi-handlers-var {six-key handler})))))
 
-(deftest ffi-handler-keys-recognize-descriptor-version-3-native-operations
+(deftest ffi-handler-keys-recognize-current-native-operations
   ;; Handler config validation is pure config checking that runs before ABI
-  ;; resolution, so it recognizes the two descriptor-version 3 pointer-loan
+  ;; resolution, so it recognizes the two current pointer-loan
   ;; operations as supported handler keys; a still-unknown operation fails
   ;; closed.
   (let [handler (fn [_] :loan)]
@@ -702,7 +702,7 @@
               #(validate-ffi-handlers-var {too-long (fn [_])}))]
     (is (= :jolt.sim.runtime/invalid-config (:type data)))))
 
-(deftest ambiguous-legacy-and-six-element-false-handler-keys-are-rejected
+(deftest ambiguous-shorthand-and-six-element-false-handler-keys-are-rejected
   (let [five-key [:foreign-function "s" [:int] :int false]
         six-key (conj five-key false)
         data (ex-data-of
@@ -710,7 +710,7 @@
                                            six-key (fn [_] :b)}))]
     (is (= :jolt.sim.runtime/invalid-config (:type data)))
     (is (= [six-key] (:ambiguous-keys data))))
-  ;; The legacy key together with the six-element-*true* key is a distinct
+  ;; The shorthand together with the six-element-*true* key is a distinct
   ;; signature (different capture identity), so it is never ambiguous.
   (let [five-key [:foreign-function "s" [:int] :int false]
         six-key-true (conj five-key true)
@@ -731,6 +731,116 @@
     (is (= :matched (controller descriptor)))
     (is (empty? (:ffi-errors @state)))))
 
+;; ---- Recursive foreign argument-type identity (descriptor-version 4) ----
+;;
+;; A public argument type is a primitive keyword or exactly
+;; [:by-value [:struct [[field-name field-type] ...]]]. Structs are nonempty,
+;; field names are unqualified keywords, nested field types are primitive
+;; keywords or a bare nested [:struct ...], and a nested :by-value wrapper is
+;; invalid. These are pure structural tests, independent of the running image.
+
+(def ^:private flat-struct-type
+  [:by-value [:struct [[:x :int] [:y :pointer]]]])
+
+(def ^:private nested-struct-type
+  [:by-value [:struct [[:tag :int]
+                      [:point [:struct [[:x :int] [:y :int]]]]]]])
+
+(defn- struct-foreign-descriptor
+  "Builds a valid foreign-function descriptor whose single argument has the
+  supplied argument type."
+  ([argument-type]
+   (struct-foreign-descriptor argument-type false))
+  ([argument-type capture?]
+   (-> base-foreign-function-descriptor
+       (assoc :argument-types [argument-type]
+              :capture-native-error? capture?))))
+
+(deftest recursive-struct-argument-types-are-valid-ffi-descriptors
+  (is (= (struct-foreign-descriptor flat-struct-type)
+         (validate-ffi-descriptor-var
+          (struct-foreign-descriptor flat-struct-type))))
+  (is (= (struct-foreign-descriptor nested-struct-type true)
+         (validate-ffi-descriptor-var
+          (struct-foreign-descriptor nested-struct-type true))))
+  ;; Primitive and struct argument types coexist, and the argument count still
+  ;; must match :arguments length.
+  (let [mixed (-> base-foreign-function-descriptor
+                  (assoc :argument-types [:int flat-struct-type]
+                         :arguments [0 1]
+                         :capture-native-error? false))]
+    (is (= mixed (validate-ffi-descriptor-var mixed)))))
+
+(deftest malformed-struct-argument-types-are-rejected
+  (let [reject
+        (fn [argument-type]
+          (let [descriptor (struct-foreign-descriptor argument-type)
+                data (ex-data-of #(validate-ffi-descriptor-var descriptor))]
+            (is (= :jolt.sim.runtime/invalid-ffi-descriptor (:type data))
+                (pr-str argument-type))
+            (is (= :invalid-argument-types (:reason data))
+                (pr-str argument-type))))]
+    ;; empty struct
+    (reject [:by-value [:struct []]])
+    ;; bare top-level struct without the :by-value wrapper
+    (reject [:struct [[:x :int]]])
+    ;; nested :by-value wrapper is invalid as a field type
+    (reject [:by-value [:struct [[:x [:by-value [:struct [[:a :int]]]]]]]])
+    ;; qualified field name
+    (reject [:by-value [:struct [[:ns/x :int]]]])
+    ;; qualified structural tags
+    (reject [:ns/by-value [:struct [[:x :int]]]])
+    (reject [:by-value [:ns/struct [[:x :int]]]])
+    (reject [:by-value [:struct [[:x [:ns/struct [[:a :int]]]]]]])
+    ;; non-keyword field name
+    (reject [:by-value [:struct [["x" :int]]]])
+    ;; field type is an unrecognized vector form (neither keyword nor :struct)
+    (reject [:by-value [:struct [[:x [:bogus [:int]]]]]])
+    ;; :by-value not wrapping a [:struct ...] shape
+    (reject [:by-value :int])
+    ;; struct shape of the wrong arity
+    (reject [:by-value [:struct]])))
+
+(deftest struct-argument-types-share-a-canonical-handler-key-by-shape
+  (let [desc-a (struct-foreign-descriptor flat-struct-type)
+        desc-b (struct-foreign-descriptor flat-struct-type)
+        different [:by-value [:struct [[:x :int] [:z :pointer]]]]
+        desc-c (struct-foreign-descriptor different)
+        key-a (descriptor-handler-key-var desc-a)
+        key-c (descriptor-handler-key-var desc-c)]
+    ;; Nested shape identity: structurally-equal shapes share one key, while a
+    ;; single renamed field yields a distinct key.
+    (is (= key-a (descriptor-handler-key-var desc-b)))
+    (is (not= key-a key-c))
+    (is (= :foreign-function (nth key-a 0)))
+    (is (= [flat-struct-type] (nth key-a 2)))
+    ;; A nested struct preserves its full recursive identity in the key.
+    (is (= [nested-struct-type]
+           (nth (descriptor-handler-key-var
+                 (struct-foreign-descriptor nested-struct-type))
+                2)))
+    ;; The struct-bearing key dispatches through the hermetic controller.
+    (let [state (atom {:ffi-errors []})
+          effects (atom [])
+          controller (make-ffi-controller-var
+                      {key-a (fn [_] :matched)}
+                      state effects)]
+      (is (= :matched (controller desc-a)))
+      (is (= [desc-a] (mapv :descriptor @effects)))
+      (is (empty? (:ffi-errors @state))))))
+
+(deftest struct-argument-types-are-accepted-as-foreign-handler-keys
+  (let [key [:foreign-function "make_point" [flat-struct-type]
+             :pointer true false]
+        handler (fn [_] :ok)]
+    (is (= {key handler} (validate-ffi-handlers-var {key handler})))
+    ;; A malformed struct inside a handler key is rejected as bad config.
+    (let [bad-key [:foreign-function "make_point"
+                   [[:by-value [:struct []]]] :pointer true false]
+          data (ex-data-of #(validate-ffi-handlers-var {bad-key (fn [_])}))]
+      (is (= :jolt.sim.runtime/invalid-config (:type data)))
+      (is (= bad-key (:handler-key data))))))
+
 (deftest same-signature-scalar-and-captured-handlers-do-not-collide
   (let [scalar-descriptor (assoc base-foreign-function-descriptor
                                  :capture-native-error? false)
@@ -749,8 +859,8 @@
     (is (= [42 nil] (controller captured-descriptor)))
     (is (empty? (:ffi-errors @state)))))
 
-(deftest descriptor-version-3-controller-dispatches-pointer-loan-and-captured-foreign
-  ;; Under descriptor-version 3 the FFI controller accepts the two new
+(deftest current-controller-dispatches-pointer-loan-and-captured-foreign
+  ;; The current FFI controller accepts the two pointer-loan
   ;; native operations and routes them to their handlers, still accepts every
   ;; base operation, and enforces the current capture-result contract on
   ;; captured foreign functions.
@@ -834,7 +944,7 @@
 (deftest current-nested-ffi-descriptor-version-is-exact
   (if (rt/available?)
     (do
-      (is (= 3 (get-in (rt/capabilities)
+      (is (= 4 (get-in (rt/capabilities)
                        [:ffi-interception :descriptor-version])))
       (is (= supported-descriptor (rt/capabilities))))
     (ordinary-reports-unavailable rt/capabilities)))
@@ -1545,7 +1655,7 @@
          (is (false? (rt/available?)))
          (is (= :jolt.sim.runtime/abi-unavailable
                 (:type (ex-data-of rt/capabilities))))))
-    (doseq [version [3 5 6 7]]
+    (doseq [version [3 4 6 7]]
       (let [descriptor (assoc supported-descriptor :abi-version version)
             data
             (with-redefs-fn

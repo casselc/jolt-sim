@@ -67,7 +67,7 @@
       (is (= [[0 1] [1 0]] schedules))
       (is (= schedules (mapv :schedule outcomes)))
       (is (= [:completed :completed] (mapv :status outcomes)))
-      (is (= [4 4] (mapv child-abi-version outcomes)))
+      (is (= [5 5] (mapv child-abi-version outcomes)))
       (is (= [[:a :b] [:b :a]]
              (mapv (fn [outcome]
                      (:start-order (body-result outcome)))
@@ -85,7 +85,7 @@
           timed-out (nth outcomes 1)]
       (is (= schedules (mapv :schedule outcomes)))
       (is (= [:completed :timeout] (mapv :status outcomes)))
-      (is (= 4 (child-abi-version completed)))
+      (is (= 5 (child-abi-version completed)))
       (is (= {:a-result :a :b-result :b} (body-result completed)))
       (is (= :deadline (:reason timed-out)))
       (is (not= :deadlock (:status timed-out))

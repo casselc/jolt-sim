@@ -10,12 +10,19 @@
   {:extra-paths ["test"]
    :main-opts ["-m" "jolt.sim.runtime-poison-test"]}
 
-  ;; Custom-image integration gate for the descriptor-v3 scoped byte-array
+  ;; Custom-image integration gate for the descriptor-v4 scoped byte-array
   ;; pointer loan. Kept separate from :test so the compatibility suite remains
   ;; loadable on released Jolt images that do not yet expose this fork API.
   :ffi-pointer-loan-test
   {:extra-paths ["test"]
    :main-opts ["-m" "jolt.sim.ffi-pointer-loan-test-main"]}
+
+  ;; Custom-image integration gate for descriptor-v4 recursive aggregate
+  ;; identity. The fixture is ordinary jolt.ffi code and intentionally cannot
+  ;; load on a released image that lacks by-value aggregate arguments.
+  :ffi-aggregate-test
+  {:extra-paths ["test"]
+   :main-opts ["-m" "jolt.sim.ffi-aggregate-test-main"]}
 
   ;; Process-isolated because the scheduler makes no deadlock-recovery claim:
   ;; this deliberately leaves a thread blocked forever and relies on process
