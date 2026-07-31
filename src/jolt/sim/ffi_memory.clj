@@ -203,23 +203,30 @@
         v
         (recur (inc i) (assoc v (+ offset i) (nth new-bytes i)))))))
 
-(defn- record-uvec
-  "Returns the record's current unsigned bytes. Active loans read the SAME live
-  byte array on every operation; released loans retain only a final immutable
-  snapshot so the world does not keep the caller's array reachable."
-  [record]
+(defn- record-uvec-range
+  "Returns only [offset, offset+length) from a record's current unsigned bytes.
+  Active loans read that exact range from the SAME live byte array; owned and
+  released records take an immutable subvector. Keeping this range explicit is
+  important for scalar reads from large loans: one byte must not snapshot the
+  complete borrowed window."
+  [record offset length]
   (if (and (= :loan (:kind record)) (contains? record :array))
     (let [arr (:array record)
-          start (:array-offset record)
-          n (:size record)]
+          start (+ (:array-offset record) offset)]
       (loop [i 0 out (transient [])]
-        (if (== i n)
+        (if (== i length)
           (persistent! out)
           (recur (inc i)
                  (conj! out
                         (bit-and 0xFF
                                  (int (aget arr (+ start i)))))))))
-    (:bytes record)))
+    (subvec (:bytes record) offset (+ offset length))))
+
+(defn- record-uvec
+  "Returns all current unsigned bytes. Used only where a complete stable
+  snapshot is required, such as release evidence and public snapshots."
+  [record]
+  (record-uvec-range record 0 (:size record)))
 
 (defn- decode-utf8 [uvec]
   (let [ba (uvec->byte-array uvec)
@@ -559,12 +566,13 @@
         (let [s @(:state world)
               {:keys [record offset]}
               (resolve-relative! (:heap s) ptr relative-offset n)]
-          (char (nth (record-uvec record) offset)))
+          (char (nth (record-uvec-range record offset 1) 0)))
         (let [s @(:state world)
               {:keys [record offset]}
               (resolve-relative! (:heap s) ptr relative-offset n)
               u (decode-uint
-                 (record-uvec record) offset n (:byte-order config))]
+                 (record-uvec-range record offset n)
+                 0 n (:byte-order config))]
           (if (contains? signed-types type)
             (let [limit (signed-limit n)]
               (if (>= u limit) (- u (width-modulus n)) u))
@@ -625,7 +633,7 @@
       ""
       (let [s @(:state world)
             {:keys [record offset]} (resolve-live! (:heap s) ptr len)
-            uvec (subvec (record-uvec record) offset (+ offset len))]
+            uvec (record-uvec-range record offset len)]
         (decode-utf8-with-latin1-fallback uvec)))))
 
 (defn- op-write-bytes [world descriptor]
@@ -650,7 +658,7 @@
       (byte-array 0)
       (let [s @(:state world)
             {:keys [record offset]} (resolve-live! (:heap s) ptr len)
-            uvec (subvec (record-uvec record) offset (+ offset len))]
+            uvec (record-uvec-range record offset len)]
         (uvec->byte-array uvec)))))
 
 (defn- op-write-array [world descriptor]
@@ -748,13 +756,14 @@
         (when-not rec
           (pointer-miss! heap ptr))
         (let [offset (- ptr (:base rec))
-              bytes (record-uvec rec)
-              nul (find-nul bytes offset (:size rec))]
+              bytes (record-uvec-range
+                     rec offset (- (:size rec) offset))
+              nul (find-nul bytes 0 (count bytes))]
           (when-not nul
             (fail! :jolt.sim.ffi-memory/unterminated-string
                    "ptr->string requires a NUL terminator within the allocation"
                    {:pointer ptr :base (:base rec) :size (:size rec)}))
-          (decode-utf8 (subvec bytes offset nul)))))))
+          (decode-utf8 (subvec bytes 0 nul)))))))
 
 (defn- op-string->ptr [world descriptor]
   (let [[s] (validate-arity! :string->ptr (:arguments descriptor) 1)]

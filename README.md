@@ -45,17 +45,19 @@ for the same scalar binding is rejected. Map membership (including a `nil`
 value) defines handled. Nested FFI descriptor version 2 adds the exact Boolean
 `:capture-native-error?` field. A captured handler must return the complete
 two-element `[native-result error-code]` public value, while descriptor version
-1 remains accepted as capture-disabled. Under ABI v1 an explicitly supplied
+1 remains accepted as capture-disabled. Descriptor version 3 retains version
+2's capture semantics and adds the scoped `:borrow-byte-array` and
+`:release-byte-array` native operations. Under ABI v1 an explicitly supplied
 `:ffi-handlers` key is rejected with
 `:jolt.sim.runtime/capability-unavailable`, and the result map never carries
 `:effects`.
 
 ABI v3 extends the v2 lifecycle with two worker-ownership events, `:exit` and
-`:abort`; its nested FFI descriptor may be version 1 or 2. Under v3 a task owns
-a worker from `:spawn` until exactly one `:exit`/`:abort`; `:finish`/`:cancel`
-settle its future but do **not** release that ownership, so a cancelled running
-worker remains owned until `:exit`. After the body returns, cleanup waits a
-bounded interval
+`:abort`; its nested FFI descriptor may be version 1, 2, or 3. Under v3 a task
+owns a worker from `:spawn` until exactly one `:exit`/`:abort`;
+`:finish`/`:cancel` settle its future but do **not** release that ownership, so
+a cancelled running worker remains owned until `:exit`. After the body returns,
+cleanup waits a bounded interval
 (`:drain-timeout-ms`, default 2000) for every lifecycle-owned hooked-future
 worker to release ownership and every lifecycle callback to finish before any
 restoration. Restoration is the reverse (FFI then future). **Safe restoration

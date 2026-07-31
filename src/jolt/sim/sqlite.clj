@@ -1,5 +1,5 @@
 (ns jolt.sim.sqlite
-  "Deterministic data-driven SQLite handler pack for ABI v2 FFI interception.
+  "Deterministic data-driven SQLite handler pack for simulation FFI interception.
 
   This is NOT a SQL parser. A world owns a jolt.sim.ffi-memory world plus an
   ordered vector of exact statement plans. db.sqlite's foreign-function calls
@@ -20,7 +20,7 @@
   borrowed pointer; an empty :blob cell with :null-pointer? true returns 0 so
   callers can exercise SQLite's ambiguous empty-BLOB pointer contract.
 
-  handlers returns the 13 native-operation handlers from the memory world
+  handlers returns the 15 native-operation handlers from the memory world
   merged with exactly the 22 SQLite foreign-function keys required by
   db.sqlite, so a single :ffi-handlers map drives both layers unchanged."
   (:require [jolt.sim.ffi-memory :as memory]))
@@ -679,7 +679,7 @@
    "sqlite3_last_insert_rowid" (partial h-last-rowid w)})
 
 (defn handlers
-  "Returns the memory world's 13 native-operation handlers merged with exactly
+  "Returns the memory world's 15 native-operation handlers merged with exactly
   the 22 SQLite foreign-function keys, as one :ffi-handlers map. Both layers
   share the single memory world."
   [w]

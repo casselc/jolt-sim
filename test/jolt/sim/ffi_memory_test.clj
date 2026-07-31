@@ -24,6 +24,9 @@
 (defn- ex-data-of [f]
   (try (f) nil (catch :default e (ex-data e))))
 
+(def ^:private record-uvec-range-var
+  (resolve 'jolt.sim.ffi-memory/record-uvec-range))
+
 ;; ---- handler shape ------------------------------------------------------
 
 (deftest handlers-cover-all-fifteen-native-operations
@@ -375,6 +378,30 @@
     (is (= :jolt.sim.ffi-memory/use-after-release
            (:type (ex-data-of #(call h :read p :uint8)))))
     (is (= [7 8] (:bytes (first (fm/snapshot w)))))))
+
+(deftest loan-reads-materialize-only-the-requested-live-range
+  (let [w (fm/world)
+        h (fm/handlers w)
+        arr (byte-array 4096)
+        _ (aset arr 4095 123)
+        _ (aset arr 2048 7)
+        _ (aset arr 2049 8)
+        _ (aset arr 2050 9)
+        p (call h :borrow-byte-array arr 0 4096)
+        original @record-uvec-range-var
+        ranges (atom [])]
+    (with-redefs-fn
+      {record-uvec-range-var
+       (fn [record offset length]
+         (swap! ranges conj [offset length])
+         (original record offset length))}
+      #(do
+         (is (= 123 (call h :read (+ p 4095) :uint8)))
+         (is (= [7 8 9]
+                (vec (call h :read-array (+ p 2048) 3))))))
+    (is (= [[4095 1] [2048 3]] @ranges))
+    (call h :release-byte-array p)
+    (is (true? (fm/clean? w)))))
 
 (deftest empty-and-nested-loans-have-distinct-balanced-lifetimes
   (let [w (fm/world)
