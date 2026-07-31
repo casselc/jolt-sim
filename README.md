@@ -16,7 +16,7 @@ and simulated worlds belong here.
 - dynamic discovery of the sim-image controller ABI without making ordinary
   Jolt images depend on it; and
 - a `run-controlled`/`defsim` adapter that preserves the application body
-  unchanged while gating ordinary future starts and, under ABI v2,
+  unchanged while gating ordinary future starts and, under ABI v2/v3,
   substituting registered FFI/native effects;
 - a deterministic native-memory world with configurable ABI widths and byte
   order, exact bounds/lifetime failures, copy-safe byte buffers, owned C
@@ -24,7 +24,7 @@ and simulated worlds belong here.
 - a deterministic SQLite handler model plus a real/sim parity fixture that
   executes unchanged `jdbc.core` application code.
 
-The current runtime adapter supports two controller ABI versions discovered
+The current runtime adapter supports three controller ABI versions discovered
 dynamically from a sim image. ABI v1 is lifecycle-only: an optional `:on-event`
 callback observes and gates ordinary Jolt future starts. ABI v2 additionally
 installs an FFI controller on every controlled run, so every `jolt.ffi` native
@@ -38,15 +38,44 @@ explicitly supplied `:ffi-handlers` key is rejected with
 `:jolt.sim.runtime/capability-unavailable`, and the result map never carries
 `:effects`.
 
+ABI v3 is the v2 FFI descriptor plus two worker-ownership events,
+`:exit` and `:abort`. Under v3 a task owns a worker from `:spawn` until exactly
+one `:exit`/`:abort`; `:finish`/`:cancel` settle its future but do **not**
+release that ownership, so a cancelled running worker remains owned until
+`:exit`. After the body returns, cleanup waits a bounded interval
+(`:drain-timeout-ms`, default 2000) for every lifecycle-owned hooked-future
+worker to release ownership and every lifecycle callback to finish before any
+restoration. Restoration is the reverse (FFI then future). **Safe restoration
+is never claimed while any tracked v3 worker ownership or lifecycle callback
+remains:** if a hooked-future body cannot drain, the controller is left
+installed and the session is poisoned
+(`:jolt.sim.runtime/session-poisoned` on the next run) rather than restored
+unsafely. Late `:finish`/`:cancel`/`:exit`/`:abort` needed for drainage are
+accepted after scope closure and still reach `:on-event`; new
+`:spawn`/`:start` after closure fail closed, and the core's balancing
+`:abort` for a rejected spawn is consumed without inventing a worker. Body
+exceptions are rethrown unchanged only after the same drain and restoration
+boundary succeeds.
+
+The non-restoration case intentionally poisons its process, so its permanent
+regression is isolated from the reusable test session:
+
+```sh
+/path/to/abi-v3/target/sim/jolt -M:runtime-poison-test
+```
+
 The adapter still does not select an exhaustive schedule, reorder execution,
-advance virtual time, or inject faults. The kernel has no stream, socket,
+advance virtual time, or inject faults. The first coarse scripted scheduler
+(driving ordinary futures from a finite spawn-ordinal script, gating at
+`:start` and advancing at `:exit`/`:abort`) is **not yet implemented** in this
+slice and is tracked as remaining work. The kernel has no stream, socket,
 HTTP, database, or OpenTelemetry integration. Its deterministic traces
 describe kernel test runs, not arbitrary production execution.
 
-### FFI interception caveats (ABI v2)
+### FFI interception caveats (ABI v2/v3)
 
 - **Effects are live in-memory evidence.** The `:effects` vector returned under
-  v2 records each exact validated descriptor in arrival order. Descriptor
+  v2/v3 records each exact validated descriptor in arrival order. Descriptor
   arguments are the live objects that crossed the interception boundary; they
   may include mutable values such as byte arrays, and are not snapshotted or
   canonicalized.
@@ -54,19 +83,19 @@ describe kernel test runs, not arbitrary production execution.
   function call completed before `run-controlled` installs its controllers has
   already reached the real OS. Defining a lazy `defcfn` before the scope is
   safe; invoking it inside the scope is intercepted before symbol resolution.
-- **Already-started outliving threads can escape after restoration.** When the
-  controllers are restored (FFI then future, exact tokens, both attempted on
-  cleanup), a thread that started inside the scope but has not yet reached its
-  terminal lifecycle event regains uncontrolled OS access. The adapter detects
-  and fails such outliving tasks, but cannot prevent their late native calls
-  from reaching the OS once restoration has completed.
+- **Raw threads remain outside lifecycle ownership.** Only ordinary
+  `future-call` workers emit the current lifecycle events. A raw `Thread.`
+  created inside the scope can outlive it undetected and regain uncontrolled OS
+  access after restoration. ABI v3 closes the canceled-running-worker gap for
+  hooked futures; it does not claim ownership of arbitrary host threads. ABI
+  v1/v2 also lack v3's post-worker `:exit` acknowledgement.
 - **A unified causal trace remains later work.** Lifecycle events and native
   effects are recorded in separate ordered logs; correlating a future's task id
   across both logs is the caller's responsibility today.
 
 ### Deterministic native memory
 
-`jolt.sim.ffi-memory` supplies handlers for all 13 ABI v2 native operations.
+`jolt.sim.ffi-memory` supplies handlers for all 13 ABI v2/v3 native operations.
 It allocates aligned fake addresses backed only by immutable byte vectors, so
 an intercepted pointer can never reach Chez or the operating system. The
 default world is deterministic LP64 little-endian; `:pointer-size`,

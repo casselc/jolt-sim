@@ -4,6 +4,12 @@
  {:test {:extra-paths ["test"]
          :main-opts ["-m" "jolt.sim.test-main"]}
 
+  ;; Process-isolated because the asserted failure deliberately retains the
+  ;; installed controllers and poisons the single adapter session.
+  :runtime-poison-test
+  {:extra-paths ["test"]
+   :main-opts ["-m" "jolt.sim.runtime-poison-test"]}
+
   ;; Workspace integration lanes: the canonical db checkout is ../db.
   :sqlite-test
   {:extra-paths ["test"]
