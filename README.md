@@ -16,8 +16,9 @@ and simulated worlds belong here.
 - dynamic discovery of the sim-image controller ABI without making ordinary
   Jolt images depend on it; and
 - a `run-controlled`/`defsim` adapter that preserves the application body
-  unchanged while gating ordinary future starts and, under ABI v2/v3,
-  substituting registered FFI/native effects;
+  unchanged while gating ordinary future starts and, under ABI v2/v3/v4,
+  substituting registered FFI/native effects; ABI v4 can also observe real
+  native execution or mix modeled boundaries with guarded native fallback;
 - capped lexicographic enumeration of exact top-level future schedules and a
   fresh-process supervisor that runs each plan with a deadline, canonical
   result transport, and bounded termination/reaping;
@@ -30,7 +31,7 @@ and simulated worlds belong here.
 - a deterministic SQLite handler model plus a real/sim parity fixture that
   executes unchanged `jdbc.core` application code.
 
-The current runtime adapter supports three controller ABI versions discovered
+The current runtime adapter supports four controller ABI versions discovered
 dynamically from a sim image. ABI v1 is lifecycle-only: an optional `:on-event`
 callback observes and gates ordinary Jolt future starts. ABI v2 additionally
 installs an FFI controller on every controlled run, so every `jolt.ffi` native
@@ -72,11 +73,72 @@ accepted after scope closure and still reach `:on-event`; new
 exceptions are rethrown unchanged only after the same drain and restoration
 boundary succeeds.
 
+ABI v4 retains descriptor-version 3 and the v3 worker lifecycle, then adds a
+scoped, single-use native `proceed` continuation. `run-controlled` exposes it
+through one explicit `:ffi-mode` option:
+
+- `:hermetic` is the default and preserves the prior behavior exactly. The
+  established one-argument controller is installed, registered handlers
+  substitute results, and an unhandled effect is blocked before OS access.
+- `:observe` requires ABI v4, accepts no `:ffi-handlers`, and proceeds every
+  intercepted call through its exact native branch while recording the route.
+- `:hybrid` requires ABI v4. A registered handler substitutes its result; a
+  handler miss proceeds through the exact native branch unless model-owned
+  resource provenance makes that fallback unsafe.
+
+Every FFI-capable successful run returns the compatibility `:effects` vector
+plus a positionally correlated `:effect-trace`. Each trace entry records the
+exact descriptor, selected mode, and actual `:handler`, `:native`, or
+`:blocked` route. A native exception raised by `proceed` keeps ordinary
+application semantics: unchanged code may catch it, and it is not relabeled as
+a controller failure. Handler, descriptor, and routing-policy failures remain
+latched fail closed even when application code catches their immediate throw.
+
+Hybrid handler functions must classify results explicitly with
+`jolt.sim.runtime/substitute` or `jolt.sim.runtime/modeled-resource`; a literal
+`nil` handler-map value remains an explicit nil substitution. `substitute` is
+an assertion that the result is a non-resource scalar/value; known non-null
+pointer results (`alloc`, `string->ptr`, pointer-typed `read`, and foreign
+`:pointer`/`:void*` results) reject that classification. A handled
+`borrow-byte-array` is stricter: it must return a positive `modeled-resource`,
+because core requires a usable borrowed pointer and cannot accept a null
+substitution.
+Integer handles returned under
+generic scalar types such as `:int`/`:uptr` cannot be identified from ABI types
+alone, so their handler packs must use `modeled-resource`. The latter marks
+a non-negative numeric pointer, descriptor, or handle as model-owned. Its
+optional positive span covers a half-open interval; `alloc` and
+`borrow-byte-array` infer their span from the intercepted arguments when it is
+omitted. Before a hybrid miss can proceed, the adapter truncates numeric
+arguments with the same toward-zero rule as core and rejects any result inside
+a model-owned interval. The ledger is per run and
+conservative for the whole scope (no early retirement yet), so extension packs
+should allocate fake resources from disjoint high ranges. This guard prevents
+a fake pointer/handle returned by one modeled call from reaching a later real
+native call; it is not general taint tracking for arbitrary scalar values.
+
+For example, this models allocation while allowing an unchanged library's
+other FFI calls to reach the real host:
+
+```clojure
+(sim/run-controlled
+ {:ffi-mode :hybrid
+  :ffi-handlers
+  {[:native-operation :alloc]
+   (fn [_descriptor] (sim/modeled-resource 1042000000 4096))}}
+ library/exercise-native-api)
+```
+
+A matching modeled `free`/read/write boundary should also be registered by a
+real handler pack; otherwise use of that fake range on a handler miss is
+reported as `:jolt.sim.runtime/modeled-resource-native-fallback` before native
+execution.
+
 The non-restoration case intentionally poisons its process, so its permanent
 regression is isolated from the reusable test session:
 
 ```sh
-/path/to/abi-v3/target/sim/jolt -M:runtime-poison-test
+/path/to/abi-v4/target/sim/jolt -M:runtime-poison-test
 ```
 
 Descriptor-version 3 also adds a scoped byte-array pointer loan. Its dedicated
@@ -85,7 +147,7 @@ memory and then unchanged against the deterministic memory handlers, including
 nested native access and exception cleanup:
 
 ```sh
-/path/to/abi-v3/target/sim/jolt -M:ffi-pointer-loan-test
+/path/to/abi-v4/target/sim/jolt -M:ffi-pointer-loan-test
 ```
 
 The adapter still does not discover future counts, choose high-utility
@@ -269,13 +331,13 @@ sampling claim. Hegel runs cases sequentially; stateful swarm rules,
 coverage/resource-order scores, targeted sampling, workload and fault
 generation, and partial-order reduction remain separate later work.
 
-### FFI interception caveats (ABI v2/v3)
+### FFI interception and routing caveats (ABI v2/v3/v4)
 
 - **Effects are live in-memory evidence.** The `:effects` vector returned under
-  v2/v3 records each exact validated descriptor in arrival order. Descriptor
-  arguments are the live objects that crossed the interception boundary; they
-  may include mutable values such as byte arrays, and are not snapshotted or
-  canonicalized.
+  v2/v3/v4 records each exact validated descriptor in arrival order, and
+  `:effect-trace` records its route in the same order. Descriptor arguments are
+  the live objects that crossed the interception boundary; they may include
+  mutable values such as byte arrays, and are not snapshotted or canonicalized.
 - **Native work before scope is not intercepted.** A library load or foreign
   function call completed before `run-controlled` installs its controllers has
   already reached the real OS. Defining a lazy `defcfn` before the scope is
@@ -285,10 +347,14 @@ generation, and partial-order reduction remain separate later work.
   created inside the scope can outlive it undetected and regain uncontrolled OS
   access after restoration. ABI v3 closes the canceled-running-worker gap for
   hooked futures; it does not claim ownership of arbitrary host threads. ABI
-  v1/v2 also lack v3's post-worker `:exit` acknowledgement.
-- **A unified causal trace remains later work.** Lifecycle events and native
-  effects are recorded in separate ordered logs; correlating a future's task id
-  across both logs is the caller's responsibility today.
+  v1/v2 also lack v3's post-worker `:exit` acknowledgement. A scenario that
+  creates raw threads or executor tasks must join them before its body returns
+  if they can perform FFI; otherwise neither safe restoration nor a complete
+  route trace is claimed.
+- **A unified causal trace remains later work.** Native descriptors and their
+  route decisions are now one correlated log, but lifecycle events remain a
+  separate ordered log; correlating a future's task id across both logs is the
+  caller's responsibility today.
 
 ### Deterministic native memory
 

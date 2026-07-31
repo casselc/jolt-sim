@@ -205,6 +205,25 @@
     (is (= :jolt.sim.runtime/invalid-config (:type data)))
     (is (= [:seed] (:unknown-keys data)))))
 
+(deftest ffi-mode-config-fails-closed-before-abi-resolution
+  (doseq [mode [nil :transparent :real "observe" 4]]
+    (let [data
+          (ex-data-of
+           #(rt/run-controlled {:ffi-mode mode} (fn [] :uncontrolled)))]
+      (is (= :jolt.sim.runtime/invalid-config (:type data)) (pr-str mode))
+      (is (= mode (:ffi-mode data)) (pr-str mode))))
+  ;; Even an empty explicit handler map contradicts observe mode. This is
+  ;; rejected before capability lookup on ordinary and custom images alike.
+  (let [data
+        (ex-data-of
+         #(rt/run-controlled
+           {:ffi-mode :observe :ffi-handlers {}}
+           (fn [] :uncontrolled)))]
+    (is (= :jolt.sim.runtime/invalid-config (:type data)))
+    (is (= :observe (:ffi-mode data))))
+  (let [data (ex-data-of #(rt/modeled-resource 10 0))]
+    (is (= :jolt.sim.runtime/invalid-modeled-resource (:type data)))))
+
 (deftest malformed-ffi-handler-keys-fail-closed-before-abi-resolution
   ;; Structural handler validation is pure config checking; it reports before
   ;; ABI resolution on every image, including ordinary released Jolt.
@@ -262,10 +281,15 @@
       (is (= (expected-finish-events) (mapv :event (:events result))))
       (is (apply = (map :task (:events result))))
       (is (every? zero? (map :parent (:events result))))
-      ;; :effects is returned only on FFI-capable images (v2/v3/v4).
+      ;; :effects and its correlated route evidence are returned only on
+      ;; FFI-capable images (v2/v3/v4).
       (if (#{2 3 4} (abi-version))
-        (is (vector? (:effects result)))
-        (is (nil? (:effects result))))
+        (do
+          (is (vector? (:effects result)))
+          (is (vector? (:effect-trace result))))
+        (do
+          (is (nil? (:effects result)))
+          (is (nil? (:effect-trace result)))))
       (is (not (contains? result :schedule-events))))
     (ordinary-reports-unavailable #(rt/run-controlled {} (fn [] :done)))))
 
@@ -582,7 +606,10 @@
           (is (some #(and (= :foreign-function (:kind %))
                           (= "jolt_sim_ghost_symbol_zzz9" (:symbol %))
                           (= [41] (:arguments %)))
-                    effects))))
+                    effects))
+          (is (= effects (mapv :descriptor (:effect-trace result))))
+          (is (every? #(= :hermetic (:mode %)) (:effect-trace result)))
+          (is (every? #(= :handler (:route %)) (:effect-trace result)))))
     1 nil
     nil (ordinary-reports-unavailable
          #(rt/run-controlled {} (fn [] :done)))))
@@ -722,6 +749,9 @@
 
 (def ^:private make-ffi-controller-var
   (resolve 'jolt.sim.runtime/make-ffi-controller))
+
+(def ^:private make-ffi-routing-controller-var
+  (resolve 'jolt.sim.runtime/make-ffi-routing-controller))
 
 (deftest exact-capability-descriptors-are-accepted-and-mismatches-rejected
   ;; Pure structural validation, independent of the running image.
@@ -979,7 +1009,9 @@
       (is (= [99 nil] (controller captured-descriptor)))
       (is (= [loan-descriptor release-descriptor base-descriptor
               captured-descriptor]
-             @effects))
+             (mapv :descriptor @effects)))
+      (is (= [:handler :handler :handler :handler]
+             (mapv :route @effects)))
       (is (empty? (:ffi-errors @state))))))
 
 (deftest captured-handler-must-return-a-two-element-vector
@@ -1027,7 +1059,9 @@
                     state effects 2)]
     (controller descriptor)
     (is (identical? descriptor @seen))
-    (is (= [descriptor] @effects))))
+    (is (= [descriptor] (mapv :descriptor @effects)))
+    (is (= [:hermetic] (mapv :mode @effects)))
+    (is (= [:handler] (mapv :route @effects)))))
 
 (deftest v3-nested-ffi-descriptor-version-is-accepted-when-advertised
   (cond
@@ -1779,16 +1813,11 @@
     :else
     (ordinary-reports-unavailable #(rt/run-controlled {} (fn [] :done)))))
 
-;; ---- ABI v4 proceed-routing descriptor compatibility -------------------
+;; ---- ABI v4 proceed-routing policy --------------------------------------
 ;;
-;; No v4 sim image is available in this worktree, so these are discriminating
-;; mock tests. They pin three v4-only properties directly: (1) a v4 image that
-;; omits the routing installer var is incompatible even though run-controlled
-;; never calls it; (2) a v4 image that exposes it resolves the v4 descriptor;
-;; and (3) run-controlled stays hermetic under v4, installing only the
-;; established one-argument FFI controller while the routing installer exists
-;; but is unused. Exact acceptance and malformed rejection are covered above in
-;; exact-capability-descriptors-are-accepted-and-mismatches-rejected.
+;; Pure mock tests keep the mode contract covered on an ordinary released
+;; image. Live branches below additionally exercise the real ABI v4 Scheme
+;; routing continuation when the canonical sim image runs this suite.
 
 (defn- mock-resolved-abi-vars
   "Returns a replacement value for jolt.sim.runtime/resolved-abi-vars whose
@@ -1805,6 +1834,29 @@
              :install-ffi-controller! stub
              :restore-ffi-controller! stub}
       (not omit-routing?) (assoc :install-ffi-routing-controller! stub))))
+
+(defn- mock-controller-ops [descriptor established routing]
+  {:descriptor descriptor
+   :abi-version (:abi-version descriptor)
+   :clear-controller-errors! (fn [])
+   :install-controller! (fn [_] :future-token)
+   :install-ffi-controller!
+   (fn [controller]
+     (when established (reset! established controller))
+     :ffi-token)
+   :install-ffi-routing-controller!
+   (fn [controller]
+     (when routing (reset! routing controller))
+     :routing-token)
+   :restore-controller! (fn [_])
+   :restore-ffi-controller! (fn [_])
+   :controller-errors (fn [])})
+
+(defn- native-descriptor [operation arguments]
+  {:kind :native-operation
+   :task 0
+   :arguments arguments
+   :operation operation})
 
 (deftest v4-requires-the-ffi-routing-installer-var
   (let [resolved-var (resolve 'jolt.sim.runtime/resolved-abi-vars)]
@@ -1870,3 +1922,465 @@
              "the routing installer must not be invoked by run-controlled")
          (is (some? @future-installed)
              "the future lifecycle controller must be installed")))))
+
+(deftest routing-modes-require-v4-and-explicit-hermetic-requires-ffi
+  (let [resolve-var (resolve 'jolt.sim.runtime/resolve-controller-ops!)]
+    (doseq [mode [:observe :hybrid]]
+      (let [data
+            (with-redefs-fn
+              {resolve-var
+               (fn [] (mock-controller-ops v3-descriptor3 nil nil))}
+              #(ex-data-of
+                (fn [] (rt/run-controlled {:ffi-mode mode}
+                                          (fn [] :uncontrolled)))))]
+        (is (= :jolt.sim.runtime/capability-unavailable (:type data)))
+        (is (= 4 (:required-abi-version data)))
+        (is (= 3 (:actual-abi-version data)))))
+    (let [data
+          (with-redefs-fn
+            {resolve-var (fn [] (mock-controller-ops v1-descriptor nil nil))}
+            #(ex-data-of
+              (fn [] (rt/run-controlled {:ffi-mode :hermetic}
+                                        (fn [] :uncontrolled)))))]
+      (is (= :jolt.sim.runtime/capability-unavailable (:type data))))))
+
+(deftest v4-observe-installs-routing-proceeds-once-and-records-the-route
+  (let [established (atom nil)
+        routing (atom nil)
+        proceed-count (atom 0)
+        descriptor (native-descriptor :sizeof [:int])
+        ops (mock-controller-ops v4-descriptor established routing)
+        resolve-var (resolve 'jolt.sim.runtime/resolve-controller-ops!)
+        run
+        (with-redefs-fn
+          {resolve-var (fn [] ops)}
+          #(rt/run-controlled
+            {:ffi-mode :observe}
+            (fn []
+              ((deref routing)
+               descriptor
+               (fn [] (swap! proceed-count inc) 8)))))]
+    (is (= 8 (:result run)))
+    (is (= 1 @proceed-count))
+    (is (nil? @established))
+    (is (some? @routing))
+    (is (= [descriptor] (:effects run)))
+    (is (= [{:mode :observe :route :native :descriptor descriptor}]
+           (:effect-trace run)))))
+
+(deftest v4-observe-preserves-a-caught-native-proceed-exception
+  (let [routing (atom nil)
+        descriptor (native-descriptor :sizeof [:int])
+        ops (mock-controller-ops v4-descriptor nil routing)
+        resolve-var (resolve 'jolt.sim.runtime/resolve-controller-ops!)
+        run
+        (with-redefs-fn
+          {resolve-var (fn [] ops)}
+          #(rt/run-controlled
+            {:ffi-mode :observe}
+            (fn []
+              (try
+                ((deref routing)
+                 descriptor
+                 (fn []
+                   (throw (ex-info "native failure" {:source :native}))))
+                :not-thrown
+                (catch :default error
+                  (:source (ex-data error)))))))]
+    (is (= :native (:result run)))
+    (is (= [:native] (mapv :route (:effect-trace run))))))
+
+(deftest v4-hybrid-routes-handlers-and-safe-misses-explicitly
+  (let [routing (atom nil)
+        proceeded (atom [])
+        alloc (native-descriptor :alloc [8])
+        sizeof (native-descriptor :sizeof [:int])
+        loaded (native-descriptor :loaded? ["libc"])
+        ops (mock-controller-ops v4-descriptor nil routing)
+        resolve-var (resolve 'jolt.sim.runtime/resolve-controller-ops!)
+        run
+        (with-redefs-fn
+          {resolve-var (fn [] ops)}
+          #(rt/run-controlled
+            {:ffi-mode :hybrid
+             :ffi-handlers
+             {[:native-operation :alloc]
+              (fn [_] (rt/modeled-resource 1042000000 8))
+              [:native-operation :sizeof]
+              (fn [_] (rt/substitute 16))}}
+            (fn []
+              [((deref routing) alloc
+                (fn [] (swap! proceeded conj :alloc) :wrong))
+               ((deref routing) sizeof
+                (fn [] (swap! proceeded conj :sizeof) :wrong))
+               ((deref routing) loaded
+                (fn [] (swap! proceeded conj :loaded) true))])))]
+    (is (= [1042000000 16 true] (:result run)))
+    (is (= [:loaded] @proceeded))
+    (is (= [:handler :handler :native]
+           (mapv :route (:effect-trace run))))
+    (is (= (:effects run) (mapv :descriptor (:effect-trace run))))))
+
+(deftest v4-hybrid-blocks-a-derived-modeled-resource-before-proceed
+  (let [routing (atom nil)
+        proceed-count (atom 0)
+        alloc (native-descriptor :alloc [8])
+        free-derived (native-descriptor :free [1042000007])
+        ops (mock-controller-ops v4-descriptor nil routing)
+        resolve-var (resolve 'jolt.sim.runtime/resolve-controller-ops!)
+        data
+        (with-redefs-fn
+          {resolve-var (fn [] ops)}
+          #(ex-data-of
+            (fn []
+              (rt/run-controlled
+               {:ffi-mode :hybrid
+                :ffi-handlers
+                {[:native-operation :alloc]
+                 (fn [_] (rt/modeled-resource 1042000000))}}
+               (fn []
+                 ((deref routing) alloc
+                  (fn [] (swap! proceed-count inc) :wrong))
+                 (try
+                   ((deref routing) free-derived
+                    (fn [] (swap! proceed-count inc) nil))
+                   (catch :default _ :caught))
+                 :apparently-ok)))))]
+    (is (= :jolt.sim.runtime/controller-error (:type data)))
+    (is (zero? @proceed-count))
+    (is (= [:alloc :free] (mapv :operation (:effects data))))
+    (is (= [:handler :blocked] (mapv :route (:effect-trace data))))
+    (is (= :modeled-resource-native-fallback
+           (:reason (second (:effect-trace data)))))
+    (is (some #(= :modeled-resource-native-fallback (:ffi-error %))
+              (:errors data)))
+    ;; A policy failure is latched for this run but exact restoration leaves the
+    ;; adapter reusable; it does not poison controller ownership.
+    (let [follow-up
+          (with-redefs-fn
+            {resolve-var (fn [] ops)}
+            #(rt/run-controlled {} (fn [] :recovered)))]
+      (is (= :recovered (:result follow-up))))))
+
+(deftest hybrid-function-results-must-be-classified
+  (let [state (atom {:ffi-errors []})
+        effect-trace (atom [])
+        ledger (atom [])
+        descriptor (native-descriptor :alloc [4])
+        controller
+        (make-ffi-routing-controller-var
+         :hybrid
+         {[:native-operation :alloc] (fn [_] 1042)}
+         state effect-trace 3 ledger)
+        data (ex-data-of #(controller descriptor (fn [] :native)))]
+    (is (= :jolt.sim.runtime/invalid-handler-result (:type data)))
+    (is (= :unclassified-result (:reason data)))
+    (is (= [:handler] (mapv :route @effect-trace)))
+    (is (= :invalid-handler-result
+           (:ffi-error (first (:ffi-errors @state)))))))
+
+(deftest hybrid-substitute-cannot-bypass-known-pointer-provenance
+  (let [foreign-pointer
+        {:kind :foreign-function :task 0 :arguments []
+         :symbol "modeled_pointer" :argument-types [] :return-type :pointer
+         :blocking? false :capture-native-error? false}
+        foreign-void-pointer (assoc foreign-pointer :return-type :void*)
+        alloc (native-descriptor :alloc [8])
+        borrow (native-descriptor :borrow-byte-array
+                                  [(byte-array [1]) 0 1])
+        string-pointer (native-descriptor :string->ptr ["x"])
+        pointer-descriptors
+        [alloc
+         (native-descriptor :read [5000 :pointer 0])
+         (native-descriptor :read [5000 :void* 0])
+         foreign-pointer
+         foreign-void-pointer]
+        fixed-native-descriptors [alloc borrow string-pointer]]
+    (letfn
+     [(assert-rejected [descriptor fake]
+        (let [state (atom {:ffi-errors []})
+              effect-trace (atom [])
+              proceeded? (atom false)
+              key (descriptor-handler-key-var descriptor)
+              controller
+              (make-ffi-routing-controller-var
+               :hybrid
+               {key (fn [_] (rt/substitute fake))}
+               state effect-trace 3 (atom []))
+              data
+              (ex-data-of
+               #(controller descriptor
+                            (fn [] (reset! proceeded? true) :native)))]
+          (is (= :jolt.sim.runtime/invalid-handler-result (:type data)))
+          (is (= (if (= :borrow-byte-array (:operation descriptor))
+                   :borrow-requires-positive-modeled-resource
+                   :resource-requires-modeled-resource)
+                 (:reason data)))
+          (is (false? @proceeded?))
+          (is (= [:handler] (mapv :route @effect-trace)))
+          (is (= :invalid-handler-result
+                 (:ffi-error (first (:ffi-errors @state)))))))]
+      (doseq [descriptor pointer-descriptors
+              fake [1042000000 1042000000.0]]
+        (assert-rejected descriptor fake))
+      ;; These native operations cannot legitimately return a negative pointer;
+      ;; jnum->exact would otherwise turn it into a real address on a later miss.
+      (doseq [descriptor fixed-native-descriptors
+              fake [-1042000000 -1042000000.0]]
+        (assert-rejected descriptor fake))))
+  ;; Explicit null/failure is not an owned resource and remains a valid
+  ;; substitution for a pointer-producing operation.
+  (let [state (atom {:ffi-errors []})
+        descriptor (native-descriptor :alloc [8])
+        controller
+        (make-ffi-routing-controller-var
+         :hybrid
+         {[:native-operation :alloc] (fn [_] (rt/substitute 0))}
+         state (atom []) 3 (atom []))]
+    (is (zero? (controller descriptor (fn [] :wrong))))
+    (is (empty? (:ffi-errors @state))))
+  ;; Pointer-typed foreign calls may use a negative API failure sentinel.
+  (let [state (atom {:ffi-errors []})
+        descriptor
+        {:kind :foreign-function :task 0 :arguments []
+         :symbol "sentinel_pointer" :argument-types [] :return-type :pointer
+         :blocking? false :capture-native-error? false}
+        key (descriptor-handler-key-var descriptor)
+        controller
+        (make-ffi-routing-controller-var
+         :hybrid {key (fn [_] (rt/substitute -1))}
+         state (atom []) 3 (atom []))]
+    (is (= -1 (controller descriptor (fn [] :wrong))))
+    (is (empty? (:ffi-errors @state)))))
+
+(def ^:private invalid-borrow-handler-cases
+  [[:nil-handler nil]
+   [:substitute-zero (fn [_] (rt/substitute 0))]
+   [:modeled-zero (fn [_] (rt/modeled-resource 0))]])
+
+(deftest hybrid-borrow-requires-a-positive-modeled-resource-directly
+  (let [descriptor (native-descriptor :borrow-byte-array
+                                      [(byte-array [1]) 0 1])]
+    (doseq [[label handler] invalid-borrow-handler-cases]
+      (let [state (atom {:ffi-errors []})
+            effect-trace (atom [])
+            proceeded? (atom false)
+            controller
+            (make-ffi-routing-controller-var
+             :hybrid
+             {[:native-operation :borrow-byte-array] handler}
+             state effect-trace 3 (atom []))
+            data
+            (ex-data-of
+             #(controller descriptor
+                          (fn [] (reset! proceeded? true) :native)))]
+        (is (= :jolt.sim.runtime/invalid-handler-result (:type data))
+            (str label))
+        (is (= :borrow-requires-positive-modeled-resource (:reason data))
+            (str label))
+        (is (false? @proceeded?) (str label))
+        (is (= [:handler] (mapv :route @effect-trace)) (str label))
+        (is (= :invalid-handler-result
+               (:ffi-error (first (:ffi-errors @state))))
+            (str label))))))
+
+(deftest hybrid-caught-invalid-borrow-remains-a-controller-error
+  (let [resolve-var (resolve 'jolt.sim.runtime/resolve-controller-ops!)
+        descriptor (native-descriptor :borrow-byte-array
+                                      [(byte-array [1]) 0 1])]
+    (doseq [[label handler] invalid-borrow-handler-cases]
+      (let [routing (atom nil)
+            caught (atom nil)
+            ops (mock-controller-ops v4-descriptor nil routing)
+            data
+            (with-redefs-fn
+              {resolve-var (fn [] ops)}
+              #(ex-data-of
+                (fn []
+                  (rt/run-controlled
+                   {:ffi-mode :hybrid
+                    :ffi-handlers
+                    {[:native-operation :borrow-byte-array] handler}}
+                   (fn []
+                     (reset! caught
+                             (try
+                               ((deref routing) descriptor (fn [] :native))
+                               :not-thrown
+                               (catch :default error
+                                 (:type (ex-data error)))))
+                     :apparently-ok)))))]
+        (is (= :jolt.sim.runtime/invalid-handler-result @caught) (str label))
+        (is (= :jolt.sim.runtime/controller-error (:type data)) (str label))
+        (is (= [:handler] (mapv :route (:effect-trace data))) (str label))
+        (is (some #(= :invalid-handler-result (:ffi-error %))
+                  (:errors data))
+            (str label))))))
+
+(deftest hybrid-blocks-inexact-aliases-of-modeled-resources-directly
+  ;; Chez truncates every numeric native argument through jnum->exact. Match
+  ;; that conversion before provenance lookup, including the zero-base edge
+  ;; where a negative fraction truncates to zero.
+  (doseq [[base alias expected-native]
+          [[1042000000 1042000000.75 1042000000]
+           [0 -0.5 0]
+           ;; Above DOUBLE's exact-integer range, a ratio must not round away
+           ;; from the fake base before the provenance interval comparison.
+           [9007199254740993 (+ 9007199254740993 1/2)
+            9007199254740993]]]
+    (let [state (atom {:ffi-errors []})
+          effect-trace (atom [])
+          proceeded? (atom false)
+          controller
+          (make-ffi-routing-controller-var
+           :hybrid
+           {[:native-operation :alloc]
+            (fn [_] (rt/modeled-resource base 8))}
+           state effect-trace 3 (atom []))]
+      (is (= base
+             (controller (native-descriptor :alloc [8])
+                         (fn [] :wrong))))
+      (let [data
+            (ex-data-of
+             #(controller (native-descriptor :free [alias])
+                          (fn [] (reset! proceeded? true) nil)))]
+        (is (= :jolt.sim.runtime/modeled-resource-native-fallback (:type data)))
+        (is (false? @proceeded?))
+        (is (= alias (:argument data)))
+        (is (= expected-native (:native-argument data)))
+        (is (= [:handler :blocked] (mapv :route @effect-trace)))
+        (is (= :modeled-resource-native-fallback
+               (:ffi-error (first (:ffi-errors @state)))))))))
+
+(deftest hybrid-caught-inexact-resource-alias-remains-a-controller-error
+  (let [routing (atom nil)
+        fake-base 9007199254740993
+        alias (+ fake-base 1/2)
+        alloc (native-descriptor :alloc [8])
+        free-alias (native-descriptor :free [alias])
+        ops (mock-controller-ops v4-descriptor nil routing)
+        resolve-var (resolve 'jolt.sim.runtime/resolve-controller-ops!)
+        caught (atom nil)
+        proceeded? (atom false)
+        data
+        (with-redefs-fn
+          {resolve-var (fn [] ops)}
+          #(ex-data-of
+            (fn []
+              (rt/run-controlled
+               {:ffi-mode :hybrid
+                :ffi-handlers
+                {[:native-operation :alloc]
+                 (fn [_] (rt/modeled-resource fake-base 8))}}
+               (fn []
+                 ((deref routing) alloc (fn [] :wrong))
+                 (reset! caught
+                         (try
+                           ((deref routing) free-alias
+                            (fn [] (reset! proceeded? true) nil))
+                           :not-thrown
+                           (catch :default error
+                             (:type (ex-data error)))))
+                 :apparently-ok)))))]
+    (is (= :jolt.sim.runtime/modeled-resource-native-fallback @caught))
+    (is (= :jolt.sim.runtime/controller-error (:type data)))
+    (is (false? @proceeded?))
+    (is (= [:handler :blocked] (mapv :route (:effect-trace data))))
+    (is (= alias (get-in data [:errors 0 :error :data :argument])))
+    (is (= fake-base
+           (get-in data [:errors 0 :error :data :native-argument])))))
+
+(deftest captured-modeled-resource-tracks-the-primary-result-span
+  (let [state (atom {:ffi-errors []})
+        effect-trace (atom [])
+        ledger (atom [])
+        pointer-descriptor
+        {:kind :foreign-function :task 0 :arguments []
+         :symbol "modeled_pointer" :argument-types [] :return-type :pointer
+         :blocking? false :capture-native-error? true}
+        key (descriptor-handler-key-var pointer-descriptor)
+        controller
+        (make-ffi-routing-controller-var
+         :hybrid
+         {key (fn [_] (rt/modeled-resource [7000 5] 4))}
+         state effect-trace 3 ledger)]
+    (is (= [7000 5]
+           (controller pointer-descriptor (fn [] :wrong))))
+    (let [free (native-descriptor :free [7003])
+          proceeded? (atom false)
+          data (ex-data-of
+                #(controller free
+                             (fn [] (reset! proceeded? true) nil)))]
+      (is (= :jolt.sim.runtime/modeled-resource-native-fallback (:type data)))
+      (is (false? @proceeded?))
+      (is (= [:handler :blocked] (mapv :route @effect-trace))))))
+
+(deftest live-v4-observe-proceeds-real-ffi-and-does-not-latch-native-errors
+  (cond
+    (= 4 (abi-version))
+    (let [expected-size (ffi/sizeof :int)
+          run
+          (rt/run-controlled
+           {:ffi-mode :observe}
+           (fn []
+             [(ffi/sizeof :int)
+              (try (sim-ghost 9)
+                   :not-thrown
+                   (catch :default _ :caught))]))]
+      (is (= [expected-size :caught] (:result run)))
+      (is (= [:native :native] (mapv :route (:effect-trace run))))
+      (is (= [:sizeof :foreign-function]
+             (mapv #(if (= :native-operation (:kind %))
+                      (:operation %)
+                      (:kind %))
+                   (:effects run)))))
+
+    (rt/available?)
+    (is (= :jolt.sim.runtime/capability-unavailable
+           (:type
+            (ex-data-of
+             #(rt/run-controlled {:ffi-mode :observe} (fn [] :done))))))
+
+    :else
+    (ordinary-reports-unavailable
+     #(rt/run-controlled {:ffi-mode :observe} (fn [] :done)))))
+
+(deftest live-v4-hybrid-mixes-modeled-and-real-effects-and-blocks-provenance
+  (cond
+    (= 4 (abi-version))
+    (let [fake-base 1042000000
+          expected-size (ffi/sizeof :int)
+          mixed
+          (rt/run-controlled
+           {:ffi-mode :hybrid
+            :ffi-handlers
+            {[:native-operation :alloc]
+             (fn [_] (rt/modeled-resource fake-base))}}
+           (fn [] [(ffi/alloc 8) (ffi/sizeof :int)]))]
+      (is (= [fake-base expected-size] (:result mixed)))
+      (is (= [:handler :native] (mapv :route (:effect-trace mixed))))
+      (let [data
+            (ex-data-of
+             #(rt/run-controlled
+               {:ffi-mode :hybrid
+                :ffi-handlers
+                {[:native-operation :alloc]
+                 (fn [_] (rt/modeled-resource fake-base))}}
+               (fn []
+                 (let [pointer (ffi/alloc 8)]
+                   (try (ffi/free (+ pointer 7))
+                        (catch :default _ :caught)))
+                 :apparently-ok)))]
+        (is (= :jolt.sim.runtime/controller-error (:type data)))
+        (is (= [:handler :blocked] (mapv :route (:effect-trace data))))
+        (is (some #(= :modeled-resource-native-fallback (:ffi-error %))
+                  (:errors data)))))
+
+    (rt/available?)
+    (is (= :jolt.sim.runtime/capability-unavailable
+           (:type
+            (ex-data-of
+             #(rt/run-controlled {:ffi-mode :hybrid} (fn [] :done))))))
+
+    :else
+    (ordinary-reports-unavailable
+     #(rt/run-controlled {:ffi-mode :hybrid} (fn [] :done)))))

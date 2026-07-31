@@ -93,14 +93,15 @@
 
   ABI v4 keeps the exact descriptor-version 3 operation contract and v3 worker
   lifecycle, and adds an exact :proceed-routing descriptor plus
-  install-ffi-routing-controller!. This compatibility slice validates and
-  resolves that capability, but run-controlled intentionally continues to use
-  the established one-argument FFI controller, retaining fail-closed hermetic
-  behavior until explicit routing policy is configured by a later slice.
+  install-ffi-routing-controller!. run-controlled remains hermetic by default,
+  but an explicit :ffi-mode :observe or :hybrid installs the v4 routing
+  controller. Observe always invokes the exact native continuation. Hybrid
+  uses configured handlers first and invokes native code only on a handler miss
+  that carries no model-owned numeric resource argument.
 
-  Under v2/v3/v4, run-controlled installs the established FFI controller on
-  every run even when no handlers are configured. A native effect inside the
-  scope without a registered handler throws
+  Under v2/v3/v4, the default :hermetic mode installs the established FFI
+  controller on every run even when no handlers are configured. A native effect
+  inside the scope without a registered handler throws
   :jolt.sim.runtime/unhandled-native-effect before
   the OS is reached. Handlers are configured via :ffi-handlers, a map keyed by
   [:native-operation operation] or, for foreign functions, the canonical
@@ -116,11 +117,20 @@
   malformed-capture-result failures are latched locally so application code
   cannot catch them and make the run succeed.
 
+  ABI v4 :observe accepts no handlers and routes every effect to native code.
+  ABI v4 :hybrid requires function handlers to return substitute or
+  modeled-resource wrappers (a nil map entry remains explicit nil). A
+  modeled-resource records a per-run numeric base/span; an unhandled later call
+  carrying an integer inside that interval is blocked before proceed. Native
+  proceed exceptions keep ordinary application catch/throw semantics and are
+  not latched as controller failures.
+
   run-controlled observes task starts and lets :on-event block at :start to
   gate them. It records an ordered event log of exact {:event :task :parent}
   maps, admits one exclusive run at a time, and fails closed on controller
   errors and on tasks that outlive the controlled scope. Under v2/v3/v4 it also
-  records an ordered :effects log of every validated native interception in
+  records an ordered :effects log of every validated native interception and a
+  positionally correlated :effect-trace with :handler/:native/:blocked route in
   arrival order. Under v3/v4 it drains lifecycle-owned future workers through
   :exit/:abort before restoring controllers. Under v3/v4 an optional
   :future-schedule additionally drives the first coarse deterministic
@@ -129,7 +139,9 @@
   is NOT yet an exhaustive deterministic scheduler: it does not search
   schedules, support nested spawns or cancellation, advance virtual time,
   inject faults, or bind a unified causal trace between lifecycle events and
-  native effects. Those remain future work tracked in the project README."
+  native effects. Raw threads and executor tasks do not emit lifecycle
+  ownership events; a controlled body must join them before returning if they
+  can perform FFI. Those remain future work tracked in the project README."
   (:require [jolt.sim.future-schedule :as future-schedule]
             [jolt.sim.trace :as trace]))
 
@@ -198,10 +210,9 @@
 ;; ABI v4 keeps the v3 descriptor-version 3 FFI interception (same foreign-
 ;; function and native-operation shapes, same 15 native operations) and the v3
 ;; worker-ownership lifecycle, and additionally advertises a proceed-routing
-;; sub-map. That sub-map is accepted as a literal here only; run-controlled does
-;; not implement proceed routing, native proceed policy, or modes, and it still
-;; installs only the established one-argument FFI controller. The exact
-;; proceed-routing map is the authoritative v4 shape.
+;; sub-map. The exact map is the authoritative v4 shape. run-controlled uses
+;; the established controller for default :hermetic runs and the routing
+;; installer only for explicit :observe/:hybrid policy.
 (def ^:private v4-proceed-routing
   {:controller-arity 2
    :proceed-arity 0
@@ -704,6 +715,59 @@
      (:return-type descriptor) (:blocking? descriptor)
      (get descriptor :capture-native-error? false)]))
 
+;; Hybrid routing must distinguish an intentionally modeled value from a
+;; legacy hermetic handler result. These wrappers are deliberately ordinary
+;; immutable maps: handler packs can construct them without depending on a
+;; runtime type, while the namespaced keys keep accidental collisions remote.
+(def ^:private handler-result-kind-key ::handler-result)
+(def ^:private handler-result-value-key ::value)
+(def ^:private handler-result-span-key ::span)
+(def ^:private substitute-result-keys
+  (set [handler-result-kind-key handler-result-value-key]))
+(def ^:private modeled-resource-result-keys
+  (set [handler-result-kind-key handler-result-value-key]))
+(def ^:private modeled-resource-span-result-keys
+  (set [handler-result-kind-key handler-result-value-key
+        handler-result-span-key]))
+
+(defn substitute
+  "Marks value as an intentional non-resource substitution for hybrid routing.
+
+  Hermetic handlers may continue returning raw values; hybrid handler
+  functions must return substitute or modeled-resource so a later native
+  fallback cannot silently treat an unclassified model result as real. A nil
+  handler-map value remains the shorthand for an explicit nil substitution.
+  Known positive pointer-producing descriptors reject substitute;
+  borrow-byte-array specifically requires a positive modeled-resource because
+  the runtime cannot accept a null borrowed pointer. Handler packs must classify
+  integer handles hidden behind scalar ABI types themselves."
+  [value]
+  {handler-result-kind-key :substitute
+   handler-result-value-key value})
+
+(defn modeled-resource
+  "Marks value as a model-owned numeric resource for hybrid FFI routing.
+
+  The optional positive span declares the half-open resource interval
+  [value,value+span). Without it, alloc and borrow-byte-array infer their span
+  from the intercepted descriptor; other calls default to one resource id.
+  Hybrid native fallback truncates numeric arguments as core does and rejects
+  any result in a recorded model-owned interval. Use disjoint high fake ids in
+  handler packs."
+  ([value]
+   {handler-result-kind-key :modeled-resource
+    handler-result-value-key value})
+  ([value span]
+   (when-not (and (integer? span) (pos? span))
+     (throw
+      (ex-info
+       "modeled-resource span must be a positive integer"
+       {:type :jolt.sim.runtime/invalid-modeled-resource
+        :span span})))
+   {handler-result-kind-key :modeled-resource
+    handler-result-value-key value
+    handler-result-span-key span}))
+
 (defn- invalid-capture-result! [descriptor result]
   (throw
    (ex-info
@@ -712,23 +776,215 @@
      :descriptor descriptor
      :result result})))
 
-(defn- record-arrival! [effects-log descriptor]
-  "Atomically appends the validated descriptor in interception-arrival order.
-  Handler completion order cannot reorder this evidence."
-  (swap! effects-log conj descriptor)
+(defn- invalid-handler-result! [reason descriptor result]
+  (throw
+   (ex-info
+    "A hybrid FFI handler returned an invalid or unclassified result"
+    {:type :jolt.sim.runtime/invalid-handler-result
+     :reason reason
+     :descriptor descriptor
+     :result result})))
+
+(defn- decode-handler-result!
+  "Returns {:kind :legacy/:substitute/:modeled-resource :value value}.
+  Legacy raw function returns are accepted only by hermetic routing."
+  [ffi-mode descriptor handler-fn result]
+  (if (nil? handler-fn)
+    {:kind :substitute :value nil}
+    (let [tagged? (and (map? result)
+                       (contains? result handler-result-kind-key))
+          kind (when tagged? (get result handler-result-kind-key))
+          keys-set (when tagged? (set (keys result)))]
+      (cond
+        (= :substitute kind)
+        (if (= substitute-result-keys keys-set)
+          {:kind :substitute
+           :value (get result handler-result-value-key)}
+          (invalid-handler-result! :malformed-substitute descriptor result))
+
+        (= :modeled-resource kind)
+        (if (or (= modeled-resource-result-keys keys-set)
+                (= modeled-resource-span-result-keys keys-set))
+          (cond-> {:kind :modeled-resource
+                   :value (get result handler-result-value-key)}
+            (contains? result handler-result-span-key)
+            (assoc :span (get result handler-result-span-key)))
+          (invalid-handler-result! :malformed-modeled-resource
+                                   descriptor result))
+
+        tagged?
+        (invalid-handler-result! :unknown-wrapper-kind descriptor result)
+
+        (= :hybrid ffi-mode)
+        (invalid-handler-result! :unclassified-result descriptor result)
+
+        :else
+        {:kind :legacy :value result}))))
+
+(defn- validate-capture-result! [descriptor result]
+  (when (and (= :foreign-function (:kind descriptor))
+             (true? (:capture-native-error? descriptor))
+             (not (and (vector? result) (= 2 (count result)))))
+    (invalid-capture-result! descriptor result))
+  result)
+
+(defn- primary-handler-result [descriptor result]
+  (if (and (= :foreign-function (:kind descriptor))
+           (true? (:capture-native-error? descriptor)))
+    (first result)
+    result))
+
+(def ^:private pointer-producing-native-operations
+  #{:alloc :borrow-byte-array :string->ptr})
+
+(def ^:private pointer-ffi-types #{:pointer :void*})
+
+(defn- pointer-producing-descriptor? [descriptor]
+  (or (and (= :native-operation (:kind descriptor))
+           (or (contains? pointer-producing-native-operations
+                          (:operation descriptor))
+               (and (= :read (:operation descriptor))
+                    (contains? pointer-ffi-types
+                               (get (:arguments descriptor) 1)))))
+      (and (= :foreign-function (:kind descriptor))
+           (contains? pointer-ffi-types (:return-type descriptor)))))
+
+(defn- validate-hybrid-classification! [descriptor decoded]
+  (let [result (:value decoded)
+        primary (primary-handler-result descriptor result)
+        borrow-byte-array?
+        (and (= :native-operation (:kind descriptor))
+             (= :borrow-byte-array (:operation descriptor)))
+        fixed-native-pointer?
+        (and (= :native-operation (:kind descriptor))
+             (contains? pointer-producing-native-operations
+                        (:operation descriptor)))]
+    ;; substitute asserts that a value is not a model-owned resource. Enforce
+    ;; that assertion for the resource-producing signatures the generic ABI can
+    ;; identify. Most fixed native pointer producers permit only nil/zero as a
+    ;; non-resource result. borrow-byte-array is stricter: core requires a
+    ;; positive pointer, so every handled borrow must return a positive modeled
+    ;; resource. Pointer-typed reads/foreign calls may additionally use negative
+    ;; API failure sentinels. Every other numeric pointer must enter the
+    ;; provenance ledger.
+    (when (and borrow-byte-array?
+               (or (not= :modeled-resource (:kind decoded))
+                   (not (and (integer? primary) (pos? primary)))))
+      (invalid-handler-result!
+       :borrow-requires-positive-modeled-resource descriptor result))
+    (when (and (= :substitute (:kind decoded))
+               (pointer-producing-descriptor? descriptor)
+               (number? primary)
+               (if fixed-native-pointer?
+                 (not (zero? primary))
+                 (pos? primary)))
+      (invalid-handler-result!
+       :resource-requires-modeled-resource descriptor result)))
+  decoded)
+
+(defn- inferred-resource-span [descriptor]
+  (let [candidate
+        (when (= :native-operation (:kind descriptor))
+          (case (:operation descriptor)
+            :alloc (first (:arguments descriptor))
+            :borrow-byte-array (get (:arguments descriptor) 2)
+            nil))]
+    (if (and (integer? candidate) (pos? candidate)) candidate 1)))
+
+(defn- register-modeled-resource!
+  [resource-ledger descriptor handler-key decoded]
+  (when (= :modeled-resource (:kind decoded))
+    (let [result (:value decoded)
+          base (primary-handler-result descriptor result)
+          span (if (contains? decoded :span)
+                 (:span decoded)
+                 (inferred-resource-span descriptor))]
+      (when-not (and (integer? base) (not (neg? base)))
+        (throw
+         (ex-info
+          "modeled-resource must wrap a non-negative integer primary result"
+          {:type :jolt.sim.runtime/invalid-modeled-resource
+           :descriptor descriptor
+           :result result})))
+      (when-not (and (integer? span) (pos? span))
+        (throw
+         (ex-info
+          "modeled-resource span must be a positive integer"
+          {:type :jolt.sim.runtime/invalid-modeled-resource
+           :descriptor descriptor
+           :span span})))
+      (swap! resource-ledger conj
+             {:base base
+              :span span
+              :handler-key handler-key
+              :descriptor descriptor})))
   nil)
+
+(defn- native-truncated-number [argument]
+  ;; Core's jnum->exact is (exact (truncate n)). Keep integer precision, and
+  ;; otherwise use Jolt's exact bigint conversion, which applies the same
+  ;; truncate-toward-zero rule without routing exact ratios through DOUBLE.
+  ;; NaN/infinities cannot be made exact; leave them unmatched so core retains
+  ;; its ordinary native/application error semantics before OS execution.
+  (cond
+    (integer? argument) argument
+    (number? argument) (try
+                         (bigint argument)
+                         (catch :default _ nil))
+    :else nil))
+
+(defn- modeled-resource-hit [resource-ledger descriptor]
+  (some
+   identity
+   (map-indexed
+    (fn [argument-index argument]
+      (when-let [native-argument (native-truncated-number argument)]
+        (when-let [resource
+                   (some
+                    (fn [{:keys [base span] :as resource}]
+                      (when (and (<= base native-argument)
+                                 (< native-argument (+ base span)))
+                        resource))
+                    @resource-ledger)]
+          {:argument-index argument-index
+           :argument argument
+           :native-argument native-argument
+           :resource resource})))
+    (:arguments descriptor))))
+
+(defn- record-arrival! [effect-trace-log entry]
+  "Atomically appends one route decision in interception-arrival order.
+  Handler or native completion order cannot reorder this evidence."
+  (swap! effect-trace-log conj entry)
+  nil)
+
+(defn- effect-evidence [effect-trace-log]
+  ;; One atom snapshot guarantees positional correlation even if a caller
+  ;; violates the documented quiescence requirement with an unmanaged thread.
+  (let [effect-trace @effect-trace-log]
+    {:effects (mapv :descriptor effect-trace)
+     :effect-trace effect-trace}))
 
 (defn- record-ffi-error! [state descriptor category error]
   (swap! state update :ffi-errors conj
          (cond-> {:ffi-error category :descriptor descriptor}
            (some? error) (assoc :error error))))
 
+(defn- ffi-error-category [validated? error]
+  (if-not validated?
+    :invalid-descriptor
+    (case (:type (ex-data error))
+      :jolt.sim.runtime/invalid-handler-result :invalid-handler-result
+      :jolt.sim.runtime/invalid-modeled-resource :invalid-handler-result
+      :jolt.sim.runtime/invalid-proceed :invalid-proceed
+      :handler-error)))
+
 (defn- make-ffi-controller
   "Returns the established FFI controller fn installed under ABI v2/v3/v4. It
   validates every incoming descriptor exactly against ffi-descriptor-version,
-  records it in arrival order before lookup, and dispatches to the registered
-  handler (nil
-  handler is a valid substitution returning nil). An unhandled effect throws
+  records its handler/blocked decision in arrival order before execution, and
+  dispatches to the registered handler (nil handler is a valid substitution
+  returning nil). An unhandled effect throws
   :jolt.sim.runtime/unhandled-native-effect before any OS access. When a
   :foreign-function descriptor's :capture-native-error? is true, the handler's
   returned value must be a vector of exactly two elements; a wrong shape
@@ -736,27 +992,34 @@
   malformed-descriptor, and malformed-capture-result failures are latched in
   state so application code cannot catch the thrown exception and make the run
   succeed."
-  [handlers state effects-log ffi-descriptor-version]
+  [handlers state effect-trace-log ffi-descriptor-version]
   (fn ffi-controller [descriptor]
     (let [latched? (volatile! false)
           validated? (volatile! false)]
       (try
         (validate-ffi-descriptor! ffi-descriptor-version descriptor)
         (vreset! validated? true)
-        (record-arrival! effects-log descriptor)
         (let [key (descriptor-handler-key descriptor)
               entry (find handlers key)]
           (if entry
             (let [handler-fn (val entry)
-                  result (if (some? handler-fn)
-                           (handler-fn descriptor)
-                           nil)]
-              (when (and (= :foreign-function (:kind descriptor))
-                         (true? (:capture-native-error? descriptor))
-                         (not (and (vector? result) (= 2 (count result)))))
-                (invalid-capture-result! descriptor result))
-              result)
+                  _ (record-arrival!
+                     effect-trace-log
+                     {:mode :hermetic :route :handler
+                      :handler-key key :descriptor descriptor})
+                  raw-result (if (some? handler-fn)
+                               (handler-fn descriptor)
+                               nil)
+                  decoded (decode-handler-result!
+                           :hermetic descriptor handler-fn raw-result)
+                  result (:value decoded)]
+              (validate-capture-result! descriptor result))
             (do
+              (record-arrival!
+               effect-trace-log
+               {:mode :hermetic :route :blocked
+                :reason :unhandled-native-effect
+                :handler-key key :descriptor descriptor})
               (record-ffi-error! state descriptor :unhandled-native-effect nil)
               (vreset! latched? true)
               (throw
@@ -767,12 +1030,102 @@
                    :descriptor descriptor})))))
         (catch :default error
           (when-not @latched?
-            (let [category (if @validated? :handler-error :invalid-descriptor)]
+            (let [category (ffi-error-category @validated? error)]
               (record-ffi-error! state descriptor category error))
             (vreset! latched? true))
           (throw error))))))
 
+(defn- invalid-proceed! [descriptor proceed]
+  (throw
+   (ex-info
+    "The ABI v4 routing controller received an invalid proceed continuation"
+    {:type :jolt.sim.runtime/invalid-proceed
+     :descriptor descriptor
+     :proceed-class (str (class proceed))})))
+
+(defn- make-ffi-routing-controller
+  "Returns the ABI v4 two-argument routing controller for :observe or :hybrid.
+  Observe always invokes proceed. Hybrid dispatches configured handlers first
+  and otherwise invokes proceed only when no model-owned numeric resource is
+  present in the descriptor's top-level arguments. Native exceptions propagate
+  with ordinary application semantics and are deliberately not controller
+  errors. Policy, handler, and provenance failures remain latched fail closed."
+  [ffi-mode handlers state effect-trace-log ffi-descriptor-version
+   resource-ledger]
+  (fn ffi-routing-controller [descriptor proceed]
+    (let [latched? (volatile! false)
+          validated? (volatile! false)
+          proceeding? (volatile! false)]
+      (try
+        (validate-ffi-descriptor! ffi-descriptor-version descriptor)
+        (vreset! validated? true)
+        (when-not (fn? proceed)
+          (invalid-proceed! descriptor proceed))
+        (let [key (descriptor-handler-key descriptor)
+              entry (find handlers key)]
+          (if (= :observe ffi-mode)
+            (do
+              (record-arrival!
+               effect-trace-log
+               {:mode :observe :route :native :descriptor descriptor})
+              (vreset! proceeding? true)
+              (proceed))
+            (if entry
+              (let [handler-fn (val entry)
+                    _ (record-arrival!
+                       effect-trace-log
+                       {:mode :hybrid :route :handler
+                        :handler-key key :descriptor descriptor})
+                    raw-result (if (some? handler-fn)
+                                 (handler-fn descriptor)
+                                 nil)
+                    decoded (decode-handler-result!
+                             :hybrid descriptor handler-fn raw-result)
+                    result (validate-capture-result!
+                            descriptor (:value decoded))
+                    decoded (validate-hybrid-classification!
+                             descriptor (assoc decoded :value result))]
+                (register-modeled-resource!
+                 resource-ledger descriptor key decoded)
+                result)
+              (if-let [hit (modeled-resource-hit resource-ledger descriptor)]
+                (let [error
+                      (ex-info
+                       "A model-owned resource cannot cross into native fallback"
+                       {:type :jolt.sim.runtime/modeled-resource-native-fallback
+                        :descriptor descriptor
+                        :argument-index (:argument-index hit)
+                        :argument (:argument hit)
+                        :native-argument (:native-argument hit)
+                        :resource (:resource hit)})]
+                  (record-arrival!
+                   effect-trace-log
+                   {:mode :hybrid :route :blocked
+                    :reason :modeled-resource-native-fallback
+                    :descriptor descriptor})
+                  (record-ffi-error!
+                   state descriptor :modeled-resource-native-fallback error)
+                  (vreset! latched? true)
+                  (throw error))
+                (do
+                  (record-arrival!
+                   effect-trace-log
+                   {:mode :hybrid :route :native :descriptor descriptor})
+                  (vreset! proceeding? true)
+                  (proceed))))))
+        (catch :default error
+          ;; A proceed failure is an ordinary native/application exception. It
+          ;; must remain catchable by the unchanged body and never poison the
+          ;; controller latch. Every other routing failure is policy-owned.
+          (when (and (not @proceeding?) (not @latched?))
+            (record-ffi-error!
+             state descriptor (ffi-error-category @validated? error) error)
+            (vreset! latched? true))
+          (throw error))))))
+
 ;; ---- config / session / run -------------------------------------------
+
+(def ^:private ffi-modes #{:hermetic :observe :hybrid})
 
 (defn- close-state! [state]
   (swap! state assoc :closed? true))
@@ -960,8 +1313,8 @@
   ;; here so malformed handler config is reported before ABI resolution, but its
   ;; availability is gated by ABI version after resolution.
   (let [unknown-keys
-        (vec (sort (remove #{:on-event :ffi-handlers :drain-timeout-ms
-                             :future-schedule}
+        (vec (sort (remove #{:on-event :ffi-handlers :ffi-mode
+                             :drain-timeout-ms :future-schedule}
                            (keys config))))]
     (when (seq unknown-keys)
       (throw
@@ -978,6 +1331,20 @@
       (throw
        (ex-info "run-controlled :on-event must be a function"
                 {:type :jolt.sim.runtime/invalid-config}))))
+  (when (contains? config :ffi-mode)
+    (when-not (contains? ffi-modes (:ffi-mode config))
+      (throw
+       (ex-info
+        "run-controlled :ffi-mode must be :hermetic, :observe, or :hybrid"
+        {:type :jolt.sim.runtime/invalid-config
+         :ffi-mode (:ffi-mode config)}))))
+  (when (and (= :observe (:ffi-mode config))
+             (contains? config :ffi-handlers))
+    (throw
+     (ex-info
+      "run-controlled :observe mode does not accept :ffi-handlers"
+      {:type :jolt.sim.runtime/invalid-config
+       :ffi-mode :observe})))
   (let [drain-timeout (:drain-timeout-ms config ::absent)]
     (when-not (or (= drain-timeout ::absent)
                   (and (integer? drain-timeout) (pos? drain-timeout)))
@@ -995,14 +1362,17 @@
 
    Resolves the controller ABI (v1, v2, v3, or v4), throwing
    :jolt.sim.runtime/abi-unavailable or /abi-incompatible otherwise. Under v1 an
-   explicitly supplied :ffi-handlers key is rejected with
+   explicitly supplied FFI policy key is rejected with
    :jolt.sim.runtime/capability-unavailable. Atomically claims the single
    session so overlapping or nested runs fail closed with
    :jolt.sim.runtime/session-overlap, clears stale controller errors, then
-   installs the future lifecycle controller (and, under v2/v3/v4, the
-   established FFI controller afterwards) before running the unchanged thunk.
-   ABI v4's routing installer is validated but intentionally unused by this
-   hermetic compatibility path. Restoration is the reverse:
+   installs the future lifecycle controller and then one FFI controller under
+   v2/v3/v4 before running the unchanged thunk. :ffi-mode defaults to
+   :hermetic, which preserves the established one-argument fail-closed
+   controller. Explicit :observe/:hybrid require ABI v4 and install its routing
+   controller; observe proceeds every call, while hybrid uses registered
+   handlers and proceeds misses only after its modeled-resource guard.
+   Restoration is the reverse:
    FFI then future, both attempted on cleanup. The original body failure is
    preserved whenever cleanup succeeds.
 
@@ -1010,10 +1380,11 @@
    {:event :task :parent} maps and forwards each to the optional (:on-event
    config) on the hook thread (blocking at :start gates that task). Under
    v2/v3/v4 the FFI controller records an ordered :effects log of every
-   validated native interception in arrival order; an unhandled effect throws
-   :jolt.sim.runtime/unhandled-native-effect before OS access, and handler or
-   missing-handler failures are latched locally so application code cannot catch
-   them and make the run succeed.
+   validated native interception plus correlated :effect-trace route evidence.
+   Hermetic unhandled effects throw :jolt.sim.runtime/unhandled-native-effect
+   before OS access. Handler and routing-policy failures are latched locally so
+   application code cannot catch them and make the run succeed; native proceed
+   exceptions are ordinary body exceptions and are not latched.
 
    Under v3/v4 a task owns a worker from :spawn until exactly one :exit/:abort;
    :finish/:cancel settle its future but do not release ownership, so after the
@@ -1022,6 +1393,11 @@
    restoration. If a worker cannot drain, the controller is left installed and
    the session is poisoned (:jolt.sim.runtime/session-poisoned on the next run)
    rather than restored unsafely.
+
+   This ownership guarantee covers hooked ordinary futures only. Raw threads
+   and executor tasks are not visible to the lifecycle ABI and must be joined
+   before thunk returns if they can perform FFI; run-controlled makes no safe
+   restoration or complete-trace claim for an unmanaged outliving thread.
 
    After the body returns, fails closed with :jolt.sim.runtime/controller-error
    if a callback or handler failed (including a supervisor-latched terminal
@@ -1047,23 +1423,37 @@
 
    On success returns {:result value :events vector-of-maps :capabilities
    descriptor}. Under v2/v3/v4 the map also includes :effects, a vector of
-   exact validated descriptors in interception-arrival order; their arguments
-   are live in-memory evidence and may contain mutable objects such as byte
-   arrays. Under v1 :effects is omitted. When :future-schedule is supplied the
-   map also includes :schedule-events, the scheduler's deterministic logical
-   evidence log of alternating [:admit ordinal] and [:complete ordinal] pairs.
-   Raw lifecycle arrival order and task ids remain only in the unchanged
-   compatibility :events field."
+   exact validated descriptors in interception-arrival order, and
+   :effect-trace, whose entries carry the exact descriptor, mode, and actual
+   :handler/:native/:blocked route. Descriptor arguments are live in-memory
+   evidence and may contain mutable objects such as byte arrays. Under v1 both
+   fields are omitted. When :future-schedule is supplied the map also includes
+   :schedule-events, the scheduler's deterministic logical evidence log of
+   alternating [:admit ordinal] and [:complete ordinal] pairs. Raw lifecycle
+   arrival order and task ids remain only in the unchanged compatibility
+   :events field."
   [config thunk]
   (validate-run-arguments! config thunk)
   (let [ops (resolve-controller-ops!)
         abi-version (:abi-version ops)
-        on-event (:on-event config)]
-    (when (and (= abi-version 1) (contains? config :ffi-handlers))
+        on-event (:on-event config)
+        ffi-mode (get config :ffi-mode :hermetic)]
+    (when (and (= abi-version 1)
+               (or (contains? config :ffi-handlers)
+                   (contains? config :ffi-mode)))
       (throw
        (ex-info
-        "run-controlled :ffi-handlers requires an ABI v2, v3, or v4 sim image"
+        "run-controlled FFI policy requires an ABI v2, v3, or v4 sim image"
         {:type :jolt.sim.runtime/capability-unavailable})))
+    (when (and (contains? #{:observe :hybrid} ffi-mode)
+               (not= 4 abi-version))
+      (throw
+       (ex-info
+        "run-controlled :observe and :hybrid modes require an ABI v4 sim image"
+        {:type :jolt.sim.runtime/capability-unavailable
+         :ffi-mode ffi-mode
+         :required-abi-version 4
+         :actual-abi-version abi-version})))
     (when (and (not (#{3 4} abi-version))
                (contains? config :drain-timeout-ms))
       (throw
@@ -1095,13 +1485,20 @@
                  :local-errors []
                  :ffi-errors []
                  :closed? false})
-          effects-log (atom [])
+          effect-trace-log (atom [])
+          resource-ledger (atom [])
           controller (make-controller effective-on-event state abi-version)
           ffi-capable? (#{2 3 4} abi-version)
-          ffi-controller (when ffi-capable?
-                           (make-ffi-controller
-                            ffi-handlers state effects-log
-                            (get-in (:descriptor ops) [:ffi-interception :descriptor-version])))
+          ffi-descriptor-version
+          (get-in (:descriptor ops) [:ffi-interception :descriptor-version])
+          ffi-controller
+          (when ffi-capable?
+            (if (= :hermetic ffi-mode)
+              (make-ffi-controller
+               ffi-handlers state effect-trace-log ffi-descriptor-version)
+              (make-ffi-routing-controller
+               ffi-mode ffi-handlers state effect-trace-log
+               ffi-descriptor-version resource-ledger)))
           drain-timeout-ms (or (:drain-timeout-ms config) 2000)]
       (when-not (compare-and-set! session-state :idle :active)
         (let [status @session-state]
@@ -1123,7 +1520,10 @@
                    ((:install-controller! ops) controller))
           (when ffi-controller
             (vreset! ffi-token
-                     ((:install-ffi-controller! ops) ffi-controller)))
+                     ((if (= :hermetic ffi-mode)
+                        (:install-ffi-controller! ops)
+                        (:install-ffi-routing-controller! ops))
+                      ffi-controller)))
           (let [effective-thunk
                 (if schedule ((:wrap-thunk schedule) thunk) thunk)
                 outcome
@@ -1146,6 +1546,8 @@
                              (v3-drained? snapshot))
                 latched ((:controller-errors ops))
                 errors (controller-errors snapshot latched)
+                ffi-evidence
+                (when ffi-capable? (effect-evidence effect-trace-log))
                 schedule-failure
                 (when schedule ((:failure schedule)))
                 gate-aborted-body?
@@ -1182,7 +1584,7 @@
                 (cond-> {:type :jolt.sim.runtime/controller-error
                          :errors errors
                          :events (:events snapshot)}
-                  ffi-capable? (assoc :effects @effects-log))))
+                  ffi-capable? (merge ffi-evidence))))
 
               (and (not (:ok? outcome))
                    (or (not (#{3 4} abi-version)) drained?))
@@ -1200,7 +1602,7 @@
                           :events (:events snapshot)
                           :capabilities (:descriptor ops)}]
                 (cond-> base
-                  ffi-capable? (assoc :effects @effects-log)
+                  ffi-capable? (merge ffi-evidence)
                   schedule (assoc :schedule-events ((:evidence schedule)))))))
           (finally
             ;; Closing before restore rejects late lifecycle starts. Under v3/v4
