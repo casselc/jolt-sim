@@ -43,6 +43,13 @@
                                           :write-bytes :read-array :write-array
                                           :ptr->string :string->ptr]}})
 
+;; ABI v3 with :ffi-interception :descriptor-version 2 is otherwise identical
+;; to v3-descriptor; only the nested FFI descriptor version changes.
+(def v3-descriptor2
+  (assoc v3-descriptor
+         :ffi-interception
+         (assoc (:ffi-interception v3-descriptor) :descriptor-version 2)))
+
 ;; Binding is safe on every image because native symbol resolution is lazy.
 ;; Calling this nonexistent symbol is safe only under the ABI v2 controller,
 ;; where the emitted sim branch must intercept before resolution.
@@ -112,6 +119,14 @@
   (let [v (abi-version)]
     (if (#{2 3} v) :ffi v)))
 
+(defn- ffi-descriptor-version
+  "Returns the running image's nested :ffi-interception :descriptor-version
+  (1 or 2), or nil when the image is ordinary or its descriptor carries no FFI
+  capability at all (ABI v1)."
+  []
+  (when (rt/available?)
+    (get-in (rt/capabilities) [:ffi-interception :descriptor-version])))
+
 (defn- with-close-signal
   "Runs thunk while wrapping the adapter's private close transition. The
   promise is delivered only after state has become closed, making late-event
@@ -136,7 +151,8 @@
   (if (rt/available?)
     (do
       (is (true? (rt/available?)))
-      (is (contains? #{v1-descriptor v2-descriptor v3-descriptor}
+      (is (contains? #{v1-descriptor v2-descriptor
+                       v3-descriptor v3-descriptor2}
                      (rt/capabilities))))
     (ordinary-reports-unavailable rt/capabilities)))
 
@@ -193,7 +209,9 @@
                   {}
                   (fn [] (let [worker (future :spawned)] @worker) :done))]
       (is (= :done (:result result)))
-      (is (contains? #{v1-descriptor v2-descriptor v3-descriptor} (:capabilities result)))
+      (is (contains? #{v1-descriptor v2-descriptor
+                       v3-descriptor v3-descriptor2}
+                     (:capabilities result)))
       (is (and (vector? (:events result))
                (seq (:events result))
                (every? #(= #{:event :task :parent} (set (keys %)))
@@ -637,6 +655,217 @@
     nil (ordinary-reports-unavailable
          #(rt/run-controlled {} (fn [] :done)))))
 
+;; ---- ABI v3 :ffi-interception :descriptor-version 2 -------------------
+;;
+;; descriptor-version 2 adds a Boolean :capture-native-error? to every
+;; :foreign-function descriptor and extends the internal handler identity to
+;; six elements. Most of this logic is pure config/descriptor validation, so
+;; it is exercised directly against the private helpers -- independent of
+;; which ABI/descriptor-version the running image actually advertises -- with
+;; one additional test gated on the live descriptor-version for when a v3
+;; descriptor-version-2 image is present.
+
+(def ^:private validate-descriptor-var
+  (resolve 'jolt.sim.runtime/validate-descriptor))
+
+(def ^:private validate-ffi-descriptor-var
+  (resolve 'jolt.sim.runtime/validate-ffi-descriptor!))
+
+(def ^:private validate-ffi-handlers-var
+  (resolve 'jolt.sim.runtime/validate-ffi-handlers!))
+
+(def ^:private descriptor-handler-key-var
+  (resolve 'jolt.sim.runtime/descriptor-handler-key))
+
+(def ^:private make-ffi-controller-var
+  (resolve 'jolt.sim.runtime/make-ffi-controller))
+
+(deftest exact-capability-descriptors-are-accepted-and-mismatches-rejected
+  ;; Pure structural validation, independent of the running image.
+  (is (= v1-descriptor (validate-descriptor-var v1-descriptor)))
+  (is (= v2-descriptor (validate-descriptor-var v2-descriptor)))
+  (is (= v3-descriptor (validate-descriptor-var v3-descriptor)))
+  (is (= v3-descriptor2 (validate-descriptor-var v3-descriptor2)))
+  ;; descriptor-version 2 is a v3-only combination; v2 nesting it is rejected.
+  (let [bad (assoc-in v2-descriptor [:ffi-interception :descriptor-version] 2)
+        data (ex-data-of #(validate-descriptor-var bad))]
+    (is (= :jolt.sim.runtime/abi-incompatible (:type data))))
+  ;; An unknown descriptor-version under v3 is rejected.
+  (let [bad (assoc-in v3-descriptor [:ffi-interception :descriptor-version] 3)
+        data (ex-data-of #(validate-descriptor-var bad))]
+    (is (= :jolt.sim.runtime/abi-incompatible (:type data))))
+  ;; A v3/descriptor-version-2 descriptor missing an unrelated outer key is
+  ;; rejected too.
+  (let [bad (dissoc v3-descriptor2 :controller-errors)
+        data (ex-data-of #(validate-descriptor-var bad))]
+    (is (= :jolt.sim.runtime/abi-incompatible (:type data)))))
+
+(def ^:private base-foreign-function-descriptor
+  {:kind :foreign-function :task 0 :arguments [0]
+   :symbol "s" :argument-types [:int] :return-type :int :blocking? false})
+
+(deftest ffi-descriptor-shape-is-exact-per-descriptor-version
+  ;; descriptor-version 1 accepts exactly the base key set.
+  (is (= base-foreign-function-descriptor
+         (validate-ffi-descriptor-var 1 base-foreign-function-descriptor)))
+  ;; ...and rejects the descriptor-version 2 extra key as unexpected.
+  (let [extra (assoc base-foreign-function-descriptor
+                      :capture-native-error? false)
+        data (ex-data-of #(validate-ffi-descriptor-var 1 extra))]
+    (is (= :jolt.sim.runtime/invalid-ffi-descriptor (:type data)))
+    (is (= :foreign-function-key-mismatch (:reason data))))
+  ;; descriptor-version 2 requires the extra Boolean key...
+  (let [v2d (assoc base-foreign-function-descriptor
+                    :capture-native-error? true)]
+    (is (= v2d (validate-ffi-descriptor-var 2 v2d))))
+  ;; ...and rejects its absence.
+  (let [data (ex-data-of
+              #(validate-ffi-descriptor-var 2 base-foreign-function-descriptor))]
+    (is (= :jolt.sim.runtime/invalid-ffi-descriptor (:type data)))
+    (is (= :foreign-function-key-mismatch (:reason data))))
+  ;; ...and rejects a non-Boolean value for it.
+  (let [bad (assoc base-foreign-function-descriptor
+                    :capture-native-error? "nope")
+        data (ex-data-of #(validate-ffi-descriptor-var 2 bad))]
+    (is (= :invalid-capture-native-error (:reason data))))
+  ;; Argument metadata and live arguments describe the same call arity.
+  (let [bad (assoc base-foreign-function-descriptor :arguments [])
+        data (ex-data-of #(validate-ffi-descriptor-var 1 bad))]
+    (is (= :argument-count-mismatch (:reason data))))
+  ;; :native-operation descriptors are unaffected by descriptor-version.
+  (let [op-descriptor {:kind :native-operation :task 0 :arguments []
+                       :operation :sizeof}]
+    (is (= op-descriptor (validate-ffi-descriptor-var 1 op-descriptor)))
+    (is (= op-descriptor (validate-ffi-descriptor-var 2 op-descriptor))))
+  ;; The private boundary also fails closed if called with a version no exact
+  ;; capability descriptor can advertise.
+  (let [data (ex-data-of
+              #(validate-ffi-descriptor-var
+                3 base-foreign-function-descriptor))]
+    (is (= :jolt.sim.runtime/invalid-ffi-descriptor (:type data)))
+    (is (= :unsupported-descriptor-version (:reason data)))))
+
+(deftest ffi-handler-keys-accept-legacy-five-element-and-canonical-six-element-forms
+  (let [five-key [:foreign-function "s" [:int] :int false]
+        handler (fn [_] :ok)
+        canonical (validate-ffi-handlers-var {five-key handler})]
+    (is (= {(conj five-key false) handler} canonical)))
+  (let [six-key [:foreign-function "s" [:int] :int false true]
+        handler (fn [_] :ok)]
+    (is (= {six-key handler} (validate-ffi-handlers-var {six-key handler})))))
+
+(deftest malformed-six-element-handler-keys-are-rejected
+  (let [bad-capture [:foreign-function "s" [:int] :int false "yes"]
+        data (ex-data-of
+              #(validate-ffi-handlers-var {bad-capture (fn [_])}))]
+    (is (= :jolt.sim.runtime/invalid-config (:type data)))
+    (is (= bad-capture (:handler-key data))))
+  (let [too-long [:foreign-function "s" [:int] :int false true true]
+        data (ex-data-of
+              #(validate-ffi-handlers-var {too-long (fn [_])}))]
+    (is (= :jolt.sim.runtime/invalid-config (:type data)))))
+
+(deftest ambiguous-legacy-and-six-element-false-handler-keys-are-rejected
+  (let [five-key [:foreign-function "s" [:int] :int false]
+        six-key (conj five-key false)
+        data (ex-data-of
+              #(validate-ffi-handlers-var {five-key (fn [_] :a)
+                                           six-key (fn [_] :b)}))]
+    (is (= :jolt.sim.runtime/invalid-config (:type data)))
+    (is (= [six-key] (:ambiguous-keys data))))
+  ;; The legacy key together with the six-element-*true* key is a distinct
+  ;; signature (different capture identity), so it is never ambiguous.
+  (let [five-key [:foreign-function "s" [:int] :int false]
+        six-key-true (conj five-key true)
+        canonical (validate-ffi-handlers-var {five-key (fn [_] :a)
+                                              six-key-true (fn [_] :b)})]
+    (is (= #{(conj five-key false) six-key-true} (set (keys canonical))))))
+
+(deftest v1-style-descriptor-without-capture-key-matches-canonical-false-handler-identity
+  (let [five-key [:foreign-function "s" [:int] :int false]
+        handlers (validate-ffi-handlers-var {five-key (fn [_] :matched)})
+        state (atom {:ffi-errors []})
+        effects (atom [])
+        controller (make-ffi-controller-var handlers state effects 1)]
+    (is (= (conj five-key false)
+           (descriptor-handler-key-var base-foreign-function-descriptor)))
+    (is (= :matched (controller base-foreign-function-descriptor)))
+    (is (empty? (:ffi-errors @state)))))
+
+(deftest same-signature-scalar-and-captured-handlers-do-not-collide
+  (let [scalar-descriptor (assoc base-foreign-function-descriptor
+                                 :capture-native-error? false)
+        captured-descriptor (assoc base-foreign-function-descriptor
+                                   :capture-native-error? true)
+        scalar-key (descriptor-handler-key-var scalar-descriptor)
+        captured-key (descriptor-handler-key-var captured-descriptor)
+        state (atom {:ffi-errors []})
+        effects (atom [])
+        controller (make-ffi-controller-var
+                    {scalar-key (fn [_] 42)
+                     captured-key (fn [_] [42 nil])}
+                    state effects 2)]
+    (is (not= scalar-key captured-key))
+    (is (= 42 (controller scalar-descriptor)))
+    (is (= [42 nil] (controller captured-descriptor)))
+    (is (empty? (:ffi-errors @state)))))
+
+(deftest captured-handler-must-return-a-two-element-vector
+  (let [descriptor (assoc base-foreign-function-descriptor
+                          :capture-native-error? true)
+        key (descriptor-handler-key-var descriptor)]
+    (doseq [bad [42 [1] [1 2 3] '(1 2) nil]]
+      (let [state (atom {:ffi-errors []})
+            effects (atom [])
+            controller (make-ffi-controller-var
+                        {key (fn [_] bad)} state effects 2)
+            data (ex-data-of #(controller descriptor))]
+        (is (= :jolt.sim.runtime/invalid-capture-result (:type data))
+            (pr-str bad))
+        (is (= 1 (count (:ffi-errors @state))) (pr-str bad))
+        (is (= :handler-error (:ffi-error (first (:ffi-errors @state))))
+            (pr-str bad))))
+    ;; A wrong-shape captured return is latched even when application code
+    ;; catches the propagated exception.
+    (let [state (atom {:ffi-errors []})
+          effects (atom [])
+          controller (make-ffi-controller-var
+                      {key (fn [_] :not-a-vector)} state effects 2)
+          swallowed (try (controller descriptor) :not-thrown
+                        (catch :default _ :caught))]
+      (is (= :caught swallowed))
+      (is (= 1 (count (:ffi-errors @state)))))
+    ;; A two-element vector is accepted.
+    (let [state (atom {:ffi-errors []})
+          effects (atom [])
+          controller (make-ffi-controller-var
+                      {key (fn [_] [1 2])} state effects 2)]
+      (is (= [1 2] (controller descriptor)))
+      (is (empty? (:ffi-errors @state))))))
+
+(deftest original-descriptor-is-preserved-in-effects-and-handler-argument
+  (let [descriptor (assoc base-foreign-function-descriptor
+                          :arguments [7] :capture-native-error? true)
+        key (descriptor-handler-key-var descriptor)
+        seen (atom nil)
+        state (atom {:ffi-errors []})
+        effects (atom [])
+        controller (make-ffi-controller-var
+                    {key (fn [d] (reset! seen d) [1 2])}
+                    state effects 2)]
+    (controller descriptor)
+    (is (identical? descriptor @seen))
+    (is (= [descriptor] @effects))))
+
+(deftest v3-descriptor-version-2-is-accepted-when-advertised
+  (cond
+    (= 2 (ffi-descriptor-version))
+    (is (= v3-descriptor2 (rt/capabilities)))
+    (rt/available?)
+    (is (contains? #{1 nil} (ffi-descriptor-version)))
+    :else
+    (ordinary-reports-unavailable rt/capabilities)))
+
 ;; ---- ABI v3 worker-ownership lifecycle --------------------------------
 ;;
 ;; v3 adds :exit/:abort so cleanup can wait for real worker release. These
@@ -651,7 +880,8 @@
                   {}
                   (fn [] (let [worker (future :released)] @worker) :done))]
       (is (= :done (:result result)))
-      (is (= v3-descriptor (:capabilities result)))
+      (is (contains? #{v3-descriptor v3-descriptor2}
+                     (:capabilities result)))
       (is (= [:spawn :start :finish :exit]
              (mapv :event (:events result))))
       (is (apply = (map :task (:events result)))))

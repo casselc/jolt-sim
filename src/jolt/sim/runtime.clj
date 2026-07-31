@@ -70,14 +70,28 @@
                                             :write-bytes :read-array :write-array
                                             :ptr->string :string->ptr]}}
 
+  ABI v3 may additionally expose :ffi-interception :descriptor-version 2 in
+  place of 1. Under descriptor-version 2 every :foreign-function descriptor
+  carries one additional Boolean key, :capture-native-error?; native-operation
+  descriptors are unchanged. v1, v2 (always descriptor-version 1), and v3 with
+  descriptor-version 1 remain exact as documented above.
+
   Under v2/v3, run-controlled installs the FFI controller on every run even when
   no handlers are configured. A native effect inside the scope that has no
   registered handler throws :jolt.sim.runtime/unhandled-native-effect before
   the OS is reached. Handlers are configured via :ffi-handlers, a map keyed by
-  [:native-operation operation] or [:foreign-function symbol argument-types
-  return-type blocking?]; map membership defines handled, so a nil value is a
-  valid substitute. Handler and missing-handler failures are latched locally so
-  application code cannot catch them and make the run succeed.
+  [:native-operation operation] or, for foreign functions, the canonical
+  six-element [:foreign-function symbol argument-types return-type blocking?
+  capture?]. The legacy five-element key (without capture?) is also accepted
+  and canonicalizes to capture? false; supplying both the legacy key and its
+  equivalent six-element-false key for the same signature is rejected as an
+  ambiguous config rather than silently overwritten. Map membership (under the
+  canonical key) defines handled, so a nil value is a valid substitute. When
+  capture? is true, the registered handler's returned public value must be a
+  vector of exactly two elements; a malformed shape throws
+  :jolt.sim.runtime/invalid-capture-result. Handler, missing-handler, and
+  malformed-capture-result failures are latched locally so application code
+  cannot catch them and make the run succeed.
 
   run-controlled observes task starts and lets :on-event block at :start to
   gate them. It records an ordered event log of exact {:event :task :parent}
@@ -133,6 +147,14 @@
                                           :read :write :sizeof :read-bytes
                                           :write-bytes :read-array :write-array
                                           :ptr->string :string->ptr]}})
+
+;; ABI v3 with :ffi-interception :descriptor-version 2 is otherwise identical
+;; to v3-descriptor; only the nested FFI descriptor version changes, which
+;; adds :capture-native-error? to every :foreign-function descriptor.
+(def ^:private v3-descriptor2
+  (assoc v3-descriptor
+         :ffi-interception
+         (assoc (:ffi-interception v3-descriptor) :descriptor-version 2)))
 
 (def ^:private v1-events
   (set (:events v1-descriptor)))
@@ -209,11 +231,12 @@
                :capabilities-class (str (class caps-value))})))
   (when-not (or (= v1-descriptor caps-value)
                 (= v2-descriptor caps-value)
-                (= v3-descriptor caps-value))
+                (= v3-descriptor caps-value)
+                (= v3-descriptor2 caps-value))
     (throw
      (ex-info "jolt.internal.sim exposes an incompatible controller ABI"
               {:type :jolt.sim.runtime/abi-incompatible
-               :expected [v1-descriptor v2-descriptor v3-descriptor]
+               :expected [v1-descriptor v2-descriptor v3-descriptor v3-descriptor2]
                :actual caps-value})))
   caps-value)
 
@@ -508,10 +531,23 @@
 (def ^:private foreign-function-keys
   #{:kind :task :arguments :symbol :argument-types :return-type :blocking?})
 
+;; Descriptor-version 2 :foreign-function descriptors carry exactly the
+;; descriptor-version 1 keys plus :capture-native-error?.
+(def ^:private foreign-function-keys-v2
+  (conj foreign-function-keys :capture-native-error?))
+
 (def ^:private native-operation-keys
   #{:kind :task :arguments :operation})
 
-(defn- validate-ffi-descriptor! [descriptor]
+(defn- validate-ffi-descriptor!
+  "Validates a single intercepted call descriptor exactly against the running
+  image's nested FFI descriptor-version (1 or 2). Version 2 requires
+  :foreign-function descriptors to additionally carry a Boolean
+  :capture-native-error?; :native-operation descriptors are unaffected by
+  descriptor-version."
+  [ffi-descriptor-version descriptor]
+  (when-not (contains? #{1 2} ffi-descriptor-version)
+    (invalid-ffi-descriptor! :unsupported-descriptor-version descriptor))
   (when-not (map? descriptor)
     (invalid-ffi-descriptor! :not-a-map descriptor))
   (let [{:keys [kind task arguments]} descriptor]
@@ -524,17 +560,26 @@
     (case kind
       :foreign-function
       (do
-        (when-not (= foreign-function-keys (set (keys descriptor)))
+        (when-not (= (if (= ffi-descriptor-version 2)
+                       foreign-function-keys-v2
+                       foreign-function-keys)
+                     (set (keys descriptor)))
           (invalid-ffi-descriptor! :foreign-function-key-mismatch descriptor))
         (when-not (string? (:symbol descriptor))
           (invalid-ffi-descriptor! :invalid-symbol descriptor))
         (when-not (and (vector? (:argument-types descriptor))
                        (every? keyword? (:argument-types descriptor)))
           (invalid-ffi-descriptor! :invalid-argument-types descriptor))
+        (when-not (= (count (:argument-types descriptor))
+                     (count arguments))
+          (invalid-ffi-descriptor! :argument-count-mismatch descriptor))
         (when-not (keyword? (:return-type descriptor))
           (invalid-ffi-descriptor! :invalid-return-type descriptor))
         (when-not (boolean? (:blocking? descriptor))
-          (invalid-ffi-descriptor! :invalid-blocking descriptor)))
+          (invalid-ffi-descriptor! :invalid-blocking descriptor))
+        (when (= ffi-descriptor-version 2)
+          (when-not (boolean? (:capture-native-error? descriptor))
+            (invalid-ffi-descriptor! :invalid-capture-native-error descriptor))))
       :native-operation
       (do
         (when-not (= native-operation-keys (set (keys descriptor)))
@@ -543,13 +588,27 @@
           (invalid-ffi-descriptor! :unknown-operation descriptor))))
     descriptor))
 
-(defn- descriptor-handler-key [descriptor]
+(defn- descriptor-handler-key
+  "Computes the canonical six-element handler identity for a :foreign-function
+  descriptor. A descriptor-version 1 descriptor never carries
+  :capture-native-error?; its absence is treated as false so v1-style
+  descriptors still match a canonical capture?-false handler key."
+  [descriptor]
   (case (:kind descriptor)
     :native-operation
     [:native-operation (:operation descriptor)]
     :foreign-function
     [:foreign-function (:symbol descriptor) (:argument-types descriptor)
-     (:return-type descriptor) (:blocking? descriptor)]))
+     (:return-type descriptor) (:blocking? descriptor)
+     (get descriptor :capture-native-error? false)]))
+
+(defn- invalid-capture-result! [descriptor result]
+  (throw
+   (ex-info
+    "A captured :foreign-function handler must return a vector of exactly two elements"
+    {:type :jolt.sim.runtime/invalid-capture-result
+     :descriptor descriptor
+     :result result})))
 
 (defn- record-arrival! [effects-log descriptor]
   "Atomically appends the validated descriptor in interception-arrival order.
@@ -564,19 +623,22 @@
 
 (defn- make-ffi-controller
   "Returns the FFI controller fn installed under ABI v2/v3. It validates every
-  incoming descriptor exactly, records it in arrival order before lookup, and
-  dispatches to the registered handler (nil handler is a valid substitution
-  returning nil). An unhandled effect throws
-  :jolt.sim.runtime/unhandled-native-effect before any OS access.
-  Handler, missing-handler, and malformed-descriptor failures are latched in
+  incoming descriptor exactly against ffi-descriptor-version, records it in
+  arrival order before lookup, and dispatches to the registered handler (nil
+  handler is a valid substitution returning nil). An unhandled effect throws
+  :jolt.sim.runtime/unhandled-native-effect before any OS access. When a
+  :foreign-function descriptor's :capture-native-error? is true, the handler's
+  returned value must be a vector of exactly two elements; a wrong shape
+  throws :jolt.sim.runtime/invalid-capture-result. Handler, missing-handler,
+  malformed-descriptor, and malformed-capture-result failures are latched in
   state so application code cannot catch the thrown exception and make the run
   succeed."
-  [handlers state effects-log]
+  [handlers state effects-log ffi-descriptor-version]
   (fn ffi-controller [descriptor]
     (let [latched? (volatile! false)
           validated? (volatile! false)]
       (try
-        (validate-ffi-descriptor! descriptor)
+        (validate-ffi-descriptor! ffi-descriptor-version descriptor)
         (vreset! validated? true)
         (record-arrival! effects-log descriptor)
         (let [key (descriptor-handler-key descriptor)
@@ -586,6 +648,10 @@
                   result (if (some? handler-fn)
                            (handler-fn descriptor)
                            nil)]
+              (when (and (= :foreign-function (:kind descriptor))
+                         (true? (:capture-native-error? descriptor))
+                         (not (and (vector? result) (= 2 (count result)))))
+                (invalid-capture-result! descriptor result))
               result)
             (do
               (record-ffi-error! state descriptor :unhandled-native-effect nil)
@@ -675,6 +741,8 @@
          (contains? native-operations (nth key 1)))
     nil
 
+    ;; Legacy five-element :foreign-function key, accepted for backward
+    ;; compatibility and canonicalized to capture? false.
     (and (vector? key)
          (= 5 (count key))
          (= :foreign-function (nth key 0))
@@ -685,6 +753,18 @@
          (boolean? (nth key 4)))
     nil
 
+    ;; Canonical six-element :foreign-function key.
+    (and (vector? key)
+         (= 6 (count key))
+         (= :foreign-function (nth key 0))
+         (string? (nth key 1))
+         (vector? (nth key 2))
+         (every? keyword? (nth key 2))
+         (keyword? (nth key 3))
+         (boolean? (nth key 4))
+         (boolean? (nth key 5)))
+    nil
+
     :else
     (throw
      (ex-info
@@ -692,7 +772,24 @@
       {:type :jolt.sim.runtime/invalid-config
        :handler-key key}))))
 
-(defn- validate-ffi-handlers! [handlers]
+(defn- canonical-handler-key
+  "Canonicalizes a validated :ffi-handlers key to the six-element internal
+  [:foreign-function symbol argument-types return-type blocking? capture?]
+  identity. A legacy five-element foreign-function key has no capture? term
+  and canonicalizes to false; every other validated key (native-operation, or
+  an already six-element foreign-function key) passes through unchanged."
+  [key]
+  (if (and (= 5 (count key)) (= :foreign-function (nth key 0)))
+    (conj key false)
+    key))
+
+(defn- validate-ffi-handlers!
+  "Validates every :ffi-handlers key/value pair, then returns the map
+  canonicalized to six-element :foreign-function keys. Rejects a config that
+  supplies both a legacy five-element key and its equivalent six-element
+  capture?-false key for the same signature, since that config cannot express
+  which handler applies without silently overwriting the other."
+  [handlers]
   (when-not (map? handlers)
     (throw
      (ex-info "run-controlled :ffi-handlers must be a map"
@@ -705,7 +802,17 @@
         "run-controlled :ffi-handlers entry must be nil or a function"
         {:type :jolt.sim.runtime/invalid-config
          :handler-key key}))))
-  handlers)
+  (let [groups (group-by (fn [[key _]] (canonical-handler-key key)) handlers)
+        ambiguous (into {} (filter #(> (count (val %)) 1) groups))]
+    (when (seq ambiguous)
+      (throw
+       (ex-info
+        "run-controlled :ffi-handlers supplies both a legacy five-element key and its equivalent six-element key for the same signature"
+        {:type :jolt.sim.runtime/invalid-config
+         :ambiguous-keys (vec (keys ambiguous))})))
+    (into {}
+          (map (fn [[key value]] [(canonical-handler-key key) value]))
+          handlers)))
 
 (defn- restore-controllers!
   "Restores both installed controllers in reverse order, attempting the future
@@ -856,7 +963,9 @@
        (ex-info
         "run-controlled :future-schedule requires an ABI v3 sim image"
         {:type :jolt.sim.runtime/capability-unavailable})))
-    (let [ffi-handlers (or (:ffi-handlers config) {})
+    (let [ffi-handlers (if (contains? config :ffi-handlers)
+                         (validate-ffi-handlers! (:ffi-handlers config))
+                         {})
           schedule (when-let [future-schedule (:future-schedule config)]
                      (future-schedule/scheduler future-schedule on-event))
           effective-on-event (if schedule (:on-event schedule) on-event)
@@ -878,7 +987,8 @@
           ffi-capable? (#{2 3} abi-version)
           ffi-controller (when ffi-capable?
                            (make-ffi-controller
-                            ffi-handlers state effects-log))
+                            ffi-handlers state effects-log
+                            (get-in (:descriptor ops) [:ffi-interception :descriptor-version])))
           drain-timeout-ms (or (:drain-timeout-ms config) 2000)]
       (when-not (compare-and-set! session-state :idle :active)
         (let [status @session-state]
