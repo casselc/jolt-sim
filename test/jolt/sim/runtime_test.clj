@@ -50,6 +50,21 @@
          :ffi-interception
          (assoc (:ffi-interception v3-descriptor) :descriptor-version 2)))
 
+;; ABI v3 with :ffi-interception :descriptor-version 3 keeps the
+;; descriptor-version 2 foreign-function key set and :capture-native-error?
+;; semantics and extends the ordered :native-operations list to 15 entries by
+;; inserting :borrow-byte-array and :release-byte-array after :write-array and
+;; before :ptr->string.
+(def v3-descriptor3
+  (-> v3-descriptor2
+      (assoc-in [:ffi-interception :descriptor-version] 3)
+      (assoc-in [:ffi-interception :native-operations]
+                [:load-library :loaded? :alloc :free
+                 :read :write :sizeof :read-bytes
+                 :write-bytes :read-array :write-array
+                 :borrow-byte-array :release-byte-array
+                 :ptr->string :string->ptr])))
+
 ;; Binding is safe on every image because native symbol resolution is lazy.
 ;; Calling this nonexistent symbol is safe only under the ABI v2 controller,
 ;; where the emitted sim branch must intercept before resolution.
@@ -152,7 +167,7 @@
     (do
       (is (true? (rt/available?)))
       (is (contains? #{v1-descriptor v2-descriptor
-                       v3-descriptor v3-descriptor2}
+                       v3-descriptor v3-descriptor2 v3-descriptor3}
                      (rt/capabilities))))
     (ordinary-reports-unavailable rt/capabilities)))
 
@@ -210,8 +225,8 @@
                   (fn [] (let [worker (future :spawned)] @worker) :done))]
       (is (= :done (:result result)))
       (is (contains? #{v1-descriptor v2-descriptor
-                       v3-descriptor v3-descriptor2}
-                     (:capabilities result)))
+                       v3-descriptor v3-descriptor2 v3-descriptor3}
+                      (:capabilities result)))
       (is (and (vector? (:events result))
                (seq (:events result))
                (every? #(= #{:event :task :parent} (set (keys %)))
@@ -686,13 +701,36 @@
   (is (= v2-descriptor (validate-descriptor-var v2-descriptor)))
   (is (= v3-descriptor (validate-descriptor-var v3-descriptor)))
   (is (= v3-descriptor2 (validate-descriptor-var v3-descriptor2)))
+  (is (= v3-descriptor3 (validate-descriptor-var v3-descriptor3)))
   ;; descriptor-version 2 is a v3-only combination; v2 nesting it is rejected.
   (let [bad (assoc-in v2-descriptor [:ffi-interception :descriptor-version] 2)
         data (ex-data-of #(validate-descriptor-var bad))]
     (is (= :jolt.sim.runtime/abi-incompatible (:type data))))
-  ;; An unknown descriptor-version under v3 is rejected.
+  ;; descriptor-version 3 under v3 requires the exact 15-operation list. A
+  ;; v3/descriptor-version-3 descriptor that still carries the
+  ;; descriptor-version-1 13-operation list is rejected.
   (let [bad (assoc-in v3-descriptor [:ffi-interception :descriptor-version] 3)
         data (ex-data-of #(validate-descriptor-var bad))]
+    (is (= :jolt.sim.runtime/abi-incompatible (:type data))))
+  ;; A v3/descriptor-version-3 descriptor whose :native-operations list is
+  ;; short by one of the two new operations (14 entries) is rejected.
+  (let [short
+        (assoc-in v3-descriptor3 [:ffi-interception :native-operations]
+                  (vec (remove #{:release-byte-array}
+                               (get-in v3-descriptor3
+                                       [:ffi-interception :native-operations]))))
+        data (ex-data-of #(validate-descriptor-var short))]
+    (is (= :jolt.sim.runtime/abi-incompatible (:type data))))
+  ;; The two new operations must sit exactly between :write-array and
+  ;; :ptr->string; swapping their insertion order is rejected.
+  (let [reordered
+        (assoc-in v3-descriptor3 [:ffi-interception :native-operations]
+                  [:load-library :loaded? :alloc :free
+                   :read :write :sizeof :read-bytes
+                   :write-bytes :read-array :write-array
+                   :release-byte-array :borrow-byte-array
+                   :ptr->string :string->ptr])
+        data (ex-data-of #(validate-descriptor-var reordered))]
     (is (= :jolt.sim.runtime/abi-incompatible (:type data))))
   ;; A v3/descriptor-version-2 descriptor missing an unrelated outer key is
   ;; rejected too.
@@ -728,20 +766,51 @@
                     :capture-native-error? "nope")
         data (ex-data-of #(validate-ffi-descriptor-var 2 bad))]
     (is (= :invalid-capture-native-error (:reason data))))
+  ;; descriptor-version 3 keeps the descriptor-version 2 foreign-function key
+  ;; set and Boolean :capture-native-error? requirement.
+  (let [v3d (assoc base-foreign-function-descriptor
+                    :capture-native-error? true)]
+    (is (= v3d (validate-ffi-descriptor-var 3 v3d))))
+  ;; ...rejects the key's absence under descriptor-version 3.
+  (let [data (ex-data-of
+              #(validate-ffi-descriptor-var 3 base-foreign-function-descriptor))]
+    (is (= :jolt.sim.runtime/invalid-ffi-descriptor (:type data)))
+    (is (= :foreign-function-key-mismatch (:reason data))))
+  ;; ...and rejects a non-Boolean value under descriptor-version 3.
+  (let [bad (assoc base-foreign-function-descriptor
+                    :capture-native-error? "nope")
+        data (ex-data-of #(validate-ffi-descriptor-var 3 bad))]
+    (is (= :invalid-capture-native-error (:reason data))))
   ;; Argument metadata and live arguments describe the same call arity.
   (let [bad (assoc base-foreign-function-descriptor :arguments [])
         data (ex-data-of #(validate-ffi-descriptor-var 1 bad))]
     (is (= :argument-count-mismatch (:reason data))))
-  ;; :native-operation descriptors are unaffected by descriptor-version.
+  ;; :native-operation descriptors keep the same shape across descriptor-version.
   (let [op-descriptor {:kind :native-operation :task 0 :arguments []
                        :operation :sizeof}]
     (is (= op-descriptor (validate-ffi-descriptor-var 1 op-descriptor)))
-    (is (= op-descriptor (validate-ffi-descriptor-var 2 op-descriptor))))
+    (is (= op-descriptor (validate-ffi-descriptor-var 2 op-descriptor)))
+    (is (= op-descriptor (validate-ffi-descriptor-var 3 op-descriptor))))
+  ;; The two descriptor-version 3 operations are accepted only under
+  ;; descriptor-version 3; under 1 and 2 they remain unknown.
+  (doseq [op [:borrow-byte-array :release-byte-array]]
+    (let [op-descriptor {:kind :native-operation :task 0 :arguments []
+                         :operation op}]
+      (is (= op-descriptor (validate-ffi-descriptor-var 3 op-descriptor))
+          (pr-str op))
+      (is (= :unknown-operation
+             (:reason (ex-data-of
+                       #(validate-ffi-descriptor-var 1 op-descriptor))))
+          (pr-str op))
+      (is (= :unknown-operation
+             (:reason (ex-data-of
+                       #(validate-ffi-descriptor-var 2 op-descriptor))))
+          (pr-str op))))
   ;; The private boundary also fails closed if called with a version no exact
   ;; capability descriptor can advertise.
   (let [data (ex-data-of
               #(validate-ffi-descriptor-var
-                3 base-foreign-function-descriptor))]
+                4 base-foreign-function-descriptor))]
     (is (= :jolt.sim.runtime/invalid-ffi-descriptor (:type data)))
     (is (= :unsupported-descriptor-version (:reason data)))))
 
@@ -753,6 +822,24 @@
   (let [six-key [:foreign-function "s" [:int] :int false true]
         handler (fn [_] :ok)]
     (is (= {six-key handler} (validate-ffi-handlers-var {six-key handler})))))
+
+(deftest ffi-handler-keys-recognize-descriptor-version-3-native-operations
+  ;; Handler config validation is pure config checking that runs before ABI
+  ;; resolution, so it recognizes the two descriptor-version 3 pointer-loan
+  ;; operations as supported handler keys; a still-unknown operation fails
+  ;; closed.
+  (let [handler (fn [_] :loan)]
+    (is (= {[:native-operation :borrow-byte-array] handler}
+           (validate-ffi-handlers-var
+            {[:native-operation :borrow-byte-array] handler})))
+    (is (= {[:native-operation :release-byte-array] handler}
+           (validate-ffi-handlers-var
+            {[:native-operation :release-byte-array] handler}))))
+  (let [unknown [:native-operation :still-not-an-operation]
+        data (ex-data-of
+              #(validate-ffi-handlers-var {unknown (fn [_])}))]
+    (is (= :jolt.sim.runtime/invalid-config (:type data)))
+    (is (= unknown (:handler-key data)))))
 
 (deftest malformed-six-element-handler-keys-are-rejected
   (let [bad-capture [:foreign-function "s" [:int] :int false "yes"]
@@ -809,6 +896,37 @@
     (is (= 42 (controller scalar-descriptor)))
     (is (= [42 nil] (controller captured-descriptor)))
     (is (empty? (:ffi-errors @state)))))
+
+(deftest descriptor-version-3-controller-dispatches-pointer-loan-and-captured-foreign
+  ;; Under descriptor-version 3 the FFI controller accepts the two new
+  ;; native operations and routes them to their handlers, still accepts every
+  ;; base operation, and enforces the descriptor-version 2 capture-result
+  ;; contract on captured foreign functions.
+  (let [loan-descriptor {:kind :native-operation :task 0 :arguments [7]
+                         :operation :borrow-byte-array}
+        release-descriptor {:kind :native-operation :task 0 :arguments [7]
+                            :operation :release-byte-array}
+        base-descriptor {:kind :native-operation :task 0 :arguments [4]
+                         :operation :alloc}
+        captured-descriptor (assoc base-foreign-function-descriptor
+                                   :capture-native-error? true)]
+    (let [state (atom {:ffi-errors []})
+          effects (atom [])
+          controller (make-ffi-controller-var
+                      {[:native-operation :borrow-byte-array] (fn [_] :borrowed)
+                       [:native-operation :release-byte-array] (fn [_] :released)
+                       [:native-operation :alloc] (fn [_] 1042)
+                       (descriptor-handler-key-var captured-descriptor)
+                       (fn [_] [99 nil])}
+                      state effects 3)]
+      (is (= :borrowed (controller loan-descriptor)))
+      (is (= :released (controller release-descriptor)))
+      (is (= 1042 (controller base-descriptor)))
+      (is (= [99 nil] (controller captured-descriptor)))
+      (is (= [loan-descriptor release-descriptor base-descriptor
+              captured-descriptor]
+             @effects))
+      (is (empty? (:ffi-errors @state))))))
 
 (deftest captured-handler-must-return-a-two-element-vector
   (let [descriptor (assoc base-foreign-function-descriptor
@@ -880,7 +998,7 @@
                   {}
                   (fn [] (let [worker (future :released)] @worker) :done))]
       (is (= :done (:result result)))
-      (is (contains? #{v3-descriptor v3-descriptor2}
+      (is (contains? #{v3-descriptor v3-descriptor2 v3-descriptor3}
                      (:capabilities result)))
       (is (= [:spawn :start :finish :exit]
              (mapv :event (:events result))))

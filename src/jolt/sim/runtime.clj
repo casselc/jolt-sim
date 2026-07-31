@@ -76,6 +76,17 @@
   descriptors are unchanged. v1, v2 (always descriptor-version 1), and v3 with
   descriptor-version 1 remain exact as documented above.
 
+  ABI v3 may additionally expose :ffi-interception :descriptor-version 3 in
+  place of 1 or 2. Descriptor-version 3 keeps every descriptor-version 2
+  :foreign-function key set and Boolean :capture-native-error? semantics, keeps
+  the :native-operation descriptor shape unchanged, and extends the ordered
+  :native-operations list from 13 to 15 entries by inserting
+  :borrow-byte-array and :release-byte-array after :write-array and before
+  :ptr->string. v1, v2, v3 with descriptor-version 1, and v3 with
+  descriptor-version 2 remain exact as documented above; v3 with
+  descriptor-version 3 is accepted only with that exact 15-entry
+  :native-operations list.
+
   Under v2/v3, run-controlled installs the FFI controller on every run even when
   no handlers are configured. A native effect inside the scope that has no
   registered handler throws :jolt.sim.runtime/unhandled-native-effect before
@@ -156,6 +167,22 @@
          :ffi-interception
          (assoc (:ffi-interception v3-descriptor) :descriptor-version 2)))
 
+;; ABI v3 with :ffi-interception :descriptor-version 3 extends the ordered
+;; :native-operations list with :borrow-byte-array and :release-byte-array
+;; (inserted after :write-array, before :ptr->string) while keeping the
+;; descriptor-version 2 foreign-function key set and :capture-native-error?
+;; semantics and the native-operation descriptor shape. Built on
+;; v3-descriptor2 so only the two changed nested fields are stated.
+(def ^:private v3-descriptor3
+  (-> v3-descriptor2
+      (assoc-in [:ffi-interception :descriptor-version] 3)
+      (assoc-in [:ffi-interception :native-operations]
+                [:load-library :loaded? :alloc :free
+                 :read :write :sizeof :read-bytes
+                 :write-bytes :read-array :write-array
+                 :borrow-byte-array :release-byte-array
+                 :ptr->string :string->ptr])))
+
 (def ^:private v1-events
   (set (:events v1-descriptor)))
 
@@ -170,6 +197,18 @@
 
 (def ^:private native-operations
   (set (get-in v2-descriptor [:ffi-interception :native-operations])))
+
+;; Descriptor-version 3 advertises the base operation list plus the two
+;; pointer-loan operations :borrow-byte-array and :release-byte-array.
+(def ^:private native-operations-v3
+  (set (get-in v3-descriptor3 [:ffi-interception :native-operations])))
+
+;; Handler config validation is pure config checking that runs before ABI
+;; resolution, so it recognizes every operation any exact capability
+;; descriptor may advertise. The descriptor-version 3 list is a superset of
+;; the base list, so the union reduces to it.
+(def ^:private config-native-operations
+  (into native-operations native-operations-v3))
 
 (def ^:private ffi-kinds
   (set (get-in v2-descriptor [:ffi-interception :kinds])))
@@ -232,11 +271,13 @@
   (when-not (or (= v1-descriptor caps-value)
                 (= v2-descriptor caps-value)
                 (= v3-descriptor caps-value)
-                (= v3-descriptor2 caps-value))
+                (= v3-descriptor2 caps-value)
+                (= v3-descriptor3 caps-value))
     (throw
      (ex-info "jolt.internal.sim exposes an incompatible controller ABI"
               {:type :jolt.sim.runtime/abi-incompatible
-               :expected [v1-descriptor v2-descriptor v3-descriptor v3-descriptor2]
+               :expected [v1-descriptor v2-descriptor v3-descriptor
+                          v3-descriptor2 v3-descriptor3]
                :actual caps-value})))
   caps-value)
 
@@ -541,12 +582,13 @@
 
 (defn- validate-ffi-descriptor!
   "Validates a single intercepted call descriptor exactly against the running
-  image's nested FFI descriptor-version (1 or 2). Version 2 requires
+  image's nested FFI descriptor-version (1, 2, or 3). Versions 2 and 3 require
   :foreign-function descriptors to additionally carry a Boolean
-  :capture-native-error?; :native-operation descriptors are unaffected by
-  descriptor-version."
+  :capture-native-error?; :native-operation descriptors keep the same shape
+  across descriptor-versions, but version 3 accepts the two additional
+  :borrow-byte-array and :release-byte-array operations."
   [ffi-descriptor-version descriptor]
-  (when-not (contains? #{1 2} ffi-descriptor-version)
+  (when-not (contains? #{1 2 3} ffi-descriptor-version)
     (invalid-ffi-descriptor! :unsupported-descriptor-version descriptor))
   (when-not (map? descriptor)
     (invalid-ffi-descriptor! :not-a-map descriptor))
@@ -560,7 +602,7 @@
     (case kind
       :foreign-function
       (do
-        (when-not (= (if (= ffi-descriptor-version 2)
+        (when-not (= (if (#{2 3} ffi-descriptor-version)
                        foreign-function-keys-v2
                        foreign-function-keys)
                      (set (keys descriptor)))
@@ -577,15 +619,21 @@
           (invalid-ffi-descriptor! :invalid-return-type descriptor))
         (when-not (boolean? (:blocking? descriptor))
           (invalid-ffi-descriptor! :invalid-blocking descriptor))
-        (when (= ffi-descriptor-version 2)
+        (when (#{2 3} ffi-descriptor-version)
           (when-not (boolean? (:capture-native-error? descriptor))
             (invalid-ffi-descriptor! :invalid-capture-native-error descriptor))))
       :native-operation
       (do
         (when-not (= native-operation-keys (set (keys descriptor)))
           (invalid-ffi-descriptor! :native-operation-key-mismatch descriptor))
-        (when-not (contains? native-operations (:operation descriptor))
-          (invalid-ffi-descriptor! :unknown-operation descriptor))))
+        ;; Descriptor-version 3 advertises the two pointer-loan operations in
+        ;; addition to the base list; earlier descriptor-versions know only the
+        ;; base list, so an out-of-list operation there still fails closed.
+        (let [operations (if (= ffi-descriptor-version 3)
+                           native-operations-v3
+                           native-operations)]
+          (when-not (contains? operations (:operation descriptor))
+            (invalid-ffi-descriptor! :unknown-operation descriptor)))))
     descriptor))
 
 (defn- descriptor-handler-key
@@ -737,8 +785,8 @@
   (cond
     (and (vector? key)
          (= 2 (count key))
-         (= :native-operation (nth key 0))
-         (contains? native-operations (nth key 1)))
+          (= :native-operation (nth key 0))
+          (contains? config-native-operations (nth key 1)))
     nil
 
     ;; Legacy five-element :foreign-function key, accepted for backward
