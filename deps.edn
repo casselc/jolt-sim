@@ -2,7 +2,17 @@
 
  :aliases
  {:test {:extra-paths ["test"]
-         :main-opts ["-m" "jolt.sim.test-main"]}}
+         :main-opts ["-m" "jolt.sim.test-main"]}
+
+  ;; Workspace integration lanes: the canonical db checkout is ../db.
+  :sqlite-test
+  {:extra-paths ["test"]
+   :extra-deps {local/db {:local/root "../db"}}
+   :main-opts ["-m" "jolt.sim.sqlite-integration-test"]}
+
+  :sqlite-sim-test
+  {:extra-paths ["test" "../db/clj"]
+   :main-opts ["-m" "jolt.sim.sqlite-integration-test" "--sim-only"]}}
 
  :tasks
  {check "jolt -M:test"}}

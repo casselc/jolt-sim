@@ -17,10 +17,12 @@ and simulated worlds belong here.
   Jolt images depend on it; and
 - a `run-controlled`/`defsim` adapter that preserves the application body
   unchanged while gating ordinary future starts and, under ABI v2,
-  substituting registered FFI/native effects; and
+  substituting registered FFI/native effects;
 - a deterministic native-memory world with configurable ABI widths and byte
   order, exact bounds/lifetime failures, copy-safe byte buffers, owned C
-  strings, and leak snapshots.
+  strings, and leak snapshots; and
+- a deterministic SQLite handler model plus a real/sim parity fixture that
+  executes unchanged `jdbc.core` application code.
 
 The current runtime adapter supports two controller ABI versions discovered
 dynamically from a sim image. ABI v1 is lifecycle-only: an optional `:on-event`
@@ -101,6 +103,63 @@ re-probes the host loader. Bounds errors, invalid frees, double frees, use after
 free, unterminated strings, and leaked live allocations are explicit evidence
 rather than native undefined behavior.
 
+### Deterministic SQLite driver model
+
+`jolt.sim.sqlite` implements the exact 22 foreign-function descriptors used by
+the current `db.sqlite` driver over the same deterministic memory world. It is
+data-driven rather than a SQL engine: each `sqlite3_prepare_v2` consumes the
+next statement plan, verifies the exact SQL, and then verifies typed bound
+parameters while serving declared rows, change counts, last-row ids, or a
+declared SQLite error.
+
+```clojure
+(require '[jolt.sim.runtime :as sim]
+         '[jolt.sim.sqlite :as sqlite]
+         '[my.app :as app])
+
+(let [world
+      (sqlite/world
+       [{:sql "PRAGMA foreign_keys=1;"
+         :params {} :columns [] :rows []}
+        {:sql "select payload from messages where id = ?"
+         :params {1 {:type :integer :value 7}}
+         :columns ["payload"]
+         :rows [[{:type :blob :value (byte-array [0 127 128 255])}]]}])
+      run
+      (sim/run-controlled
+       {:ffi-handlers (sqlite/handlers world)}
+       #(app/read-message 7))]
+  {:result (:result run)
+   :effects (:effects run)
+   :clean? (sqlite/clean? world)})
+```
+
+`my.app` and its database library import no simulator namespaces. The
+integration fixture runs the same `jdbc.core` body against real SQLite and the
+model, including nonempty and empty BLOB round trips, and checks the exact
+foreign-call sequence and complete handle/borrowed-memory cleanup:
+
+```sh
+export JOLT_SIM_BIN=/path/to/an/ABI-v2-sim-enabled/jolt
+"$JOLT_SIM_BIN" -M:sqlite-test
+"$JOLT_SIM_BIN" -M:sqlite-sim-test
+```
+
+These workspace-local aliases expect the `db` checkout to be a sibling of the
+canonical `jolt-sim` checkout. They deliberately do not fall back to an older
+installed `db`. The first command proves real/sim result parity, but resolving
+`db` as a normal dependency lets Jolt process its native-library metadata
+before the controlled scope begins. The second command adds the `db` source
+path without that metadata: it proves the fixture does not need SQLite
+native-library startup or loading. It does not claim that every other startup
+effect in the process is OS-independent. In both lanes, every application
+SQLite call made inside `run-controlled` is intercepted and an unhandled
+descriptor fails closed.
+
+This first model intentionally describes sequential statement executions. It
+does not parse SQL, simulate SQLite locking or durability, choose concurrent
+schedules, or inject step/cleanup failures yet.
+
 ## Execution model
 
 The cooperative step API is the scheduler kernel and a low-level model-testing
@@ -140,9 +199,9 @@ the real operating system.
 1. Drive the existing future controller adapter from scheduler choices, then
    run one unchanged Jolt namespace in normal and controlled modes through
    ordinary futures, promises, clocks, and entropy.
-2. Expand the landed deterministic memory ownership substrate into
-   library-specific provider packs on the fail-closed FFI/native interception
-   boundary.
+2. Extend the landed memory and SQLite handler models with bounded error and
+   cleanup plans, then add handler packs for codecs and socket operations on
+   the same fail-closed FFI/native interception boundary.
 3. Add operation effects for connect, accept, read, write, close, cancel, and
    deadlines, followed by deterministic network and storage fault models.
 4. Add Hegel generation and shrinking for workloads, scheduler choices, native
