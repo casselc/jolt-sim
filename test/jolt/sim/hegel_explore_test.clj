@@ -1,6 +1,6 @@
 (ns jolt.sim.hegel-explore-test
   "Isolated Hegel-to-process-explorer integration. The property runs unchanged
-  ordinary futures in fresh ABI-v3 Jolt children, finds the start order that
+  ordinary futures in fresh sim-enabled Jolt children, finds the start order that
   violates a deliberately narrow invariant, and replays the same minimized
   schedule without flakiness."
   (:require [clojure.test :as test :refer [deftest is]]
@@ -85,7 +85,7 @@
     (is (= [[1 0 2]] @final-schedules))))
 
 (deftest hegel-directly-generates-and-minimizes-a-real-future-start-order
-  ;; The direct, count-based generator drives the same ABI-v3 fresh-process
+  ;; The direct, count-based generator drives the same current fresh-process
   ;; independent-three scenario with no explicit schedule domain. Under the
   ;; fixed seed below, exploration first fails on [1 2 0] (A does not start
   ;; first), then shrinks the Lehmer digit draws toward 0 until the final

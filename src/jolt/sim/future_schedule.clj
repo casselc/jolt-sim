@@ -1,14 +1,14 @@
 (ns jolt.sim.future-schedule
   "The first coarse deterministic scheduler for unchanged ordinary Jolt future
-  code, driven entirely off the existing ABI v3 lifecycle events. It does not
-  add a new controller hook or change core Jolt semantics: it is a pure
+  code, driven entirely off the current controller lifecycle events. It does
+  not add a new controller hook or change core Jolt semantics: it is a pure
   interpreter over the same `{:event :task :parent}` records `run-controlled`
   already forwards to `:on-event`.
 
   A `:future-schedule` is a nonempty vector that is an exact permutation of
   `0..N-1`. Ordinals are assigned, in arrival order, to `:spawn` events whose
-  `:parent` is `0`. ABI v3 uses parent zero for every non-hooked spawning
-  thread, not only the thread running the thunk, so this first slice requires
+  `:parent` is `0`. The current contract uses parent zero for every non-hooked
+  spawning thread, not only the thread running the thunk, so this first slice requires
   a caller-enforced quiescent scope with exactly one parent-zero spawner. A
   nonzero parent is rejected; a competing raw-thread spawner is outside the
   enforceable ABI boundary and must not be present. The schedule vector then
@@ -21,7 +21,7 @@
   that task blocks on the gate. A gate is delivered `:admit` either the
   instant it is created (if its ordinal is already due) or when the
   currently-due ordinal's `:finish` arrives (if the next ordinal's gate
-  already exists). `:exit`/`:abort` are ABI v3 worker-ownership/drain
+  already exists). `:exit`/`:abort` are current worker-ownership/drain
   evidence only -- they never advance the schedule.
 
   Any violation -- a nested spawn, more spawns than the schedule
@@ -30,7 +30,7 @@
   application cancellation (unsupported in this first slice) -- aborts the
   scheduler, delivers an internal abort decision to every gate not yet
   delivered (so blocked `:start` calls fail fast instead of hanging and can
-  still reach ABI v3 `:exit` for drainage), and throws an `ex-info` tagged
+  still reach `:exit` for drainage), and throws an `ex-info` tagged
   `:jolt.sim.runtime/schedule-error`. Because it is thrown from the composed
   `:on-event` callback, `run-controlled`'s existing supervisor-latch
   machinery records it even when application code catches the propagated

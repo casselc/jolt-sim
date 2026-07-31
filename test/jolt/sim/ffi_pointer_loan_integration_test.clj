@@ -47,6 +47,7 @@
 (deftest unchanged-pointer-loan-fixture-runs-against-simulated-memory
   (is (true? (runtime/available?)))
   (when (runtime/available?)
+    (is (= 4 (:abi-version (runtime/capabilities))))
     (is (= 3
            (get-in (runtime/capabilities)
                    [:ffi-interception :descriptor-version])))
@@ -72,7 +73,7 @@
       (is (empty? (memory/leaks world))))))
 
 (deftest unchanged-pointer-loan-fixture-can-observe-real-native-memory
-  ;; ABI v4 routing lets the same ordinary body proceed through the exact real
+  ;; Current routing lets the same ordinary body proceed through the exact real
   ;; borrow/callback/release path while jolt-sim records every native route.
   ;; Core Jolt, not a handler pack, remains responsible for unlock ownership.
   (is (= 4 (:abi-version (runtime/capabilities))))

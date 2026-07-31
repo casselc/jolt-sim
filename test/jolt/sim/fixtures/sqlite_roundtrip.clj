@@ -3,7 +3,7 @@
 
   This namespace deliberately depends only on jdbc.core. Its caller chooses
   whether db.sqlite reaches the system SQLite library or an installed
-  jolt-sim ABI v2 handler pack."
+  current jolt-sim handler pack."
   (:require [jdbc.core :as jdbc]))
 
 (defn exercise-sqlite

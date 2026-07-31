@@ -11,7 +11,7 @@
       (ex-data error))))
 
 (deftest undrained-worker-poisons-without-restoring
-  (is (contains? #{3 4} (:abi-version (rt/capabilities))))
+  (is (= 4 (:abi-version (rt/capabilities))))
   (let [worker-started (promise)
         worker-release (promise)
         worker (atom nil)

@@ -1,6 +1,7 @@
 (ns jolt.sim.ffi-memory
   "Deterministic simulated native memory exposed as jolt.sim.runtime
-  :ffi-handlers for the 15 ABI v3 native operations.
+  :ffi-handlers for the 15 native operations in the current descriptor-version
+  3 contract.
 
   Owned allocations use concurrency-safe immutable byte-vector records.
   Scoped byte-array loans instead alias the caller's live array window between
@@ -811,8 +812,9 @@
       :type ::world})))
 
 (defn handlers
-  "Returns a map keyed by [:native-operation op] over all 15 ABI v3 native
-  operations, compatible with jolt.sim.runtime :ffi-handlers. Each handler fn
+  "Returns a map keyed by [:native-operation op] over all 15 native operations
+  in the current descriptor-version 3 contract, compatible with
+  jolt.sim.runtime :ffi-handlers. Each handler fn
   receives the exact descriptor and dispatches on its :arguments vector. One
   operation holds the world monitor at a time; a byte-array loan does not hold
   it across application callback code."

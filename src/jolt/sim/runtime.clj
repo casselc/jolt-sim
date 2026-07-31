@@ -1,219 +1,49 @@
 (ns jolt.sim.runtime
-  "Test-only adapter that bridges ordinary Jolt code to the optional simulation
-  controller exposed by a sim-enabled Jolt image.
+  "Test-only adapter from ordinary Jolt code to the optional controller exposed
+  by a sim-enabled Jolt image.
 
-  Core Jolt exposes sim-image-only vars in the namespace jolt.internal.sim:
+  This unreleased adapter supports one exact current controller contract: ABI
+  v4 with worker-ownership lifecycle events, descriptor-version 3 FFI
+  interception, and scoped native proceed routing. Until jolt-sim has a public
+  release, a future ABI bump replaces this contract in place; intermediate
+  development ABIs remain in Git history rather than accumulating compatibility
+  branches.
 
-    capabilities             ;; () -> descriptor (ABI v1/v2/v3/v4, see below)
-    install-controller!      ;; (controller) -> opaque token
-    restore-controller!      ;; (token) -> nil, restores exactly what that
-                              ;; token displaced; only the current top of the
-                              ;; strict-LIFO installation stack may restore
-    controller-errors        ;; () -> latched controller hook errors
-    clear-controller-errors! ;; () -> nil, clears latched errors
+  Core exposes the contract only in sim images through jolt.internal.sim:
 
-  ABI v2/v3/v4 additionally expose:
+    capabilities
+    install-controller! / restore-controller!
+    controller-errors / clear-controller-errors!
+    install-ffi-controller! / restore-ffi-controller!
+    install-ffi-routing-controller!
 
-    install-ffi-controller!  ;; (ffi-controller) -> opaque token
-    restore-ffi-controller!  ;; (token) -> nil, LIFO-restores the FFI controller
+  An ordinary released image has no such namespace. Every symbol is resolved
+  dynamically, never required at compile time, so this namespace still loads
+  and reports the capability unavailable there. A partial namespace or any
+  descriptor other than the exact current literal fails as ABI-incompatible.
 
-  ABI v4 additionally exposes:
+  The lifecycle controller receives (event id parent) for :spawn, :start,
+  :finish, :cancel, :exit, and :abort. A task owns a worker from :spawn through
+  exactly one :exit/:abort; settlement at :finish/:cancel does not release that
+  ownership. Cleanup drains all owned workers and in-flight callbacks before
+  restoring the strict-LIFO controller tokens.
 
-    install-ffi-routing-controller! ;; (routing-controller) -> opaque token
+  run-controlled is hermetic by default: the established one-argument FFI
+  controller substitutes registered handlers and blocks unhandled effects
+  before OS access. :observe proceeds every intercepted call through its exact
+  native branch. :hybrid substitutes registered handlers and permits a native
+  miss only when modeled-resource provenance makes it safe. Every controlled
+  run records lifecycle events, exact FFI descriptors, and correlated route
+  evidence. Optional :future-schedule gates ordinary futures over the same
+  current lifecycle contract.
 
-  The controller fn install-controller! installs is invoked positionally as
-  (controller event id parent) on the future lifecycle hook thread — event is
-  one of :spawn/:start/:finish/:cancel and, under v3/v4, :exit/:abort. id is
-  that task's stable id; parent is the task id in effect on the spawning thread.
-  v1/v2 terminal ownership ends at :finish/:cancel. v3/v4 separately retain
-  worker ownership through :exit, or balance a pre-fork failure with :abort.
-  A :spawn hook failure propagates before the worker forks, while a :start hook
-  failure becomes that future's own failure. Terminal hook failures never
-  replace the application result; they are latched in controller-errors.
-
-  Those vars exist only in a sim image; an ordinary released image has no such
-  namespace. This adapter resolves the symbols dynamically (resolve on quoted
-  symbols, never a compile-time require) so that this namespace loads and its
-  tests run normally under released ordinary Jolt, where the controller is
-  simply reported absent rather than failing to compile.
-
-  ABI v1 descriptor (lifecycle only):
-
-    {:abi-version 1 :future-lifecycle true :controller-errors true
-     :events [:spawn :start :finish :cancel]}
-
-  ABI v2 descriptor adds an FFI interception capability:
-
-    {:abi-version 2 :future-lifecycle true :controller-errors true
-     :events [:spawn :start :finish :cancel]
-     :ffi-interception {:descriptor-version 1
-                        :kinds [:foreign-function :native-operation]
-                        :arguments :live
-                        :task-identity :future-lifecycle
-                        :native-operations [:load-library :loaded? :alloc :free
-                                            :read :write :sizeof :read-bytes
-                                            :write-bytes :read-array :write-array
-                                            :ptr->string :string->ptr]}}
-
-  ABI v3 is the v2 FFI descriptor plus two worker-ownership events. The
-  controller is still invoked as (event id parent), but event may also be
-  :exit/:abort. A task owns a worker from :spawn until exactly one
-  :exit/:abort; :finish/:cancel settle its future but do NOT release that
-  ownership, so a cancelled running worker remains owned until :exit. This
-  lets cleanup wait for real worker release rather than guessing from future
-  settlement.
-
-    {:abi-version 3 :future-lifecycle true :controller-errors true
-     :events [:spawn :start :finish :cancel :exit :abort]
-     :ffi-interception {:descriptor-version 1
-                        :kinds [:foreign-function :native-operation]
-                        :arguments :live
-                        :task-identity :future-lifecycle
-                        :native-operations [:load-library :loaded? :alloc :free
-                                            :read :write :sizeof :read-bytes
-                                            :write-bytes :read-array :write-array
-                                            :ptr->string :string->ptr]}}
-
-  ABI v3 may additionally expose :ffi-interception :descriptor-version 2 in
-  place of 1. Under descriptor-version 2 every :foreign-function descriptor
-  carries one additional Boolean key, :capture-native-error?; native-operation
-  descriptors are unchanged. v1, v2 (always descriptor-version 1), and v3 with
-  descriptor-version 1 remain exact as documented above.
-
-  ABI v3 may additionally expose :ffi-interception :descriptor-version 3 in
-  place of 1 or 2. Descriptor-version 3 keeps every descriptor-version 2
-  :foreign-function key set and Boolean :capture-native-error? semantics, keeps
-  the :native-operation descriptor shape unchanged, and extends the ordered
-  :native-operations list from 13 to 15 entries by inserting
-  :borrow-byte-array and :release-byte-array after :write-array and before
-  :ptr->string. v1, v2, v3 with descriptor-version 1, and v3 with
-  descriptor-version 2 remain exact as documented above; v3 with
-  descriptor-version 3 is accepted only with that exact 15-entry
-  :native-operations list.
-
-  ABI v4 keeps the exact descriptor-version 3 operation contract and v3 worker
-  lifecycle, and adds an exact :proceed-routing descriptor plus
-  install-ffi-routing-controller!. run-controlled remains hermetic by default,
-  but an explicit :ffi-mode :observe or :hybrid installs the v4 routing
-  controller. Observe always invokes the exact native continuation. Hybrid
-  uses configured handlers first and invokes native code only on a handler miss
-  that carries no model-owned numeric resource argument.
-
-  Under v2/v3/v4, the default :hermetic mode installs the established FFI
-  controller on every run even when no handlers are configured. A native effect
-  inside the scope without a registered handler throws
-  :jolt.sim.runtime/unhandled-native-effect before
-  the OS is reached. Handlers are configured via :ffi-handlers, a map keyed by
-  [:native-operation operation] or, for foreign functions, the canonical
-  six-element [:foreign-function symbol argument-types return-type blocking?
-  capture?]. The legacy five-element key (without capture?) is also accepted
-  and canonicalizes to capture? false; supplying both the legacy key and its
-  equivalent six-element-false key for the same signature is rejected as an
-  ambiguous config rather than silently overwritten. Map membership (under the
-  canonical key) defines handled, so a nil value is a valid substitute. When
-  capture? is true, the registered handler's returned public value must be a
-  vector of exactly two elements; a malformed shape throws
-  :jolt.sim.runtime/invalid-capture-result. Handler, missing-handler, and
-  malformed-capture-result failures are latched locally so application code
-  cannot catch them and make the run succeed.
-
-  ABI v4 :observe accepts no handlers and routes every effect to native code.
-  ABI v4 :hybrid requires function handlers to return substitute or
-  modeled-resource wrappers (a nil map entry remains explicit nil). A
-  modeled-resource records a per-run numeric base/span; an unhandled later call
-  carrying an integer inside that interval is blocked before proceed. Native
-  proceed exceptions keep ordinary application catch/throw semantics and are
-  not latched as controller failures.
-
-  run-controlled observes task starts and lets :on-event block at :start to
-  gate them. It records an ordered event log of exact {:event :task :parent}
-  maps, admits one exclusive run at a time, and fails closed on controller
-  errors and on tasks that outlive the controlled scope. Under v2/v3/v4 it also
-  records an ordered :effects log of every validated native interception and a
-  positionally correlated :effect-trace with :handler/:native/:blocked route in
-  arrival order. Under v3/v4 it drains lifecycle-owned future workers through
-  :exit/:abort before restoring controllers. Under v3/v4 an optional
-  :future-schedule additionally drives the first coarse deterministic
-  scheduler (jolt.sim.future-schedule) over unchanged ordinary futures spawned
-  directly by the thunk, admitting one scripted ordinal's body at a time. It
-  is NOT yet an exhaustive deterministic scheduler: it does not search
-  schedules, support nested spawns or cancellation, advance virtual time,
-  inject faults, or bind a unified causal trace between lifecycle events and
-  native effects. Raw threads and executor tasks do not emit lifecycle
-  ownership events; a controlled body must join them before returning if they
-  can perform FFI. Those remain future work tracked in the project README."
+  Raw threads and executor tasks do not emit lifecycle ownership events. A
+  controlled body must join them before returning if they can perform FFI;
+  otherwise safe restoration and complete route evidence are not claimed."
   (:require [jolt.sim.future-schedule :as future-schedule]
             [jolt.sim.trace :as trace]))
 
-(def ^:private v1-descriptor
-  {:abi-version 1
-   :future-lifecycle true
-   :controller-errors true
-   :events [:spawn :start :finish :cancel]})
-
-(def ^:private v2-descriptor
-  {:abi-version 2
-   :future-lifecycle true
-   :controller-errors true
-   :events [:spawn :start :finish :cancel]
-   :ffi-interception {:descriptor-version 1
-                      :kinds [:foreign-function :native-operation]
-                      :arguments :live
-                      :task-identity :future-lifecycle
-                      :native-operations [:load-library :loaded? :alloc :free
-                                          :read :write :sizeof :read-bytes
-                                          :write-bytes :read-array :write-array
-                                          :ptr->string :string->ptr]}})
-
-;; ABI v3 is the v2 FFI descriptor plus two worker-ownership events. A task
-;; owns a worker from :spawn until exactly one :exit/:abort; :finish/:cancel
-;; settle its future but do NOT release that ownership, so a cancelled running
-;; worker remains :unexited until :exit.
-(def ^:private v3-descriptor
-  {:abi-version 3
-   :future-lifecycle true
-   :controller-errors true
-   :events [:spawn :start :finish :cancel :exit :abort]
-   :ffi-interception {:descriptor-version 1
-                      :kinds [:foreign-function :native-operation]
-                      :arguments :live
-                      :task-identity :future-lifecycle
-                      :native-operations [:load-library :loaded? :alloc :free
-                                          :read :write :sizeof :read-bytes
-                                          :write-bytes :read-array :write-array
-                                          :ptr->string :string->ptr]}})
-
-;; ABI v3 with :ffi-interception :descriptor-version 2 is otherwise identical
-;; to v3-descriptor; only the nested FFI descriptor version changes, which
-;; adds :capture-native-error? to every :foreign-function descriptor.
-(def ^:private v3-descriptor2
-  (assoc v3-descriptor
-         :ffi-interception
-         (assoc (:ffi-interception v3-descriptor) :descriptor-version 2)))
-
-;; ABI v3 with :ffi-interception :descriptor-version 3 extends the ordered
-;; :native-operations list with :borrow-byte-array and :release-byte-array
-;; (inserted after :write-array, before :ptr->string) while keeping the
-;; descriptor-version 2 foreign-function key set and :capture-native-error?
-;; semantics and the native-operation descriptor shape. Built on
-;; v3-descriptor2 so only the two changed nested fields are stated.
-(def ^:private v3-descriptor3
-  (-> v3-descriptor2
-      (assoc-in [:ffi-interception :descriptor-version] 3)
-      (assoc-in [:ffi-interception :native-operations]
-                [:load-library :loaded? :alloc :free
-                 :read :write :sizeof :read-bytes
-                 :write-bytes :read-array :write-array
-                 :borrow-byte-array :release-byte-array
-                 :ptr->string :string->ptr])))
-
-;; ABI v4 keeps the v3 descriptor-version 3 FFI interception (same foreign-
-;; function and native-operation shapes, same 15 native operations) and the v3
-;; worker-ownership lifecycle, and additionally advertises a proceed-routing
-;; sub-map. The exact map is the authoritative v4 shape. run-controlled uses
-;; the established controller for default :hermetic runs and the routing
-;; installer only for explicit :observe/:hybrid policy.
-(def ^:private v4-proceed-routing
+(def ^:private proceed-routing-contract
   {:controller-arity 2
    :proceed-arity 0
    :single-use true
@@ -221,40 +51,43 @@
    :owner-thread true
    :scoped-byte-array-release :runtime-owned})
 
-(def ^:private v4-descriptor
-  (-> v3-descriptor3
-      (assoc :abi-version 4)
-      (assoc-in [:ffi-interception :proceed-routing] v4-proceed-routing)))
+(def ^:private supported-descriptor
+  {:abi-version 4
+   :future-lifecycle true
+   :controller-errors true
+   :events [:spawn :start :finish :cancel :exit :abort]
+   :ffi-interception
+   {:descriptor-version 3
+    :kinds [:foreign-function :native-operation]
+    :arguments :live
+    :task-identity :future-lifecycle
+    :native-operations [:load-library :loaded? :alloc :free
+                        :read :write :sizeof :read-bytes
+                        :write-bytes :read-array :write-array
+                        :borrow-byte-array :release-byte-array
+                        :ptr->string :string->ptr]
+    :proceed-routing proceed-routing-contract}})
 
-(def ^:private v1-events
-  (set (:events v1-descriptor)))
-
-(def ^:private v3-events
-  (set (:events v3-descriptor)))
+(def ^:private controller-events
+  (set (:events supported-descriptor)))
 
 (def ^:private drain-events
   "Terminal events accepted (and applied) during scope closing for drainage.
-  Under v1/v2 late terminal events are observed but not applied; under v3/v4
-  they are applied so :exit/:abort can balance outstanding worker ownership."
+  They let :exit/:abort balance outstanding worker ownership after the body
+  closes to new work."
   #{:finish :cancel :exit :abort})
 
 (def ^:private native-operations
-  (set (get-in v2-descriptor [:ffi-interception :native-operations])))
+  (set (get-in supported-descriptor
+               [:ffi-interception :native-operations])))
 
-;; Descriptor-version 3 advertises the base operation list plus the two
-;; pointer-loan operations :borrow-byte-array and :release-byte-array.
-(def ^:private native-operations-v3
-  (set (get-in v3-descriptor3 [:ffi-interception :native-operations])))
-
-;; Handler config validation is pure config checking that runs before ABI
-;; resolution, so it recognizes every operation any exact capability
-;; descriptor may advertise. The descriptor-version 3 list is a superset of
-;; the base list, so the union reduces to it.
+;; Handler config validation runs before ABI resolution but uses the exact
+;; current operation set.
 (def ^:private config-native-operations
-  (into native-operations native-operations-v3))
+  native-operations)
 
 (def ^:private ffi-kinds
-  (set (get-in v2-descriptor [:ffi-interception :kinds])))
+  (set (get-in supported-descriptor [:ffi-interception :kinds])))
 
 (def ^:private capabilities-sym 'jolt.internal.sim/capabilities)
 (def ^:private install-sym 'jolt.internal.sim/install-controller!)
@@ -263,22 +96,21 @@
 (def ^:private clear-errors-sym 'jolt.internal.sim/clear-controller-errors!)
 (def ^:private install-ffi-sym 'jolt.internal.sim/install-ffi-controller!)
 (def ^:private restore-ffi-sym 'jolt.internal.sim/restore-ffi-controller!)
-;; ABI v4 advertises a routing FFI controller whose installer takes a single
-;; controller invoked as (controller descriptor proceed). It shares
-;; restore-ffi-sym for restoration; only the installer var is v4-specific.
+;; The routing installer takes one controller invoked as
+;; (controller descriptor proceed). Both FFI installers share the same restore
+;; stack and restoration function.
 (def ^:private install-ffi-routing-sym
   'jolt.internal.sim/install-ffi-routing-controller!)
 
-(def ^:private base-abi-keys
+(def ^:private controller-abi-keys
   [:capabilities
    :install-controller!
    :restore-controller!
    :controller-errors
-   :clear-controller-errors!])
-
-(def ^:private ffi-abi-keys
-  [:install-ffi-controller!
-   :restore-ffi-controller!])
+   :clear-controller-errors!
+   :install-ffi-controller!
+   :restore-ffi-controller!
+   :install-ffi-routing-controller!])
 
 ;; Single run-controlled session state. Compare-and-set! claims :idle
 ;; atomically, so overlapping or nested runs fail closed without a separate
@@ -290,10 +122,7 @@
   (try (resolve sym) (catch :default _ nil)))
 
 (defn- resolved-abi-vars
-  "Returns controller ABI resolution results, including nils. The five base
-  vars are required for any sim image; the established FFI vars are required
-  for ABI v2/v3/v4, and the routing installer is additionally required for
-  ABI v4."
+  "Returns all current controller ABI resolution results, including nils."
   []
   {:capabilities (safe-resolve capabilities-sym)
    :install-controller! (safe-resolve install-sym)
@@ -304,57 +133,43 @@
    :restore-ffi-controller! (safe-resolve restore-ffi-sym)
    :install-ffi-routing-controller! (safe-resolve install-ffi-routing-sym)})
 
-(defn available?
-  "True only on a sim-enabled Jolt image that exposes the base controller ABI
-  (the five lifecycle vars). Returns false on an ordinary released image
-  without throwing. The FFI vars are validated separately for v2/v3/v4."
-  []
-  (let [vars (resolved-abi-vars)]
-    (every? some? (map vars base-abi-keys))))
-
 (defn- validate-descriptor [caps-value]
   (when-not (map? caps-value)
     (throw
      (ex-info "jolt.internal.sim/capabilities did not return a map"
               {:type :jolt.sim.runtime/abi-incompatible
                :capabilities-class (str (class caps-value))})))
-  (when-not (or (= v1-descriptor caps-value)
-                (= v2-descriptor caps-value)
-                (= v3-descriptor caps-value)
-                (= v3-descriptor2 caps-value)
-                (= v3-descriptor3 caps-value)
-                (= v4-descriptor caps-value))
+  (when-not (= supported-descriptor caps-value)
     (throw
      (ex-info "jolt.internal.sim exposes an incompatible controller ABI"
               {:type :jolt.sim.runtime/abi-incompatible
-               :expected [v1-descriptor v2-descriptor v3-descriptor
-                          v3-descriptor2 v3-descriptor3 v4-descriptor]
+               :expected supported-descriptor
                :actual caps-value})))
   caps-value)
 
 (defn- resolve-controller-ops!
   "Resolves the controller ABI vars and the validated capabilities descriptor,
   or throws :jolt.sim.runtime/abi-unavailable (no sim image) or
-  :jolt.sim.runtime/abi-incompatible (unsupported/malformed descriptor or a
-  v2/v3/v4 descriptor whose required FFI vars are missing)."
+  :jolt.sim.runtime/abi-incompatible (a partial current ABI or any descriptor
+  other than the exact current contract)."
   []
   (let [vars (resolved-abi-vars)
-        base-missing
+        missing
         (vec
-          (keep (fn [key]
-                  (when-not (vars key) key))
-                base-abi-keys))]
+         (keep (fn [key]
+                 (when-not (vars key) key))
+               controller-abi-keys))]
     (cond
-      (= (count base-missing) (count base-abi-keys))
+      (= (count missing) (count controller-abi-keys))
       (throw
         (ex-info "jolt.sim.runtime requires a sim-enabled Jolt image"
                  {:type :jolt.sim.runtime/abi-unavailable}))
 
-      (seq base-missing)
+      (seq missing)
       (throw
         (ex-info "jolt.internal.sim exposes an incomplete controller ABI"
                  {:type :jolt.sim.runtime/abi-incompatible
-                  :missing base-missing})))
+                  :missing missing})))
     (let [caps-fn @(:capabilities vars)
           caps-value
           (try
@@ -366,45 +181,33 @@
                   {:type :jolt.sim.runtime/abi-incompatible
                    :error (trace/normalize-error error)}))))
           descriptor (validate-descriptor caps-value)]
-      (when (#{2 3 4} (:abi-version descriptor))
-        (let [ffi-missing
-              (vec
-                (keep (fn [key]
-                        (when-not (vars key) key))
-                      ffi-abi-keys))]
-          (when (seq ffi-missing)
-            (throw
-              (ex-info
-                "jolt.internal.sim exposes an FFI-capable descriptor without the FFI controller ABI"
-                {:type :jolt.sim.runtime/abi-incompatible
-                 :missing ffi-missing})))))
-      ;; ABI v4 advertises a routing FFI controller. The routing installer
-      ;; (jolt.internal.sim/install-ffi-routing-controller!) must be present on
-      ;; a v4 image even though run-controlled itself installs only the
-      ;; established one-argument FFI controller. A v4 image that omits it is
-      ;; incompatible; restoration still shares restore-ffi-controller!.
-      (when (= 4 (:abi-version descriptor))
-        (when-not (:install-ffi-routing-controller! vars)
-          (throw
-            (ex-info
-              "jolt.internal.sim exposes an ABI v4 descriptor without the FFI routing controller installer"
-              {:type :jolt.sim.runtime/abi-incompatible
-               :missing [:install-ffi-routing-controller!]}))))
       {:descriptor descriptor
-       :abi-version (:abi-version descriptor)
        :install-controller! @(:install-controller! vars)
        :restore-controller! @(:restore-controller! vars)
        :controller-errors @(:controller-errors vars)
        :clear-controller-errors! @(:clear-controller-errors! vars)
-       :install-ffi-controller! (some-> (:install-ffi-controller! vars) deref)
-       :restore-ffi-controller! (some-> (:restore-ffi-controller! vars) deref)
+       :install-ffi-controller! @(:install-ffi-controller! vars)
+       :restore-ffi-controller! @(:restore-ffi-controller! vars)
        :install-ffi-routing-controller!
-       (some-> (:install-ffi-routing-controller! vars) deref)})))
+       @(:install-ffi-routing-controller! vars)})))
+
+(defn available?
+  "True only when the exact current sim controller contract is available.
+  Returns false on an ordinary released image where every optional ABI var is
+  absent. A partial namespace or incompatible descriptor fails closed instead
+  of being reported as merely unavailable."
+  []
+  (try
+    (resolve-controller-ops!)
+    true
+    (catch :default error
+      (if (= :jolt.sim.runtime/abi-unavailable (:type (ex-data error)))
+        false
+        (throw error)))))
 
 (defn capabilities
-  "Resolves and returns the validated controller capability descriptor from a
-  sim image (ABI v1, v2, v3, or v4). This is the validated descriptor only —
-  the raw controller functions are never exposed publicly.
+  "Resolves and returns the exact current controller capability descriptor.
+  The raw controller functions are never exposed publicly.
 
   Throws typed ex-info tagged :jolt.sim.runtime/abi-unavailable on an ordinary
   image, and :jolt.sim.runtime/abi-incompatible when the image does not expose
@@ -429,7 +232,7 @@
     (invalid-controller-event! :invalid-parent-id record))
   record)
 
-(defn- apply-event [abi-version state {:keys [event task] :as record}]
+(defn- apply-event [state {:keys [event task] :as record}]
   (let [seen (:seen state)
         active (:active state)
         next-state
@@ -437,43 +240,37 @@
           :spawn
           (if (contains? seen task)
             (invalid-controller-event! :duplicate-spawn record)
-            (cond-> (-> state
-                        (update :seen conj task)
-                        (update :active conj task))
-              (#{3 4} abi-version) (update :unexited conj task)))
+            (-> state
+                (update :seen conj task)
+                (update :active conj task)
+                (update :unexited conj task)))
 
           :start
           (cond
             (not (contains? seen task))
             (invalid-controller-event! :start-before-spawn record)
 
-            (and (#{3 4} abi-version)
-                 (contains? (:started state) task))
+            (contains? (:started state) task)
             (invalid-controller-event! :duplicate-start record)
 
-            (#{3 4} abi-version)
-            (update state :started conj task)
-
             :else
-            state)
+            (update state :started conj task))
 
           (:finish :cancel)
           (cond
             (not (contains? active task))
             (invalid-controller-event! :terminal-without-active-task record)
-            (#{3 4} abi-version)
+
+            :else
             ;; Settle the future; the worker remains :unexited until exactly one
             ;; :exit/:abort releases its ownership.
             (-> state
                 (update :active disj task)
-                (update :settled conj task))
-            :else
-            (update state :active disj task))
+                (update :settled conj task)))
 
-          ;; :exit/:abort arrive only under ABI v3/v4. A worker may exit only
-          ;; after :finish/:cancel settled its future. :abort is the distinct
-          ;; pre-worker path and therefore removes both active and unexited
-          ;; ownership without requiring settlement.
+          ;; A worker may exit only after :finish/:cancel settled its future.
+          ;; :abort is the distinct pre-worker path and therefore removes both
+          ;; active and unexited ownership without requiring settlement.
           :exit
           (cond
             (not (contains? (:unexited state) task))
@@ -525,43 +322,38 @@
 (defn- begin-event!
   "Atomically orders an event against scope closure. A late :spawn is rejected
   before its worker can fork, and a late :start is rejected before its body can
-  run. Under v1/v2 a late terminal event is observed but not applied (returns
-  :ignore). Under v3/v4, late drainage events are applied and still invoke
-  on-event. A rejected late :spawn is recorded before failing so the core's
-  synchronous balancing :abort can be accepted without inventing worker
-  ownership; that special :abort is recorded but not forwarded to on-event."
-  [abi-version state record]
+  run. Late drainage events are applied and still invoke on-event. A rejected
+  late :spawn is recorded before failing so the core's synchronous balancing
+  :abort can be accepted without inventing worker ownership; that special
+  :abort is recorded but not forwarded to on-event."
+  [state record]
   (loop []
     (let [before @state]
       (if (:closed? before)
         (let [event (:event record)]
           (cond
-            (and (#{3 4} abi-version) (#{:spawn :start} event))
+            (#{:spawn :start} event)
             (let [after (reject-event-after-close before record)]
               (if (compare-and-set! state before after)
                 :reject
                 (recur)))
 
-            (#{:spawn :start} event)
-            (invalid-controller-event! :event-after-scope record)
-
-            (and (#{3 4} abi-version)
-                 (= :abort event)
+            (and (= :abort event)
                  (contains? (:rejected before) (:task record)))
             (let [after (balance-rejected-spawn before record)]
               (if (compare-and-set! state before after)
                 :balance
                 (recur)))
 
-            (and (#{3 4} abi-version) (contains? drain-events event))
-            (let [after (apply-event abi-version before record)]
+            (contains? drain-events event)
+            (let [after (apply-event before record)]
               (if (compare-and-set! state before after)
                 :invoke
                 (recur)))
 
             :else
             :ignore))
-        (let [after (apply-event abi-version before record)]
+        (let [after (apply-event before record)]
           (if (compare-and-set! state before after)
             :invoke
             (recur)))))))
@@ -582,49 +374,48 @@
   controller failure; the failure is latched in state before the in-flight
   entry is cleared (so the supervisor never observes a callback neither
   in-flight nor latched), and :finish/:cancel/:exit/:abort failures never
-  replace the application result. Under v3/v4 late drainage events still reach
-  on-event and remain in-flight until that callback returns."
-  [on-event state abi-version]
-  (let [events-set (if (#{3 4} abi-version) v3-events v1-events)]
-    (fn controller [event id parent]
-      (let [record {:event event :task id :parent parent}
-            error-recorded? (volatile! false)]
-        (try
-          (validate-controller-event! events-set record)
-          (let [mode (begin-event! abi-version state record)]
-            (when-not (= :ignore mode)
-              ;; Every mode except :ignore inserted an in-flight entry. Clear
-              ;; it only after callback delivery or rejection/error latching.
-              ;; :balance is the core's synchronous acknowledgement for a
-              ;; rejected late spawn, so no user callback saw that spawn.
-              (try
-                (case mode
-                  :invoke
-                  (when (some? on-event)
-                    (on-event record))
+  replace the application result. Late drainage events still reach on-event
+  and remain in-flight until that callback returns."
+  [on-event state]
+  (fn controller [event id parent]
+    (let [record {:event event :task id :parent parent}
+          error-recorded? (volatile! false)]
+      (try
+        (validate-controller-event! controller-events record)
+        (let [mode (begin-event! state record)]
+          (when-not (= :ignore mode)
+            ;; Every mode except :ignore inserted an in-flight entry. Clear it
+            ;; only after callback delivery or rejection/error latching.
+            ;; :balance is the core's synchronous acknowledgement for a
+            ;; rejected late spawn, so no user callback saw that spawn.
+            (try
+              (case mode
+                :invoke
+                (when (some? on-event)
+                  (on-event record))
 
-                  :reject
-                  (invalid-controller-event! :event-after-scope record)
+                :reject
+                (invalid-controller-event! :event-after-scope record)
 
-                  :balance
-                  nil)
-                (catch :default error
-                  ;; Record before clearing :in-flight. This closes the race
-                  ;; where the body observes neither an in-flight callback nor
-                  ;; the supervisor latch while Scheme is still unwinding the
-                  ;; callback failure.
-                  (record-controller-error! state record error)
-                  (vreset! error-recorded? true)
-                  (throw error))
-                (finally
-                  (end-event! state event id)))))
-          nil
-          (catch :default error
-            (when-not @error-recorded?
-              (record-controller-error! state record error))
-            (throw error)))))))
+                :balance
+                nil)
+              (catch :default error
+                ;; Record before clearing :in-flight. This closes the race
+                ;; where the body observes neither an in-flight callback nor
+                ;; the supervisor latch while Scheme is still unwinding the
+                ;; callback failure.
+                (record-controller-error! state record error)
+                (vreset! error-recorded? true)
+                (throw error))
+              (finally
+                (end-event! state event id)))))
+        nil
+        (catch :default error
+          (when-not @error-recorded?
+            (record-controller-error! state record error))
+          (throw error))))))
 
-;; ---- Established FFI interception (ABI v2/v3/v4) ----------------------
+;; ---- Established FFI interception -------------------------------------
 
 (defn- invalid-ffi-descriptor! [reason descriptor]
   (throw
@@ -635,26 +426,17 @@
      :descriptor descriptor})))
 
 (def ^:private foreign-function-keys
-  #{:kind :task :arguments :symbol :argument-types :return-type :blocking?})
-
-;; Descriptor-version 2 :foreign-function descriptors carry exactly the
-;; descriptor-version 1 keys plus :capture-native-error?.
-(def ^:private foreign-function-keys-v2
-  (conj foreign-function-keys :capture-native-error?))
+  #{:kind :task :arguments :symbol :argument-types :return-type :blocking?
+    :capture-native-error?})
 
 (def ^:private native-operation-keys
   #{:kind :task :arguments :operation})
 
 (defn- validate-ffi-descriptor!
-  "Validates a single intercepted call descriptor exactly against the running
-  image's nested FFI descriptor-version (1, 2, or 3). Versions 2 and 3 require
-  :foreign-function descriptors to additionally carry a Boolean
-  :capture-native-error?; :native-operation descriptors keep the same shape
-  across descriptor-versions, but version 3 accepts the two additional
-  :borrow-byte-array and :release-byte-array operations."
-  [ffi-descriptor-version descriptor]
-  (when-not (contains? #{1 2 3} ffi-descriptor-version)
-    (invalid-ffi-descriptor! :unsupported-descriptor-version descriptor))
+  "Validates one intercepted call against the exact current descriptor-version
+  3 shape. Every foreign descriptor carries Boolean :capture-native-error?;
+  native descriptors admit the current 15-operation set."
+  [descriptor]
   (when-not (map? descriptor)
     (invalid-ffi-descriptor! :not-a-map descriptor))
   (let [{:keys [kind task arguments]} descriptor]
@@ -667,10 +449,7 @@
     (case kind
       :foreign-function
       (do
-        (when-not (= (if (#{2 3} ffi-descriptor-version)
-                       foreign-function-keys-v2
-                       foreign-function-keys)
-                     (set (keys descriptor)))
+        (when-not (= foreign-function-keys (set (keys descriptor)))
           (invalid-ffi-descriptor! :foreign-function-key-mismatch descriptor))
         (when-not (string? (:symbol descriptor))
           (invalid-ffi-descriptor! :invalid-symbol descriptor))
@@ -684,28 +463,18 @@
           (invalid-ffi-descriptor! :invalid-return-type descriptor))
         (when-not (boolean? (:blocking? descriptor))
           (invalid-ffi-descriptor! :invalid-blocking descriptor))
-        (when (#{2 3} ffi-descriptor-version)
-          (when-not (boolean? (:capture-native-error? descriptor))
-            (invalid-ffi-descriptor! :invalid-capture-native-error descriptor))))
+        (when-not (boolean? (:capture-native-error? descriptor))
+          (invalid-ffi-descriptor! :invalid-capture-native-error descriptor)))
       :native-operation
       (do
         (when-not (= native-operation-keys (set (keys descriptor)))
           (invalid-ffi-descriptor! :native-operation-key-mismatch descriptor))
-        ;; Descriptor-version 3 advertises the two pointer-loan operations in
-        ;; addition to the base list; earlier descriptor-versions know only the
-        ;; base list, so an out-of-list operation there still fails closed.
-        (let [operations (if (= ffi-descriptor-version 3)
-                           native-operations-v3
-                           native-operations)]
-          (when-not (contains? operations (:operation descriptor))
-            (invalid-ffi-descriptor! :unknown-operation descriptor)))))
+        (when-not (contains? native-operations (:operation descriptor))
+          (invalid-ffi-descriptor! :unknown-operation descriptor))))
     descriptor))
 
 (defn- descriptor-handler-key
-  "Computes the canonical six-element handler identity for a :foreign-function
-  descriptor. A descriptor-version 1 descriptor never carries
-  :capture-native-error?; its absence is treated as false so v1-style
-  descriptors still match a canonical capture?-false handler key."
+  "Computes the canonical six-element handler identity for a foreign call."
   [descriptor]
   (case (:kind descriptor)
     :native-operation
@@ -713,7 +482,7 @@
     :foreign-function
     [:foreign-function (:symbol descriptor) (:argument-types descriptor)
      (:return-type descriptor) (:blocking? descriptor)
-     (get descriptor :capture-native-error? false)]))
+     (:capture-native-error? descriptor)]))
 
 ;; Hybrid routing must distinguish an intentionally modeled value from a
 ;; legacy hermetic handler result. These wrappers are deliberately ordinary
@@ -980,9 +749,9 @@
       :handler-error)))
 
 (defn- make-ffi-controller
-  "Returns the established FFI controller fn installed under ABI v2/v3/v4. It
-  validates every incoming descriptor exactly against ffi-descriptor-version,
-  records its handler/blocked decision in arrival order before execution, and
+  "Returns the established hermetic FFI controller. It validates every incoming
+  descriptor against the exact current shape, records its handler/blocked
+  decision in arrival order before execution, and
   dispatches to the registered handler (nil handler is a valid substitution
   returning nil). An unhandled effect throws
   :jolt.sim.runtime/unhandled-native-effect before any OS access. When a
@@ -992,12 +761,12 @@
   malformed-descriptor, and malformed-capture-result failures are latched in
   state so application code cannot catch the thrown exception and make the run
   succeed."
-  [handlers state effect-trace-log ffi-descriptor-version]
+  [handlers state effect-trace-log]
   (fn ffi-controller [descriptor]
     (let [latched? (volatile! false)
           validated? (volatile! false)]
       (try
-        (validate-ffi-descriptor! ffi-descriptor-version descriptor)
+        (validate-ffi-descriptor! descriptor)
         (vreset! validated? true)
         (let [key (descriptor-handler-key descriptor)
               entry (find handlers key)]
@@ -1038,26 +807,25 @@
 (defn- invalid-proceed! [descriptor proceed]
   (throw
    (ex-info
-    "The ABI v4 routing controller received an invalid proceed continuation"
+    "The routing controller received an invalid proceed continuation"
     {:type :jolt.sim.runtime/invalid-proceed
      :descriptor descriptor
      :proceed-class (str (class proceed))})))
 
 (defn- make-ffi-routing-controller
-  "Returns the ABI v4 two-argument routing controller for :observe or :hybrid.
+  "Returns the two-argument routing controller for :observe or :hybrid.
   Observe always invokes proceed. Hybrid dispatches configured handlers first
   and otherwise invokes proceed only when no model-owned numeric resource is
   present in the descriptor's top-level arguments. Native exceptions propagate
   with ordinary application semantics and are deliberately not controller
   errors. Policy, handler, and provenance failures remain latched fail closed."
-  [ffi-mode handlers state effect-trace-log ffi-descriptor-version
-   resource-ledger]
+  [ffi-mode handlers state effect-trace-log resource-ledger]
   (fn ffi-routing-controller [descriptor proceed]
     (let [latched? (volatile! false)
           validated? (volatile! false)
           proceeding? (volatile! false)]
       (try
-        (validate-ffi-descriptor! ffi-descriptor-version descriptor)
+        (validate-ffi-descriptor! descriptor)
         (vreset! validated? true)
         (when-not (fn? proceed)
           (invalid-proceed! descriptor proceed))
@@ -1130,31 +898,27 @@
 (defn- close-state! [state]
   (swap! state assoc :closed? true))
 
-(defn- outliving-tasks [abi-version snapshot]
-  ;; Under v3/v4 a task outlives the scope while its worker still owns (has not
-  ;; reached :exit/:abort), a rejected spawn has not received its balancing
-  ;; :abort, or a lifecycle callback is still executing.
-  ;; Under v1/v2 ownership ends at :finish/:cancel, so :active is the test.
-  (let [owning
-        (if (#{3 4} abi-version)
-          (concat (:active snapshot)
-                  (:unexited snapshot)
-                  (:rejected snapshot))
-          (:active snapshot))]
+(defn- outliving-tasks [snapshot]
+  ;; A task outlives the scope while its worker still owns (has not reached
+  ;; :exit/:abort), a rejected spawn has not received its balancing :abort, or
+  ;; a lifecycle callback is still executing.
+  (let [owning (concat (:active snapshot)
+                       (:unexited snapshot)
+                       (:rejected snapshot))]
     (vec
      (sort
       (set
        (concat owning
                (map second (:in-flight snapshot))))))))
 
-(defn- v3-drained? [snapshot]
+(defn- drained? [snapshot]
   (and (empty? (:active snapshot))
        (empty? (:unexited snapshot))
        (empty? (:rejected snapshot))
        (empty? (:in-flight snapshot))))
 
-(defn- drain-unexited!
-  "Waits a bounded interval for every v3 worker to release ownership
+(defn- drain-owned!
+  "Waits a bounded interval for every worker to release ownership
   (:exit/:abort), every rejected spawn to receive its balancing :abort, and
   every lifecycle callback to finish. Returns true when the scope is safe to
   restore, false when ownership or a callback remains at the deadline."
@@ -1162,7 +926,7 @@
   (let [deadline (+ (System/nanoTime) (* timeout-ms 1000000))]
     (loop []
       (let [snap @state]
-        (if (v3-drained? snap)
+        (if (drained? snap)
           true
           (if (<= deadline (System/nanoTime))
             false
@@ -1309,9 +1073,7 @@
     (throw
      (ex-info "run-controlled config must be a map"
               {:type :jolt.sim.runtime/invalid-config})))
-  ;; :on-event is always available; :ffi-handlers is structurally validated
-  ;; here so malformed handler config is reported before ABI resolution, but its
-  ;; availability is gated by ABI version after resolution.
+  ;; Validate pure config before resolving the optional runtime capability.
   (let [unknown-keys
         (vec (sort (remove #{:on-event :ffi-handlers :ffi-mode
                              :drain-timeout-ms :future-schedule}
@@ -1360,39 +1122,31 @@
 (defn run-controlled
   "Runs thunk under the simulation controller described by config.
 
-   Resolves the controller ABI (v1, v2, v3, or v4), throwing
-   :jolt.sim.runtime/abi-unavailable or /abi-incompatible otherwise. Under v1 an
-   explicitly supplied FFI policy key is rejected with
-   :jolt.sim.runtime/capability-unavailable. Atomically claims the single
-   session so overlapping or nested runs fail closed with
-   :jolt.sim.runtime/session-overlap, clears stale controller errors, then
-   installs the future lifecycle controller and then one FFI controller under
-   v2/v3/v4 before running the unchanged thunk. :ffi-mode defaults to
-   :hermetic, which preserves the established one-argument fail-closed
-   controller. Explicit :observe/:hybrid require ABI v4 and install its routing
-   controller; observe proceeds every call, while hybrid uses registered
-   handlers and proceeds misses only after its modeled-resource guard.
-   Restoration is the reverse:
-   FFI then future, both attempted on cleanup. The original body failure is
-   preserved whenever cleanup succeeds.
+   Resolves the exact current controller contract, throwing
+   :jolt.sim.runtime/abi-unavailable or /abi-incompatible otherwise. Atomically
+   claims the single session, clears stale errors, installs the lifecycle
+   controller and then one FFI controller, and runs the unchanged thunk.
+   :ffi-mode defaults to :hermetic and uses the established one-argument
+   fail-closed controller. :observe/:hybrid install the routing controller;
+   observe proceeds every call, while hybrid proceeds misses only after its
+   modeled-resource guard. Restoration is FFI then future, with both attempted.
 
    The future controller records an ordered event log of exact
    {:event :task :parent} maps and forwards each to the optional (:on-event
-   config) on the hook thread (blocking at :start gates that task). Under
-   v2/v3/v4 the FFI controller records an ordered :effects log of every
-   validated native interception plus correlated :effect-trace route evidence.
+   config) on the hook thread (blocking at :start gates that task). The FFI
+   controller records every validated native interception plus correlated
+   :effect-trace route evidence.
    Hermetic unhandled effects throw :jolt.sim.runtime/unhandled-native-effect
    before OS access. Handler and routing-policy failures are latched locally so
    application code cannot catch them and make the run succeed; native proceed
    exceptions are ordinary body exceptions and are not latched.
 
-   Under v3/v4 a task owns a worker from :spawn until exactly one :exit/:abort;
-   :finish/:cancel settle its future but do not release ownership, so after the
+   A task owns a worker from :spawn until exactly one :exit/:abort;
+   :finish/:cancel settle its future but do not release ownership. After the
    body returns the scope waits (bounded by :drain-timeout-ms, default 2000) for
-   every worker to release and every lifecycle callback to finish before any
-   restoration. If a worker cannot drain, the controller is left installed and
-   the session is poisoned (:jolt.sim.runtime/session-poisoned on the next run)
-   rather than restored unsafely.
+   every worker and callback before restoration. If the scope cannot drain,
+   controllers stay installed and the session is poisoned rather than restored
+   unsafely.
 
    This ownership guarantee covers hooked ordinary futures only. Raw threads
    and executor tasks are not visible to the lifecycle ABI and must be joined
@@ -1403,69 +1157,28 @@
    if a callback or handler failed (including a supervisor-latched terminal
    failure, normalized through jolt.sim.trace/normalize-error), and with
    :jolt.sim.runtime/tasks-outlive-scope if any task reached :spawn inside the
-   scope but did not release worker ownership (v3/v4: :exit/:abort; v1/v2:
-   :finish/:cancel) before cleanup completed.
+   scope but did not release worker ownership through :exit/:abort before
+   cleanup completed.
 
-   Under v3/v4, an optional :future-schedule -- a nonempty vector that is an
-   exact permutation of 0..N-1 -- drives the first coarse deterministic scheduler
-   (see jolt.sim.future-schedule) over unchanged ordinary futures with parent
-   zero. Because ABI v3/v4 cannot distinguish the thunk thread from another
-   non-hooked raw thread, this first slice requires a quiescent scope with one
-   caller-enforced parent-zero spawner. It assigns ordinals in arrival order
-   and admits at most one ordinal's body at a time, in the schedule's order,
-   releasing the next only after the current ordinal's :finish. A nested
-   spawn, a spawn beyond or short of the schedule's length, a pre-worker
-   :abort, an out-of-order terminal event, or a cancellation (unsupported in
-   this first slice) fails closed with a retained
-   :jolt.sim.runtime/schedule-error and still drains through ABI v3/v4
-   :exit/:abort. It requires ABI v3 or v4 and is otherwise rejected with
-   :jolt.sim.runtime/capability-unavailable.
+   An optional :future-schedule -- a nonempty exact permutation of 0..N-1 --
+   drives the first coarse deterministic scheduler over ordinary futures with
+   parent zero. This first slice requires a quiescent scope with one
+   caller-enforced parent-zero spawner. Nested or excess spawns, missing spawns,
+   pre-worker abort, out-of-order terminal events, and cancellation fail closed
+   with a retained :jolt.sim.runtime/schedule-error and still drain ownership.
 
    On success returns {:result value :events vector-of-maps :capabilities
-   descriptor}. Under v2/v3/v4 the map also includes :effects, a vector of
-   exact validated descriptors in interception-arrival order, and
-   :effect-trace, whose entries carry the exact descriptor, mode, and actual
-   :handler/:native/:blocked route. Descriptor arguments are live in-memory
-   evidence and may contain mutable objects such as byte arrays. Under v1 both
-   fields are omitted. When :future-schedule is supplied the map also includes
+   descriptor :effects vector :effect-trace vector}. Descriptor arguments are
+   live in-memory evidence and may contain mutable objects such as byte arrays.
+   When :future-schedule is supplied the map also includes
    :schedule-events, the scheduler's deterministic logical evidence log of
    alternating [:admit ordinal] and [:complete ordinal] pairs. Raw lifecycle
-   arrival order and task ids remain only in the unchanged compatibility
-   :events field."
+   arrival order and task ids remain in :events."
   [config thunk]
   (validate-run-arguments! config thunk)
   (let [ops (resolve-controller-ops!)
-        abi-version (:abi-version ops)
         on-event (:on-event config)
         ffi-mode (get config :ffi-mode :hermetic)]
-    (when (and (= abi-version 1)
-               (or (contains? config :ffi-handlers)
-                   (contains? config :ffi-mode)))
-      (throw
-       (ex-info
-        "run-controlled FFI policy requires an ABI v2, v3, or v4 sim image"
-        {:type :jolt.sim.runtime/capability-unavailable})))
-    (when (and (contains? #{:observe :hybrid} ffi-mode)
-               (not= 4 abi-version))
-      (throw
-       (ex-info
-        "run-controlled :observe and :hybrid modes require an ABI v4 sim image"
-        {:type :jolt.sim.runtime/capability-unavailable
-         :ffi-mode ffi-mode
-         :required-abi-version 4
-         :actual-abi-version abi-version})))
-    (when (and (not (#{3 4} abi-version))
-               (contains? config :drain-timeout-ms))
-      (throw
-       (ex-info
-        "run-controlled :drain-timeout-ms requires an ABI v3 or v4 sim image"
-        {:type :jolt.sim.runtime/capability-unavailable})))
-    (when (and (not (#{3 4} abi-version))
-               (contains? config :future-schedule))
-      (throw
-       (ex-info
-        "run-controlled :future-schedule requires an ABI v3 or v4 sim image"
-        {:type :jolt.sim.runtime/capability-unavailable})))
     (let [ffi-handlers (if (contains? config :ffi-handlers)
                          (validate-ffi-handlers! (:ffi-handlers config))
                          {})
@@ -1487,18 +1200,12 @@
                  :closed? false})
           effect-trace-log (atom [])
           resource-ledger (atom [])
-          controller (make-controller effective-on-event state abi-version)
-          ffi-capable? (#{2 3 4} abi-version)
-          ffi-descriptor-version
-          (get-in (:descriptor ops) [:ffi-interception :descriptor-version])
+          controller (make-controller effective-on-event state)
           ffi-controller
-          (when ffi-capable?
-            (if (= :hermetic ffi-mode)
-              (make-ffi-controller
-               ffi-handlers state effect-trace-log ffi-descriptor-version)
-              (make-ffi-routing-controller
-               ffi-mode ffi-handlers state effect-trace-log
-               ffi-descriptor-version resource-ledger)))
+          (if (= :hermetic ffi-mode)
+            (make-ffi-controller ffi-handlers state effect-trace-log)
+            (make-ffi-routing-controller
+             ffi-mode ffi-handlers state effect-trace-log resource-ledger))
           drain-timeout-ms (or (:drain-timeout-ms config) 2000)]
       (when-not (compare-and-set! session-state :idle :active)
         (let [status @session-state]
@@ -1518,12 +1225,11 @@
           ;; future-then-FFI setup can still restore the future controller.
           (vreset! future-token
                    ((:install-controller! ops) controller))
-          (when ffi-controller
-            (vreset! ffi-token
-                     ((if (= :hermetic ffi-mode)
-                        (:install-ffi-controller! ops)
-                        (:install-ffi-routing-controller! ops))
-                      ffi-controller)))
+          (vreset! ffi-token
+                   ((if (= :hermetic ffi-mode)
+                      (:install-ffi-controller! ops)
+                      (:install-ffi-routing-controller! ops))
+                    ffi-controller))
           (let [effective-thunk
                 (if schedule ((:wrap-thunk schedule) thunk) thunk)
                 outcome
@@ -1532,45 +1238,38 @@
                   (catch :default error
                     {:ok? false :error error}))
                 _ (close-state! state)
-                ;; Under v3/v4, after the body returns the scope waits (bounded)
-                ;; for every worker to release ownership and every lifecycle
-                ;; callback to finish before any restoration is attempted.
+                ;; After the body returns, wait a bounded interval for every
+                ;; worker and lifecycle callback before attempting restoration.
                 _drain-attempt
-                (when (#{3 4} abi-version)
-                  (drain-unexited! state drain-timeout-ms))
+                (drain-owned! state drain-timeout-ms)
                 snapshot @state
                 ;; Recheck the atomic snapshot after the deadline. A worker may
                 ;; have released in the narrow interval between the last clock
                 ;; check and this read; such a fully drained state is safe.
-                drained? (or (not (#{3 4} abi-version))
-                             (v3-drained? snapshot))
+                scope-drained? (drained? snapshot)
                 latched ((:controller-errors ops))
                 errors (controller-errors snapshot latched)
-                ffi-evidence
-                (when ffi-capable? (effect-evidence effect-trace-log))
+                ffi-evidence (effect-evidence effect-trace-log)
                 schedule-failure
                 (when schedule ((:failure schedule)))
                 gate-aborted-body?
                 (and (not (:ok? outcome))
                      (future-schedule/gate-aborted? (:error outcome)))
-                outliving (outliving-tasks abi-version snapshot)]
+                outliving (outliving-tasks snapshot)]
             (cond
               ;; A caught nested spawn, cancellation, pre-worker abort, or
               ;; other scheduler violation remains the primary typed failure
               ;; after every owned worker drains. Later gate-abort sentinels
               ;; must not replace it.
-              (and schedule-failure drained?)
+              (and schedule-failure scope-drained?)
               (throw schedule-failure)
 
-              ;; Preserve the original body throw when v3 drainage and exact
-              ;; controller restoration remain possible, matching the v1/v2
-              ;; contract. v1/v2 retain their historical immediate body-error
-              ;; precedence because they have no worker-exit evidence. An
-              ;; internal gate-abort sentinel instead defers to the callback
-              ;; errors that caused the scheduler to abort.
+              ;; Preserve the original body throw once drainage and exact
+              ;; restoration remain possible. An internal gate-abort sentinel
+              ;; instead defers to the callback errors that caused the abort.
               (and (not (:ok? outcome))
                    (not gate-aborted-body?)
-                   (or (not (#{3 4} abi-version)) drained?))
+                   scope-drained?)
               (throw (:error outcome))
 
               ;; A callback error still fails closed when the body itself
@@ -1581,16 +1280,16 @@
               (throw
                (ex-info
                 "A controller or native-effect callback failed"
-                (cond-> {:type :jolt.sim.runtime/controller-error
-                         :errors errors
-                         :events (:events snapshot)}
-                  ffi-capable? (merge ffi-evidence))))
+                (merge {:type :jolt.sim.runtime/controller-error
+                        :errors errors
+                        :events (:events snapshot)}
+                       ffi-evidence)))
 
               (and (not (:ok? outcome))
-                   (or (not (#{3 4} abi-version)) drained?))
+                   scope-drained?)
               (throw (:error outcome))
 
-              (or (not drained?) (seq outliving))
+              (or (not scope-drained?) (seq outliving))
               (throw
                (ex-info
                 "Tasks spawned inside run-controlled outlived its scope"
@@ -1601,21 +1300,17 @@
               (let [base {:result (:value outcome)
                           :events (:events snapshot)
                           :capabilities (:descriptor ops)}]
-                (cond-> base
-                  ffi-capable? (merge ffi-evidence)
+                (cond-> (merge base ffi-evidence)
                   schedule (assoc :schedule-events ((:evidence schedule)))))))
           (finally
-            ;; Closing before restore rejects late lifecycle starts. Under v3/v4
-            ;; restoration is refused while any worker still owns or any
-            ;; lifecycle callback remains in flight: such restoration would be
-            ;; unsafe, so the controller is left installed and the session is
+            ;; Restoration is refused while any worker still owns or callback
+            ;; remains in flight; controllers stay installed and the session is
             ;; poisoned instead.
             (try
               (close-state! state)
               (finally
                 (let [final @state]
-                  (if (and (#{3 4} abi-version)
-                           (not (v3-drained? final)))
+                  (if (not (drained? final))
                     (reset! session-state :poisoned)
                     (restore-controllers!
                      ops @ffi-token @future-token)))))))))))

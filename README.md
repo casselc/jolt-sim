@@ -16,9 +16,9 @@ and simulated worlds belong here.
 - dynamic discovery of the sim-image controller ABI without making ordinary
   Jolt images depend on it; and
 - a `run-controlled`/`defsim` adapter that preserves the application body
-  unchanged while gating ordinary future starts and, under ABI v2/v3/v4,
-  substituting registered FFI/native effects; ABI v4 can also observe real
-  native execution or mix modeled boundaries with guarded native fallback;
+  unchanged while gating ordinary future starts, substituting registered
+  FFI/native effects, observing real native execution, or mixing modeled
+  boundaries with guarded native fallback;
 - capped lexicographic enumeration of exact top-level future schedules and a
   fresh-process supervisor that runs each plan with a deadline, canonical
   result transport, and bounded termination/reaping;
@@ -31,68 +31,62 @@ and simulated worlds belong here.
 - a deterministic SQLite handler model plus a real/sim parity fixture that
   executes unchanged `jdbc.core` application code.
 
-The current runtime adapter supports four controller ABI versions discovered
-dynamically from a sim image. ABI v1 is lifecycle-only: an optional `:on-event`
-callback observes and gates ordinary Jolt future starts. ABI v2 additionally
-installs an FFI controller on every controlled run, so every `jolt.ffi` native
-effect inside the scope is intercepted before the operating system is reached.
-An effect without a registered handler throws
-`:jolt.sim.runtime/unhandled-native-effect`; handlers are configured via
-`:ffi-handlers`, a map keyed by `[:native-operation operation]` or
-`[:foreign-function c-symbol-string argument-types return-type blocking?
-capture-native-error?]`. The prior five-element foreign-function key remains
-accepted as an unambiguous shorthand for a final `false`; supplying both forms
-for the same scalar binding is rejected. Map membership (including a `nil`
-value) defines handled. Nested FFI descriptor version 2 adds the exact Boolean
-`:capture-native-error?` field. A captured handler must return the complete
-two-element `[native-result error-code]` public value, while descriptor version
-1 remains accepted as capture-disabled. Descriptor version 3 retains version
-2's capture semantics and adds the scoped `:borrow-byte-array` and
-`:release-byte-array` native operations. Under ABI v1 an explicitly supplied
-`:ffi-handlers` key is rejected with
-`:jolt.sim.runtime/capability-unavailable`, and the result map never carries
-`:effects`.
+The runtime adapter accepts one exact current controller contract, presently
+prerelease ABI 4. All current controller vars are required. If every var is
+absent, `available?` returns false for an ordinary released Jolt image. A
+partial namespace, stale or future ABI number, or any descriptor that differs
+from the literal current shape fails closed as
+`:jolt.sim.runtime/abi-incompatible`.
 
-ABI v3 extends the v2 lifecycle with two worker-ownership events, `:exit` and
-`:abort`; its nested FFI descriptor may be version 1, 2, or 3. Under v3 a task
-owns a worker from `:spawn` until exactly one `:exit`/`:abort`;
+The current lifecycle has `:spawn`, `:start`, `:finish`, `:cancel`, `:exit`, and
+`:abort`. A task owns a worker from `:spawn` until exactly one `:exit`/`:abort`;
 `:finish`/`:cancel` settle its future but do **not** release that ownership, so
 a cancelled running worker remains owned until `:exit`. After the body returns,
-cleanup waits a bounded interval
-(`:drain-timeout-ms`, default 2000) for every lifecycle-owned hooked-future
-worker to release ownership and every lifecycle callback to finish before any
-restoration. Restoration is the reverse (FFI then future). **Safe restoration
-is never claimed while any tracked v3 worker ownership or lifecycle callback
-remains:** if a hooked-future body cannot drain, the controller is left
-installed and the session is poisoned
-(`:jolt.sim.runtime/session-poisoned` on the next run) rather than restored
-unsafely. Late `:finish`/`:cancel`/`:exit`/`:abort` needed for drainage are
-accepted after scope closure and still reach `:on-event`; new
-`:spawn`/`:start` after closure fail closed, and the core's balancing
-`:abort` for a rejected spawn is consumed without inventing a worker. Body
-exceptions are rethrown unchanged only after the same drain and restoration
-boundary succeeds.
+cleanup waits a bounded interval (`:drain-timeout-ms`, default 2000) for every
+hooked-future worker to release ownership and every lifecycle callback to
+finish before restoration. Restoration is FFI then future. If the scope cannot
+drain, the controllers remain installed and the session is poisoned rather
+than restored unsafely. Late terminal/drain events are accepted after closure;
+new `:spawn`/`:start` events fail closed. Body exceptions are rethrown unchanged
+only after drainage and restoration succeed.
 
-ABI v4 retains descriptor-version 3 and the v3 worker lifecycle, then adds a
-scoped, single-use native `proceed` continuation. `run-controlled` exposes it
-through one explicit `:ffi-mode` option:
+Every controlled run installs FFI interception. The exact nested descriptor is
+version 3: it requires Boolean `:capture-native-error?` on foreign calls and
+admits all 15 current native operations, including scoped
+`:borrow-byte-array`/`:release-byte-array`. Handlers are configured via
+`:ffi-handlers`, keyed by `[:native-operation operation]` or
+`[:foreign-function c-symbol-string argument-types return-type blocking?
+capture-native-error?]`. A five-element foreign-function key remains an
+unambiguous shorthand for final `false`; supplying both identities for the same
+scalar binding is rejected. Map membership, including a `nil` value, defines
+handled. A captured handler must return `[native-result error-code]`.
+
+The current contract also exposes a scoped, owner-thread, single-use native
+`proceed` continuation. `run-controlled` selects routing with `:ffi-mode`:
 
 - `:hermetic` is the default and preserves the prior behavior exactly. The
   established one-argument controller is installed, registered handlers
   substitute results, and an unhandled effect is blocked before OS access.
-- `:observe` requires ABI v4, accepts no `:ffi-handlers`, and proceeds every
+- `:observe` accepts no `:ffi-handlers` and proceeds every
   intercepted call through its exact native branch while recording the route.
-- `:hybrid` requires ABI v4. A registered handler substitutes its result; a
+- `:hybrid` lets a registered handler substitute its result; a
   handler miss proceeds through the exact native branch unless model-owned
   resource provenance makes that fallback unsafe.
 
-Every FFI-capable successful run returns the compatibility `:effects` vector
-plus a positionally correlated `:effect-trace`. Each trace entry records the
+Every successful run returns the `:effects` vector plus a positionally
+correlated `:effect-trace`. Each trace entry records the
 exact descriptor, selected mode, and actual `:handler`, `:native`, or
 `:blocked` route. A native exception raised by `proceed` keeps ordinary
 application semantics: unchanged code may catch it, and it is not relabeled as
 a controller failure. Handler, descriptor, and routing-policy failures remain
 latched fail closed even when application code catches their immediate throw.
+
+Controller numbering is explicitly prerelease-only. ABI 5, 6, 7, and later
+development bumps replace the current contract in place; historical contracts
+remain available in Git but do not accumulate as supported runtime branches.
+At the first real public release, the externally visible controller and nested
+FFI ABI/schema numbering will be consolidated and reset to version 1,
+establishing the first compatibility boundary.
 
 Hybrid handler functions must classify results explicitly with
 `jolt.sim.runtime/substitute` or `jolt.sim.runtime/modeled-resource`; a literal
@@ -138,7 +132,7 @@ The non-restoration case intentionally poisons its process, so its permanent
 regression is isolated from the reusable test session:
 
 ```sh
-/path/to/abi-v4/target/sim/jolt -M:runtime-poison-test
+/path/to/current-sim/target/sim/jolt -M:runtime-poison-test
 ```
 
 Descriptor-version 3 also adds a scoped byte-array pointer loan. Its dedicated
@@ -147,7 +141,7 @@ memory and then unchanged against the deterministic memory handlers, including
 nested native access and exception cleanup:
 
 ```sh
-/path/to/abi-v4/target/sim/jolt -M:ffi-pointer-loan-test
+/path/to/current-sim/target/sim/jolt -M:ffi-pointer-loan-test
 ```
 
 The adapter still does not discover future counts, choose high-utility
@@ -157,20 +151,19 @@ not yet Hegel/swarm search or partial-order reduction. The kernel has no
 stream, socket, HTTP, database, or OpenTelemetry integration. Its deterministic
 traces describe kernel test runs, not arbitrary production execution.
 
-### First coarse scripted scheduler (ABI v3 `:future-schedule`)
+### First coarse scripted scheduler (`:future-schedule`)
 
-`run-controlled` accepts an optional `:future-schedule` under ABI v3: a
+`run-controlled` accepts an optional `:future-schedule`: a
 nonempty vector that is an exact permutation of `0..N-1`, shape-validated
 before any controller is installed (so a malformed schedule fails closed on
-any image, including an ordinary released one) and rejected with
-`:jolt.sim.runtime/capability-unavailable` on v1/v2. It drives
+any image, including an ordinary released one). It drives
 `jolt.sim.future-schedule`, the first coarse deterministic scheduler over
-**unchanged** ordinary futures, using only the existing ABI v3 lifecycle
+**unchanged** ordinary futures, using only the current lifecycle
 events -- no new controller hook.
 
 Ordinals are assigned, in arrival order, to accepted `:spawn` events whose
-`:parent` is `0`. ABI v3 also uses parent zero for a future created by any
-non-hooked raw thread; it does not expose enough identity to distinguish that
+`:parent` is `0`. The current hook also uses parent zero for a future created by
+any non-hooked raw thread; it does not expose enough identity to distinguish that
 thread from the thunk's thread. This first slice therefore requires a
 caller-enforced quiescent scope with exactly one parent-zero spawner. Nested
 hooked futures fail closed; competing raw-thread spawners are an explicit
@@ -178,7 +171,7 @@ nonclaim. The schedule states the admission order for the accepted ordinals'
 *bodies*: an immutable single-use gate is created per ordinal at `:spawn` and
 its `:start` blocks on that gate; at most one ordinal's body is admitted at a
 time, and the next is released only after the current ordinal's `:finish`.
-`:exit` remains ABI v3 worker-ownership/drain evidence, never the advancement
+`:exit` remains worker-ownership/drain evidence, never the advancement
 point.
 
 Any of the following aborts every undecided gate (so blocked `:start` calls
@@ -216,7 +209,7 @@ external/subprocess supervision -- exercised in isolation, not as an
 in-process test that would hang the suite:
 
 ```sh
-/path/to/abi-v3/target/sim/jolt -M:future-schedule-poison-test
+/path/to/current-sim/target/sim/jolt -M:future-schedule-poison-test
 ```
 
 ### Fresh-process schedule exploration
@@ -241,7 +234,7 @@ working directory, scenario var, schedule vector, and deadline:
          '[jolt.sim.process-explorer :as process-explorer])
 
 (process-explorer/explore
- {:worker-command ["/path/to/abi-v3/jolt" "-M:sim-worker"]
+ {:worker-command ["/path/to/current-sim/jolt" "-M:sim-worker"]
   :dir "/absolute/path/to/project"
   :scenario 'my.scenarios/checkout-race
   :schedules (explore/schedule-plans
@@ -331,10 +324,10 @@ sampling claim. Hegel runs cases sequentially; stateful swarm rules,
 coverage/resource-order scores, targeted sampling, workload and fault
 generation, and partial-order reduction remain separate later work.
 
-### FFI interception and routing caveats (ABI v2/v3/v4)
+### FFI interception and routing caveats
 
-- **Effects are live in-memory evidence.** The `:effects` vector returned under
-  v2/v3/v4 records each exact validated descriptor in arrival order, and
+- **Effects are live in-memory evidence.** The `:effects` vector records each
+  exact validated descriptor in arrival order, and
   `:effect-trace` records its route in the same order. Descriptor arguments are
   the live objects that crossed the interception boundary; they may include
   mutable values such as byte arrays, and are not snapshotted or canonicalized.
@@ -345,9 +338,9 @@ generation, and partial-order reduction remain separate later work.
 - **Raw threads remain outside lifecycle ownership.** Only ordinary
   `future-call` workers emit the current lifecycle events. A raw `Thread.`
   created inside the scope can outlive it undetected and regain uncontrolled OS
-  access after restoration. ABI v3 closes the canceled-running-worker gap for
-  hooked futures; it does not claim ownership of arbitrary host threads. ABI
-  v1/v2 also lack v3's post-worker `:exit` acknowledgement. A scenario that
+  access after restoration. The current lifecycle closes the
+  canceled-running-worker gap for hooked futures; it does not claim ownership
+  of arbitrary host threads. A scenario that
   creates raw threads or executor tasks must join them before its body returns
   if they can perform FFI; otherwise neither safe restoration nor a complete
   route trace is claimed.
@@ -359,9 +352,10 @@ generation, and partial-order reduction remain separate later work.
 ### Deterministic native memory
 
 `jolt.sim.ffi-memory` supplies handlers for all 15 operations in the current
-ABI v3 FFI descriptor. Owned allocations use aligned fake addresses backed by
-immutable byte vectors, so an intercepted pointer can never reach Chez or the
-operating system. A staged `:borrow-byte-array`/`:release-byte-array` pair
+descriptor-version 3 FFI contract. Owned allocations use aligned fake addresses
+backed by immutable byte vectors, so an intercepted pointer can never reach
+Chez or the operating system. A staged
+`:borrow-byte-array`/`:release-byte-array` pair
 instead aliases a validated live Jolt byte-array window for exactly one
 `with-byte-array-pointer` callback; modeled native and ordinary array
 mutations remain mutually visible, and access after release fails closed. The

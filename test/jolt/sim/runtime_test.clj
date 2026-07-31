@@ -5,71 +5,13 @@
 
 ;; A sim-enabled Jolt image exposes jolt.internal.sim; an ordinary released
 ;; image does not. The ordinary branches prove clean absence while the sim
-;; branches exercise event, result, cancellation, and cleanup behavior using
-;; ordinary future/promise/atom code. v2 branches additionally exercise FFI
-;; interception through jolt.ffi when the image advertises ABI v2.
+;; branches exercise the one exact current controller contract using ordinary
+;; future/promise/atom code and jolt.ffi interception.
 
-(def v1-descriptor
-  {:abi-version 1
-   :future-lifecycle true
-   :controller-errors true
-   :events [:spawn :start :finish :cancel]})
-
-(def v2-descriptor
-  {:abi-version 2
-   :future-lifecycle true
-   :controller-errors true
-   :events [:spawn :start :finish :cancel]
-   :ffi-interception {:descriptor-version 1
-                      :kinds [:foreign-function :native-operation]
-                      :arguments :live
-                      :task-identity :future-lifecycle
-                      :native-operations [:load-library :loaded? :alloc :free
-                                          :read :write :sizeof :read-bytes
-                                          :write-bytes :read-array :write-array
-                                          :ptr->string :string->ptr]}})
-
-(def v3-descriptor
-  {:abi-version 3
-   :future-lifecycle true
-   :controller-errors true
-   :events [:spawn :start :finish :cancel :exit :abort]
-   :ffi-interception {:descriptor-version 1
-                      :kinds [:foreign-function :native-operation]
-                      :arguments :live
-                      :task-identity :future-lifecycle
-                      :native-operations [:load-library :loaded? :alloc :free
-                                          :read :write :sizeof :read-bytes
-                                          :write-bytes :read-array :write-array
-                                          :ptr->string :string->ptr]}})
-
-;; ABI v3 with :ffi-interception :descriptor-version 2 is otherwise identical
-;; to v3-descriptor; only the nested FFI descriptor version changes.
-(def v3-descriptor2
-  (assoc v3-descriptor
-         :ffi-interception
-         (assoc (:ffi-interception v3-descriptor) :descriptor-version 2)))
-
-;; ABI v3 with :ffi-interception :descriptor-version 3 keeps the
-;; descriptor-version 2 foreign-function key set and :capture-native-error?
-;; semantics and extends the ordered :native-operations list to 15 entries by
-;; inserting :borrow-byte-array and :release-byte-array after :write-array and
-;; before :ptr->string.
-(def v3-descriptor3
-  (-> v3-descriptor2
-      (assoc-in [:ffi-interception :descriptor-version] 3)
-      (assoc-in [:ffi-interception :native-operations]
-                [:load-library :loaded? :alloc :free
-                 :read :write :sizeof :read-bytes
-                 :write-bytes :read-array :write-array
-                 :borrow-byte-array :release-byte-array
-                 :ptr->string :string->ptr])))
-
-;; ABI v4 is the authoritative exact descriptor: the v3 descriptor-version 3 FFI
-;; interception plus an exact :proceed-routing sub-map and :abi-version 4. It is
-;; stated here as the full literal (not built from v3-descriptor3) so the test
-;; independently pins production's v4-descriptor to the authoritative shape.
-(def v4-descriptor
+;; This full literal independently pins production's current descriptor. During
+;; prerelease development a future ABI bump replaces this contract in place;
+;; it does not add another accepted compatibility descriptor.
+(def supported-descriptor
   {:abi-version 4
    :future-lifecycle true
    :controller-errors true
@@ -91,8 +33,8 @@
                                         :scoped-byte-array-release :runtime-owned}}})
 
 ;; Binding is safe on every image because native symbol resolution is lazy.
-;; Calling this nonexistent symbol is safe only under the ABI v2 controller,
-;; where the emitted sim branch must intercept before resolution.
+;; Calling this nonexistent symbol is safe only under the sim controller,
+;; where the emitted branch must intercept before native resolution.
 (ffi/defcfn sim-ghost "jolt_sim_ghost_symbol_zzz9" [:int] :int)
 
 ;; A defsim scenario defined at namespace load time. Loading must succeed under
@@ -131,42 +73,16 @@
 (defn- ex-of [f]
   (try (f) ::not-thrown (catch :default error error)))
 
-(defn- abi-version
-  "Returns the validated descriptor's :abi-version when a sim image is present,
-  nil on an ordinary released image."
-  []
-  (when (rt/available?)
-    (:abi-version (rt/capabilities))))
-
-;; Under ABI v3 a normally completed future emits a trailing worker :exit after
-;; :finish, and a cancelled future emits :exit after :cancel. v1/v2 stop at the
-;; future-settling event.
 (defn- expected-finish-events []
-  (if (#{3 4} (abi-version))
-    [:spawn :start :finish :exit]
-    [:spawn :start :finish]))
+  [:spawn :start :finish :exit])
 
 (defn- expected-cancel-events []
-  (if (#{3 4} (abi-version))
-    [:spawn :start :cancel :exit]
-    [:spawn :start :cancel]))
+  [:spawn :start :cancel :exit])
 
 (defn- ffi-capable-version
-  "ABI version collapsed for FFI-interception tests: v2, v3, and v4 are equally
-  FFI-capable (each is the v2 FFI descriptor plus worker-ownership events, with
-  v4 additionally advertising proceed-routing), so all project to :ffi; v1
-  stays 1; an ordinary image stays nil."
+  "Returns :ffi for the exact current sim image, nil for ordinary Jolt."
   []
-  (let [v (abi-version)]
-    (if (#{2 3 4} v) :ffi v)))
-
-(defn- ffi-descriptor-version
-  "Returns the running image's nested :ffi-interception :descriptor-version
-  (1 or 2), or nil when the image is ordinary or its descriptor carries no FFI
-  capability at all (ABI v1)."
-  []
-  (when (rt/available?)
-    (get-in (rt/capabilities) [:ffi-interception :descriptor-version])))
+  (when (rt/available?) :ffi))
 
 (defn- with-close-signal
   "Runs thunk while wrapping the adapter's private close transition. The
@@ -192,10 +108,7 @@
   (if (rt/available?)
     (do
       (is (true? (rt/available?)))
-      (is (contains? #{v1-descriptor v2-descriptor
-                       v3-descriptor v3-descriptor2 v3-descriptor3
-                       v4-descriptor}
-                      (rt/capabilities))))
+      (is (= supported-descriptor (rt/capabilities))))
     (ordinary-reports-unavailable rt/capabilities)))
 
 (deftest unimplemented-simulation-options-fail-closed
@@ -253,12 +166,6 @@
              {:ffi-handlers {[:native-operation :alloc] nil}}
              (fn [] (ffi/alloc 1)))]
         (is (nil? (:result result))))
-    1 (is (= :jolt.sim.runtime/capability-unavailable
-             (:type
-              (ex-data-of
-               #(rt/run-controlled
-                 {:ffi-handlers {[:native-operation :alloc] nil}}
-                 (fn [] :uncontrolled))))))
     nil (ordinary-reports-unavailable
          #(rt/run-controlled
            {:ffi-handlers {[:native-operation :alloc] nil}}
@@ -270,10 +177,7 @@
                   {}
                   (fn [] (let [worker (future :spawned)] @worker) :done))]
       (is (= :done (:result result)))
-      (is (contains? #{v1-descriptor v2-descriptor
-                       v3-descriptor v3-descriptor2 v3-descriptor3
-                       v4-descriptor}
-                      (:capabilities result)))
+      (is (= supported-descriptor (:capabilities result)))
       (is (and (vector? (:events result))
                (seq (:events result))
                (every? #(= #{:event :task :parent} (set (keys %)))
@@ -281,15 +185,8 @@
       (is (= (expected-finish-events) (mapv :event (:events result))))
       (is (apply = (map :task (:events result))))
       (is (every? zero? (map :parent (:events result))))
-      ;; :effects and its correlated route evidence are returned only on
-      ;; FFI-capable images (v2/v3/v4).
-      (if (#{2 3 4} (abi-version))
-        (do
-          (is (vector? (:effects result)))
-          (is (vector? (:effect-trace result))))
-        (do
-          (is (nil? (:effects result)))
-          (is (nil? (:effect-trace result)))))
+      (is (vector? (:effects result)))
+      (is (vector? (:effect-trace result)))
       (is (not (contains? result :schedule-events))))
     (ordinary-reports-unavailable #(rt/run-controlled {} (fn [] :done)))))
 
@@ -409,33 +306,11 @@
      #(rt/run-controlled {} (fn [] (rt/run-controlled {} (fn [] :nested)))))))
 
 (deftest tasks-spawned-inside-must-stop-before-scope-ends
-  ;; Under v1/v2 a task that has not settled before the body returns is
-  ;; outliving. Under v3 the same scenario cannot drain (the worker never
-  ;; releases ownership), so cleanup refuses to restore and the session is
-  ;; poisoned. Defined here but, because it poisons the shared session under
-  ;; v3, the v3 branch is skipped inline and exercised by the final test so no
-  ;; later test inherits a poisoned session.
+  ;; A worker that never releases ownership cannot drain, so cleanup refuses to
+  ;; restore and poisons the shared session. The destructive control lives in
+  ;; the isolated runtime-poison suite; this unit test merely reserves it.
   (if (rt/available?)
-    (if (#{3 4} (abi-version))
-      (is true "v3 outliving-detection is exercised by the final test")
-      (let [latch (promise)
-            worker (atom nil)
-            data (ex-data-of
-                  #(rt/run-controlled
-                    {}
-                    (fn []
-                      (reset! worker (future @latch))
-                      :done)))]
-        (is (= :jolt.sim.runtime/tasks-outlive-scope (:type data)))
-        (is (seq (:tasks data)))
-        (deliver latch :late)
-        (let [outcome
-              (try
-                (deref @worker 5000 :timeout)
-                (catch :default _ :future-failed))]
-          (is (contains? #{:late :future-failed} outcome)))
-        (is (= :recovered
-               (:result (rt/run-controlled {} (fn [] :recovered)))))))
+    (is true "outliving detection is exercised by the isolated poison suite")
     (ordinary-reports-unavailable #(rt/run-controlled {} (fn [] :done)))))
 
 (deftest supervisor-latched-terminal-callback-fails-closed
@@ -463,7 +338,7 @@
   (if (rt/available?)
     (let [result (sample-scenario)]
       (is (= :scenario-result (:result result)))
-      (is (contains? #{1 2 3 4} (:abi-version (:capabilities result)))))
+      (is (= 4 (:abi-version (:capabilities result)))))
     (ordinary-reports-unavailable sample-scenario)))
 
 (deftest defsim-runtime-overrides-require-a-map-before-abi-resolution
@@ -472,23 +347,14 @@
     (is (= 'sample-scenario (:scenario data)))
     (is (= [:not-a-map] (:runtime-overrides data)))))
 
-(deftest defsim-runtime-overrides-can-drive-the-v3-future-scheduler
-  (cond
-    (#{3 4} (abi-version))
+(deftest defsim-runtime-overrides-can-drive-the-future-scheduler
+  (if (rt/available?)
     (let [run (scheduled-scenario {:future-schedule [1 0]})]
       (is (= [:first :second] (get-in run [:result :values])))
       (is (= [:second :first] (get-in run [:result :start-order])))
       (is (= [[:admit 1] [:complete 1]
               [:admit 0] [:complete 0]]
              (:schedule-events run))))
-
-    (rt/available?)
-    (is (= :jolt.sim.runtime/capability-unavailable
-           (:type
-            (ex-data-of
-             #(scheduled-scenario {:future-schedule [1 0]})))))
-
-    :else
     (ordinary-reports-unavailable
      #(scheduled-scenario {:future-schedule [1 0]}))))
 
@@ -506,41 +372,24 @@
         (is (= (mapv (fn [event] [:override event])
                      (expected-finish-events))
                @configurable-scenario-events)))
-      (when (#{3 4} (abi-version))
-        (reset! configurable-scenario-events [])
-        (let [run
-              (configurable-scenario {:future-schedule [0]})]
-          (is (= :configured (:result run)))
-          (is (= (mapv (fn [event] [:declared event])
-                       (expected-finish-events))
-                 @configurable-scenario-events))
-          (is (= [[:admit 0] [:complete 0]]
-                 (:schedule-events run))))))
+      (reset! configurable-scenario-events [])
+      (let [run
+            (configurable-scenario {:future-schedule [0]})]
+        (is (= :configured (:result run)))
+        (is (= (mapv (fn [event] [:declared event])
+                     (expected-finish-events))
+               @configurable-scenario-events))
+        (is (= [[:admit 0] [:complete 0]]
+               (:schedule-events run)))))
     (ordinary-reports-unavailable
      #(configurable-scenario {:on-event (fn [_])}))))
 
-;; ---- ABI v2 FFI interception ------------------------------------------
+;; ---- Current FFI interception -----------------------------------------
 ;;
-;; These tests only exercise real interception when the running image
-;; advertises ABI v2. On v1 they assert v1 compatibility (no :effects, FFI
-;; handlers rejected); on an ordinary image they assert clean unavailability.
+;; These tests exercise interception on the exact current sim image and clean
+;; unavailability on ordinary released Jolt.
 
-(deftest v1-image-rejects-ffi-handlers-and-omits-effects
-  ;; Under v1 an explicitly supplied :ffi-handlers is a capability the image
-  ;; does not provide, and the result map never carries :effects.
-  (condp = (ffi-capable-version)
-    1 (let [data (ex-data-of
-                  #(rt/run-controlled
-                    {:ffi-handlers {[:native-operation :alloc] (fn [_] 0)}}
-                    (fn [] :uncontrolled)))
-            plain (rt/run-controlled {} (fn [] :plain))]
-        (is (= :jolt.sim.runtime/capability-unavailable (:type data)))
-        (is (nil? (:effects plain))))
-    :ffi nil
-    nil (ordinary-reports-unavailable
-         #(rt/run-controlled {} (fn [] :done)))))
-
-(deftest v2-default-native-effect-rejection-before-os-access
+(deftest default-native-effect-rejection-before-os-access
   ;; With no handlers configured, every native effect inside the scope is
   ;; rejected before the OS is reached. Direct callers see the typed unhandled
   ;; error; catching it in application code still makes the enclosing run fail
@@ -574,11 +423,10 @@
         (is (= :jolt.sim.runtime/controller-error (:type swallowed-data)))
         (is (some #(= :unhandled-native-effect (:ffi-error %))
                   (:errors swallowed-data))))
-    1 nil
     nil (ordinary-reports-unavailable
          #(rt/run-controlled {} (fn [] :done)))))
 
-(deftest v2-registered-native-and-foreign-substitution-including-nil
+(deftest registered-native-and-foreign-substitution-including-nil
   (condp = (ffi-capable-version)
     :ffi (let [result
             (rt/run-controlled
@@ -610,11 +458,10 @@
           (is (= effects (mapv :descriptor (:effect-trace result))))
           (is (every? #(= :hermetic (:mode %)) (:effect-trace result)))
           (is (every? #(= :handler (:route %)) (:effect-trace result)))))
-    1 nil
     nil (ordinary-reports-unavailable
          #(rt/run-controlled {} (fn [] :done)))))
 
-(deftest v2-live-byte-array-argument-identity
+(deftest live-byte-array-argument-identity
   ;; Arguments are live in-memory evidence: a byte array handed to a native
   ;; operation is the identical object recorded in :effects.
   (condp = (ffi-capable-version)
@@ -636,11 +483,10 @@
         (is (some #(identical? (:result result)
                                (-> % :arguments second))
                   (:effects result))))
-    1 nil
     nil (ordinary-reports-unavailable
          #(rt/run-controlled {} (fn [] :done)))))
 
-(deftest v2-top-level-task-zero-and-future-task-correlation
+(deftest top-level-task-zero-and-future-task-correlation
   ;; Top-level effects carry :task 0; effects inside a future carry the future
   ;; task id, which matches the :task of that future's lifecycle events.
   (condp = (ffi-capable-version)
@@ -661,11 +507,10 @@
                   effects))
         (is (some #(= future-task (:task %))
                   effects)))
-    1 nil
     nil (ordinary-reports-unavailable
          #(rt/run-controlled {} (fn [] :done)))))
 
-(deftest v2-effect-ordering-matches-interception-arrival
+(deftest effect-ordering-matches-interception-arrival
   (condp = (ffi-capable-version)
     :ffi (let [result
             (rt/run-controlled
@@ -679,11 +524,10 @@
                :done))
             ops (mapv :operation (:effects result))]
         (is (= [:sizeof :alloc :sizeof] ops)))
-    1 nil
     nil (ordinary-reports-unavailable
          #(rt/run-controlled {} (fn [] :done)))))
 
-(deftest v2-swallowed-handler-failure-still-fails-the-run
+(deftest swallowed-handler-failure-still-fails-the-run
   ;; A handler failure is latched locally, so even when application code
   ;; catches the propagated exception the run fails closed.
   (condp = (ffi-capable-version)
@@ -701,11 +545,10 @@
         (is (some #(and (= :handler-error (:ffi-error %))
                         (= "handler boom" (-> % :error :message)))
                   (:errors data))))
-    1 nil
     nil (ordinary-reports-unavailable
          #(rt/run-controlled {} (fn [] :done)))))
 
-(deftest v2-restores-ffi-controller-for-a-follow-up-run
+(deftest restores-ffi-controller-for-a-follow-up-run
   (condp = (ffi-capable-version)
     :ffi (let [first-run
             (rt/run-controlled
@@ -721,19 +564,10 @@
                   (:effects first-run)))
         (is (some #(= :alloc (:operation %))
                   (:effects follow-up))))
-    1 nil
     nil (ordinary-reports-unavailable
          #(rt/run-controlled {} (fn [] :done)))))
 
-;; ---- ABI v3 :ffi-interception :descriptor-version 2 -------------------
-;;
-;; descriptor-version 2 adds a Boolean :capture-native-error? to every
-;; :foreign-function descriptor and extends the internal handler identity to
-;; six elements. Most of this logic is pure config/descriptor validation, so
-;; it is exercised directly against the private helpers -- independent of
-;; which ABI/descriptor-version the running image actually advertises -- with
-;; one additional test gated on the live descriptor-version for when a v3
-;; descriptor-version-2 image is present.
+;; ---- Current descriptor and handler contracts -------------------------
 
 (def ^:private validate-descriptor-var
   (resolve 'jolt.sim.runtime/validate-descriptor))
@@ -753,62 +587,40 @@
 (def ^:private make-ffi-routing-controller-var
   (resolve 'jolt.sim.runtime/make-ffi-routing-controller))
 
-(deftest exact-capability-descriptors-are-accepted-and-mismatches-rejected
+(deftest exact-current-capability-descriptor-is-accepted-and-mismatches-rejected
   ;; Pure structural validation, independent of the running image.
-  (is (= v1-descriptor (validate-descriptor-var v1-descriptor)))
-  (is (= v2-descriptor (validate-descriptor-var v2-descriptor)))
-  (is (= v3-descriptor (validate-descriptor-var v3-descriptor)))
-  (is (= v3-descriptor2 (validate-descriptor-var v3-descriptor2)))
-  (is (= v3-descriptor3 (validate-descriptor-var v3-descriptor3)))
-  ;; ABI v4 is accepted exactly, and production's private v4-descriptor equals
-  ;; the authoritative literal.
-  (is (= v4-descriptor (validate-descriptor-var v4-descriptor)))
-  (is (= v4-descriptor
-         @(resolve 'jolt.sim.runtime/v4-descriptor)))
-  ;; A v4-shaped descriptor missing :proceed-routing is not the exact v4 shape.
-  (let [bad (assoc v3-descriptor3 :abi-version 4)
-        data (ex-data-of #(validate-descriptor-var bad))]
-    (is (= :jolt.sim.runtime/abi-incompatible (:type data))))
-  ;; :abi-version 4 with descriptor-version 1 (not 3) is rejected even if a
-  ;; proceed-routing sub-map is attached.
-  (let [bad (-> v3-descriptor (assoc :abi-version 4)
-                (assoc-in [:ffi-interception :proceed-routing]
-                          (:proceed-routing (:ffi-interception v4-descriptor))))
-        data (ex-data-of #(validate-descriptor-var bad))]
-    (is (= :jolt.sim.runtime/abi-incompatible (:type data))))
-  ;; A malformed :proceed-routing field (wrong controller-arity) is rejected.
-  (let [bad (assoc-in v4-descriptor
+  (is (= supported-descriptor
+         (validate-descriptor-var supported-descriptor)))
+  (is (= supported-descriptor
+         @(resolve 'jolt.sim.runtime/supported-descriptor)))
+  ;; Prerelease versions are exact: stale and future ABI numbers are rejected
+  ;; rather than accumulating compatibility branches.
+  (doseq [version [3 5 6 7]]
+    (let [bad (assoc supported-descriptor :abi-version version)
+          data (ex-data-of #(validate-descriptor-var bad))]
+      (is (= :jolt.sim.runtime/abi-incompatible (:type data))
+          (pr-str version))))
+  (let [bad (assoc-in supported-descriptor
                       [:ffi-interception :proceed-routing :controller-arity] 3)
         data (ex-data-of #(validate-descriptor-var bad))]
     (is (= :jolt.sim.runtime/abi-incompatible (:type data))))
-  ;; An extra :proceed-routing key is rejected (exact-shape match).
-  (let [bad (assoc-in v4-descriptor
+  (let [bad (assoc-in supported-descriptor
                       [:ffi-interception :proceed-routing :extra] :nope)
         data (ex-data-of #(validate-descriptor-var bad))]
     (is (= :jolt.sim.runtime/abi-incompatible (:type data))))
-  ;; descriptor-version 2 is a v3-only combination; v2 nesting it is rejected.
-  (let [bad (assoc-in v2-descriptor [:ffi-interception :descriptor-version] 2)
+  (let [bad (assoc-in supported-descriptor
+                      [:ffi-interception :descriptor-version] 2)
         data (ex-data-of #(validate-descriptor-var bad))]
     (is (= :jolt.sim.runtime/abi-incompatible (:type data))))
-  ;; descriptor-version 3 under v3 requires the exact 15-operation list. A
-  ;; v3/descriptor-version-3 descriptor that still carries the
-  ;; descriptor-version-1 13-operation list is rejected.
-  (let [bad (assoc-in v3-descriptor [:ffi-interception :descriptor-version] 3)
-        data (ex-data-of #(validate-descriptor-var bad))]
-    (is (= :jolt.sim.runtime/abi-incompatible (:type data))))
-  ;; A v3/descriptor-version-3 descriptor whose :native-operations list is
-  ;; short by one of the two new operations (14 entries) is rejected.
   (let [short
-        (assoc-in v3-descriptor3 [:ffi-interception :native-operations]
+        (assoc-in supported-descriptor [:ffi-interception :native-operations]
                   (vec (remove #{:release-byte-array}
-                               (get-in v3-descriptor3
+                               (get-in supported-descriptor
                                        [:ffi-interception :native-operations]))))
         data (ex-data-of #(validate-descriptor-var short))]
     (is (= :jolt.sim.runtime/abi-incompatible (:type data))))
-  ;; The two new operations must sit exactly between :write-array and
-  ;; :ptr->string; swapping their insertion order is rejected.
   (let [reordered
-        (assoc-in v3-descriptor3 [:ffi-interception :native-operations]
+        (assoc-in supported-descriptor [:ffi-interception :native-operations]
                   [:load-library :loaded? :alloc :free
                    :read :write :sizeof :read-bytes
                    :write-bytes :read-array :write-array
@@ -816,9 +628,7 @@
                    :ptr->string :string->ptr])
         data (ex-data-of #(validate-descriptor-var reordered))]
     (is (= :jolt.sim.runtime/abi-incompatible (:type data))))
-  ;; A v3/descriptor-version-2 descriptor missing an unrelated outer key is
-  ;; rejected too.
-  (let [bad (dissoc v3-descriptor2 :controller-errors)
+  (let [bad (dissoc supported-descriptor :controller-errors)
         data (ex-data-of #(validate-descriptor-var bad))]
     (is (= :jolt.sim.runtime/abi-incompatible (:type data)))))
 
@@ -826,77 +636,33 @@
   {:kind :foreign-function :task 0 :arguments [0]
    :symbol "s" :argument-types [:int] :return-type :int :blocking? false})
 
-(deftest ffi-descriptor-shape-is-exact-per-descriptor-version
-  ;; descriptor-version 1 accepts exactly the base key set.
-  (is (= base-foreign-function-descriptor
-         (validate-ffi-descriptor-var 1 base-foreign-function-descriptor)))
-  ;; ...and rejects the descriptor-version 2 extra key as unexpected.
-  (let [extra (assoc base-foreign-function-descriptor
-                      :capture-native-error? false)
-        data (ex-data-of #(validate-ffi-descriptor-var 1 extra))]
-    (is (= :jolt.sim.runtime/invalid-ffi-descriptor (:type data)))
-    (is (= :foreign-function-key-mismatch (:reason data))))
-  ;; descriptor-version 2 requires the extra Boolean key...
-  (let [v2d (assoc base-foreign-function-descriptor
-                    :capture-native-error? true)]
-    (is (= v2d (validate-ffi-descriptor-var 2 v2d))))
-  ;; ...and rejects its absence.
+(deftest ffi-descriptor-shape-is-exact-for-the-current-contract
+  (let [descriptor (assoc base-foreign-function-descriptor
+                          :capture-native-error? true)]
+    (is (= descriptor (validate-ffi-descriptor-var descriptor))))
   (let [data (ex-data-of
-              #(validate-ffi-descriptor-var 2 base-foreign-function-descriptor))]
+              #(validate-ffi-descriptor-var base-foreign-function-descriptor))]
     (is (= :jolt.sim.runtime/invalid-ffi-descriptor (:type data)))
     (is (= :foreign-function-key-mismatch (:reason data))))
-  ;; ...and rejects a non-Boolean value for it.
   (let [bad (assoc base-foreign-function-descriptor
                     :capture-native-error? "nope")
-        data (ex-data-of #(validate-ffi-descriptor-var 2 bad))]
+        data (ex-data-of #(validate-ffi-descriptor-var bad))]
     (is (= :invalid-capture-native-error (:reason data))))
-  ;; descriptor-version 3 keeps the descriptor-version 2 foreign-function key
-  ;; set and Boolean :capture-native-error? requirement.
-  (let [v3d (assoc base-foreign-function-descriptor
-                    :capture-native-error? true)]
-    (is (= v3d (validate-ffi-descriptor-var 3 v3d))))
-  ;; ...rejects the key's absence under descriptor-version 3.
-  (let [data (ex-data-of
-              #(validate-ffi-descriptor-var 3 base-foreign-function-descriptor))]
-    (is (= :jolt.sim.runtime/invalid-ffi-descriptor (:type data)))
-    (is (= :foreign-function-key-mismatch (:reason data))))
-  ;; ...and rejects a non-Boolean value under descriptor-version 3.
   (let [bad (assoc base-foreign-function-descriptor
-                    :capture-native-error? "nope")
-        data (ex-data-of #(validate-ffi-descriptor-var 3 bad))]
-    (is (= :invalid-capture-native-error (:reason data))))
-  ;; Argument metadata and live arguments describe the same call arity.
-  (let [bad (assoc base-foreign-function-descriptor :arguments [])
-        data (ex-data-of #(validate-ffi-descriptor-var 1 bad))]
+                   :arguments [] :capture-native-error? false)
+        data (ex-data-of #(validate-ffi-descriptor-var bad))]
     (is (= :argument-count-mismatch (:reason data))))
-  ;; :native-operation descriptors keep the same shape across descriptor-version.
-  (let [op-descriptor {:kind :native-operation :task 0 :arguments []
-                       :operation :sizeof}]
-    (is (= op-descriptor (validate-ffi-descriptor-var 1 op-descriptor)))
-    (is (= op-descriptor (validate-ffi-descriptor-var 2 op-descriptor)))
-    (is (= op-descriptor (validate-ffi-descriptor-var 3 op-descriptor))))
-  ;; The two descriptor-version 3 operations are accepted only under
-  ;; descriptor-version 3; under 1 and 2 they remain unknown.
-  (doseq [op [:borrow-byte-array :release-byte-array]]
+  (doseq [op (get-in supported-descriptor
+                     [:ffi-interception :native-operations])]
     (let [op-descriptor {:kind :native-operation :task 0 :arguments []
                          :operation op}]
-      (is (= op-descriptor (validate-ffi-descriptor-var 3 op-descriptor))
-          (pr-str op))
-      (is (= :unknown-operation
-             (:reason (ex-data-of
-                       #(validate-ffi-descriptor-var 1 op-descriptor))))
-          (pr-str op))
-      (is (= :unknown-operation
-             (:reason (ex-data-of
-                       #(validate-ffi-descriptor-var 2 op-descriptor))))
+      (is (= op-descriptor (validate-ffi-descriptor-var op-descriptor))
           (pr-str op))))
-  ;; The private boundary also fails closed if called with a version no exact
-  ;; capability descriptor can advertise.
-  (let [data (ex-data-of
-              #(validate-ffi-descriptor-var
-                4 base-foreign-function-descriptor))]
+  (let [bad {:kind :native-operation :task 0 :arguments []
+             :operation :not-current}
+        data (ex-data-of #(validate-ffi-descriptor-var bad))]
     (is (= :jolt.sim.runtime/invalid-ffi-descriptor (:type data)))
-    (is (= :unsupported-descriptor-version (:reason data)))))
+    (is (= :unknown-operation (:reason data)))))
 
 (deftest ffi-handler-keys-accept-legacy-five-element-and-canonical-six-element-forms
   (let [five-key [:foreign-function "s" [:int] :int false]
@@ -952,15 +718,17 @@
                                               six-key-true (fn [_] :b)})]
     (is (= #{(conj five-key false) six-key-true} (set (keys canonical))))))
 
-(deftest v1-style-descriptor-without-capture-key-matches-canonical-false-handler-identity
+(deftest five-element-handler-shorthand-matches-capture-false-descriptor
   (let [five-key [:foreign-function "s" [:int] :int false]
         handlers (validate-ffi-handlers-var {five-key (fn [_] :matched)})
+        descriptor (assoc base-foreign-function-descriptor
+                          :capture-native-error? false)
         state (atom {:ffi-errors []})
         effects (atom [])
-        controller (make-ffi-controller-var handlers state effects 1)]
+        controller (make-ffi-controller-var handlers state effects)]
     (is (= (conj five-key false)
-           (descriptor-handler-key-var base-foreign-function-descriptor)))
-    (is (= :matched (controller base-foreign-function-descriptor)))
+           (descriptor-handler-key-var descriptor)))
+    (is (= :matched (controller descriptor)))
     (is (empty? (:ffi-errors @state)))))
 
 (deftest same-signature-scalar-and-captured-handlers-do-not-collide
@@ -975,7 +743,7 @@
         controller (make-ffi-controller-var
                     {scalar-key (fn [_] 42)
                      captured-key (fn [_] [42 nil])}
-                    state effects 2)]
+                    state effects)]
     (is (not= scalar-key captured-key))
     (is (= 42 (controller scalar-descriptor)))
     (is (= [42 nil] (controller captured-descriptor)))
@@ -984,8 +752,8 @@
 (deftest descriptor-version-3-controller-dispatches-pointer-loan-and-captured-foreign
   ;; Under descriptor-version 3 the FFI controller accepts the two new
   ;; native operations and routes them to their handlers, still accepts every
-  ;; base operation, and enforces the descriptor-version 2 capture-result
-  ;; contract on captured foreign functions.
+  ;; base operation, and enforces the current capture-result contract on
+  ;; captured foreign functions.
   (let [loan-descriptor {:kind :native-operation :task 0 :arguments [7]
                          :operation :borrow-byte-array}
         release-descriptor {:kind :native-operation :task 0 :arguments [7]
@@ -1002,7 +770,7 @@
                        [:native-operation :alloc] (fn [_] 1042)
                        (descriptor-handler-key-var captured-descriptor)
                        (fn [_] [99 nil])}
-                      state effects 3)]
+                      state effects)]
       (is (= :borrowed (controller loan-descriptor)))
       (is (= :released (controller release-descriptor)))
       (is (= 1042 (controller base-descriptor)))
@@ -1022,7 +790,7 @@
       (let [state (atom {:ffi-errors []})
             effects (atom [])
             controller (make-ffi-controller-var
-                        {key (fn [_] bad)} state effects 2)
+                        {key (fn [_] bad)} state effects)
             data (ex-data-of #(controller descriptor))]
         (is (= :jolt.sim.runtime/invalid-capture-result (:type data))
             (pr-str bad))
@@ -1034,7 +802,7 @@
     (let [state (atom {:ffi-errors []})
           effects (atom [])
           controller (make-ffi-controller-var
-                      {key (fn [_] :not-a-vector)} state effects 2)
+                      {key (fn [_] :not-a-vector)} state effects)
           swallowed (try (controller descriptor) :not-thrown
                         (catch :default _ :caught))]
       (is (= :caught swallowed))
@@ -1043,7 +811,7 @@
     (let [state (atom {:ffi-errors []})
           effects (atom [])
           controller (make-ffi-controller-var
-                      {key (fn [_] [1 2])} state effects 2)]
+                      {key (fn [_] [1 2])} state effects)]
       (is (= [1 2] (controller descriptor)))
       (is (empty? (:ffi-errors @state))))))
 
@@ -1056,61 +824,42 @@
         effects (atom [])
         controller (make-ffi-controller-var
                     {key (fn [d] (reset! seen d) [1 2])}
-                    state effects 2)]
+                    state effects)]
     (controller descriptor)
     (is (identical? descriptor @seen))
     (is (= [descriptor] (mapv :descriptor @effects)))
     (is (= [:hermetic] (mapv :mode @effects)))
     (is (= [:handler] (mapv :route @effects)))))
 
-(deftest v3-nested-ffi-descriptor-version-is-accepted-when-advertised
-  (cond
-    (= 3 (ffi-descriptor-version))
-    ;; ABI v3 and v4 both advertise nested descriptor-version 3; v3 resolves to
-    ;; v3-descriptor3 while v4 resolves to its exact proceed-routing descriptor.
-    (is (contains? #{v3-descriptor3 v4-descriptor} (rt/capabilities)))
-    (= 2 (ffi-descriptor-version))
-    (is (= v3-descriptor2 (rt/capabilities)))
-    (rt/available?)
-    (is (contains? #{1 nil} (ffi-descriptor-version)))
-    :else
+(deftest current-nested-ffi-descriptor-version-is-exact
+  (if (rt/available?)
+    (do
+      (is (= 3 (get-in (rt/capabilities)
+                       [:ffi-interception :descriptor-version])))
+      (is (= supported-descriptor (rt/capabilities))))
     (ordinary-reports-unavailable rt/capabilities)))
 
-;; ---- ABI v3 worker-ownership lifecycle --------------------------------
+;; ---- Current worker-ownership lifecycle -------------------------------
 ;;
-;; v3 adds :exit/:abort so cleanup can wait for real worker release. These
-;; tests are discriminating only on a v3 image; on v1/v2 they assert that the
-;; v3-specific contract does not apply, and on an ordinary image they assert
-;; clean unavailability.
+;; :exit/:abort let cleanup wait for real worker release. These tests exercise
+;; the current sim image and clean unavailability on ordinary Jolt.
 
-(deftest v3-completed-future-releases-worker-at-exit
-  (cond
-    (#{3 4} (abi-version))
+(deftest completed-future-releases-worker-at-exit
+  (if (rt/available?)
     (let [result (rt/run-controlled
                   {}
                   (fn [] (let [worker (future :released)] @worker) :done))]
       (is (= :done (:result result)))
-      (is (contains? #{v3-descriptor v3-descriptor2 v3-descriptor3
-                       v4-descriptor}
-                      (:capabilities result)))
+      (is (= supported-descriptor (:capabilities result)))
       (is (= [:spawn :start :finish :exit]
              (mapv :event (:events result))))
       (is (apply = (map :task (:events result)))))
-    (rt/available?)
-    (do (is (contains? #{1 2} (abi-version)))
-        ;; v1/v2 never emit :exit/:abort; the contract is v3-only.
-        (let [run (rt/run-controlled
-                   {}
-                   (fn [] (let [w (future :x)] @w) :done))]
-          (is (= [:spawn :start :finish] (mapv :event (:events run))))))
-    :else
     (ordinary-reports-unavailable #(rt/run-controlled {} (fn [] :done)))))
 
-(deftest v3-terminal-cancel-is-distinct-from-worker-exit
+(deftest terminal-cancel-is-distinct-from-worker-exit
   ;; A cancelled running worker settles its future with :cancel but remains
   ;; owned until :exit; cleanup waits for that :exit and the run still succeeds.
-  (cond
-    (#{3 4} (abi-version))
+  (if (rt/available?)
     (let [closed (promise)
           body-started (promise)
           result
@@ -1131,17 +880,13 @@
       (is (true? (:result result)))
       (is (= [:spawn :start :cancel :exit]
              (mapv :event (:events result)))))
-    (rt/available?)
-    (is (contains? #{1 2} (abi-version)))
-    :else
     (ordinary-reports-unavailable
      #(rt/run-controlled {:on-event (fn [_])} (fn [] :done)))))
 
-(deftest v3-cleanup-waits-for-every-spawned-worker-to-exit
-  ;; After a successful v3 run every spawned task must have released worker
+(deftest cleanup-waits-for-every-spawned-worker-to-exit
+  ;; After a successful run every spawned task must have released worker
   ;; ownership via exactly one :exit or :abort; none may remain owned.
-  (cond
-    (#{3 4} (abi-version))
+  (if (rt/available?)
     (let [result
           (rt/run-controlled
            {}
@@ -1158,33 +903,20 @@
         ;; exactly one release event per spawned worker
         (is (= (count spawned)
                (count (filter #(#{:exit :abort} (:event %)) events))))))
-    (rt/available?)
-    (is (contains? #{1 2} (abi-version)))
-    :else
     (ordinary-reports-unavailable #(rt/run-controlled {} (fn [] :done)))))
 
-(deftest drain-timeout-is-an-abi-v3-only-capability
-  (cond
-    (#{3 4} (abi-version))
+(deftest drain-timeout-is-part-of-the-current-contract
+  (if (rt/available?)
     (is (= :ok
            (:result
             (rt/run-controlled
              {:drain-timeout-ms 100}
              (fn [] :ok)))))
-    (rt/available?)
-    (is (= :jolt.sim.runtime/capability-unavailable
-           (:type
-            (ex-data-of
-             #(rt/run-controlled
-               {:drain-timeout-ms 100}
-               (fn [] :uncontrolled))))))
-    :else
     (ordinary-reports-unavailable
      #(rt/run-controlled {:drain-timeout-ms 100} (fn [] :done)))))
 
-(deftest v3-cleanup-drains-a-worker-that-finishes-after-the-body
-  (cond
-    (#{3 4} (abi-version))
+(deftest cleanup-drains-a-worker-that-finishes-after-the-body
+  (if (rt/available?)
     (let [closed (promise)
           worker-started (promise)
           worker (atom nil)
@@ -1206,14 +938,10 @@
       (is (= :released @@worker))
       (is (= [:spawn :start :finish :exit]
              (mapv :event (:events result)))))
-    (rt/available?)
-    (is (contains? #{1 2} (abi-version)))
-    :else
     (ordinary-reports-unavailable #(rt/run-controlled {} (fn [] :done)))))
 
-(deftest v3-restoration-waits-for-an-exit-callback-to-return
-  (cond
-    (#{3 4} (abi-version))
+(deftest restoration-waits-for-an-exit-callback-to-return
+  (if (rt/available?)
     (let [closed (promise)
           worker-started (promise)
           exit-entered (promise)
@@ -1257,14 +985,10 @@
           (deliver exit-entered true)
           (deliver release-exit true)
           (.join releaser))))
-    (rt/available?)
-    (is (contains? #{1 2} (abi-version)))
-    :else
     (ordinary-reports-unavailable #(rt/run-controlled {} (fn [] :done)))))
 
-(deftest v3-body-failure-drains-workers-before-restoring
-  (cond
-    (#{3 4} (abi-version))
+(deftest body-failure-drains-workers-before-restoring
+  (if (rt/available?)
     (let [closed (promise)
           worker-started (promise)
           worker (atom nil)
@@ -1290,14 +1014,10 @@
       (is (= :recovered
              (:result
               (rt/run-controlled {} (fn [] :recovered))))))
-    (rt/available?)
-    (is (contains? #{1 2} (abi-version)))
-    :else
     (ordinary-reports-unavailable #(rt/run-controlled {} (fn [] :done)))))
 
-(deftest v3-spawn-callback-failure-is-balanced-by-abort
-  (cond
-    (#{3 4} (abi-version))
+(deftest spawn-callback-failure-is-balanced-by-abort
+  (if (rt/available?)
     (let [data
           (ex-data-of
            #(rt/run-controlled
@@ -1314,14 +1034,10 @@
       (is (= [:spawn :abort] (mapv :event (:events data))))
       (is (= :recovered
              (:result (rt/run-controlled {} (fn [] :recovered))))))
-    (rt/available?)
-    (is (contains? #{1 2} (abi-version)))
-    :else
     (ordinary-reports-unavailable #(rt/run-controlled {} (fn [] :done)))))
 
-(deftest v3-late-nested-spawn-is-rejected-balanced-and-drained
-  (cond
-    (#{3 4} (abi-version))
+(deftest late-nested-spawn-is-rejected-balanced-and-drained
+  (if (rt/available?)
     (let [closed (promise)
           parent-started (promise)
           parent (atom nil)
@@ -1350,21 +1066,17 @@
       (is (= :recovered
              (:result
               (rt/run-controlled {} (fn [] :recovered))))))
-    (rt/available?)
-    (is (contains? #{1 2} (abi-version)))
-    :else
     (ordinary-reports-unavailable #(rt/run-controlled {} (fn [] :done)))))
 
-;; ---- ABI v3 :future-schedule scripted scheduler -----------------------
+;; ---- Current :future-schedule scripted scheduler ----------------------
 ;;
 ;; A :future-schedule is a nonempty vector, an exact permutation of 0..N-1.
 ;; Ordinals are assigned to accepted parent-zero :spawn events under the
 ;; explicit single-spawner/quiescent-raw-thread restriction; the schedule
 ;; declares the order in which those ordinals' bodies are admitted to run, one
 ;; at a time, releasing the next only after the current ordinal's :finish.
-;; These tests are discriminating only on a v3 image; on v1/v2 (which never
-;; accept :future-schedule at all) and on an ordinary image they assert clean
-;; rejection/unavailability.
+;; These tests exercise the current sim image and clean unavailability on an
+;; ordinary image.
 
 (deftest future-schedule-malformed-permutations-fail-before-install
   ;; Shape validation is pure config checking; it reports before ABI
@@ -1395,23 +1107,15 @@
     (is (zero? @resolutions)
         "malformed schedule must fail before ABI resolution or installation")))
 
-(deftest future-schedule-requires-abi-v3
-  (cond
-    (#{3 4} (abi-version))
+(deftest future-schedule-is-part-of-the-current-contract
+  (if (rt/available?)
     (is (= :ok (:result (rt/run-controlled {:future-schedule [0]}
                                             (fn [] (let [a (future :ok)] @a))))))
-    (rt/available?)
-    (is (= :jolt.sim.runtime/capability-unavailable
-           (:type (ex-data-of
-                   #(rt/run-controlled {:future-schedule [0]}
-                                        (fn [] :uncontrolled))))))
-    :else
     (ordinary-reports-unavailable
      #(rt/run-controlled {:future-schedule [0]} (fn [] :uncontrolled)))))
 
-(deftest v3-future-schedule-drives-exact-body-start-order
-  (cond
-    (#{3 4} (abi-version))
+(deftest future-schedule-drives-exact-body-start-order
+  (if (rt/available?)
     (let [observed (atom [])
           result
           (rt/run-controlled
@@ -1428,14 +1132,10 @@
               [:admit 0] [:complete 0]
               [:admit 1] [:complete 1]]
              schedule-events)))
-    (rt/available?)
-    (is (contains? #{1 2} (abi-version)))
-    :else
     (ordinary-reports-unavailable #(rt/run-controlled {} (fn [] :done)))))
 
-(deftest v3-future-schedule-releases-next-at-finish-before-exit
-  (cond
-    (#{3 4} (abi-version))
+(deftest future-schedule-releases-next-at-finish-before-exit
+  (if (rt/available?)
     (let [first-task (atom nil)
           first-exit-entered (promise)
           release-first-exit (promise)
@@ -1465,14 +1165,10 @@
       (is (true? (get-in result [:result :exit-entered])))
       (is (true? (get-in result [:result :second-before-release]))
           "the second body must start while the first exit callback is blocked"))
-    (rt/available?)
-    (is (contains? #{1 2} (abi-version)))
-    :else
     (ordinary-reports-unavailable #(rt/run-controlled {} (fn [] :done)))))
 
-(deftest v3-future-schedule-admits-at-most-one-body-at-a-time
-  (cond
-    (#{3 4} (abi-version))
+(deftest future-schedule-admits-at-most-one-body-at-a-time
+  (if (rt/available?)
     (let [first-entered (promise)
           second-entered (promise)
           release-first (promise)
@@ -1507,14 +1203,10 @@
       (is (= [:a :b :c] (:result result)))
       (is (= :not-entered @premature-second))
       (is (= 1 @max-concurrent)))
-    (rt/available?)
-    (is (contains? #{1 2} (abi-version)))
-    :else
     (ordinary-reports-unavailable #(rt/run-controlled {} (fn [] :done)))))
 
-(deftest v3-future-schedule-evidence-is-stable-across-runs-with-changing-raw-ids
-  (cond
-    (#{3 4} (abi-version))
+(deftest future-schedule-evidence-is-stable-across-runs-with-changing-raw-ids
+  (if (rt/available?)
     (let [runs
           (vec
            (for [_ (range 20)]
@@ -1537,14 +1229,10 @@
              (first evidence)))
       (is (apply = evidence)
           "the complete returned logical evidence must be replay-stable"))
-    (rt/available?)
-    (is (contains? #{1 2} (abi-version)))
-    :else
     (ordinary-reports-unavailable #(rt/run-controlled {} (fn [] :done)))))
 
-(deftest v3-future-schedule-rejects-a-spawn-beyond-the-schedule
-  (cond
-    (#{3 4} (abi-version))
+(deftest future-schedule-rejects-a-spawn-beyond-the-schedule
+  (if (rt/available?)
     (let [thrown (ex-of
                   #(rt/run-controlled
                     {:future-schedule [0]}
@@ -1556,14 +1244,10 @@
       (is (= :jolt.sim.runtime/schedule-error (:type data)))
       (is (= :extra-spawn (:reason data)))
       (is (= :recovered (:result (rt/run-controlled {} (fn [] :recovered))))))
-    (rt/available?)
-    (is (contains? #{1 2} (abi-version)))
-    :else
     (ordinary-reports-unavailable #(rt/run-controlled {} (fn [] :done)))))
 
-(deftest v3-future-schedule-retains-caught-extra-spawn-failure
-  (cond
-    (#{3 4} (abi-version))
+(deftest future-schedule-retains-caught-extra-spawn-failure
+  (if (rt/available?)
     (let [caught (atom nil)
           data
           (ex-data-of
@@ -1582,14 +1266,10 @@
       (is (= :jolt.sim.runtime/schedule-error (:type data)))
       (is (= :extra-spawn (:reason data)))
       (is (= :recovered (:result (rt/run-controlled {} (fn [] :recovered))))))
-    (rt/available?)
-    (is (contains? #{1 2} (abi-version)))
-    :else
     (ordinary-reports-unavailable #(rt/run-controlled {} (fn [] :done)))))
 
-(deftest v3-future-schedule-rejects-fewer-spawns-than-scheduled
-  (cond
-    (#{3 4} (abi-version))
+(deftest future-schedule-rejects-fewer-spawns-than-scheduled
+  (if (rt/available?)
     (let [thrown (ex-of
                   #(rt/run-controlled
                     {:future-schedule [0 1 2]}
@@ -1600,14 +1280,10 @@
       (is (= 3 (:expected data)))
       (is (= 1 (:spawned data)))
       (is (= :recovered (:result (rt/run-controlled {} (fn [] :recovered))))))
-    (rt/available?)
-    (is (contains? #{1 2} (abi-version)))
-    :else
     (ordinary-reports-unavailable #(rt/run-controlled {} (fn [] :done)))))
 
-(deftest v3-future-schedule-rejects-a-nested-spawn-even-when-app-catches-it
-  (cond
-    (#{3 4} (abi-version))
+(deftest future-schedule-rejects-a-nested-spawn-even-when-app-catches-it
+  (if (rt/available?)
     (let [parent (atom nil)
           data (ex-data-of
                 #(rt/run-controlled
@@ -1623,14 +1299,10 @@
       (is (= :nested-spawn (:reason data)))
       (is (= :child-rejected @@parent))
       (is (= :recovered (:result (rt/run-controlled {} (fn [] :recovered))))))
-    (rt/available?)
-    (is (contains? #{1 2} (abi-version)))
-    :else
     (ordinary-reports-unavailable #(rt/run-controlled {} (fn [] :done)))))
 
-(deftest v3-future-schedule-rejects-cancellation
-  (cond
-    (#{3 4} (abi-version))
+(deftest future-schedule-rejects-cancellation
+  (if (rt/available?)
     (let [started (promise)
           release (promise)
           data
@@ -1650,14 +1322,10 @@
       (is (= :jolt.sim.runtime/schedule-error (:type data)))
       (is (= :cancellation-unsupported (:reason data)))
       (is (= :recovered (:result (rt/run-controlled {} (fn [] :recovered))))))
-    (rt/available?)
-    (is (contains? #{1 2} (abi-version)))
-    :else
     (ordinary-reports-unavailable #(rt/run-controlled {} (fn [] :done)))))
 
-(deftest v3-future-schedule-cancel-before-start-skips-the-gated-body
-  (cond
-    (#{3 4} (abi-version))
+(deftest future-schedule-cancel-before-start-skips-the-gated-body
+  (if (rt/available?)
     (let [first-ran? (atom false)
           second-started (promise)
           release-second (promise)
@@ -1683,14 +1351,10 @@
       (is (= :jolt.sim.runtime/schedule-error (:type data)))
       (is (= :cancellation-unsupported (:reason data)))
       (is (= :recovered (:result (rt/run-controlled {} (fn [] :recovered))))))
-    (rt/available?)
-    (is (contains? #{1 2} (abi-version)))
-    :else
     (ordinary-reports-unavailable #(rt/run-controlled {} (fn [] :done)))))
 
-(deftest v3-future-schedule-user-spawn-callback-failure-aborts-later-gates
-  (cond
-    (#{3 4} (abi-version))
+(deftest future-schedule-user-spawn-callback-failure-aborts-later-gates
+  (if (rt/available?)
     (let [spawn-count (atom 0)
           bodies (atom [])
           caught (atom [])
@@ -1724,14 +1388,10 @@
                     (get-in % [:error :message]))
                 (:errors data)))
       (is (= :recovered (:result (rt/run-controlled {} (fn [] :recovered))))))
-    (rt/available?)
-    (is (contains? #{1 2} (abi-version)))
-    :else
     (ordinary-reports-unavailable #(rt/run-controlled {} (fn [] :done)))))
 
-(deftest v3-future-schedule-user-finish-callback-failure-does-not-admit-next
-  (cond
-    (#{3 4} (abi-version))
+(deftest future-schedule-user-finish-callback-failure-does-not-admit-next
+  (if (rt/available?)
     (let [bodies (atom [])
           failed? (atom false)
           callback-error (ex-info "finish observer failed" {:observer :finish})
@@ -1755,14 +1415,10 @@
                     (get-in % [:error :message]))
                 (:errors data)))
       (is (= :recovered (:result (rt/run-controlled {} (fn [] :recovered))))))
-    (rt/available?)
-    (is (contains? #{1 2} (abi-version)))
-    :else
     (ordinary-reports-unavailable #(rt/run-controlled {} (fn [] :done)))))
 
-(deftest v3-future-schedule-body-failure-still-drains-and-restores
-  (cond
-    (#{3 4} (abi-version))
+(deftest future-schedule-body-failure-still-drains-and-restores
+  (if (rt/available?)
     (let [closed (promise)
           worker-started (promise)
           worker (atom nil)
@@ -1786,14 +1442,10 @@
       (is (identical? body-error thrown))
       (is (= :released @@worker))
       (is (= :recovered (:result (rt/run-controlled {} (fn [] :recovered))))))
-    (rt/available?)
-    (is (contains? #{1 2} (abi-version)))
-    :else
     (ordinary-reports-unavailable #(rt/run-controlled {} (fn [] :done)))))
 
-(deftest v3-future-schedule-session-recovers-for-a-follow-up-run
-  (cond
-    (#{3 4} (abi-version))
+(deftest future-schedule-session-recovers-for-a-follow-up-run
+  (if (rt/available?)
     (let [failed (ex-data-of
                   #(rt/run-controlled
                     {:future-schedule [0]}
@@ -1808,22 +1460,19 @@
       (is (= :jolt.sim.runtime/schedule-error (:type failed)))
       (is (= :a (:result scheduled-again)))
       (is (= :done (:result unscheduled))))
-    (rt/available?)
-    (is (contains? #{1 2} (abi-version)))
-    :else
     (ordinary-reports-unavailable #(rt/run-controlled {} (fn [] :done)))))
 
-;; ---- ABI v4 proceed-routing policy --------------------------------------
+;; ---- Current proceed-routing policy ------------------------------------
 ;;
 ;; Pure mock tests keep the mode contract covered on an ordinary released
-;; image. Live branches below additionally exercise the real ABI v4 Scheme
+;; image. Live branches below additionally exercise the current Scheme
 ;; routing continuation when the canonical sim image runs this suite.
 
 (defn- mock-resolved-abi-vars
   "Returns a replacement value for jolt.sim.runtime/resolved-abi-vars whose
   :capabilities yields descriptor and whose other slots are derefable stubs.
   When omit-routing? is true the :install-ffi-routing-controller! slot is nil,
-  simulating a v4 image that lacks the routing installer var."
+  simulating a current image that lacks the routing installer var."
   [descriptor omit-routing?]
   (let [stub (atom (fn [& _] nil))]
     (cond-> {:capabilities (atom (fn [] descriptor))
@@ -1837,7 +1486,6 @@
 
 (defn- mock-controller-ops [descriptor established routing]
   {:descriptor descriptor
-   :abi-version (:abi-version descriptor)
    :clear-controller-errors! (fn [])
    :install-controller! (fn [_] :future-token)
    :install-ffi-controller!
@@ -1858,42 +1506,65 @@
    :arguments arguments
    :operation operation})
 
-(deftest v4-requires-the-ffi-routing-installer-var
+(deftest current-contract-requires-the-ffi-routing-installer-var
   (let [resolved-var (resolve 'jolt.sim.runtime/resolved-abi-vars)]
-    ;; A v4 image that advertises the exact v4 descriptor but omits the routing
+    ;; A current image that advertises the exact descriptor but omits the routing
     ;; installer var is incompatible, even though run-controlled never invokes
     ;; that installer. It shares restore-ffi-controller! for restoration.
     (let [data
           (with-redefs-fn
-            {resolved-var (fn [] (mock-resolved-abi-vars v4-descriptor true))}
+            {resolved-var (fn [] (mock-resolved-abi-vars supported-descriptor true))}
             #(ex-data-of rt/capabilities))]
       (is (= :jolt.sim.runtime/abi-incompatible (:type data)))
       (is (= [:install-ffi-routing-controller!] (:missing data))))
-    ;; A v4 image that exposes the routing installer resolves the v4 descriptor.
+    (let [data
+          (with-redefs-fn
+            {resolved-var (fn [] (mock-resolved-abi-vars supported-descriptor true))}
+            #(ex-data-of rt/available?))]
+      (is (= :jolt.sim.runtime/abi-incompatible (:type data))))
+    ;; A complete image resolves the one exact current descriptor.
     (let [caps
           (with-redefs-fn
-            {resolved-var (fn [] (mock-resolved-abi-vars v4-descriptor false))}
+            {resolved-var (fn [] (mock-resolved-abi-vars supported-descriptor false))}
             #(rt/capabilities))]
-      (is (= v4-descriptor caps)))
-    ;; A v3 image never needs the routing installer, so omitting it is not an
-    ;; error and the v3 descriptor still resolves.
-    (let [caps
-          (with-redefs-fn
-            {resolved-var (fn [] (mock-resolved-abi-vars v3-descriptor3 true))}
-            #(rt/capabilities))]
-      (is (= v3-descriptor3 caps)))))
+      (is (= supported-descriptor caps)))))
 
-(deftest v4-run-controlled-retains-the-established-ffi-controller
-  ;; Under ABI v4 run-controlled stays hermetic: it installs the established
+(deftest runtime-resolution-distinguishes-absence-from-incompatible-versions
+  (let [resolved-var (resolve 'jolt.sim.runtime/resolved-abi-vars)
+        absent {:capabilities nil
+                :install-controller! nil
+                :restore-controller! nil
+                :controller-errors nil
+                :clear-controller-errors! nil
+                :install-ffi-controller! nil
+                :restore-ffi-controller! nil
+                :install-ffi-routing-controller! nil}]
+    (with-redefs-fn
+      {resolved-var (fn [] absent)}
+      #(do
+         (is (false? (rt/available?)))
+         (is (= :jolt.sim.runtime/abi-unavailable
+                (:type (ex-data-of rt/capabilities))))))
+    (doseq [version [3 5 6 7]]
+      (let [descriptor (assoc supported-descriptor :abi-version version)
+            data
+            (with-redefs-fn
+              {resolved-var
+               (fn [] (mock-resolved-abi-vars descriptor false))}
+              #(ex-data-of rt/available?))]
+        (is (= :jolt.sim.runtime/abi-incompatible (:type data))
+            (pr-str version))))))
+
+(deftest hermetic-run-retains-the-established-ffi-controller
+  ;; Hermetic mode installs the established
   ;; one-argument FFI controller (install-ffi-controller!) and never the routing
   ;; installer (install-ffi-routing-controller!), which is required to exist on
-  ;; the image but unused by the controlled run. v4 lifecycle drainage behaves
-  ;; like v3, so a thunk that spawns nothing drains immediately and restores.
+  ;; the image but unused by the controlled run. A thunk that spawns nothing
+  ;; drains immediately and restores.
   (let [established-ffi (atom nil)
         routing (atom nil)
         future-installed (atom nil)
-        ops {:descriptor v4-descriptor
-             :abi-version 4
+        ops {:descriptor supported-descriptor
              :clear-controller-errors! (fn [])
              :install-controller!
              (fn [controller]
@@ -1915,7 +1586,7 @@
       {resolve-var (fn [] ops)}
       #(let [result (rt/run-controlled {} (fn [] :done))]
          (is (= :done (:result result)))
-         (is (= v4-descriptor (:capabilities result)))
+         (is (= supported-descriptor (:capabilities result)))
          (is (some? @established-ffi)
              "the established one-argument FFI controller must be installed")
          (is (nil? @routing)
@@ -1923,33 +1594,12 @@
          (is (some? @future-installed)
              "the future lifecycle controller must be installed")))))
 
-(deftest routing-modes-require-v4-and-explicit-hermetic-requires-ffi
-  (let [resolve-var (resolve 'jolt.sim.runtime/resolve-controller-ops!)]
-    (doseq [mode [:observe :hybrid]]
-      (let [data
-            (with-redefs-fn
-              {resolve-var
-               (fn [] (mock-controller-ops v3-descriptor3 nil nil))}
-              #(ex-data-of
-                (fn [] (rt/run-controlled {:ffi-mode mode}
-                                          (fn [] :uncontrolled)))))]
-        (is (= :jolt.sim.runtime/capability-unavailable (:type data)))
-        (is (= 4 (:required-abi-version data)))
-        (is (= 3 (:actual-abi-version data)))))
-    (let [data
-          (with-redefs-fn
-            {resolve-var (fn [] (mock-controller-ops v1-descriptor nil nil))}
-            #(ex-data-of
-              (fn [] (rt/run-controlled {:ffi-mode :hermetic}
-                                        (fn [] :uncontrolled)))))]
-      (is (= :jolt.sim.runtime/capability-unavailable (:type data))))))
-
-(deftest v4-observe-installs-routing-proceeds-once-and-records-the-route
+(deftest observe-installs-routing-proceeds-once-and-records-the-route
   (let [established (atom nil)
         routing (atom nil)
         proceed-count (atom 0)
         descriptor (native-descriptor :sizeof [:int])
-        ops (mock-controller-ops v4-descriptor established routing)
+        ops (mock-controller-ops supported-descriptor established routing)
         resolve-var (resolve 'jolt.sim.runtime/resolve-controller-ops!)
         run
         (with-redefs-fn
@@ -1968,10 +1618,10 @@
     (is (= [{:mode :observe :route :native :descriptor descriptor}]
            (:effect-trace run)))))
 
-(deftest v4-observe-preserves-a-caught-native-proceed-exception
+(deftest observe-preserves-a-caught-native-proceed-exception
   (let [routing (atom nil)
         descriptor (native-descriptor :sizeof [:int])
-        ops (mock-controller-ops v4-descriptor nil routing)
+        ops (mock-controller-ops supported-descriptor nil routing)
         resolve-var (resolve 'jolt.sim.runtime/resolve-controller-ops!)
         run
         (with-redefs-fn
@@ -1990,13 +1640,13 @@
     (is (= :native (:result run)))
     (is (= [:native] (mapv :route (:effect-trace run))))))
 
-(deftest v4-hybrid-routes-handlers-and-safe-misses-explicitly
+(deftest hybrid-routes-handlers-and-safe-misses-explicitly
   (let [routing (atom nil)
         proceeded (atom [])
         alloc (native-descriptor :alloc [8])
         sizeof (native-descriptor :sizeof [:int])
         loaded (native-descriptor :loaded? ["libc"])
-        ops (mock-controller-ops v4-descriptor nil routing)
+        ops (mock-controller-ops supported-descriptor nil routing)
         resolve-var (resolve 'jolt.sim.runtime/resolve-controller-ops!)
         run
         (with-redefs-fn
@@ -2021,12 +1671,12 @@
            (mapv :route (:effect-trace run))))
     (is (= (:effects run) (mapv :descriptor (:effect-trace run))))))
 
-(deftest v4-hybrid-blocks-a-derived-modeled-resource-before-proceed
+(deftest hybrid-blocks-a-derived-modeled-resource-before-proceed
   (let [routing (atom nil)
         proceed-count (atom 0)
         alloc (native-descriptor :alloc [8])
         free-derived (native-descriptor :free [1042000007])
-        ops (mock-controller-ops v4-descriptor nil routing)
+        ops (mock-controller-ops supported-descriptor nil routing)
         resolve-var (resolve 'jolt.sim.runtime/resolve-controller-ops!)
         data
         (with-redefs-fn
@@ -2071,7 +1721,7 @@
         (make-ffi-routing-controller-var
          :hybrid
          {[:native-operation :alloc] (fn [_] 1042)}
-         state effect-trace 3 ledger)
+         state effect-trace ledger)
         data (ex-data-of #(controller descriptor (fn [] :native)))]
     (is (= :jolt.sim.runtime/invalid-handler-result (:type data)))
     (is (= :unclassified-result (:reason data)))
@@ -2106,7 +1756,7 @@
               (make-ffi-routing-controller-var
                :hybrid
                {key (fn [_] (rt/substitute fake))}
-               state effect-trace 3 (atom []))
+               state effect-trace (atom []))
               data
               (ex-data-of
                #(controller descriptor
@@ -2136,7 +1786,7 @@
         (make-ffi-routing-controller-var
          :hybrid
          {[:native-operation :alloc] (fn [_] (rt/substitute 0))}
-         state (atom []) 3 (atom []))]
+         state (atom []) (atom []))]
     (is (zero? (controller descriptor (fn [] :wrong))))
     (is (empty? (:ffi-errors @state))))
   ;; Pointer-typed foreign calls may use a negative API failure sentinel.
@@ -2149,7 +1799,7 @@
         controller
         (make-ffi-routing-controller-var
          :hybrid {key (fn [_] (rt/substitute -1))}
-         state (atom []) 3 (atom []))]
+         state (atom []) (atom []))]
     (is (= -1 (controller descriptor (fn [] :wrong))))
     (is (empty? (:ffi-errors @state)))))
 
@@ -2169,7 +1819,7 @@
             (make-ffi-routing-controller-var
              :hybrid
              {[:native-operation :borrow-byte-array] handler}
-             state effect-trace 3 (atom []))
+             state effect-trace (atom []))
             data
             (ex-data-of
              #(controller descriptor
@@ -2191,7 +1841,7 @@
     (doseq [[label handler] invalid-borrow-handler-cases]
       (let [routing (atom nil)
             caught (atom nil)
-            ops (mock-controller-ops v4-descriptor nil routing)
+            ops (mock-controller-ops supported-descriptor nil routing)
             data
             (with-redefs-fn
               {resolve-var (fn [] ops)}
@@ -2235,7 +1885,7 @@
            :hybrid
            {[:native-operation :alloc]
             (fn [_] (rt/modeled-resource base 8))}
-           state effect-trace 3 (atom []))]
+           state effect-trace (atom []))]
       (is (= base
              (controller (native-descriptor :alloc [8])
                          (fn [] :wrong))))
@@ -2257,7 +1907,7 @@
         alias (+ fake-base 1/2)
         alloc (native-descriptor :alloc [8])
         free-alias (native-descriptor :free [alias])
-        ops (mock-controller-ops v4-descriptor nil routing)
+        ops (mock-controller-ops supported-descriptor nil routing)
         resolve-var (resolve 'jolt.sim.runtime/resolve-controller-ops!)
         caught (atom nil)
         proceeded? (atom false)
@@ -2302,7 +1952,7 @@
         (make-ffi-routing-controller-var
          :hybrid
          {key (fn [_] (rt/modeled-resource [7000 5] 4))}
-         state effect-trace 3 ledger)]
+         state effect-trace ledger)]
     (is (= [7000 5]
            (controller pointer-descriptor (fn [] :wrong))))
     (let [free (native-descriptor :free [7003])
@@ -2314,9 +1964,8 @@
       (is (false? @proceeded?))
       (is (= [:handler :blocked] (mapv :route @effect-trace))))))
 
-(deftest live-v4-observe-proceeds-real-ffi-and-does-not-latch-native-errors
-  (cond
-    (= 4 (abi-version))
+(deftest live-observe-proceeds-real-ffi-and-does-not-latch-native-errors
+  (if (rt/available?)
     (let [expected-size (ffi/sizeof :int)
           run
           (rt/run-controlled
@@ -2334,19 +1983,11 @@
                       (:kind %))
                    (:effects run)))))
 
-    (rt/available?)
-    (is (= :jolt.sim.runtime/capability-unavailable
-           (:type
-            (ex-data-of
-             #(rt/run-controlled {:ffi-mode :observe} (fn [] :done))))))
-
-    :else
     (ordinary-reports-unavailable
      #(rt/run-controlled {:ffi-mode :observe} (fn [] :done)))))
 
-(deftest live-v4-hybrid-mixes-modeled-and-real-effects-and-blocks-provenance
-  (cond
-    (= 4 (abi-version))
+(deftest live-hybrid-mixes-modeled-and-real-effects-and-blocks-provenance
+  (if (rt/available?)
     (let [fake-base 1042000000
           expected-size (ffi/sizeof :int)
           mixed
@@ -2375,12 +2016,5 @@
         (is (some #(= :modeled-resource-native-fallback (:ffi-error %))
                   (:errors data)))))
 
-    (rt/available?)
-    (is (= :jolt.sim.runtime/capability-unavailable
-           (:type
-            (ex-data-of
-             #(rt/run-controlled {:ffi-mode :hybrid} (fn [] :done))))))
-
-    :else
     (ordinary-reports-unavailable
      #(rt/run-controlled {:ffi-mode :hybrid} (fn [] :done)))))

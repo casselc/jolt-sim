@@ -3,7 +3,7 @@
 
   This namespace deliberately has no dependency on jolt.sim. Its caller
   chooses whether the standard jolt.ffi operations reach real native memory or
-  an installed descriptor-v3 controller."
+  the installed current controller with FFI descriptor-version 3."
   (:require [jolt.ffi :as ffi]))
 
 (defn exercise-loan

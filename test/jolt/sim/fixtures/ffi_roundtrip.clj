@@ -3,7 +3,7 @@
 
   This namespace deliberately has no dependency on jolt.sim. Its caller
   chooses whether the standard jolt.ffi operations reach Chez/native memory or
-  an installed ABI v2 controller."
+  an installed current simulation controller."
   (:require [jolt.ffi :as ffi]))
 
 (defn exercise-memory

@@ -4,10 +4,6 @@
             [jolt.sim.fixtures.ffi-roundtrip :as fixture]
             [jolt.sim.runtime :as runtime]))
 
-(defn- abi-version []
-  (when (runtime/available?)
-    (:abi-version (runtime/capabilities))))
-
 (defn- assert-roundtrip [result]
   (is (= -1234567 (:integer result)))
   (is (= [0 127 128 255 10] (:bytes result)))
@@ -20,7 +16,8 @@
   (assert-roundtrip (fixture/exercise-memory)))
 
 (deftest unchanged-ffi-namespace-runs-against-the-simulated-world
-  (when (contains? #{2 3 4} (abi-version))
+  (when (runtime/available?)
+    (is (= 4 (:abi-version (runtime/capabilities))))
     (let [real-result (fixture/exercise-memory)
           world
           (memory/world {:pointer-size (:pointer-size real-result)})
