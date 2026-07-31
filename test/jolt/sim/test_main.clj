@@ -6,7 +6,8 @@
             [jolt.sim.kernel-test]
             [jolt.sim.monitor-test]
             [jolt.sim.replay-test]
-            [jolt.sim.runtime-test]))
+            [jolt.sim.runtime-test]
+            [jolt.sim.sqlite-test]))
 
 (defn -main [& _]
   (let [result
@@ -16,7 +17,8 @@
                         'jolt.sim.kernel-test
                         'jolt.sim.monitor-test
                         'jolt.sim.replay-test
-                        'jolt.sim.runtime-test)
+                        'jolt.sim.runtime-test
+                        'jolt.sim.sqlite-test)
         failures (+ (:fail result) (:error result))]
     (println (str (:test result) " tests, "
                   (:pass result) " assertions passed"))
