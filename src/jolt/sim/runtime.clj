@@ -862,6 +862,14 @@
           (map (fn [[key value]] [(canonical-handler-key key) value]))
           handlers)))
 
+(defn normalize-ffi-handlers
+  "Validates and canonicalizes an FFI handler map using run-controlled's exact
+  current contract. Legacy five-element foreign-function keys become canonical
+  six-element keys with capture disabled. This pure helper is public so
+  extension and handler-pack tooling cannot drift from runtime validation."
+  [handlers]
+  (validate-ffi-handlers! handlers))
+
 (defn- restore-controllers!
   "Restores both installed controllers in reverse order, attempting the future
   restore even when the FFI restore fails. The session becomes reusable only

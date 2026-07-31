@@ -390,6 +390,52 @@ This first model intentionally describes sequential statement executions. It
 does not parse SQL, simulate SQLite locking or durability, choose concurrent
 schedules, or inject step/cleanup failures yet.
 
+### Composing handler packs
+
+`jolt.sim.handler-pack` is a small public helper for assembling one
+`:ffi-handlers` map from several named, validated packs. It does not touch the
+runtime or any world; `compose` returns the plain canonical map that
+`run-controlled` already consumes, so an application can add bespoke
+interceptors alongside a world's handlers without hand-merging their keys.
+
+```clojure
+(require '[jolt.sim.handler-pack :as hp]
+         '[jolt.sim.sqlite :as sqlite]
+         '[jolt.sim.runtime :as sim]
+         '[my.app :as app]
+         '[my.codec.sim :as codec-sim])
+
+(defn run-scenario [plans codec-model production-config]
+  (let [sqlite-world (sqlite/world plans)
+        ;; sqlite/handlers already merges the memory world's native-operation
+        ;; handlers with its SQLite foreign-function handlers. A separate
+        ;; library-provided simulation namespace supplies the codec boundary.
+        handlers
+        (hp/compose
+         (hp/pack :jolt.sim/sqlite (sqlite/handlers sqlite-world))
+         (codec-sim/handler-pack codec-model))]
+    (sim/run-controlled {:ffi-handlers handlers}
+                        #(app/run! production-config))))
+```
+
+`native-operation-key` and `foreign-function-key` build the canonical keys
+directly; `foreign-function-key` defaults `capture?` to `false` and takes an
+explicit fifth positional argument for a capture-enabled handler. `pack`
+requires an explicit **namespaced** keyword id and a handler map; legacy
+five-element foreign-function keys are canonicalized to the six-element form.
+`compose` merges one or more packs and fails closed with a typed ex-info on a
+duplicate pack id or on any canonical handler key registered by more than one
+pack — even when the two registered values are identical — carrying the
+colliding key and both pack ids so an accidental double-registration can never
+silently overwrite a handler.
+
+A library can ship a function such as the hypothetical
+`my.codec.sim/handler-pack` in an optional simulation-only namespace or
+artifact. Its production namespaces continue to depend only on their ordinary
+Jolt APIs; only the scenario harness requires `jolt.sim.handler-pack` and the
+library's simulation namespace. The application body still receives its normal
+production configuration rather than a simulator world.
+
 ## Execution model
 
 The cooperative step API is the scheduler kernel and a low-level model-testing
