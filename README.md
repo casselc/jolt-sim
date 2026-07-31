@@ -15,17 +15,49 @@ and simulated worlds belong here.
 - a trace-grammar monitor for ordering, step, time, and terminal invariants;
 - dynamic discovery of the sim-image controller ABI without making ordinary
   Jolt images depend on it; and
-- a `run-controlled`/`defsim` adapter that observes and can gate ordinary Jolt
-  future starts while preserving the application body unchanged.
+- a `run-controlled`/`defsim` adapter that preserves the application body
+  unchanged while gating ordinary future starts and, under ABI v2,
+  substituting registered FFI/native effects.
 
-The current runtime adapter is deliberately narrower than the intended
-scenario form below. Its v1 configuration accepts only an optional `:on-event`
-callback and rejects unimplemented options rather than silently pretending
-that seed, time, fault, or effect control exists. It observes future lifecycle
-events and detects futures that outlive a controlled scope, but it does not yet
-select an exhaustive schedule. The kernel still has no stream, socket, HTTP,
-database, native-effect, or OpenTelemetry integration. Its deterministic
-traces describe kernel test runs, not arbitrary production execution.
+The current runtime adapter supports two controller ABI versions discovered
+dynamically from a sim image. ABI v1 is lifecycle-only: an optional `:on-event`
+callback observes and gates ordinary Jolt future starts. ABI v2 additionally
+installs an FFI controller on every controlled run, so every `jolt.ffi` native
+effect inside the scope is intercepted before the operating system is reached.
+An effect without a registered handler throws
+`:jolt.sim.runtime/unhandled-native-effect`; handlers are configured via
+`:ffi-handlers`, a map keyed by `[:native-operation operation]` or
+`[:foreign-function c-symbol-string argument-types return-type blocking?]`,
+where map membership (including a `nil` value) defines handled. Under v1 an
+explicitly supplied `:ffi-handlers` key is rejected with
+`:jolt.sim.runtime/capability-unavailable`, and the result map never carries
+`:effects`.
+
+The adapter still does not select an exhaustive schedule, reorder execution,
+advance virtual time, or inject faults. The kernel has no stream, socket,
+HTTP, database, or OpenTelemetry integration. Its deterministic traces
+describe kernel test runs, not arbitrary production execution.
+
+### FFI interception caveats (ABI v2)
+
+- **Effects are live in-memory evidence.** The `:effects` vector returned under
+  v2 records each exact validated descriptor in arrival order. Descriptor
+  arguments are the live objects that crossed the interception boundary; they
+  may include mutable values such as byte arrays, and are not snapshotted or
+  canonicalized.
+- **Native work before scope is not intercepted.** A library load or foreign
+  function call completed before `run-controlled` installs its controllers has
+  already reached the real OS. Defining a lazy `defcfn` before the scope is
+  safe; invoking it inside the scope is intercepted before symbol resolution.
+- **Already-started outliving threads can escape after restoration.** When the
+  controllers are restored (FFI then future, exact tokens, both attempted on
+  cleanup), a thread that started inside the scope but has not yet reached its
+  terminal lifecycle event regains uncontrolled OS access. The adapter detects
+  and fails such outliving tasks, but cannot prevent their late native calls
+  from reaching the OS once restoration has completed.
+- **A unified causal trace remains later work.** Lifecycle events and native
+  effects are recorded in separate ordered logs; correlating a future's task id
+  across both logs is the caller's responsibility today.
 
 ## Execution model
 
@@ -66,9 +98,8 @@ the real operating system.
 1. Drive the existing future controller adapter from scheduler choices, then
    run one unchanged Jolt namespace in normal and controlled modes through
    ordinary futures, promises, clocks, and entropy.
-2. Intercept `jolt.ffi` binding calls before native symbol resolution, fail
-   closed on unregistered native effects, and add deterministic simulated
-   memory ownership.
+2. Build deterministic simulated memory ownership and library-specific
+   provider packs on the current fail-closed FFI/native interception boundary.
 3. Add operation effects for connect, accept, read, write, close, cancel, and
    deadlines, followed by deterministic network and storage fault models.
 4. Add Hegel generation and shrinking for workloads, scheduler choices, native
