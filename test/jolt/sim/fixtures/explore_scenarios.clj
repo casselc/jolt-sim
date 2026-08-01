@@ -70,12 +70,21 @@
   ;; `dependent` follows so the process explorer's kill path has something to
   ;; interrupt.
   (let [started-path (System/getenv "JOLT_SIM_STARTED_PATH")
-        late-path (System/getenv "JOLT_SIM_LATE_PATH")]
+        late-path (System/getenv "JOLT_SIM_LATE_PATH")
+        late-delay-raw (System/getenv "JOLT_SIM_LATE_DELAY_MS")
+        late-delay-ms (if late-delay-raw
+                        (parse-long late-delay-raw)
+                        1500)]
+    (when-not (and late-delay-ms (pos? late-delay-ms))
+      (throw
+       (ex-info
+        "JOLT_SIM_LATE_DELAY_MS must be a positive integer"
+        {:value late-delay-raw})))
     (spit started-path "started")
     (let [late-writer
           (Thread.
            (fn []
-             (Thread/sleep 1500)
+             (Thread/sleep late-delay-ms)
              (spit late-path "late")))]
       (.setDaemon late-writer true)
       (.start late-writer))

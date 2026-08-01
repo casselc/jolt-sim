@@ -186,6 +186,9 @@
           (str (fs/create-temp-dir {:prefix "jolt-sim-kill-witness-"}))
           started-path (str (fs/path temp-dir "started"))
           late-path (str (fs/path temp-dir "late"))
+          worker-timeout-ms 5000
+          late-delay-ms 5000
+          post-timeout-wait-ms 5500
           safe-to-clean? (volatile! false)]
       (try
         (let [config
@@ -193,11 +196,12 @@
                (run-config
                 'jolt.sim.fixtures.explore-scenarios/kill-witness
                 [1 0]
-                750)
+                worker-timeout-ms)
                :temp-dir temp-dir
                :extra-env
                {"JOLT_SIM_STARTED_PATH" started-path
-                "JOLT_SIM_LATE_PATH" late-path})
+                "JOLT_SIM_LATE_PATH" late-path
+                "JOLT_SIM_LATE_DELAY_MS" (str late-delay-ms)})
               outcome (process-explorer/run-schedule config)]
           ;; A returned timeout means terminate-and-reap! observed child exit.
           ;; If it throws because death was not observed, retain this directory
@@ -207,10 +211,12 @@
           (is (= :deadline (:reason outcome)))
           (is (fs/exists? started-path)
               "the child must reach the fixture before its deadline")
-          ;; The fixture's daemon waits 1500 ms from its started witness. Wait
-          ;; longer than that after the supervisor returns, so absence of the
-          ;; late witness demonstrates process death rather than a short wait.
-          (Thread/sleep 1750)
+          ;; Hosted runners may spend more than 750 ms starting a fresh Jolt
+          ;; image. Give startup a real budget, then wait longer than the
+          ;; fixture's independently configured poison delay after the
+          ;; supervisor returns. Since the started witness predates that
+          ;; return, absence of the late witness still proves process death.
+          (Thread/sleep post-timeout-wait-ms)
           (is (not (fs/exists? late-path))
               "a reaped worker cannot write its delayed witness"))
         (finally
