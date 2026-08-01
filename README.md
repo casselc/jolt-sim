@@ -60,7 +60,8 @@ baseline and remints the affected contracts and tests in place.
   executes unchanged `jdbc.core` application code; and
 - a descriptor-driven POSIX IPv4 loopback handler model whose dual-use fixture
   executes unchanged public `jolt.net` code against either real sockets or a
-  hermetic in-memory stream, including partial I/O and directional half-close.
+  hermetic in-memory stream, including partial I/O, directional half-close,
+  target-exact `poll(2)`, and the real public poller/self-pipe wake machinery.
 
 The runtime adapter accepts one exact current controller contract, presently
 prerelease ABI 5. All current controller vars are required. If every var is
@@ -214,10 +215,10 @@ The adapter still does not discover future counts, choose high-utility
 interleavings, advance virtual time, or inject faults. `schedule-plans` can
 enumerate the first bounded lexicographic top-level permutations, but that is
 not yet Hegel/swarm search or partial-order reduction. SQLite and the first
-poller-free POSIX loopback stream now have deterministic boundary models, but
-public readiness/pollers, TCP and HTTP servers, network faults, and
-OpenTelemetry export remain open. The traces still do not describe arbitrary
-production execution.
+POSIX loopback stream, self-pipe, and readiness wait now have deterministic
+boundary models; unchanged public `jolt.net` poller code runs over them. TCP and
+HTTP servers, virtual network faults, and OpenTelemetry export remain open. The
+traces still do not describe arbitrary production execution.
 
 ### First coarse scripted scheduler (`:future-schedule`)
 
@@ -462,6 +463,36 @@ re-probes the host loader. Bounds errors, invalid frees, double frees, use after
 free, unterminated strings, and leaked live allocations are explicit evidence
 rather than native undefined behavior.
 
+### Deterministic POSIX loopback and readiness
+
+`jolt.sim.net.posix-loopback` models the exact foreign descriptors used by the
+current POSIX `jolt.net` stack over the same native-memory world. The caller
+supplies the live target descriptor, so Linux `nfds_t :size_t` and Darwin
+`nfds_t :uint`, `pollfd` offsets, socket constants, and errno values are never
+guessed from the host name.
+
+The model owns synthetic IPv4 stream sockets, listener accept queues,
+directional byte FIFOs, and self-pipe endpoints. `poll(2)` reports requested
+read/write readiness plus unconditional error, hangup, and invalid-fd bits. A
+blocking wait registers atomically with its readiness check, releases the world
+lock while parked, and recomputes live state after every notification. This is
+why an ordinary self-pipe write, connect, stream send, shutdown, or close can
+wake it without deadlocking or returning readiness for an unrelated descriptor.
+
+Two fixtures import `jolt.net`, not `jolt.sim`: one exercises stream I/O and
+half-close, and the other drives `open-poller`, registration-token succession,
+`await-ready`, the wake cursor, removal, and idempotent close. Their harness
+installs the handler world underneath the unchanged code:
+
+```sh
+/path/to/current-sim/target/sim/jolt -M:posix-loopback-test
+```
+
+The wait currently uses real monotonic elapsed time, not the simulator's future
+virtual clock. Socket and pipe FIFOs are unbounded, so full-buffer backpressure
+and the self-pipe wake-coalescing `EAGAIN` branch still need a capacity/fault
+seam before they can be claimed as adversarial coverage.
+
 ### Deterministic SQLite driver model
 
 `jolt.sim.sqlite` implements the exact 22 foreign-function descriptors used by
@@ -606,9 +637,9 @@ the real operating system.
    order, single-concurrency admission) has landed; still open is running
    one unchanged Jolt namespace in normal and controlled modes through
    nested spawns, promises, clocks, and entropy.
-2. Extend the landed memory, SQLite, and poller-free POSIX loopback models with
-   bounded error and cleanup plans; add the poll/wake readiness boundary and
-   handler packs for codecs on the same fail-closed interception seam.
+2. Extend the landed memory, SQLite, and POSIX loopback/poll models with bounded
+   error and cleanup plans, pipe/socket capacity and fault seams, and handler
+   packs for codecs on the same fail-closed interception seam.
 3. Drive unchanged public nonblocking connect/accept through readiness, then
    add operation effects for cancel and deadlines followed by deterministic
    network and storage fault models.

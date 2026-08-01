@@ -26,8 +26,10 @@
   bytes (EPIPE once the reader closes); read drains that FIFO in bounded slices
   (EAGAIN while empty only after the reader is nonblocking, [0 0] EOF after the
   writer closes); and scalar close retires each endpoint idempotently while
-  marking its peer's lifecycle. Blocking empty reads fail closed until the poll
-  slice supplies a real waiter. No poll, scheduling, or virtual time are modeled.
+  marking its peer's lifecycle. poll(2) uses the supplied target's exact pollfd
+  layout and nfds_t width. A blocking poll registers under the world lock,
+  releases that lock while parked, and recomputes readiness after every wake.
+  Timeouts use real monotonic elapsed time; virtual time is not modeled here.
 
   sockaddr_in and addrinfo are written from the supplied descriptor, including
   Darwin's sin_len byte and its different ai_addr/ai_canonname order. Resolver
@@ -89,12 +91,7 @@
 
 ;; ---- exact jolt.net POSIX foreign-function keys ------------------------
 
-(def
- ^{:doc "The exact POSIX loopback foreign-function handler keys, each the
- canonical six-element [symbol argument-types return-type blocking? capture?]
- identity. Exposed so tests and callers never diverge from the registered
- handlers."}
- handler-keys
+(def ^:private common-handler-keys
  [[:foreign-function "getaddrinfo"
    [:pointer :pointer :pointer :pointer] :int true true]
   [:foreign-function "freeaddrinfo" [:pointer] :void false false]
@@ -123,6 +120,16 @@
   [:foreign-function "pipe" [:pointer] :int false true]
   [:foreign-function "read" [:int :pointer :size_t] :ssize_t false true]
   [:foreign-function "write" [:int :pointer :size_t] :ssize_t false true]])
+
+(defn handler-keys
+  "The exact POSIX loopback foreign-function handler keys for one validated
+  target descriptor. poll(2)'s nfds_t is :size_t on Linux and :uint on Darwin,
+  so registering both plausible signatures would weaken fail-closed routing."
+  [target-descriptor]
+  (conj common-handler-keys
+        [:foreign-function "poll"
+         [:pointer (:nfds-type target-descriptor) :int]
+         :int true true]))
 
 ;; ---- captured result helpers -------------------------------------------
 
@@ -169,7 +176,8 @@
 
 (def ^:private required-constants
   #{:af-inet :sock-stream :sol-socket :so-error
-    :shut-rd :shut-wr :shut-rdwr :f-getfl :f-setfl :o-nonblock})
+    :shut-rd :shut-wr :shut-rdwr :f-getfl :f-setfl :o-nonblock
+    :pollin :pollout :pollerr :pollhup :pollnval})
 
 (def ^:private required-errnos
   #{:eagain :einprogress :eaddrinuse :econnrefused :econnreset :epipe})
@@ -188,6 +196,7 @@
         missing-errnos
         (vec (sort (remove #(integer? (get-in d [:errno %])) required-errnos)))
         sockaddr (get-in d [:layout :sockaddr-in])
+        pollfd (get-in d [:layout :pollfd])
         addrinfo (get-in d [:layout :addrinfo])]
     (when (seq missing-constants)
       (fail! :jolt.sim.net.posix-loopback/invalid-target
@@ -197,6 +206,10 @@
       (fail! :jolt.sim.net.posix-loopback/invalid-target
              "target descriptor lacks required POSIX errno values"
              {:missing-errnos missing-errnos}))
+    (when-not (contains? #{:size_t :uint} (:nfds-type d))
+      (fail! :jolt.sim.net.posix-loopback/invalid-target
+             "target descriptor has an unsupported POSIX nfds_t type"
+             {:nfds-type (:nfds-type d)}))
     (when-not (and (= 16 (:size sockaddr))
                    (integer? (:family sockaddr))
                    (= 2 (:port sockaddr))
@@ -204,6 +217,10 @@
       (fail! :jolt.sim.net.posix-loopback/invalid-target
              "target descriptor has an unsupported sockaddr_in layout"
              {:layout sockaddr}))
+    (when-not (= {:size 8 :fd 0 :events 4 :revents 6} pollfd)
+      (fail! :jolt.sim.net.posix-loopback/invalid-target
+             "target descriptor has an unsupported pollfd layout"
+             {:layout pollfd}))
     (when-not (and (= 48 (:size addrinfo))
                    (every? integer?
                            (map addrinfo
@@ -245,6 +262,10 @@
                     :listeners {}
                     :closed-fds #{}
                     :addrinfo-allocations {}})
+      ;; Waiters deliberately live outside the public resource state. They are
+      ;; host synchronization objects, not simulated POSIX resources or trace
+      ;; values, and must never leak into a replay snapshot.
+      :readiness (atom {:epoch 0 :next-waiter 0 :waiters {}})
       :lock (Object.)
       :target target
       :config cfg
@@ -373,6 +394,169 @@
     (f s)
     (err-pair (native-error w :ebadf))))
 
+;; ---- readiness waiters -------------------------------------------------
+
+(defn- notify-readiness!
+  "Advance the readiness epoch and release every currently parked poll call.
+  The caller holds the world lock, so clearing the waiter set before delivery
+  forms one atomic publish-before-wake boundary with the resource transition."
+  [w]
+  (let [readiness (:readiness w)
+        current @readiness
+        waiters (vals (:waiters current))]
+    (reset! readiness
+            (-> current
+                (update :epoch inc)
+                (assoc :waiters {})))
+    (doseq [waiter waiters]
+      (deliver waiter true))
+    nil))
+
+(defn- register-readiness-waiter! [w]
+  (let [readiness (:readiness w)
+        current @readiness
+        id (:next-waiter current)
+        signal (promise)]
+    (reset! readiness
+            (-> current
+                (assoc :next-waiter (inc id))
+                (assoc-in [:waiters id] signal)))
+    {:id id :signal signal}))
+
+(defn- remove-readiness-waiter! [w id]
+  (swap! (:readiness w) update :waiters dissoc id)
+  nil)
+
+(defn- requested? [events flag]
+  (not (zero? (bit-and events flag))))
+
+(defn- pipe-poll-bits [w endpoint events]
+  (let [pollin (target-const w :pollin)
+        pollout (target-const w :pollout)
+        pollerr (target-const w :pollerr)
+        pollhup (target-const w :pollhup)]
+    (case (:role endpoint)
+      :reader
+      (bit-or
+       (if (and (requested? events pollin)
+                (seq (:fifo endpoint)))
+         pollin 0)
+       ;; POSIX reports hangup independently of the requested interests. Any
+       ;; bytes queued before writer close remain readable alongside POLLHUP.
+       (if (:writer-closed? endpoint) pollhup 0))
+
+      :writer
+      (bit-or
+       ;; With no capacity limit a write either makes immediate progress or
+       ;; fails immediately with EPIPE, so it never blocks. Linux accordingly
+       ;; reports POLLOUT alongside POLLERR after the reader closes.
+       (if (requested? events pollout) pollout 0)
+       (if (:reader-closed? endpoint) pollerr 0))
+
+      0)))
+
+(defn- socket-poll-bits [w socket events]
+  (let [pollin (target-const w :pollin)
+        pollout (target-const w :pollout)
+        pollhup (target-const w :pollhup)]
+    (case (:state socket)
+      :listening
+      (if (and (requested? events pollin)
+               (seq (:accept-q socket)))
+        pollin 0)
+
+      :connected
+      (let [readable? (or (seq (:recv-q socket))
+                          (:read-shutdown? socket)
+                          (:peer-write-shutdown? socket)
+                          (:peer-closed? socket))
+            ;; The model has no send-buffer capacity. A send while the peer is
+            ;; unavailable fails immediately rather than blocking, which still
+            ;; makes the descriptor writable in poll's sense.
+            writable? (not (:write-shutdown? socket))]
+        (bit-or
+         (if (and (requested? events pollin) readable?) pollin 0)
+         (if (and (requested? events pollout) writable?) pollout 0)
+         (if (:peer-closed? socket) pollhup 0)))
+
+      0)))
+
+(defn- poll-bits [w fd events]
+  (if (neg? fd)
+    ;; poll(2) uses a negative fd as a caller-owned disabled slot.
+    0
+    (if-let [{:keys [kind entry]} (fd-resource w fd)]
+      (case kind
+        :socket (socket-poll-bits w entry events)
+        :pipe (pipe-poll-bits w entry events)
+        0)
+      ;; POLLNVAL is reported for each invalid descriptor regardless of the
+      ;; requested mask; poll itself still succeeds and counts that entry.
+      (target-const w :pollnval))))
+
+(defn- poll-ready-count! [w buf n]
+  (let [{:keys [size fd events revents]}
+        (get-in w [:target :layout :pollfd])]
+    (loop [idx 0 ready 0]
+      (if (= idx n)
+        ready
+        (let [entry (+ buf (* idx size))
+              raw-fd (invoke-mem w :read [entry :int fd])
+              interests (invoke-mem w :read [entry :int16 events])
+              bits (poll-bits w raw-fd interests)]
+          (invoke-mem w :write [entry :int16 revents bits])
+          (recur (inc idx) (if (zero? bits) ready (inc ready))))))))
+
+(defn- monotonic-nanos []
+  (System/nanoTime))
+
+(defn- remaining-wait-ms [deadline]
+  (let [remaining (- deadline (monotonic-nanos))]
+    (if (pos? remaining)
+      (max 1 (quot (+ remaining 999999) 1000000))
+      0)))
+
+(defn- h-poll [w {:keys [arguments]}]
+  (let [[buf n timeout-ms] (vec arguments)]
+    (when-not (and (integer? n) (not (neg? n)))
+      (fail! :jolt.sim.net.posix-loopback/invalid-poll
+             "poll entry count must be a non-negative integer"
+             {:count n}))
+    (when-not (and (integer? timeout-ms) (>= timeout-ms -1))
+      (fail! :jolt.sim.net.posix-loopback/invalid-poll
+             "poll timeout must be -1 or a non-negative integer"
+             {:timeout-ms timeout-ms}))
+    (when (and (pos? n) (zero? buf))
+      (fail! :jolt.sim.net.posix-loopback/invalid-poll
+             "a non-empty poll array requires a non-null buffer"
+             {:count n :buffer buf}))
+    (let [deadline (when-not (= -1 timeout-ms)
+                     (+ (monotonic-nanos) (* timeout-ms 1000000)))]
+      (loop []
+        (let [step
+              (locking (:lock w)
+                (let [ready (poll-ready-count! w buf n)]
+                  (cond
+                    (pos? ready) {:result [ready 0]}
+                    (zero? timeout-ms) {:result [0 0]}
+                    (and deadline (zero? (remaining-wait-ms deadline)))
+                    {:result [0 0]}
+                    :else {:waiter (register-readiness-waiter! w)})))]
+          (if-let [result (:result step)]
+            result
+            (let [{:keys [id signal]} (:waiter step)]
+              (try
+                (if deadline
+                  (deref signal (remaining-wait-ms deadline) ::poll-timeout)
+                  @signal)
+                (finally
+                  ;; Timeout, cancellation, and notification all converge on
+                  ;; the same cleanup. If a publisher already cleared this id,
+                  ;; dissoc is harmless. The next loop always recomputes bits.
+                  (locking (:lock w)
+                    (remove-readiness-waiter! w id))))
+              (recur))))))))
+
 ;; ---- per-function handlers ---------------------------------------------
 
 (defn- h-getaddrinfo [w {:keys [arguments]}]
@@ -484,6 +668,7 @@
                    (if (and (#{:bound :listening} (:state s)) (:local-port s))
                      (do (swap! (:state w) assoc-in [:sockets fd :state] :listening)
                          (swap! (:state w) assoc-in [:listeners (:local-port s)] fd)
+                         (notify-readiness! w)
                          (ok-pair))
                      (err-pair (native-error w :einval)))))))
 
@@ -571,6 +756,7 @@
                 :recv-q [] :accept-q [] :options {}})
         (swap! (:state w) update-in [:sockets listener-fd :accept-q]
                (fn [q] (conj (or q []) server-fd)))
+        (notify-readiness! w)
         (if (:nonblocking? s)
           (err-pair (target-errno w :einprogress))
           (ok-pair))))))
@@ -595,6 +781,7 @@
       (swap! (:state w) assoc-in [:sockets listener :accept-q]
              (subvec (:accept-q s) 1))
       (swap! (:state w) assoc-in [:sockets server-fd :accepted?] true)
+      (notify-readiness! w)
       (if (zero? addr-ptr)
         [server-fd 0]
         (do (write-name-result
@@ -640,6 +827,7 @@
               moved (ba->uvec (invoke-mem w :read-array [buf-ptr n]))]
           (swap! (:state w) update-in [:sockets (:fd peer) :recv-q]
                  into moved)
+          (notify-readiness! w)
           [n 0]))
       (err-pair (target-errno w :epipe)))))
 
@@ -668,6 +856,7 @@
           (swap! (:state w) assoc-in [:sockets (:fd s) :recv-q]
                  (subvec q n))
           (invoke-mem w :write-array [buf-ptr (uvec->byte-array got)])
+          (notify-readiness! w)
           [n 0])))))
 
 (defn- h-recv [w {:keys [arguments]}]
@@ -701,6 +890,7 @@
                           (assoc-in [:sockets peer-fd :peer-write-shutdown?]
                                     true)
                           read? (assoc-in [:sockets fd :read-shutdown?] true))))
+               (notify-readiness! w)
                (ok-pair)))))))))
 
 (defn- close-result [w s]
@@ -722,6 +912,7 @@
     (when (and peer-fd (socket-of w peer-fd))
       (swap! (:state w) update-in [:sockets peer-fd]
              assoc :peer-write-shutdown? true :peer-closed? true))
+    (notify-readiness! w)
     0))
 
 ;; ---- pipe (self-pipe wake) handlers ------------------------------------
@@ -748,7 +939,8 @@
         (do (when (pos? len)
               (let [moved (ba->uvec (invoke-mem w :read-array [buf-ptr len]))]
                 (swap! (:state w) update-in [:pipes reader-fd :fifo]
-                       into moved)))
+                       into moved)
+                (notify-readiness! w)))
             [len 0])
         (err-pair (target-errno w :epipe))))))
 
@@ -769,6 +961,7 @@
               got (subvec q 0 n)]
           (swap! (:state w) assoc-in [:pipes (:fd s) :fifo] (subvec q n))
           (invoke-mem w :write-array [buf-ptr (uvec->byte-array got)])
+          (notify-readiness! w)
           [n 0])
         (cond
           (:writer-closed? s) [0 0]
@@ -797,6 +990,7 @@
     (swap! (:state w) update :closed-fds conj fd)
     (when (and mark (pipe-of w peer-fd))
       (swap! (:state w) assoc-in [:pipes peer-fd mark] true))
+    (notify-readiness! w)
     0))
 
 (defn- h-close [w {:keys [arguments]}]
@@ -824,22 +1018,27 @@
    "shutdown" (partial h-shutdown w)
    "close" (partial h-close w)
    "pipe" (partial h-pipe w)
+   "poll" (partial h-poll w)
    "read" (partial h-read w)
    "write" (partial h-write w)})
 
 (defn foreign-handlers
-  "Returns only the exact POSIX foreign-function handlers. Each transition is
-  serialized on the world's lock; its internal memory calls then use the shared
-  ffi-memory lock in one consistent order."
+  "Returns only the target-exact POSIX foreign-function handlers. Ordinary
+  transitions are serialized on the world lock. poll owns its narrower critical
+  sections itself so a parked wait never prevents a writer, connect, shutdown,
+  or close from publishing readiness and waking it."
   [w]
-  (let [fns (posix-fns w)]
+  (let [fns (posix-fns w)
+        keys (handler-keys (:target w))]
     (into {}
           (map (fn [key]
                  [key
                   (fn posix-handler [descriptor]
-                    (locking (:lock w)
-                      ((get fns (nth key 1)) descriptor)))]))
-          handler-keys)))
+                    (if (= "poll" (nth key 1))
+                      ((get fns "poll") descriptor)
+                      (locking (:lock w)
+                        ((get fns (nth key 1)) descriptor))))]))
+          keys)))
 
 (defn handlers
   "Returns one complete runtime :ffi-handlers map: all native-memory handlers
@@ -872,6 +1071,15 @@
                 :writer-closed? (:writer-closed? endpoint)
                 :reader-closed? (:reader-closed? endpoint)}))))
 
+(defn readiness-snapshot
+  "Stable evidence for the modeled readiness boundary. Host promise identities
+  are intentionally omitted; only the monotonic epoch and live waiter count are
+  trace-safe values."
+  [w]
+  (let [r @(:readiness w)]
+    {:epoch (:epoch r)
+     :waiter-count (count (:waiters r))}))
+
 (defn snapshot
   "Stable plain-data summary of every open socket, ordered by fd. Each entry
   carries its state machine value, local/peer loopback ports, the nonblocking
@@ -901,4 +1109,5 @@
        (empty? (:sockets @(:state w)))
        (empty? (:pipes @(:state w)))
        (empty? (:listeners @(:state w)))
-       (empty? (:addrinfo-allocations @(:state w)))))
+       (empty? (:addrinfo-allocations @(:state w)))
+       (zero? (:waiter-count (readiness-snapshot w)))))
