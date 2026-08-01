@@ -3,8 +3,12 @@
 
   This is a transport only. It routes envelopes between named endpoints over
   per-endpoint FIFOs and records a monotonic, ordered history of enqueue and
-  delivery events. It owns no message semantics: init, Echo, reply building, and
-  body validation all stay in jolt.maelstrom.node and jolt.maelstrom.echo, whose
+  delivery events. Each successful enqueue is also tagged with a stable
+  positive transport message-id -- the enqueue event's own ordinal -- that is
+  retained unchanged on the matching delivery event, so every history event
+  carries both its per-event :ordinal and its enqueued message's :message-id.
+  It owns no message semantics: init, Echo, reply building, and body
+  validation all stay in jolt.maelstrom.node and jolt.maelstrom.echo, whose
   handle! is driven unchanged over this transport.
 
   All mutable state lives in one atom captured by an opaque operation closure;
@@ -22,8 +26,10 @@
 
 (defn- enqueue-into!
   "Appends envelope to its :dest FIFO under one compare-and-set! on world and
-  records an enqueue event carrying the assigned stable ordinal. Returns that
-  ordinal. Validates only the routing shape (a map with a string :dest)."
+  records an enqueue event carrying the assigned stable ordinal. That ordinal
+  is also the envelope's transport message-id, retained unchanged on the
+  matching delivery event. Returns the assigned ordinal. Validates only the
+  routing shape (a map with a string :dest)."
   [world envelope]
   (when-not (and (map? envelope) (string? (:dest envelope)))
     (fail! ::invalid-envelope
@@ -34,10 +40,12 @@
       (let [ordinal (:next-ordinal current)
             queues (:queues current)
             event {:ordinal ordinal :op :enqueue
-                   :endpoint dest :envelope envelope}
+                   :endpoint dest :envelope envelope
+                   :message-id ordinal}
             next-state (-> current
                            (update :queues assoc dest
-                                   (conj (get queues dest empty-queue) envelope))
+                                   (conj (get queues dest empty-queue)
+                                         {:message-id ordinal :envelope envelope}))
                            (assoc :next-ordinal (inc ordinal))
                            (update :history conj event))]
         (if (compare-and-set! world current next-state)
@@ -46,19 +54,21 @@
 
 (defn- take-from!
   "Atomically pops one envelope from endpoint's FIFO under one
-  compare-and-set! on world, records a delivery event, and returns the
-  envelope. Returns nil (and records nothing) when the FIFO is empty."
+  compare-and-set! on world, records a delivery event that retains the
+  envelope's assigned message-id, and returns the bare envelope. Returns nil
+  (and records nothing) when the FIFO is empty."
   [world endpoint]
   (loop [current @world]
     (let [queues (:queues current)
           q (get queues endpoint empty-queue)]
       (if (empty? q)
         nil
-        (let [envelope (peek q)
+        (let [{:keys [message-id envelope]} (peek q)
               remaining (pop q)
               ordinal (:next-ordinal current)
               event {:ordinal ordinal :op :deliver
-                     :endpoint endpoint :envelope envelope}
+                     :endpoint endpoint :envelope envelope
+                     :message-id message-id}
               next-queues (if (empty? remaining)
                             (dissoc queues endpoint)
                             (assoc queues endpoint remaining))
@@ -85,7 +95,8 @@
          ::snapshot
          (let [state @world]
            {:queues (into (sorted-map)
-                          (map (fn [[endpoint queue]] [endpoint (vec queue)])
+                          (map (fn [[endpoint queue]]
+                                 [endpoint (mapv :envelope queue)])
                                (:queues state)))
             :history (vec (:history state))})
          (fail! ::invalid-operation
@@ -116,10 +127,11 @@
   (fn [envelope] (transport ::enqueue envelope)))
 
 (defn enqueue!
-  "Appends envelope to its :dest FIFO and records a stable, monotonically
-  ordered enqueue event. Returns the assigned ordinal. Validates only the
-  routing shape (a map with a string :dest); body content is passed through
-  untouched."
+  "Appends envelope to its :dest FIFO, tags it with a stable positive monotonic
+  transport message-id (the enqueue event's ordinal), and records an enqueue
+  event carrying that message-id and the event ordinal. Returns the assigned
+  event ordinal, which is also the message-id. Validates only the routing
+  shape (a map with a string :dest); body content is passed through untouched."
   [transport envelope]
   ((require-transport! transport) ::enqueue envelope))
 

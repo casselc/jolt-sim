@@ -10,6 +10,7 @@
             [jolt.sim.future-schedule-test]
             [jolt.sim.handler-pack-test]
             [jolt.sim.kernel-test]
+            [jolt.sim.maelstrom-history-test]
             [jolt.sim.monitor-test]
             [jolt.sim.posix-loopback-model-test]
             [jolt.sim.process-explorer-test]
@@ -30,6 +31,7 @@
                         'jolt.sim.future-schedule-test
                         'jolt.sim.handler-pack-test
                         'jolt.sim.kernel-test
+                        'jolt.sim.maelstrom-history-test
                         'jolt.sim.monitor-test
                         'jolt.sim.posix-loopback-model-test
                         'jolt.sim.process-explorer-test

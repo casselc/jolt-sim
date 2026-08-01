@@ -41,7 +41,42 @@
       (is (= ["n1" "n1" "n1"] (mapv :endpoint history)))
       ;; The deliver event carries the FIFO-front envelope, not the last one.
       (is (= ["x" "y" "x"] (mapv #(get-in % [:envelope :body :echo]) history)))
-      (is (apply < (mapv :ordinal history))))))
+      (is (apply < (mapv :ordinal history)))
+      ;; The transport tags each event with a positive :message-id; the
+      ;; deliver event retains the enqueue's message-id rather than carrying
+      ;; its own event ordinal.
+      (is (every? #(and (integer? (:message-id %)) (pos? (:message-id %))) history))
+      (let [enqs (filterv #(= :enqueue (:op %)) history)
+            dels (filterv #(= :deliver (:op %)) history)]
+        (is (= (mapv :ordinal enqs) (mapv :message-id enqs)))
+        (is (= (:message-id (first enqs)) (:message-id (first dels))))
+        (is (not= (:ordinal (first dels)) (:message-id (first dels))))))))
+
+;; ---- message-id stability ---------------------------------------------------
+
+(deftest identical-envelopes-receive-distinct-message-ids
+  (let [t (memory/create-transport)
+        env {:src "c1" :dest "n1" :body {:type "echo" :msg_id 7 :echo "same"}}
+        ord1 (memory/enqueue! t env)
+        ord2 (memory/enqueue! t env)]
+    ;; take!/drain! still expose only the original bare envelope.
+    (is (= env (memory/take! t "n1")))
+    (let [history (:history (memory/snapshot t))
+          enqs (filterv #(= :enqueue (:op %)) history)
+          dels (filterv #(= :deliver (:op %)) history)]
+      ;; Two structurally identical envelopes get distinct message-ids because
+      ;; the message-id is the enqueue event's ordinal, not the envelope value.
+      (is (not= ord1 ord2))
+      (is (= [ord1 ord2] (mapv :message-id enqs)))
+      (is (= [env env] (mapv :envelope enqs)))
+      ;; The single delivery served the first enqueue's message-id.
+      (is (= [ord1] (mapv :message-id dels)))))
+  ;; snapshot :queues still holds bare envelopes only.
+  (let [t (memory/create-transport)
+        env {:src "c1" :dest "n1" :body {:type "echo" :msg_id 9 :echo "q"}}]
+    (memory/enqueue! t env)
+    (is (= {"n1" [env]} (:queues (memory/snapshot t))))
+    (is (= [env] (memory/drain! t "n1")))))
 
 ;; ---- concurrent enqueue loses no updates -------------------------------------
 
