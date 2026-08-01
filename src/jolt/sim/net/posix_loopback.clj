@@ -140,7 +140,7 @@
 
 (def ^:private supported-config-keys
   #{:first-fd :ephemeral-base :ephemeral-max :progress-limit
-    :stream-capacity})
+    :stream-capacity :pipe-capacity})
 
 (def ^:private default-config
   {:first-fd 0x40000000
@@ -150,7 +150,11 @@
    ;; Each connected socket's receive FIFO is capped globally by a finite
    ;; positive-integer capacity. There is deliberately no nil/unbounded
    ;; compatibility mode: every world commits to one exact bound.
-   :stream-capacity 65536})
+   :stream-capacity 65536
+   ;; The self-pipe wake FIFO is capped the same way: one finite
+   ;; positive-integer capacity, no nil/unbounded compatibility mode. A pipe
+   ;; write either fits whole or fails; there is no partial pipe progress.
+   :pipe-capacity 65536})
 
 (defn- validate-config [config]
   (let [cfg (or config {})]
@@ -168,7 +172,8 @@
                      :ephemeral-base (:ephemeral-base merged)
                      :ephemeral-max (:ephemeral-max merged)
                      :progress-limit (:progress-limit merged)
-                     :stream-capacity (:stream-capacity merged)}]
+                     :stream-capacity (:stream-capacity merged)
+                     :pipe-capacity (:pipe-capacity merged)}]
         (when-not (and (integer? v) (pos? v))
           (fail! :jolt.sim.net.posix-loopback/invalid-config
                  (str "posix-loopback " (name k) " must be a positive integer")
@@ -272,7 +277,11 @@
                     {:stream-capacity (:stream-capacity cfg)
                      :stream-would-blocks 0
                      :stream-capacity-limited-writes 0
-                     :max-stream-recv-bytes 0}})
+                     :max-stream-recv-bytes 0}
+                    :pipe-evidence
+                    {:pipe-capacity (:pipe-capacity cfg)
+                     :pipe-would-blocks 0
+                     :max-pipe-fifo-bytes 0}})
       ;; Waiters deliberately live outside the public resource state. They are
       ;; host synchronization objects, not simulated POSIX resources or trace
       ;; values, and must never leak into a replay snapshot.
@@ -457,12 +466,19 @@
        (if (:writer-closed? endpoint) pollhup 0))
 
       :writer
-      (bit-or
-       ;; With no capacity limit a write either makes immediate progress or
-       ;; fails immediately with EPIPE, so it never blocks. Linux accordingly
-       ;; reports POLLOUT alongside POLLERR after the reader closes.
-       (if (requested? events pollout) pollout 0)
-       (if (:reader-closed? endpoint) pollerr 0))
+      (let [capacity (:pipe-capacity (:config w))
+            reader (pipe-of w (:peer-fd endpoint))
+            reader-gone? (or (:reader-closed? endpoint) (nil? reader))
+            ;; POLLOUT is present for a live reader only while its FIFO has
+            ;; room. A closed or missing reader still exposes POLLOUT alongside
+            ;; POLLERR so the subsequent write reveals EPIPE rather than EAGAIN.
+            pollout? (if reader-gone?
+                       (requested? events pollout)
+                       (and (requested? events pollout)
+                            (pos? (- capacity (count (:fifo reader))))))]
+        (bit-or
+         (if pollout? pollout 0)
+         (if reader-gone? pollerr 0)))
 
       0)))
 
@@ -988,17 +1004,57 @@
     [0 0]))
 
 (defn- pipe-write-result [w s buf-ptr len]
-  (if (:reader-closed? s)
-    (err-pair (target-errno w :epipe))
-    (let [reader-fd (:peer-fd s)]
-      (if (pipe-of w reader-fd)
-        (do (when (pos? len)
-              (let [moved (ba->uvec (invoke-mem w :read-array [buf-ptr len]))]
-                (swap! (:state w) update-in [:pipes reader-fd :fifo]
-                       into moved)
-                (notify-readiness! w)))
+  (let [reader-fd (:peer-fd s)
+        reader (pipe-of w reader-fd)]
+    (cond
+      ;; EPIPE precedence: a closed or missing reader fails before the
+      ;; capacity model is consulted.
+      (:reader-closed? s)
+      (err-pair (target-errno w :epipe))
+
+      (nil? reader)
+      (err-pair (target-errno w :epipe))
+
+      ;; A live reader: zero length keeps the current result.
+      (zero? len)
+      [len 0]
+
+      :else
+      (let [capacity (:pipe-capacity (:config w))
+            occupied (count (:fifo reader))
+            room (- capacity occupied)]
+        (if (<= len room)
+          ;; The entire positive write fits: copy all bytes and update the
+          ;; reader FIFO plus evidence coherently in one state swap so a
+          ;; concurrent readiness observer never sees occupancy without its
+          ;; matching evidence.
+          (let [moved (ba->uvec (invoke-mem w :read-array [buf-ptr len]))
+                new-occ (+ occupied len)]
+            (swap! (:state w)
+                   (fn [cur]
+                     (-> cur
+                         (update-in [:pipes reader-fd :fifo] into moved)
+                         (update :pipe-evidence
+                                 (fn [ev]
+                                   (assoc ev
+                                          :max-pipe-fifo-bytes
+                                          (max (:max-pipe-fifo-bytes ev)
+                                               new-occ)))))))
+            (notify-readiness! w)
             [len 0])
-        (err-pair (target-errno w :epipe))))))
+          ;; The write does not fit. A nonblocking writer captures EAGAIN
+          ;; without moving bytes; a blocking writer cannot wait inside the
+          ;; model and fails closed with a typed transition. Evidence records
+          ;; the would-block on both paths.
+          (do (swap! (:state w)
+                     update :pipe-evidence
+                     (fn [ev] (update ev :pipe-would-blocks inc)))
+              (if (:nonblocking? s)
+                (err-pair (target-errno w :eagain))
+                (fail! :jolt.sim.net.posix-loopback/blocking-pipe-write-unsupported
+                       "blocking pipe write that does not fit the reader FIFO requires the modeled poll/wait slice"
+                       {:fd (:fd s) :reader-fd reader-fd
+                        :capacity capacity :length len}))))))))
 
 (defn- h-write [w {:keys [arguments]}]
   (let [[fd buf-ptr len] (vec arguments)]
@@ -1113,19 +1169,35 @@
   @(:state w))
 
 (defn pipe-snapshot
-  "Stable plain-data summary of every open modeled pipe endpoint, ordered by fd."
+  "Stable plain-data summary of every open modeled pipe endpoint, ordered by fd.
+  Each entry carries its role, peer fd, nonblocking flag, the byte occupancy of
+  its own FIFO field, and the independent half-open flags. Channel capacity and
+  available room are reported for both ends against the one shared reader FIFO;
+  a writer whose reader has retired reports zero available room because no
+  further write can succeed."
   [w]
-  (->> (:pipes @(:state w))
-       vals
-       (sort-by :fd)
-       (mapv (fn [endpoint]
-               {:fd (:fd endpoint)
-                :role (:role endpoint)
-                :peer-fd (:peer-fd endpoint)
-                :nonblocking? (:nonblocking? endpoint)
-                :fifo-bytes (count (:fifo endpoint))
-                :writer-closed? (:writer-closed? endpoint)
-                :reader-closed? (:reader-closed? endpoint)}))))
+  (let [capacity (:pipe-capacity (:config w))
+        pipes (:pipes @(:state w))]
+    (->> pipes
+         vals
+         (sort-by :fd)
+         (mapv (fn [endpoint]
+                 (let [shared-occ
+                       (if (= :reader (:role endpoint))
+                         (count (:fifo endpoint))
+                         (let [peer (get pipes (:peer-fd endpoint))]
+                           (if peer
+                             (count (:fifo peer))
+                             capacity)))]
+                   {:fd (:fd endpoint)
+                    :role (:role endpoint)
+                    :peer-fd (:peer-fd endpoint)
+                    :nonblocking? (:nonblocking? endpoint)
+                    :fifo-bytes (count (:fifo endpoint))
+                    :channel-capacity capacity
+                    :channel-available (- capacity shared-occ)
+                    :writer-closed? (:writer-closed? endpoint)
+                    :reader-closed? (:reader-closed? endpoint)}))))))
 
 (defn readiness-snapshot
   "Stable evidence for the modeled readiness boundary. Host promise identities
@@ -1173,6 +1245,17 @@
      :stream-capacity-limited-writes
      (:stream-capacity-limited-writes evidence)
      :max-stream-recv-bytes (:max-stream-recv-bytes evidence)}))
+
+(defn pipe-capacity-summary
+  "Stable evidence for the self-pipe FIFO capacity model: the configured finite
+  capacity, the count of writes that would block on a full FIFO, and the
+  maximum byte occupancy observed on the shared reader FIFO. This is separate
+  from the per-socket stream capacity summary."
+  [w]
+  (let [evidence (:pipe-evidence @(:state w))]
+    {:pipe-capacity (:pipe-capacity evidence)
+     :pipe-would-blocks (:pipe-would-blocks evidence)
+     :max-pipe-fifo-bytes (:max-pipe-fifo-bytes evidence)}))
 
 (defn clean?
   "True when shared memory has no live allocations and every modeled socket and

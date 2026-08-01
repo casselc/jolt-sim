@@ -958,3 +958,202 @@
           (native h :free payload)
           (close-pair h pair))))
     (is (true? (posix/clean? (:world h))))))
+
+;; ---- self-pipe FIFO capacity -------------------------------------------
+
+(defn- pipe-by-role [world role]
+  (some #(when (= role (:role %)) %) (posix/pipe-snapshot world)))
+
+(deftest pipe-capacity-default-is-finite-and-invalid-values-fail-closed
+  (is (= {:pipe-capacity 65536
+          :pipe-would-blocks 0
+          :max-pipe-fifo-bytes 0}
+         (posix/pipe-capacity-summary
+          (posix/world (memory/world) linux-descriptor))))
+  (is (= {:pipe-capacity 4
+          :pipe-would-blocks 0
+          :max-pipe-fifo-bytes 0}
+         (posix/pipe-capacity-summary
+          (posix/world (memory/world) darwin-descriptor
+                       {:pipe-capacity 4}))))
+  (doseq [bad [0 -1 nil "3" 3.0]]
+    (is (= :jolt.sim.net.posix-loopback/invalid-config
+           (:type (ex-data-of
+                   #(posix/world (memory/world) linux-descriptor
+                                 {:pipe-capacity bad}))))
+        (str "pipe-capacity " (pr-str bad) " must be rejected"))))
+
+(deftest pipe-capacity-limits-nonblocking-writes-poll-and-evidence
+  (doseq [descriptor [linux-descriptor darwin-descriptor]]
+    (let [h (harness descriptor {:pipe-capacity 3})
+          cell (native h :alloc 8)]
+      (foreign h "pipe" false [cell])
+      (let [rfd (native h :read cell :int 0)
+            wfd (native h :read cell :int 4)
+            pollout (get-in descriptor [:const :pollout])
+            eagain (get-in descriptor [:errno :eagain])
+            payload (native h :alloc 4)
+            received (native h :alloc 3)
+            entries (alloc-poll-entries h [[wfd pollout]])]
+        (try
+          (make-nonblocking! h descriptor wfd)
+          (native h :write-array payload (byte-array [0 1 2 3]))
+          ;; The writer is writable while the reader FIFO has room, and the
+          ;; snapshot reports the configured capacity against both ends.
+          (is (= [1 0] (foreign h "poll" true [entries 1 0])))
+          (is (= pollout (poll-revents h entries 0)))
+          (is (= 3 (:channel-capacity (pipe-by-role (:world h) :reader))))
+          (is (= 3 (:channel-capacity (pipe-by-role (:world h) :writer))))
+          (is (= 3 (:channel-available (pipe-by-role (:world h) :reader))))
+          (is (= 3 (:channel-available (pipe-by-role (:world h) :writer))))
+          ;; A positive write that fits copies all bytes into the reader FIFO.
+          (is (= [3 0] (foreign h "write" false [wfd payload 3])))
+          (is (= 3 (:fifo-bytes (pipe-by-role (:world h) :reader))))
+          (is (= 0 (:channel-available (pipe-by-role (:world h) :writer)))
+              "the writer end shares the reader FIFO's room")
+          ;; POLLOUT clears once the reader FIFO is full.
+          (is (= [0 0] (foreign h "poll" true [entries 1 0])))
+          (is (zero? (poll-revents h entries 0)))
+          ;; Zero length remains a successful no-op for a live reader even
+          ;; when the FIFO is full.
+          (is (= [0 0] (foreign h "write" false [wfd payload 0])))
+          ;; A write that does not fit captures EAGAIN and moves no bytes.
+          (is (= [-1 eagain] (foreign h "write" false [wfd payload 1])))
+          (is (= 3 (:fifo-bytes (pipe-by-role (:world h) :reader)))
+              "a would-block leaves the FIFO at capacity with no overflow")
+          ;; A read on the reader publishes readiness and frees one byte.
+          (is (= [1 0] (foreign h "read" false [rfd received 1])))
+          (is (= 0 (unsigned (first (vec (native h :read-array received 1))))))
+          ;; POLLOUT reappears once capacity returns.
+          (is (= [1 0] (foreign h "poll" true [entries 1 0])))
+          (is (= pollout (poll-revents h entries 0)))
+          ;; The remaining bytes retain their exact order.
+          (is (= [2 0] (foreign h "read" false [rfd (+ received 1) 2])))
+          (is (= [0 1 2]
+                 (mapv unsigned (vec (native h :read-array received 3)))))
+          ;; Exact pipe-capacity evidence after this transition sequence.
+          (is (= {:pipe-capacity 3
+                  :pipe-would-blocks 1
+                  :max-pipe-fifo-bytes 3}
+                 (posix/pipe-capacity-summary (:world h))))
+          (finally
+            (foreign h "close" false [rfd])
+            (foreign h "close" false [wfd])
+            (native h :free received)
+            (native h :free payload)
+            (native h :free entries))))
+      (native h :free cell)
+      (is (true? (posix/clean? (:world h)))))))
+
+(deftest blocking-pipe-write-into-full-fifo-fails-closed
+  (doseq [descriptor [linux-descriptor darwin-descriptor]]
+    (let [h (harness descriptor {:pipe-capacity 1})
+          cell (native h :alloc 8)]
+      (foreign h "pipe" false [cell])
+      (let [rfd (native h :read cell :int 0)
+            wfd (native h :read cell :int 4)
+            payload (native h :alloc 1)]
+        (try
+          (native h :write-array payload (byte-array [42]))
+          ;; The writer is blocking by default. Fill the single-byte FIFO.
+          (is (= [1 0] (foreign h "write" false [wfd payload 1])))
+          ;; A blocking write that does not fit cannot wait inside the model
+          ;; and fails closed with the typed transition and exact evidence.
+          (let [data (ex-data-of #(foreign h "write" false [wfd payload 1]))]
+            (is (= :jolt.sim.net.posix-loopback/blocking-pipe-write-unsupported
+                   (:type data)))
+            (is (= 1 (:capacity data)))
+            (is (= 1 (:length data))))
+          ;; Evidence records the would-block on the closed failure path too.
+          (is (= 1 (:pipe-would-blocks
+                    (posix/pipe-capacity-summary (:world h)))))
+          (is (= 1 (:max-pipe-fifo-bytes
+                    (posix/pipe-capacity-summary (:world h)))))
+          (finally
+            (foreign h "close" false [rfd])
+            (foreign h "close" false [wfd])
+            (native h :free payload))))
+      (native h :free cell)
+      (is (true? (posix/clean? (:world h)))))))
+
+(deftest pipe-capacity-epipe-precedence-beats-would-block
+  (doseq [descriptor [linux-descriptor darwin-descriptor]]
+    (let [h (harness descriptor {:pipe-capacity 1})
+          cell (native h :alloc 8)]
+      (foreign h "pipe" false [cell])
+      (let [rfd (native h :read cell :int 0)
+            wfd (native h :read cell :int 4)
+            epipe (get-in descriptor [:errno :epipe])
+            pollout (get-in descriptor [:const :pollout])
+            pollerr (get-in descriptor [:const :pollerr])
+            payload (native h :alloc 1)
+            entry (alloc-poll-entries h [[wfd pollout]])]
+        (try
+          (native h :write-array payload (byte-array [9]))
+          ;; Fill the single-byte FIFO at the capacity bound.
+          (is (= [1 0] (foreign h "write" false [wfd payload 1])))
+          ;; Close the reader; a subsequent write reveals EPIPE rather than
+          ;; the capacity would-block path, and the closed reader still
+          ;; exposes POLLOUT alongside POLLERR so the write can observe it.
+          (is (= 0 (foreign h "close" false [rfd])))
+          (is (= [-1 epipe]
+                 (foreign h "write" false [wfd payload 0]))
+              "terminal EPIPE also precedes the live-reader zero-length case")
+          (is (= [-1 epipe]
+                 (foreign h "write" false [wfd payload 1]))
+              "EPIPE beats capacity once the reader is gone")
+          (is (= [1 0] (foreign h "poll" true [entry 1 0])))
+          (is (= (bit-or pollout pollerr) (poll-revents h entry 0))
+              "terminal readiness preserves POLLOUT and adds POLLERR")
+          ;; The would-block counter must not advance on the EPIPE path.
+          (is (zero? (:pipe-would-blocks
+                      (posix/pipe-capacity-summary (:world h)))))
+          (finally
+            (foreign h "close" false [wfd])
+            (native h :free payload)
+            (native h :free entry))))
+      (native h :free cell)
+      (is (true? (posix/clean? (:world h)))))))
+
+(deftest parked-pipe-write-poll-wakes-when-read-releases-capacity
+  (let [h (harness linux-descriptor {:pipe-capacity 1})
+        cell (native h :alloc 8)]
+    (foreign h "pipe" false [cell])
+    (let [rfd (native h :read cell :int 0)
+          wfd (native h :read cell :int 4)
+          pollout (get-in linux-descriptor [:const :pollout])
+          payload (native h :alloc 1)
+          received (native h :alloc 1)
+          entry (alloc-poll-entries h [[wfd pollout]])
+          poll-future (atom nil)]
+      (try
+        (make-nonblocking! h linux-descriptor wfd)
+        ;; Fill the single-byte FIFO; POLLOUT then clears.
+        (is (= [1 0] (foreign h "write" false [wfd payload 1])))
+        (is (= [0 0] (foreign h "poll" true [entry 1 0])))
+        (is (zero? (poll-revents h entry 0)))
+        ;; Park a blocking poll for write readiness on the full pipe.
+        (let [waiting (future (foreign h "poll" true [entry 1 3000]))]
+          (reset! poll-future waiting)
+          (is (true? (wait-for-waiter-count (:world h) 1 2000)))
+          ;; A read on the reader publishes readiness and must wake the
+          ;; parked writer even though it parked while capacity was zero.
+          (is (= [1 0] (foreign h "read" false [rfd received 1])))
+          (is (= [1 0] (deref waiting 3000 :timeout)))
+          (is (= pollout (poll-revents h entry 0))))
+        (finally
+          (foreign h "close" false [rfd])
+          (foreign h "close" false [wfd])
+          (native h :free received)
+          (native h :free payload)
+          ;; If the primary assertion timed out, terminal close above must wake
+          ;; and join the poll before its native entry is released.
+          (if-let [waiting @poll-future]
+            (let [joined (deref waiting 3000 :timeout)]
+              (is (not= :timeout joined)
+                  "a timed-out poll must join after terminal readiness")
+              (when-not (= :timeout joined)
+                (native h :free entry)))
+            (native h :free entry))
+          (native h :free cell)))
+      (is (true? (posix/clean? (:world h)))))))

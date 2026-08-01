@@ -23,7 +23,7 @@
 
 (deftest unchanged-jolt-net-poller-code-runs-in-the-hermetic-loopback-world
   (let [mem (memory/world)
-        world (posix/world mem (net/target-descriptor))
+        world (posix/world mem (net/target-descriptor) {:pipe-capacity 1})
         controlled
         (runtime/run-controlled
          {:ffi-handlers (posix/handlers world)}
@@ -77,7 +77,16 @@
     (is (empty? (get (posix/state world) :pipes)))
     (is (empty? (get (posix/state world) :addrinfo-allocations)))
     (is (true? (memory/clean? mem)))
-    (is (true? (posix/clean? world)))))
+    (is (true? (posix/clean? world)))
+    ;; The self-pipe wake FIFO is capped at one byte. The pinned public poller
+    ;; first publishes its acknowledged close mutation and then deliberately
+    ;; attempts an unconditional terminal wake. Exact evidence proves that
+    ;; ordinary code reached the full-pipe EAGAIN path, accepted it as an
+    ;; already-pending wake, and never exceeded the bound.
+    (let [summary (posix/pipe-capacity-summary world)]
+      (is (= 1 (:pipe-capacity summary)))
+      (is (pos? (:pipe-would-blocks summary)))
+      (is (= 1 (:max-pipe-fifo-bytes summary))))))
 
 (deftest active-public-poller-close-wakes-and-joins-a-parked-native-wait
   (let [mem (memory/world)

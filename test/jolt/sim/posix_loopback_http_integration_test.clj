@@ -15,7 +15,7 @@
 
 (deftest unchanged-jolt-http-hello-world-runs-in-the-hermetic-loopback-world
   (let [mem (memory/world)
-        world (posix/world mem (net/target-descriptor))
+        world (posix/world mem (net/target-descriptor) {:pipe-capacity 1})
         controlled
         (runtime/run-controlled
          {:ffi-handlers (posix/handlers world)
@@ -70,4 +70,10 @@
     (is (empty? (get (posix/state world) :listeners)))
     (is (empty? (get (posix/state world) :addrinfo-allocations)))
     (is (true? (memory/clean? mem)))
-    (is (true? (posix/clean? world)))))
+    (is (true? (posix/clean? world)))
+    ;; The unchanged HTTP stack remains correct at one-byte self-pipe capacity.
+    ;; The focused ordinary-poller fixture owns the deterministic EAGAIN claim;
+    ;; an active HTTP reactor may drain between close's two wake attempts.
+    (let [summary (posix/pipe-capacity-summary world)]
+      (is (= 1 (:pipe-capacity summary)))
+      (is (= 1 (:max-pipe-fifo-bytes summary))))))

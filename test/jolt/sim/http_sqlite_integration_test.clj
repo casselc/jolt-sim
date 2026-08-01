@@ -82,7 +82,8 @@
         ;; the capacity model: the writer poll/recv handshake is exercised
         ;; end to end while ordinary library behavior and cleanup are retained.
         posix-world (posix/world mem (net/target-descriptor)
-                                 {:stream-capacity 1})
+                                 {:stream-capacity 1
+                                  :pipe-capacity 1})
         ;; Three named packs: the shared memory native-operation handlers
         ;; registered exactly once, plus the SQLite and POSIX foreign packs
         ;; that contribute only their foreign-function keys over that same
@@ -147,6 +148,13 @@
       (is (pos? (:stream-capacity-limited-writes summary)))
       (is (pos? (:stream-would-blocks summary)))
       (is (= 1 (:max-stream-recv-bytes summary))))
+
+    ;; The same ordinary run remains correct with a one-byte poller self-pipe.
+    ;; The focused ordinary-poller fixture owns the deterministic EAGAIN claim;
+    ;; an active HTTP reactor may drain between close's two wake attempts.
+    (let [summary (posix/pipe-capacity-summary posix-world)]
+      (is (= 1 (:pipe-capacity summary)))
+      (is (= 1 (:max-pipe-fifo-bytes summary))))
 
     ;; The single shared memory world backs SQLite and POSIX, and is clean.
     (is (true? (memory/clean? mem)))
