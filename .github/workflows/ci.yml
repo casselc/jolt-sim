@@ -13,7 +13,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  JOLT_CORE_SHA: 757389df094fa9afb7fa1f1eba5ba83ab297f1a4
+  JOLT_CORE_SHA: 56d0694af7b815b61d9ad73924b0df19d4ad324c
   CHEZ_RELEASE_TAG: chez-ci-10.4.1.1
 
 jobs:
@@ -122,6 +122,7 @@ jobs:
           # The portable loopback model runs in -M:test on every host; this
           # unchanged jolt.net integration lane is intentionally POSIX-only.
           "$sim" -M:posix-loopback-test
+          "$sim" -M:http-hello-test
           "$sim" -M:future-schedule-poison-test
           JOLT_SIM_BIN="$sim" JOLT_SIM_PROJECT_DIR="$PWD" \
             "$sim" -M:explore-process-test

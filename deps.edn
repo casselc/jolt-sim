@@ -76,17 +76,15 @@
    :main-opts ["-m" "jolt.sim.posix-loopback-test-main"]}
 
   ;; Unchanged public jolt-http (README Hello World) application code over the
-  ;; deterministic POSIX loopback FFI pack. jolt-http local-roots its own
-  ;; jolt-tcp, which in turn pins an older jolt-net commit. This alias's
-  ;; direct jolt-net f264852 pin intentionally overrides that older
-  ;; transitive jolt-tcp pin until jolt-tcp's own pin catches up to it.
+  ;; deterministic POSIX loopback FFI pack. Pin the reviewed ownership commit;
+  ;; it transitively pins the matching jolt-tcp wake-cursor and jolt-net
+  ;; readiness commits, so CI needs no sibling checkout or moving branch.
   :http-hello-test
   {:extra-paths ["test"]
    :extra-deps
-   {jolt-lang/jolt-http {:local/root "../../jolt-http"}
-    io.github.casselc/jolt-net
-    {:git/url "https://github.com/casselc/jolt-net.git"
-     :git/sha "f2648525f08a7fbef5b82b4a11268b76f3984155"}}
+   {io.github.casselc/jolt-http
+    {:git/url "https://github.com/casselc/jolt-http.git"
+     :git/sha "96bd0fc93f1a2c77128d06f74802dd2a4631c0d4"}}
    :main-opts ["-m" "jolt.sim.posix-loopback-http-test-main"]}}
 
  :tasks
