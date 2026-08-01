@@ -57,7 +57,10 @@ baseline and remints the affected contracts and tests in place.
   order, exact bounds/lifetime failures, copy-safe byte buffers, owned C
   strings, and leak snapshots; and
 - a deterministic SQLite handler model plus a real/sim parity fixture that
-  executes unchanged `jdbc.core` application code.
+  executes unchanged `jdbc.core` application code; and
+- a descriptor-driven POSIX IPv4 loopback handler model whose dual-use fixture
+  executes unchanged public `jolt.net` code against either real sockets or a
+  hermetic in-memory stream, including partial I/O and directional half-close.
 
 The runtime adapter accepts one exact current controller contract, presently
 prerelease ABI 5. All current controller vars are required. If every var is
@@ -210,9 +213,11 @@ nested native access and exception cleanup:
 The adapter still does not discover future counts, choose high-utility
 interleavings, advance virtual time, or inject faults. `schedule-plans` can
 enumerate the first bounded lexicographic top-level permutations, but that is
-not yet Hegel/swarm search or partial-order reduction. The kernel has no
-stream, socket, HTTP, database, or OpenTelemetry integration. Its deterministic
-traces describe kernel test runs, not arbitrary production execution.
+not yet Hegel/swarm search or partial-order reduction. SQLite and the first
+poller-free POSIX loopback stream now have deterministic boundary models, but
+public readiness/pollers, TCP and HTTP servers, network faults, and
+OpenTelemetry export remain open. The traces still do not describe arbitrary
+production execution.
 
 ### First coarse scripted scheduler (`:future-schedule`)
 
@@ -447,9 +452,10 @@ The application body remains ordinary Jolt code:
 native memory and this world.
 
 This is intentionally a memory substrate, not a model of every C library.
-Foreign functions such as SQLite, sockets, and codecs still require
-library-specific handler packs that allocate or inspect buffers in the same
-world. Scalar `:float` and `:double` memory reads/writes fail with a distinct
+SQLite and the initial POSIX loopback stream provide library-specific handler
+packs over the same heap; other native libraries and codecs still require
+their own minimal boundary handlers. Scalar `:float` and `:double` memory
+reads/writes fail with a distinct
 typed error in this first slice (their `sizeof` values are available).
 Simulated `loaded?` reports names successfully loaded in the world; it never
 re-probes the host loader. Bounds errors, invalid frees, double frees, use after
@@ -600,11 +606,12 @@ the real operating system.
    order, single-concurrency admission) has landed; still open is running
    one unchanged Jolt namespace in normal and controlled modes through
    nested spawns, promises, clocks, and entropy.
-2. Extend the landed memory and SQLite handler models with bounded error and
-   cleanup plans, then add handler packs for codecs and socket operations on
-   the same fail-closed FFI/native interception boundary.
-3. Add operation effects for connect, accept, read, write, close, cancel, and
-   deadlines, followed by deterministic network and storage fault models.
+2. Extend the landed memory, SQLite, and poller-free POSIX loopback models with
+   bounded error and cleanup plans; add the poll/wake readiness boundary and
+   handler packs for codecs on the same fail-closed interception seam.
+3. Drive unchanged public nonblocking connect/accept through readiness, then
+   add operation effects for cancel and deadlines followed by deterministic
+   network and storage fault models.
 4. Extend the landed optional explicit-domain and direct-count Hegel schedule
    shrinkers into generation and shrinking for workloads,
    synchronization-boundary choices, native faults, and effect plans,
