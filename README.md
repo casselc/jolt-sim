@@ -64,8 +64,8 @@ baseline and remints the affected contracts and tests in place.
 - a descriptor-driven POSIX IPv4 loopback handler model whose dual-use fixture
   executes unchanged public `jolt.net` code against either real sockets or a
   hermetic in-memory stream, including partial I/O, directional half-close,
-  finite receive-FIFO backpressure, target-exact `poll(2)`, and the real public
-  poller/self-pipe wake machinery;
+  finite stream and self-pipe backpressure, target-exact `poll(2)`, and the real
+  public poller/self-pipe wake machinery;
 - an ordinary HTTP-plus-SQLite application fixture whose unchanged
   `jolt-http` handler uses public `jdbc.core`, returns a byte-exact BLOB, and
   passes both real-socket/real-SQLite parity and one shared hermetic
@@ -79,7 +79,7 @@ only the application surfaces and modes exercised by a durable gate.
 | Scenario | Ordinary library surface | Real lane | Simulated lane | Current boundary |
 | --- | --- | --- | --- | --- |
 | SQLite BLOB round trip | `jdbc.core`, `db.sqlite`, `jolt.ffi`, byte arrays | System SQLite | Scripted SQLite over FFI memory | Sequential statements; local workspace gate |
-| POSIX loopback stream/poller | `jolt.net`, `jolt.ffi` | Not in the durable gate | Modeled sockets, pipe, and `poll(2)` | Finite socket-stream capacity; no pipe capacity or virtual time |
+| POSIX loopback stream/poller | `jolt.net`, `jolt.ffi` | Not in the durable gate | Modeled sockets, pipe, and `poll(2)` | Finite stream/self-pipe capacity; no virtual time |
 | HTTP Hello World | `jolt-http`, `jolt-tcp`, `jolt.net`, `jolt.ffi` | Not in the durable gate | Modeled POSIX loopback | One request; public CI, no faults |
 | HTTP SQLite BLOB | `jolt-http`, `jolt-tcp`, `jolt.net`, `jdbc.core`, `db.sqlite`, `jolt.ffi`, byte arrays | Host sockets plus system SQLite | Shared FFI-memory, POSIX, and SQLite worlds | One request at one-byte stream capacity; local gate, no schedule/fault search |
 | Maelstrom Echo | `jolt.maelstrom` node/handler code | JSON-lines lane reviewed but not integrated | Deterministic memory transport | FIFO/history integrity only; no nemesis or liveness claim |
@@ -564,9 +564,18 @@ virtual clock. Each socket receive FIFO has a finite positive capacity (65,536
 bytes by default). A full live peer clears `POLLOUT`; nonblocking `send` captures
 `EAGAIN`, and `recv` republishes write readiness after freeing room. The
 HTTP-plus-SQLite lane runs at one-byte capacity and proves both partial progress
-and an actual would-block/retry without changing application code. Pipe FIFOs
-remain unbounded, so the self-pipe wake-coalescing `EAGAIN` branch is the next
-separate capacity slice.
+and an actual would-block/retry without changing application code.
+
+Each modeled self-pipe likewise has a finite positive capacity (65,536 bytes by
+default). This bounded wake-pipe surface keeps its current short writes atomic:
+a write either fits in full or a nonblocking writer captures `EAGAIN`; a full
+blocking write fails closed because the model has no blocking pipe-write wait.
+`POLLOUT` clears while a live reader FIFO is full and returns after a read. The
+focused unchanged `jolt.net` poller lane runs with a one-byte FIFO and proves its
+acknowledged close wake followed by the unconditional terminal wake reaches and
+correctly accepts the full-pipe `EAGAIN` path. The ordinary HTTP and HTTP/SQLite
+lanes also remain correct at one-byte self-pipe capacity without making a
+scheduling-dependent claim about which close attempt observes `EAGAIN`.
 
 ### Deterministic SQLite driver model
 
@@ -652,11 +661,11 @@ Both aliases currently expect the reviewed `db` checkout beside the canonical
 The gate asserts real/sim response parity, the exact POSIX-plus-SQLite foreign
 symbol set, handler-only routing, complete statement-plan consumption, and
 clean SQLite handles, sockets, pipes, waiters, resolver allocations, and shared
-native memory. Its simulated run additionally fixes socket receive capacity at
-one byte and proves a capacity-limited partial write, `EAGAIN`/poll retry, and a
-maximum one-byte occupancy. It does not yet claim concurrent requests,
-generated schedules, fault injection, database locking/durability, or bounded
-liveness.
+native memory. Its simulated run additionally fixes both socket receive and
+self-pipe capacity at one byte. It proves a capacity-limited stream write,
+`EAGAIN`/poll retry, maximum one-byte stream occupancy, and bounded self-pipe
+occupancy. It does not yet claim concurrent requests, generated schedules,
+fault injection, database locking/durability, or bounded liveness.
 
 ### Composing handler packs
 
@@ -784,9 +793,9 @@ checked offline.
    one unchanged Jolt namespace in normal and controlled modes through
    nested spawns, promises, clocks, and entropy.
 2. Extend the landed memory, SQLite, and POSIX loopback/poll models with bounded
-   error and cleanup plans, finite pipe capacity and fault seams, and handler
-   packs for codecs on the same fail-closed interception seam. Finite socket
-   receive capacity is landed and exercised by the ordinary HTTP/SQLite lane.
+   error and cleanup plans, fault seams, and handler packs for codecs on the
+   same fail-closed interception seam. Finite socket and self-pipe capacity are
+   landed and exercised by unchanged public-library lanes.
 3. Drive unchanged public nonblocking connect/accept through readiness, then
    add operation effects for cancel and deadlines followed by deterministic
    network and storage fault models.
