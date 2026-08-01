@@ -11,6 +11,7 @@
             [jolt.sim.monitor-test]
             [jolt.sim.posix-loopback-model-test]
             [jolt.sim.process-explorer-test]
+            [jolt.sim.repl-test]
             [jolt.sim.replay-test]
             [jolt.sim.runtime-test]
             [jolt.sim.sqlite-test]))
@@ -28,6 +29,7 @@
                         'jolt.sim.monitor-test
                         'jolt.sim.posix-loopback-model-test
                         'jolt.sim.process-explorer-test
+                        'jolt.sim.repl-test
                         'jolt.sim.replay-test
                         'jolt.sim.runtime-test
                         'jolt.sim.sqlite-test)
