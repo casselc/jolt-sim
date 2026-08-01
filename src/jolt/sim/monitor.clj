@@ -3,77 +3,33 @@
 
   A trace document is `{:jolt.sim.trace/version trace-version
   :jolt.sim.trace/events events}`, where `events` is a complete replay trace
-  validated by `jolt.sim.kernel/validate-trace!`. Monitors run as a pure fold
+  validated by `jolt.sim.trace/validate-trace!`. Monitors run as a pure fold
   over a validated document's events; see `run-monitor`."
-  (:require [clojure.edn :as edn]
-            [jolt.sim.kernel :as kernel]
-            [jolt.sim.trace :as trace]))
+  (:require [jolt.sim.trace :as trace]))
 
 (def trace-version
-  "The only trace document version this namespace accepts."
-  1)
+  "The only trace document version this namespace accepts.
 
-(def ^:private document-keys
-  #{:jolt.sim.trace/version :jolt.sim.trace/events})
-
-(defn- malformed-document! [reason detail]
-  (throw
-   (ex-info
-    "Trace document is malformed"
-    {:type ::invalid-document
-     :reason reason
-     :detail detail})))
-
-(defn- validate-document! [value]
-  (when-not (map? value)
-    (malformed-document! :not-a-map (str (class value))))
-  (when-not (= document-keys (set (keys value)))
-    (malformed-document! :wrong-keys (set (keys value))))
-  (let [version (:jolt.sim.trace/version value)]
-    (when-not (= trace-version version)
-      (malformed-document! :unsupported-version version)))
-  (kernel/validate-trace! (:jolt.sim.trace/events value))
-  value)
+  Thin facade over `jolt.sim.trace/trace-version`."
+  trace/trace-version)
 
 (defn document
   "Builds a versioned trace document from `events`, validating exact keys,
-  supported version, and the complete event schema before returning it."
+  supported version, and the complete event schema before returning it.
+
+  Thin facade over `jolt.sim.trace/document`."
   [events]
-  (validate-document!
-   {:jolt.sim.trace/version trace-version
-    :jolt.sim.trace/events events}))
-
-(def ^:private end-of-input ::end-of-input)
-
-(defn- ensure-one-form! [s]
-  (when-not (string? s)
-    (malformed-document! :not-a-string (str (class s))))
-  (try
-    (let [reader (__string-reader s)
-          [first-form _] (read+string reader false end-of-input)
-          [trailing-form _] (read+string reader false end-of-input)]
-      (when (= end-of-input first-form)
-        (malformed-document! :unreadable-edn "EOF while reading"))
-      (when-not (= end-of-input trailing-form)
-        (malformed-document! :trailing-edn nil)))
-    (catch :default error
-      (if (= ::invalid-document (:type (ex-data error)))
-        (throw error)
-        (malformed-document! :unreadable-edn (ex-message error))))))
+  (trace/document events))
 
 (defn read-edn
   "Reads a versioned trace document from the EDN string `s`, validating exact
   keys, supported version, and the complete event schema before returning it.
   Exactly one EDN form is required. Throws a typed, fail-closed error on
-  unreadable or trailing EDN and on any malformed document shape."
+  unreadable or trailing EDN and on any malformed document shape.
+
+  Thin facade over `jolt.sim.trace/read-edn`."
   [s]
-  (ensure-one-form! s)
-  (let [value
-        (try
-          (edn/read-string s)
-          (catch :default error
-            (malformed-document! :unreadable-edn (ex-message error))))]
-    (validate-document! value)))
+  (trace/read-edn s))
 
 (def ^:private decision-statuses #{:pass :violation :inconclusive})
 (def ^:private monitor-spec-keys #{:id :initial :step :finish})
@@ -165,7 +121,7 @@
   being coerced; exceptions `:step` or `:finish` raise propagate uncaught
   rather than becoming a decision."
   [spec doc]
-  (validate-document! doc)
+  (trace/validate-document! doc)
   (validate-spec! spec)
   (let [monitor-id (:id spec)
         step (:step spec)
@@ -322,7 +278,7 @@
 
 (defn check-trace-grammar
   "Checks the temporal grammar of a structurally validated trace `doc`,
-  beyond what `jolt.sim.kernel/validate-trace!` already enforces.
+  beyond what `jolt.sim.trace/validate-trace!` already enforces.
 
   Verifies: exactly one terminal event and it is the trailing event; every
   `:schedule/choose` is immediately followed by exactly one `:task/transition`

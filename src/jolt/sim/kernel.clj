@@ -3,7 +3,9 @@
   (:require [jolt.sim.strategy :as strategy]
             [jolt.sim.trace :as trace]))
 
-(def replay-diverged :jolt.sim/replay-diverged)
+(def replay-diverged
+  "Compatibility facade for the trace-owned replay/schema error type."
+  trace/replay-diverged)
 
 (def ^:private task-statuses
   #{:runnable :blocked :sleeping :completed :failed})
@@ -418,135 +420,15 @@
                          :strategy selected-strategy})]
     result))
 
-(defn- malformed-trace! [event-index detail]
-  (throw
-   (ex-info
-    "Replay trace is malformed"
-    {:type replay-diverged
-     :reason :malformed-trace
-     :event-index event-index
-     :detail detail})))
-
-(defn- non-negative-integer? [value]
-  (and (integer? value) (not (neg? value))))
-
-(defn- sorted-task-id-vector? [value]
-  (and (vector? value)
-       (every? task-id? value)
-       (= value (sorted-ids value))
-       (= (count value) (count (set value)))))
-
-(defn- state-projection? [value]
-  (and (trace/canonical-form? value)
-       (= :jolt.sim.value/map (first value))))
-
-(defn- valid-step-and-time? [step time]
-  (and (non-negative-integer? step)
-       (integer? time)))
-
-(defn- validate-event! [index event]
-  (when-not (vector? event)
-    (malformed-trace! index :event-must-be-vector))
-  (when (empty? event)
-    (malformed-trace! index :empty-event))
-  (let [tag (nth event 0)]
-    (case tag
-      :run/initial
-      (when-not (and (= 2 (count event))
-                     (state-projection? (nth event 1)))
-        (malformed-trace! index :invalid-initial-event))
-
-      :schedule/choose
-      (when-not
-       (and (= 5 (count event))
-            (valid-step-and-time? (nth event 1) (nth event 2))
-            (sorted-task-id-vector? (nth event 3))
-            (task-id? (nth event 4)))
-        (malformed-trace! index :invalid-choice-event))
-
-      :task/transition
-      (when-not
-       (and (= 9 (count event))
-            (valid-step-and-time? (nth event 1) (nth event 2))
-            (task-id? (nth event 3))
-            (contains? transition-ops (nth event 4))
-            (trace/canonical-form? (nth event 5))
-            (sorted-task-id-vector? (nth event 6))
-            (or (nil? (nth event 7))
-                (integer? (nth event 7)))
-            (state-projection? (nth event 8)))
-        (malformed-trace! index :invalid-transition-event))
-
-      :time/advance
-      (when-not
-       (and (= 6 (count event))
-            (non-negative-integer? (nth event 1))
-            (integer? (nth event 2))
-            (integer? (nth event 3))
-            (sorted-task-id-vector? (nth event 4))
-            (state-projection? (nth event 5)))
-        (malformed-trace! index :invalid-time-event))
-
-      :run/completed
-      (when-not
-       (and (= 4 (count event))
-            (valid-step-and-time? (nth event 1) (nth event 2))
-            (state-projection? (nth event 3)))
-        (malformed-trace! index :invalid-completed-event))
-
-      :run/failed
-      (when-not
-       (and (= 6 (count event))
-            (valid-step-and-time? (nth event 1) (nth event 2))
-            (task-id? (nth event 3))
-            (trace/canonical-form? (nth event 4))
-            (state-projection? (nth event 5)))
-        (malformed-trace! index :invalid-failed-event))
-
-      :run/deadlock
-      (when-not
-       (and (= 5 (count event))
-            (valid-step-and-time? (nth event 1) (nth event 2))
-            (sorted-task-id-vector? (nth event 3))
-            (state-projection? (nth event 4)))
-        (malformed-trace! index :invalid-deadlock-event))
-
-      :run/step-limit
-      (when-not
-       (and (= 4 (count event))
-            (valid-step-and-time? (nth event 1) (nth event 2))
-            (state-projection? (nth event 3)))
-        (malformed-trace! index :invalid-step-limit-event))
-
-      (malformed-trace! index :unknown-event-tag))))
-
 (defn validate-trace!
   "Validates a complete replay trace's event schema and returns it unchanged.
 
-  Checks every event's fixed-position shape (see `replay`), that the trace is
-  a non-empty vector starting with exactly one `:run/initial` event, and
-  throws `ex-info` tagged `replay-diverged` with reason `:malformed-trace` and
-  a specific `:detail` on any violation. This is the same schema check `replay`
-  runs before extracting choices, exposed so other callers can validate a
-  trace up front."
+  Thin facade over `jolt.sim.trace/validate-trace!`, kept here because
+  `replay` depends on this name and other callers already use it to validate
+  a trace up front. See that function for the fixed-position shape checked
+  per event and the malformed-trace error it throws."
   [expected-trace]
-  (when-not (vector? expected-trace)
-    (malformed-trace! 0 :trace-must-be-vector))
-  (when (empty? expected-trace)
-    (malformed-trace! 0 :empty-trace))
-  (doseq [[index event] (map-indexed vector expected-trace)]
-    (validate-event! index event))
-  (when-not (= :run/initial (first (first expected-trace)))
-    (malformed-trace! 0 :missing-initial-event))
-  (let [initial-indices
-        (keep-indexed (fn [index event]
-                        (when (= :run/initial (first event))
-                          index))
-                      expected-trace)]
-    (when-not (= [0] (vec initial-indices))
-      (malformed-trace! (or (second initial-indices) 0)
-                        :duplicate-initial-event)))
-  expected-trace)
+  (trace/validate-trace! expected-trace))
 
 (defn- first-difference-index [expected actual]
   (loop [index 0]

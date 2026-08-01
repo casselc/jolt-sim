@@ -17,6 +17,22 @@
 (def unsupported-value :jolt.sim.trace/unsupported-value)
 (def malformed-canonical-value :jolt.sim.trace/malformed-canonical-value)
 
+(def trace-version
+  "The only trace document version this namespace accepts."
+  1)
+
+(def replay-diverged
+  "Type value for a malformed replay-trace event schema, or a replay that
+  diverges from its recorded trace. Identical to
+  `jolt.sim.kernel/replay-diverged`; owned here because complete event-schema
+  validation is jolt.sim.trace's responsibility."
+  :jolt.sim/replay-diverged)
+
+(def invalid-document
+  "Type value for a malformed trace document: wrong shape, wrong keys,
+  unsupported version, or unreadable/trailing EDN."
+  ::invalid-document)
+
 (def ^:private canonical-tags
   #{:jolt.sim.value/nil
     :jolt.sim.value/boolean
@@ -532,3 +548,214 @@
   ;; already encode byte arrays and caller collection types collision-free.
   (canonical-value events)
   (pr-str (ordered-edn-value events)))
+
+;; Complete cooperative event-schema validation, and the versioned trace
+;; document built on top of it, are owned here so every consumer—kernel
+;; replay and monitor documents alike—shares one schema check.
+
+(def ^:private transition-ops
+  #{:yield :block :sleep :complete :fail})
+
+(defn- task-id? [value]
+  (and (integer? value) (not (neg? value))))
+
+(defn- sorted-ids [ids]
+  (vec (sort ids)))
+
+(defn- non-negative-integer? [value]
+  (and (integer? value) (not (neg? value))))
+
+(defn- sorted-task-id-vector? [value]
+  (and (vector? value)
+       (every? task-id? value)
+       (= value (sorted-ids value))
+       (= (count value) (count (set value)))))
+
+(defn- state-projection? [value]
+  (and (canonical-form? value)
+       (= :jolt.sim.value/map (first value))))
+
+(defn- valid-step-and-time? [step time]
+  (and (non-negative-integer? step)
+       (integer? time)))
+
+(defn- malformed-trace! [event-index detail]
+  (throw
+   (ex-info
+    "Replay trace is malformed"
+    {:type replay-diverged
+     :reason :malformed-trace
+     :event-index event-index
+     :detail detail})))
+
+(defn- validate-event! [index event]
+  (when-not (vector? event)
+    (malformed-trace! index :event-must-be-vector))
+  (when (empty? event)
+    (malformed-trace! index :empty-event))
+  (let [tag (nth event 0)]
+    (case tag
+      :run/initial
+      (when-not (and (= 2 (count event))
+                     (state-projection? (nth event 1)))
+        (malformed-trace! index :invalid-initial-event))
+
+      :schedule/choose
+      (when-not
+       (and (= 5 (count event))
+            (valid-step-and-time? (nth event 1) (nth event 2))
+            (sorted-task-id-vector? (nth event 3))
+            (task-id? (nth event 4)))
+        (malformed-trace! index :invalid-choice-event))
+
+      :task/transition
+      (when-not
+       (and (= 9 (count event))
+            (valid-step-and-time? (nth event 1) (nth event 2))
+            (task-id? (nth event 3))
+            (contains? transition-ops (nth event 4))
+            (canonical-form? (nth event 5))
+            (sorted-task-id-vector? (nth event 6))
+            (or (nil? (nth event 7))
+                (integer? (nth event 7)))
+            (state-projection? (nth event 8)))
+        (malformed-trace! index :invalid-transition-event))
+
+      :time/advance
+      (when-not
+       (and (= 6 (count event))
+            (non-negative-integer? (nth event 1))
+            (integer? (nth event 2))
+            (integer? (nth event 3))
+            (sorted-task-id-vector? (nth event 4))
+            (state-projection? (nth event 5)))
+        (malformed-trace! index :invalid-time-event))
+
+      :run/completed
+      (when-not
+       (and (= 4 (count event))
+            (valid-step-and-time? (nth event 1) (nth event 2))
+            (state-projection? (nth event 3)))
+        (malformed-trace! index :invalid-completed-event))
+
+      :run/failed
+      (when-not
+       (and (= 6 (count event))
+            (valid-step-and-time? (nth event 1) (nth event 2))
+            (task-id? (nth event 3))
+            (canonical-form? (nth event 4))
+            (state-projection? (nth event 5)))
+        (malformed-trace! index :invalid-failed-event))
+
+      :run/deadlock
+      (when-not
+       (and (= 5 (count event))
+            (valid-step-and-time? (nth event 1) (nth event 2))
+            (sorted-task-id-vector? (nth event 3))
+            (state-projection? (nth event 4)))
+        (malformed-trace! index :invalid-deadlock-event))
+
+      :run/step-limit
+      (when-not
+       (and (= 4 (count event))
+            (valid-step-and-time? (nth event 1) (nth event 2))
+            (state-projection? (nth event 3)))
+        (malformed-trace! index :invalid-step-limit-event))
+
+      (malformed-trace! index :unknown-event-tag))))
+
+(defn validate-trace!
+  "Validates a complete replay trace's event schema and returns it unchanged.
+
+  Checks every event's fixed-position shape (see the `*-event` constructors
+  above), that the trace is a non-empty vector starting with exactly one
+  `:run/initial` event, and throws `ex-info` tagged `replay-diverged` with
+  reason `:malformed-trace` and a specific `:detail` on any violation. Kernel
+  replay and monitor trace documents both run this same check before doing
+  anything else with a trace."
+  [expected-trace]
+  (when-not (vector? expected-trace)
+    (malformed-trace! 0 :trace-must-be-vector))
+  (when (empty? expected-trace)
+    (malformed-trace! 0 :empty-trace))
+  (doseq [[index event] (map-indexed vector expected-trace)]
+    (validate-event! index event))
+  (when-not (= :run/initial (first (first expected-trace)))
+    (malformed-trace! 0 :missing-initial-event))
+  (let [initial-indices
+        (keep-indexed (fn [index event]
+                        (when (= :run/initial (first event))
+                          index))
+                      expected-trace)]
+    (when-not (= [0] (vec initial-indices))
+      (malformed-trace! (or (second initial-indices) 0)
+                        :duplicate-initial-event)))
+  expected-trace)
+
+(def ^:private document-keys
+  #{:jolt.sim.trace/version :jolt.sim.trace/events})
+
+(defn- malformed-document! [reason detail]
+  (throw
+   (ex-info
+    "Trace document is malformed"
+    {:type invalid-document
+     :reason reason
+     :detail detail})))
+
+(defn validate-document!
+  "Validates a versioned trace document: exact keys, supported version, and
+  the complete event schema (`validate-trace!`). Returns `value` unchanged."
+  [value]
+  (when-not (map? value)
+    (malformed-document! :not-a-map (str (class value))))
+  (when-not (= document-keys (set (keys value)))
+    (malformed-document! :wrong-keys (set (keys value))))
+  (let [version (:jolt.sim.trace/version value)]
+    (when-not (= trace-version version)
+      (malformed-document! :unsupported-version version)))
+  (validate-trace! (:jolt.sim.trace/events value))
+  value)
+
+(defn document
+  "Builds a versioned trace document from `events`, validating exact keys,
+  supported version, and the complete event schema before returning it."
+  [events]
+  (validate-document!
+   {:jolt.sim.trace/version trace-version
+    :jolt.sim.trace/events events}))
+
+(def ^:private end-of-input
+  ;; This sentinel must be impossible for EDN input to reproduce. A keyword
+  ;; sentinel lets a trailing form with that same keyword masquerade as EOF.
+  (atom nil))
+
+(defn- ensure-one-form! [s]
+  (when-not (string? s)
+    (malformed-document! :not-a-string (str (class s))))
+  (try
+    (let [reader (__string-reader s)
+          [first-form _] (read+string reader false end-of-input)
+          [trailing-form _] (read+string reader false end-of-input)]
+      (when (identical? end-of-input first-form)
+        (malformed-document! :unreadable-edn "EOF while reading"))
+      (when-not (identical? end-of-input trailing-form)
+        (malformed-document! :trailing-edn nil)))
+    (catch :default error
+      (if (= invalid-document (:type (ex-data error)))
+        (throw error)
+        (malformed-document! :unreadable-edn (ex-message error))))))
+
+(defn read-edn
+  "Reads a versioned trace document from the EDN string `s`, validating exact
+  keys, supported version, and the complete event schema before returning it.
+  Exactly one EDN form is required. Throws a typed, fail-closed error on
+  unreadable or trailing EDN and on any malformed document shape."
+  [s]
+  (ensure-one-form! s)
+  (let [value
+        (try
+          (edn/read-string s)
+          (catch :default error
+            (malformed-document! :unreadable-edn (ex-message error))))]
+    (validate-document! value)))
