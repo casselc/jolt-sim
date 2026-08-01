@@ -21,6 +21,10 @@
   #{:worker-command :scenario :schedule :timeout-ms :kill-grace-ms
     :dir :extra-env :temp-dir})
 
+(def ^:private case-keys
+  #{:worker-command :scenario :schedule :input :timeout-ms :kill-grace-ms
+    :dir :extra-env :temp-dir})
+
 (def ^:private explore-keys
   #{:worker-command :scenario :schedules :timeout-ms :kill-grace-ms
     :dir :extra-env :temp-dir})
@@ -84,6 +88,26 @@
   (when-not (future-schedule/valid-schedule? (:schedule config))
     (throw
      (invalid-config :invalid-schedule {:value (:schedule config)})))
+  (assoc config :kill-grace-ms (get config :kill-grace-ms 250)))
+
+(defn- validate-case-config! [config]
+  (validate-common! config case-keys)
+  (let [schedule (:schedule config)]
+    (when-not (or (nil? schedule)
+                  (future-schedule/valid-schedule? schedule))
+      (throw
+       (invalid-config :invalid-schedule {:value schedule}))))
+  ;; A case must fail before creating its temporary directory or launching a
+  ;; child when its input cannot cross the canonical worker boundary.
+  (when (contains? config :input)
+    (try
+      (trace/canonical-value (:input config))
+      (catch :default error
+        (throw
+         (invalid-config
+          :invalid-input
+          {:error (select-keys (ex-data error)
+                               [:type :reason :path :value-class])})))))
   (assoc config :kill-grace-ms (get config :kill-grace-ms 250)))
 
 (defn- validate-schedules! [schedules]
@@ -269,9 +293,15 @@
            schedule :result-protocol error diagnostics exit))))))
 
 (defn- supervise-child
-  [config child result-path stdout-path stderr-path]
-  (let [schedule (:schedule config)
-        worker-pid (child-pid child)
+  [config schedule child result-path stdout-path stderr-path]
+  ;; PID is diagnostic-only. Failure to read it must never abandon an already
+  ;; spawned child before the bounded wait/termination/reap path owns it.
+  (let [pid-diagnostic
+        (try
+          {:worker-pid (child-pid child)}
+          (catch :default error
+            {:worker-pid nil
+             :worker-pid-error (error-summary :worker-pid error)}))
         wait-result
         (try
           {:finished? (boolean (timed-wait! child (:timeout-ms config)))}
@@ -304,7 +334,7 @@
           :reason :deadline
           :exit exit
           :diagnostics (diagnostics stdout-path stderr-path)}))
-     :diagnostics assoc :worker-pid worker-pid)))
+     :diagnostics merge pid-diagnostic)))
 
 (defn- captured [thunk]
   (try
@@ -317,6 +347,59 @@
    #{:jolt.sim.process-explorer/worker-survived-kill
      :jolt.sim.process-explorer/worker-exit-unobserved}
    (:type (ex-data error))))
+
+(defn- run-worker!
+  "Shared spawn/supervise/cleanup machinery for one fresh worker process,
+  driven by an already-validated config plus the exact schedule (nil for a
+  no-schedule case) and scenario input to place in the request."
+  [config schedule input]
+  (let [run-dir (create-run-dir (:temp-dir config))
+        request-path (path-in run-dir "request.edn")
+        result-path (path-in run-dir "result.edn")
+        stdout-path (path-in run-dir "stdout.log")
+        stderr-path (path-in run-dir "stderr.log")
+        keep-temp? (volatile! false)]
+    (try
+      (try
+        (let [request-write
+              (captured
+               #(spit
+                 request-path
+                 (trace/canonical-edn
+                  (worker/request-document (:scenario config) schedule input))))]
+          (if-let [error (:error request-write)]
+            (worker-error-outcome
+             schedule :request-writing error
+             (diagnostics stdout-path stderr-path))
+            (let [command
+                  (into (:worker-command config)
+                        [request-path result-path])
+                  spawn
+                  (captured
+                   #(process/process
+                     command
+                     (process-options config stdout-path stderr-path)))]
+              (if-let [error (:error spawn)]
+                (worker-error-outcome
+                 schedule :process-spawn error
+                 (diagnostics stdout-path stderr-path))
+                (supervise-child
+                 config schedule (:value spawn)
+                 result-path stdout-path stderr-path)))))
+        (catch :default error
+          ;; `supervise-child` converts every ordinary post-spawn failure into
+          ;; an outcome. Only the two explicit "exit not observed" conditions
+          ;; may escape. Any future escaping path must first prove the child
+          ;; reaped or be added to retain-run-directory?.
+          (when (retain-run-directory? error)
+            ;; A child whose death was not observed may still retain or mutate
+            ;; its artifacts; keep them for diagnosis and do not claim an
+            ;; ordinary exploration outcome.
+            (vreset! keep-temp? true))
+          (throw error)))
+      (finally
+        (when-not @keep-temp?
+          (fs/delete-tree run-dir))))))
 
 (defn run-schedule
   "Runs one exact future schedule in a fresh worker process.
@@ -339,55 +422,23 @@
   Timeout means only that the child did not exit by the deadline; it is not a
   proof of deadlock."
   [config]
-  (let [config (validate-run-config! config)
-        schedule (:schedule config)
-        run-dir (create-run-dir (:temp-dir config))
-        request-path (path-in run-dir "request.edn")
-        result-path (path-in run-dir "result.edn")
-        stdout-path (path-in run-dir "stdout.log")
-        stderr-path (path-in run-dir "stderr.log")
-        keep-temp? (volatile! false)]
-    (try
-      (try
-        (let [request-write
-              (captured
-               #(spit
-                 request-path
-                 (trace/canonical-edn
-                  (worker/request-document (:scenario config) schedule))))]
-          (if-let [error (:error request-write)]
-            (worker-error-outcome
-             schedule :request-writing error
-             (diagnostics stdout-path stderr-path))
-            (let [command
-                  (into (:worker-command config)
-                        [request-path result-path])
-                  spawn
-                  (captured
-                   #(process/process
-                     command
-                     (process-options config stdout-path stderr-path)))]
-              (if-let [error (:error spawn)]
-                (worker-error-outcome
-                 schedule :process-spawn error
-                 (diagnostics stdout-path stderr-path))
-                (supervise-child
-                 config (:value spawn)
-                 result-path stdout-path stderr-path)))))
-        (catch :default error
-          ;; `supervise-child` converts every ordinary post-spawn failure into
-          ;; an outcome. Only the two explicit "exit not observed" conditions
-          ;; may escape. Any future escaping path must first prove the child
-          ;; reaped or be added to retain-run-directory?.
-          (when (retain-run-directory? error)
-            ;; A child whose death was not observed may still retain or mutate
-            ;; its artifacts; keep them for diagnosis and do not claim an
-            ;; ordinary exploration outcome.
-            (vreset! keep-temp? true))
-          (throw error)))
-      (finally
-        (when-not @keep-temp?
-          (fs/delete-tree run-dir))))))
+  (let [config (validate-run-config! config)]
+    (run-worker! config (:schedule config) nil)))
+
+(defn run-case
+  "Runs one general exploration case in a fresh worker process, carrying an
+  optional canonical `:input` value and optional exact `:schedule`.
+
+  Required config is the same as `run-schedule` except `:schedule` is optional;
+  nil or absence drives no `:future-schedule` override. `:input` is optional and
+  defaults to nil. Supplying both is the common workload/fault/schedule path for
+  generated and replayed cases.
+
+  Returns the same `:completed`/`:failed`/`:timeout`/`:worker-error` shape as
+  `run-schedule`, echoing the effective schedule (including nil)."
+  [config]
+  (let [config (validate-case-config! config)]
+    (run-worker! config (:schedule config) (:input config))))
 
 (defn explore
   "Runs each exact schedule sequentially in input order and returns its ordered

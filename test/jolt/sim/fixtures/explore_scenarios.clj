@@ -68,6 +68,34 @@
     "jolt.sim.fixtures.explore-scenarios deliberate failure"
     {:type :jolt.sim.fixtures.explore-scenarios/deliberate-failure})))
 
+(rt/defsim echoes-input [input]
+  ;; A no-schedule case scenario: the [input] binding form threads the
+  ;; process explorer's canonical scenario input straight through, with no
+  ;; ordinary futures and no :future-schedule override involved.
+  {}
+  {:echoed input})
+
+(rt/defsim rejection-keyword-collision [input] {}
+  ;; The worker must classify exceptions thrown by an input-capable scenario
+  ;; body as application failures even when their public data happens to use
+  ;; the runtime's direct-call rejection keyword.
+  (throw
+   (ex-info
+    "application deliberately collides with the input-rejection keyword"
+    {:type :jolt.sim.runtime/scenario-rejects-input
+     :input input})))
+
+(rt/defsim scheduled-echoes-input [input] {}
+  ;; The general case path may carry both a workload/fault input and an exact
+  ;; future schedule. Two independent futures make [1 0] discriminate actual
+  ;; scheduler installation from a worker that merely echoes the schedule.
+  (let [observed (atom [])
+        a (future (swap! observed conj :a) :a)
+        b (future (swap! observed conj :b) :b)]
+    {:echoed input
+     :values [@a @b]
+     :start-order @observed}))
+
 (rt/defsim noncanonical {}
   ;; One ordinary future satisfies a single-ordinal schedule so the scheduler
   ;; observes the spawn it expects; the scenario result is a function, which

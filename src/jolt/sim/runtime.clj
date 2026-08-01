@@ -1543,39 +1543,100 @@
                     (restore-controllers!
                      ops @ffi-token @future-token)))))))))))
 
+(defn- invalid-defsim! [name reason data]
+  (throw
+   (ex-info
+    "defsim declaration is malformed"
+    (merge {:type :jolt.sim.runtime/invalid-defsim
+            :scenario name
+            :reason reason}
+           data))))
+
 (defmacro defsim
   "Defines a marked scenario named name that runs body under run-controlled with
   config. The body is ordinary Jolt code; defsim only installs the controller,
   event capture, and cleanup around it.
 
-  The generated function has two arities. `([] ...)` preserves the original
-  no-argument contract. `([runtime-overrides] ...)` requires a map and merges it
-  over the declared config before the run, allowing an external harness to
-  supply one `:future-schedule` without rewriting or wrapping the application
-  body. The var carries `:jolt.sim/scenario true` metadata so a process worker
-  can fail closed instead of invoking an arbitrary resolved function.
+  Two declaration forms are accepted: `(defsim name config & body)` -- the
+  original form -- and `(defsim name [input] config & body)`, which binds one
+  extra symbol to a caller-supplied input value for the run.
+
+  The generated function always has three arities. `([] ...)` preserves the
+  original no-argument contract. `([runtime-overrides] ...)` requires a map
+  and merges it over the declared config before the run, allowing an external
+  harness to supply one `:future-schedule` without rewriting or wrapping the
+  application body. `([runtime-overrides input] ...)` additionally accepts a
+  scenario input value: a scenario declared with the `[input]` binding form
+  runs its body with that symbol bound to the given value; a scenario declared
+  with the original form has no input to bind and rejects any non-nil input
+  with a typed `:jolt.sim.runtime/scenario-rejects-input` error instead of
+  silently discarding it. The zero- and one-argument arities always pass nil
+  input, so existing calls are unaffected by this addition.
+
+  The var carries `:jolt.sim/scenario true` and a boolean
+  `:jolt.sim/accepts-input` metadata marker so a process worker can fail closed
+  before invocation instead of trusting an application-thrown exception tag.
 
   The expansion references the fully qualified run-controlled, so the scenario
   is callable from any namespace. Not coupled to clojure.test."
-  [name config & body]
-  (let [scenario-name
-        (with-meta name (assoc (meta name) :jolt.sim/scenario true))]
-    `(defn ~scenario-name
-       ([]
-        (~scenario-name {}))
-       ([runtime-overrides#]
-        (when-not (map? runtime-overrides#)
-          (throw
-           (ex-info
-            "defsim runtime overrides must be a map"
-            {:type :jolt.sim.runtime/invalid-config
-             :scenario '~name
-             :runtime-overrides runtime-overrides#})))
-        (let [base-config# ~config]
-          ;; Keep run-controlled authoritative for malformed declared config.
-          ;; Passing it through unchanged preserves the original no-arg error.
-          (jolt.sim.runtime/run-controlled
-           (if (map? base-config#)
-             (merge base-config# runtime-overrides#)
-             base-config#)
-           (fn [] ~@body)))))))
+  [name & args]
+  (when (empty? args)
+    (invalid-defsim! name :missing-config {}))
+  (let [has-input? (vector? (first args))]
+    (when (and has-input? (< (count args) 2))
+      (invalid-defsim! name :missing-config {:binding (first args)}))
+    (when has-input?
+      (let [binding (first args)]
+        (when-not (= 1 (count binding))
+          (invalid-defsim! name :binding-arity {:binding binding}))
+        (when-not (and (symbol? (first binding))
+                       (nil? (namespace (first binding)))
+                       (not= '& (first binding)))
+          (invalid-defsim! name :binding-not-a-simple-symbol
+                           {:binding binding}))))
+    (let [config (if has-input? (second args) (first args))
+          body (if has-input? (nnext args) (next args))
+          input-binding-sym (when has-input? (first (first args)))
+          scenario-name
+          (with-meta name
+            (assoc (meta name)
+                   :jolt.sim/scenario true
+                   :jolt.sim/accepts-input has-input?))
+          overrides-sym (gensym "runtime-overrides")
+          input-sym (gensym "input")
+          base-config-sym (gensym "base-config")
+          run-form
+          `(let [~base-config-sym ~config]
+             ;; Keep run-controlled authoritative for malformed declared
+             ;; config. Passing it through unchanged preserves the original
+             ;; no-arg error.
+             (jolt.sim.runtime/run-controlled
+              (if (map? ~base-config-sym)
+                (merge ~base-config-sym ~overrides-sym)
+                ~base-config-sym)
+              (fn [] ~@body)))]
+      `(defn ~scenario-name
+         ([]
+          (~scenario-name {} nil))
+         ([~overrides-sym]
+          (~scenario-name ~overrides-sym nil))
+         ([~overrides-sym ~input-sym]
+          (when-not (map? ~overrides-sym)
+            (throw
+             (ex-info
+              "defsim runtime overrides must be a map"
+              {:type :jolt.sim.runtime/invalid-config
+               :scenario '~name
+               :runtime-overrides ~overrides-sym})))
+          ~(if has-input?
+             `(let [~input-binding-sym ~input-sym]
+                ~run-form)
+             `(do
+                (when (some? ~input-sym)
+                  (throw
+                   (ex-info
+                    "defsim scenario does not declare an input binding and rejects non-nil input"
+                    {:type :jolt.sim.runtime/scenario-rejects-input
+                     :scenario '~name
+                     :input ~input-sym})))
+                ~run-form)))))))

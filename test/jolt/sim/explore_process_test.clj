@@ -41,6 +41,17 @@
     :timeout-ms timeout-ms
     :kill-grace-ms kill-grace-ms}))
 
+(defn- case-config
+  ([scenario timeout-ms]
+   (case-config scenario timeout-ms {}))
+  ([scenario timeout-ms extra]
+   (merge
+    (process-config)
+    {:scenario scenario
+     :timeout-ms timeout-ms
+     :kill-grace-ms kill-grace-ms}
+    extra)))
+
 (defn- explore-config [scenario schedules timeout-ms]
   (merge
    (process-config)
@@ -252,6 +263,77 @@
         (finally
           (when (and @safe-to-clean? (fs/exists? temp-dir))
             (fs/delete-tree temp-dir)))))))
+
+(deftest run-case-drives-a-fresh-child-with-canonical-input-and-optional-schedule
+  (testing "a fresh no-schedule case round-trips canonical scenario input"
+    (let [outcome
+          (process-explorer/run-case
+           (case-config
+            'jolt.sim.fixtures.explore-scenarios/echoes-input
+            scenario-timeout-ms
+            {:input {:answer 42 :label "ok"}}))]
+      (is (= :completed (:status outcome)))
+      (is (nil? (:schedule outcome)))
+      (is (= 5 (child-abi-version outcome)))
+      (is (= {:echoed {:answer 42 :label "ok"}} (body-result outcome)))))
+
+  (testing "one case carries scenario input and a future schedule together"
+    (let [input {:workload [:echo]
+                 :faults []
+                 :payload (byte-array [0 1 127])}
+          outcome
+          (process-explorer/run-case
+           (case-config
+            'jolt.sim.fixtures.explore-scenarios/scheduled-echoes-input
+            scenario-timeout-ms
+            {:schedule [1 0]
+             :input input}))
+          body (body-result outcome)]
+      (is (= :completed (:status outcome)))
+      (is (= [1 0] (:schedule outcome)))
+      (is (= [:b :a] (:start-order body)))
+      (is (= [:a :b] (:values body)))
+      (is (= [:echo] (get-in body [:echoed :workload])))
+      (is (= [] (get-in body [:echoed :faults])))
+      (is (= [0 1 127] (vec (seq (get-in body [:echoed :payload])))))
+      (is (= [[:admit 1] [:complete 1]
+              [:admit 0] [:complete 0]]
+             (get-in outcome [:result :schedule-events])))))
+
+  (testing "no :input defaults to nil, still with no :future-schedule override"
+    (let [outcome
+          (process-explorer/run-case
+           (case-config
+            'jolt.sim.fixtures.explore-scenarios/echoes-input
+            scenario-timeout-ms))]
+      (is (= :completed (:status outcome)))
+      (is (= {:echoed nil} (body-result outcome)))))
+
+  (testing "an old-form scenario rejects non-nil input as an invalid case"
+    (let [outcome
+          (process-explorer/run-case
+           (case-config
+            'jolt.sim.fixtures.explore-scenarios/independent
+            scenario-timeout-ms
+            {:input :unexpected}))]
+      (is (= :worker-error (:status outcome)))
+      (is (nil? (:schedule outcome)))
+      (is (= :scenario-input (get-in outcome [:error :phase])))))
+
+  (testing "a real input-capable defsim body cannot spoof contract rejection"
+    (let [outcome
+          (process-explorer/run-case
+           (case-config
+            'jolt.sim.fixtures.explore-scenarios/rejection-keyword-collision
+            scenario-timeout-ms
+            {:input {:workload :collision-control}}))]
+      (is (= :failed (:status outcome)))
+      (is (= "application deliberately collides with the input-rejection keyword"
+             (get-in outcome [:error :message])))
+      (is (= :jolt.sim.runtime/scenario-rejects-input
+             (get-in outcome [:error :data :type])))
+      (is (= {:workload :collision-control}
+             (get-in outcome [:error :data :input]))))))
 
 (defn -main [& _]
   (let [bin (required-environment "JOLT_SIM_BIN")

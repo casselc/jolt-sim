@@ -67,6 +67,13 @@
   (let [worker (future :configured)]
     @worker))
 
+;; A defsim scenario declared with the optional [input] binding form.
+(rt/defsim input-scenario [input] {} {:echoed input})
+
+(rt/defsim input-config-scenario [input]
+  {:drain-timeout-ms (:drain-timeout-ms input)}
+  (:value input))
+
 (defn- ex-data-of [f]
   (try (f) nil (catch :default error (ex-data error))))
 
@@ -335,6 +342,7 @@
 
 (deftest defsim-defines-a-callable-no-arg-scenario
   (is (true? (:jolt.sim/scenario (meta #'sample-scenario))))
+  (is (false? (:jolt.sim/accepts-input (meta #'sample-scenario))))
   (if (rt/available?)
     (let [result (sample-scenario)]
       (is (= :scenario-result (:result result)))
@@ -383,6 +391,89 @@
                (:schedule-events run)))))
     (ordinary-reports-unavailable
      #(configurable-scenario {:on-event (fn [_])}))))
+
+(deftest defsim-old-form-scenarios-reject-non-nil-input
+  (if (rt/available?)
+    (let [data (ex-data-of #(sample-scenario {} :not-nil))]
+      (is (= :jolt.sim.runtime/scenario-rejects-input (:type data)))
+      (is (= 'sample-scenario (:scenario data)))
+      (is (= :not-nil (:input data))))
+    (ordinary-reports-unavailable #(sample-scenario {} nil))))
+
+(deftest defsim-old-form-scenarios-accept-nil-input-at-every-arity
+  (if (rt/available?)
+    (do
+      (is (= :scenario-result (:result (sample-scenario))))
+      (is (= :scenario-result (:result (sample-scenario {}))))
+      (is (= :scenario-result (:result (sample-scenario {} nil)))))
+    (ordinary-reports-unavailable sample-scenario)))
+
+(deftest defsim-input-binding-form-binds-the-supplied-input
+  (is (true? (:jolt.sim/scenario (meta #'input-scenario))))
+  (is (true? (:jolt.sim/accepts-input (meta #'input-scenario))))
+  (if (rt/available?)
+    (do
+      ;; The zero- and one-argument arities always pass nil input.
+      (is (= {:echoed nil} (:result (input-scenario))))
+      (is (= {:echoed nil} (:result (input-scenario {}))))
+      (is (= {:echoed [:answer 42]} (:result (input-scenario {} [:answer 42])))))
+    (ordinary-reports-unavailable input-scenario)))
+
+(deftest defsim-input-binding-is-visible-to-declared-config
+  (if (rt/available?)
+    (is (= :configured-from-input
+           (:result
+            (input-config-scenario
+             {}
+             {:drain-timeout-ms 1000 :value :configured-from-input}))))
+    (ordinary-reports-unavailable
+     #(input-config-scenario
+       {}
+       {:drain-timeout-ms 1000 :value :configured-from-input}))))
+
+(defn- macroexpansion-error-data
+  "Returns the ex-data of a failed eval, unwrapping one compiler-wrapper cause
+  if the top-level exception itself carries none."
+  [form]
+  (try
+    (eval form)
+    nil
+    (catch :default error
+      (or (ex-data error)
+          (some-> (ex-cause error) ex-data)))))
+
+(deftest defsim-input-binding-vector-must-hold-exactly-one-symbol
+  (let [data
+        (macroexpansion-error-data
+         '(jolt.sim.runtime/defsim bad-arity-scenario [a b] {} nil))]
+    (is (= :jolt.sim.runtime/invalid-defsim (:type data)))
+    (is (= :binding-arity (:reason data)))
+    (is (= 'bad-arity-scenario (:scenario data))))
+  (let [data
+        (macroexpansion-error-data
+         '(jolt.sim.runtime/defsim bad-symbol-scenario [42] {} nil))]
+    (is (= :jolt.sim.runtime/invalid-defsim (:type data)))
+    (is (= :binding-not-a-simple-symbol (:reason data))))
+  (let [data
+        (macroexpansion-error-data
+         '(jolt.sim.runtime/defsim bad-qualified-scenario [foo/input] {} nil))]
+    (is (= :jolt.sim.runtime/invalid-defsim (:type data)))
+    (is (= :binding-not-a-simple-symbol (:reason data)))))
+
+(deftest defsim-declaration-requires-a-config-form
+  (let [old-form
+        (macroexpansion-error-data
+         '(jolt.sim.runtime/defsim missing-old-config))
+        input-form
+        (macroexpansion-error-data
+         '(jolt.sim.runtime/defsim missing-input-config [input]))]
+    (is (= :jolt.sim.runtime/invalid-defsim (:type old-form)))
+    (is (= :missing-config (:reason old-form)))
+    (is (= 'missing-old-config (:scenario old-form)))
+    (is (= :jolt.sim.runtime/invalid-defsim (:type input-form)))
+    (is (= :missing-config (:reason input-form)))
+    (is (= 'missing-input-config (:scenario input-form)))
+    (is (= '[input] (:binding input-form)))))
 
 ;; ---- Current FFI interception -----------------------------------------
 ;;

@@ -11,6 +11,12 @@
    :timeout-ms 1000
    :dir "/tmp"})
 
+(def base-case-config
+  {:worker-command ["jolt" "-M:explore-worker-test"]
+   :scenario 'example/scenario
+   :timeout-ms 1000
+   :dir "/tmp"})
+
 (defn- ex-data-of [thunk]
   (try
     (thunk)
@@ -40,6 +46,28 @@
     (is (= :unknown-key (:reason unknown)))
     (is (= [4 :z/unknown] (:keys unknown)))
     (is (= :invalid-schedule (:reason invalid-schedule)))))
+
+(deftest run-case-rejects-an-invalid-optional-schedule
+  (let [invalid
+        (ex-data-of
+         #(process-explorer/run-case
+           (assoc base-case-config :schedule [1 1])))]
+    (is (= :jolt.sim.process-explorer/invalid-config (:type invalid)))
+    (is (= :invalid-schedule (:reason invalid)))
+    (is (= [1 1] (:value invalid)))))
+
+(deftest run-case-rejects-malformed-input-before-file-or-process-access
+  (let [not-a-map (ex-data-of #(process-explorer/run-case :bad))
+        invalid-input
+        (ex-data-of
+         #(process-explorer/run-case
+           (assoc base-case-config :input (fn [] :not-canonical))))]
+    (is (= :jolt.sim.process-explorer/invalid-config (:type not-a-map)))
+    (is (= :config-not-a-map (:reason not-a-map)))
+    (is (= :jolt.sim.process-explorer/invalid-config (:type invalid-input)))
+    (is (= :invalid-input (:reason invalid-input)))
+    (is (= :jolt.sim.trace/unsupported-value
+           (get-in invalid-input [:error :type])))))
 
 (deftest explore-rejects-duplicate-and-inconsistent-plans
   (let [base (-> base-run-config
@@ -107,9 +135,49 @@
             (fn []
               (@supervise-var
                {:schedule [0] :timeout-ms 1 :kill-grace-ms 1}
+               [0]
                :fake-child
                "unused-result"
                "unused-stdout"
                "unused-stderr"))))]
     (is (identical? unobserved thrown))
     (is (true? (@retain-var thrown)))))
+
+(deftest pid-diagnostic-failure-cannot-abandon-a-spawned-child
+  (let [supervise-var
+        (resolve 'jolt.sim.process-explorer/supervise-child)
+        wait-var
+        (resolve 'jolt.sim.process-explorer/timed-wait!)
+        pid-var
+        (resolve 'jolt.sim.process-explorer/child-pid)
+        exit-var
+        (resolve 'jolt.sim.process-explorer/reaped-exit)
+        read-var
+        (resolve 'jolt.sim.process-explorer/read-worker-outcome)
+        terminate-var
+        (resolve 'jolt.sim.process-explorer/terminate-and-reap!)
+        terminate-called? (atom false)
+        outcome
+        (with-redefs-fn
+          {pid-var (fn [_] (throw (ex-info "pid unavailable" {})))
+           wait-var (fn [_ _] true)
+           exit-var (fn [_] 0)
+           read-var (fn [schedule _exit _result _stdout _stderr]
+                      {:status :completed
+                       :schedule schedule
+                       :diagnostics {}})
+           terminate-var (fn [& _]
+                           (reset! terminate-called? true)
+                           (throw (ex-info "must not terminate exited child" {})))}
+          #(@supervise-var
+            {:timeout-ms 1 :kill-grace-ms 1}
+            [0]
+            :fake-child
+            "unused-result"
+            "unused-stdout"
+            "unused-stderr"))]
+    (is (= :completed (:status outcome)))
+    (is (false? @terminate-called?))
+    (is (nil? (get-in outcome [:diagnostics :worker-pid])))
+    (is (= :worker-pid
+           (get-in outcome [:diagnostics :worker-pid-error :phase])))))

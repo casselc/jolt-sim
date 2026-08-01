@@ -281,13 +281,23 @@ in-process test that would hang the suite:
 /path/to/current-sim/target/sim/jolt -M:future-schedule-poison-test
 ```
 
-### Fresh-process schedule exploration
+### Fresh-process case and schedule exploration
 
 `jolt.sim.process-explorer` now supplies the external supervision required by
 that nonclaim. `defsim` vars are marked and retain their original no-argument
-form; an additive one-map arity lets the worker merge in one exact
-`:future-schedule` while leaving the scenario body unchanged. A project can
-define a worker alias such as:
+form. The original declaration form accepts runtime overrides but no nonnil
+scenario input. An optional one-symbol binding form exposes a canonical input
+to both the declared configuration and the otherwise ordinary Jolt body:
+
+```clojure
+(sim/defsim checkout-race [case]
+  {:ffi-handlers (handlers-for (:faults case))}
+  (checkout/run! (:workload case)))
+```
+
+The generated var records whether it accepts input, so a worker rejects an
+incompatible case before invoking the scenario; it never infers that contract
+from application exception data. A project can define a worker alias such as:
 
 ```clojure
 {:aliases
@@ -295,8 +305,27 @@ define a worker alias such as:
   {:main-opts ["-m" "jolt.sim.explore-worker"]}}}
 ```
 
-The parent runs outside `run-controlled` and passes an explicit Jolt image,
-working directory, scenario var, schedule vector, and deadline:
+The parent runs outside `run-controlled`. `run-case` carries one optional
+canonical `:input` and one optional exact future `:schedule` through a fresh
+worker. Supplying both is the basic transport for generated
+workload/fault/schedule cases; omitting the schedule installs no future
+scheduler:
+
+```clojure
+(require '[jolt.sim.process-explorer :as process-explorer])
+
+(process-explorer/run-case
+ {:worker-command ["/path/to/current-sim/jolt" "-M:sim-worker"]
+  :dir "/absolute/path/to/project"
+  :scenario 'my.scenarios/checkout-race
+  :input {:workload [[:checkout :order-7]]
+          :faults [[:sqlite/busy 1]]}
+  :schedule [1 0]
+  :timeout-ms 5000})
+```
+
+`run-schedule` remains the exact-schedule compatibility wrapper, and `explore`
+runs an ordered schedule domain. For example:
 
 ```clojure
 (require '[jolt.sim.explore :as explore]
@@ -315,21 +344,24 @@ The worker command must name the Jolt executable directly or use an exec-style
 wrapper. The current Jolt process host reclaims that worker process, not an
 arbitrary descendant tree left behind by a shell wrapper.
 
-Each schedule gets a new operating-system process and a versioned EDN
-request/result file pair. Only a namespaced, `defsim`-marked var is invoked.
-Completed values and scenario failures cross the boundary through the
-canonical trace value domain; resolution, protocol, and encoding failures are
-reported as `:worker-error`. A child that misses its deadline is sent TERM,
-then KILL after a bounded grace period, and must be observed reaped before the
-supervisor returns `:timeout`. Failure to observe death is an infrastructure
-exception and retains the run directory for diagnosis.
+Each case gets a new operating-system process and a protocol-v2 EDN
+request/result file pair. There is no prerelease protocol-v1 compatibility.
+Only a namespaced, `defsim`-marked var with an explicit input-contract marker
+is invoked. Inputs, completed values, and scenario failures cross the boundary
+through the canonical trace value domain; resolution, protocol, contract, and
+encoding failures are reported as `:worker-error`. A child that misses its
+deadline is sent TERM, then KILL after a bounded grace period, and must be
+observed reaped before the supervisor returns `:timeout`. Failure to observe
+death is an infrastructure exception and retains the run directory for
+diagnosis.
 
 `:timeout` deliberately means only “the worker did not exit by its deadline.”
-It is not a deadlock proof. The current plan space is still just serial
-admission of a known number of top-level ordinary-future bodies; nested
+It is not a deadlock proof. General case transport does not itself generate or
+interpret workloads and faults: the current plan space is still just serial
+admission of a known number of top-level ordinary-future bodies. Nested
 futures, competing raw spawners, clocks, synchronization-boundary choices,
-fault plans, workload/fault shrinking, and coverage-guided sampling remain
-later work.
+fault-plan semantics, workload/fault shrinking, and coverage-guided sampling
+remain later work.
 
 ### Optional Hegel selection and shrinking
 

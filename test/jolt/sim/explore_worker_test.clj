@@ -14,6 +14,7 @@
 (def ^:private protocol-key :jolt.sim.explore/protocol)
 (def ^:private status-key :jolt.sim.explore/status)
 (def ^:private schedule-key :jolt.sim.explore/schedule)
+(def ^:private input-key :jolt.sim.explore/input)
 (def ^:private value-key :jolt.sim.explore/value)
 (def ^:private error-key :jolt.sim.explore/error)
 
@@ -33,17 +34,17 @@
       (ex-data error))))
 
 (defn- completed-document
-  "Builds one well-formed protocol-v1 completed result for `value`."
+  "Builds one well-formed protocol-v2 completed result for `value`."
   [schedule value]
-  {protocol-key 1
+  {protocol-key 2
    status-key :completed
    schedule-key schedule
    value-key (trace/canonical-value value)})
 
 (defn- error-document
-  "Builds one well-formed protocol-v1 failed/worker-error result for `error`."
+  "Builds one well-formed protocol-v2 failed/worker-error result for `error`."
   [schedule status error]
-  {protocol-key 1
+  {protocol-key 2
    status-key status
    schedule-key schedule
    error-key (trace/canonical-value (trace/normalize-error error))})
@@ -51,21 +52,46 @@
 (defn unmarked-scenario [_]
   :must-not-run)
 
+(def ^{:jolt.sim/scenario true}
+  marked-without-input-contract
+  (fn [& _]
+    (throw (ex-info "missing-contract scenario must not run" {}))))
+
+(def ^{:jolt.sim/scenario true :jolt.sim/accepts-input true}
+  marked-noncallable
+  42)
+
+(defn ^{:jolt.sim/scenario true :jolt.sim/accepts-input true}
+  input-contract-collision-scenario
+  [_runtime-overrides input]
+  (throw
+   (ex-info
+    "application deliberately collides with the input-rejection keyword"
+    {:type :jolt.sim.runtime/scenario-rejects-input
+     :input input})))
+
 ;;; ---------------------------------------------------------------------------
 ;;; request-document
 ;;; ---------------------------------------------------------------------------
 
-(deftest request-document-builds-the-exact-protocol-v1-request
+(deftest request-document-builds-the-exact-protocol-v2-request
   (let [document (explore/request-document 'jolt.sim.some/scenario [2 0 1])]
-    (is (= {protocol-key 1
+    (is (= {protocol-key 2
             :jolt.sim.explore/scenario 'jolt.sim.some/scenario
-            schedule-key [2 0 1]}
+            schedule-key [2 0 1]
+            input-key (trace/canonical-value nil)}
            document))
-    ;; Exactly the three declared keys, no more, no less.
+    ;; Exactly the four declared keys, no more, no less.
     (is (= #{protocol-key
              :jolt.sim.explore/scenario
-             schedule-key}
+             schedule-key
+             input-key}
            (set (keys document))))))
+
+(deftest request-document-accepts-a-nil-schedule-for-a-no-scheduler-case
+  (let [document (explore/request-document 'jolt.sim.some/scenario nil :the-input)]
+    (is (nil? (get document schedule-key)))
+    (is (= (trace/canonical-value :the-input) (get document input-key)))))
 
 (deftest request-document-rejects-a-non-namespaced-scenario-symbol
   (let [data (caught-data #(explore/request-document 'unqualified [0]))]
@@ -88,6 +114,28 @@
           schedule))
         outcome (explore/decode-result schedule document)]
     (is (= :must-not-run (unmarked-scenario nil)))
+    (is (= :worker-error (:status outcome)))
+    (is (= :scenario-resolution (get-in outcome [:error :phase])))
+    (is (= :jolt.sim/exception (get-in outcome [:error :kind])))))
+
+(deftest execute-request-refuses-a-marked-var-without-an-input-contract
+  (let [document
+        (explore/execute-request
+         (explore/request-document
+          'jolt.sim.explore-worker-test/marked-without-input-contract
+          nil))
+        outcome (explore/decode-result nil document)]
+    (is (= :worker-error (:status outcome)))
+    (is (= :scenario-resolution (get-in outcome [:error :phase])))
+    (is (= :jolt.sim/exception (get-in outcome [:error :kind])))))
+
+(deftest execute-request-refuses-a-marked-noncallable-var
+  (let [document
+        (explore/execute-request
+         (explore/request-document
+          'jolt.sim.explore-worker-test/marked-noncallable
+          nil))
+        outcome (explore/decode-result nil document)]
     (is (= :worker-error (:status outcome)))
     (is (= :scenario-resolution (get-in outcome [:error :phase])))
     (is (= :jolt.sim/exception (get-in outcome [:error :kind])))))
@@ -118,6 +166,53 @@
         (when (fs/exists? run-dir)
           (fs/delete-tree run-dir))))))
 
+(deftest execute-request-rejects-a-malformed-canonical-input
+  (let [schedule [0]
+        document
+        (explore/execute-request
+         (assoc
+          (explore/request-document
+           'jolt.sim.explore-worker-test/unmarked-scenario
+           schedule)
+          input-key [:jolt.sim.value/integer "not-an-integer"]))
+        outcome (explore/decode-result schedule document)]
+    (is (= :worker-error (:status outcome)))
+    (is (= :request-validation (get-in outcome [:error :phase])))))
+
+(deftest execute-request-rejects-an-actual-v1-request-by-version
+  ;; Protocol v2 has no v1 compatibility. Version is checked before the v2 key
+  ;; set so a genuine v1 document is classified as a version mismatch.
+  (let [schedule [0]
+        v1-shaped {protocol-key 1
+                   :jolt.sim.explore/scenario
+                   'jolt.sim.explore-worker-test/unmarked-scenario
+                   schedule-key schedule}
+        validate-var (resolve 'jolt.sim.explore-worker/validate-request!)
+        validation-data (caught-data #(@validate-var v1-shaped))
+        document (explore/execute-request v1-shaped)
+        outcome (explore/decode-result schedule document)]
+    (is (= :protocol-version (:reason validation-data)))
+    (is (= 2 (:expected validation-data)))
+    (is (= 1 (:actual validation-data)))
+    (is (= :worker-error (:status outcome)))
+    (is (= :request-validation (get-in outcome [:error :phase])))))
+
+(deftest application-cannot-spoof-the-scenario-input-contract
+  (let [document
+        (explore/execute-request
+         (explore/request-document
+          'jolt.sim.explore-worker-test/input-contract-collision-scenario
+          nil
+          {:workload :collision-control}))
+        outcome (explore/decode-result nil document)]
+    (is (= :failed (:status outcome)))
+    (is (= "application deliberately collides with the input-rejection keyword"
+           (get-in outcome [:error :message])))
+    (is (= :jolt.sim.runtime/scenario-rejects-input
+           (get-in outcome [:error :data :type])))
+    (is (= {:workload :collision-control}
+           (get-in outcome [:error :data :input])))))
+
 ;;; ---------------------------------------------------------------------------
 ;;; decode-result: happy paths for all three statuses
 ;;; ---------------------------------------------------------------------------
@@ -131,6 +226,13 @@
     (is (= schedule (:schedule outcome)))
     (is (= value (:result outcome)))
     (is (nil? (:error outcome)))))
+
+(deftest decode-result-accepts-a-nil-schedule-for-a-no-scheduler-case
+  (let [value {:echoed :hello}
+        outcome (explore/decode-result nil (completed-document nil value))]
+    (is (= :completed (:status outcome)))
+    (is (nil? (:schedule outcome)))
+    (is (= value (:result outcome)))))
 
 (deftest decode-result-restores-a-failed-outcome
   (let [schedule [0]
@@ -195,7 +297,7 @@
         data (caught-data #(explore/decode-result schedule document))]
     (is (= :jolt.sim.explore/worker-protocol-error (:type data)))
     (is (= :protocol-version (:reason data)))
-    (is (= 1 (:expected data)))
+    (is (= 2 (:expected data)))
     (is (= 0 (:actual data)))))
 
 (deftest decode-result-rejects-a-schedule-mismatch
@@ -210,7 +312,7 @@
 
 (deftest decode-result-rejects-an-invalid-status
   (let [schedule [0]
-        document {protocol-key 1
+        document {protocol-key 2
                   status-key :pending
                   schedule-key schedule
                   value-key (trace/canonical-value nil)}
@@ -233,7 +335,7 @@
              (:actual data)))))
   (testing "a failed document carrying the value key is rejected"
     (let [schedule [0]
-          document {protocol-key 1
+          document {protocol-key 2
                     status-key :failed
                     schedule-key schedule
                     value-key (trace/canonical-value nil)}
@@ -248,7 +350,7 @@
   ;; a shape ever emitted by canonical-value, so canonical-form? rejects it.
   (let [schedule [0]
         payload [:jolt.sim.value/integer "not-an-integer"]
-        document {protocol-key 1
+        document {protocol-key 2
                   status-key :completed
                   schedule-key schedule
                   value-key payload}
