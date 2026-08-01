@@ -21,6 +21,14 @@
   pending accept then returns [-1 EINPROGRESS]; a drained recv whose peer
   half-closed write returns [0 0] (EOF) while the reverse direction stays open.
 
+  The self-pipe wake boundary is modeled the same way: pipe writes the two int
+  fds at offsets 0 and 4 over one shared byte FIFO; write copies exactly len
+  bytes (EPIPE once the reader closes); read drains that FIFO in bounded slices
+  (EAGAIN while empty only after the reader is nonblocking, [0 0] EOF after the
+  writer closes); and scalar close retires each endpoint idempotently while
+  marking its peer's lifecycle. Blocking empty reads fail closed until the poll
+  slice supplies a real waiter. No poll, scheduling, or virtual time are modeled.
+
   sockaddr_in and addrinfo are written from the supplied descriptor, including
   Darwin's sin_len byte and its different ai_addr/ai_canonname order. Resolver
   ownership is tracked explicitly so only the returned head can free its nodes,
@@ -74,6 +82,8 @@
 (defn- fail! [type message data]
   (throw (ex-info message (assoc data :type type))))
 
+(def ^:private o-rdonly 0)
+(def ^:private o-wronly 1)
 (def ^:private o-rdwr 2)
 (def ^:private loopback-addr 0x7f000001)
 
@@ -109,7 +119,10 @@
   [:foreign-function "recv"
    [:int :pointer :size_t :int] :ssize_t false true]
   [:foreign-function "shutdown" [:int :int] :int false true]
-  [:foreign-function "close" [:int] :int false false]])
+  [:foreign-function "close" [:int] :int false false]
+  [:foreign-function "pipe" [:pointer] :int false true]
+  [:foreign-function "read" [:int :pointer :size_t] :ssize_t false true]
+  [:foreign-function "write" [:int :pointer :size_t] :ssize_t false true]])
 
 ;; ---- captured result helpers -------------------------------------------
 
@@ -228,6 +241,7 @@
       :state (atom {:next-fd (:first-fd cfg)
                     :next-ephemeral (:ephemeral-base cfg)
                     :sockets {}
+                    :pipes {}
                     :listeners {}
                     :closed-fds #{}
                     :addrinfo-allocations {}})
@@ -340,6 +354,19 @@
 
 (defn- socket-of [w fd]
   (get-in @(:state w) [:sockets fd]))
+
+(defn- pipe-of [w fd]
+  (get-in @(:state w) [:pipes fd]))
+
+(defn- fd-resource [w fd]
+  (cond
+    (socket-of w fd)
+    {:kind :socket :entry (socket-of w fd) :path [:sockets fd]}
+
+    (pipe-of w fd)
+    {:kind :pipe :entry (pipe-of w fd) :path [:pipes fd]}
+
+    :else nil))
 
 (defn- with-socket [w fd f]
   (if-let [s (socket-of w fd)]
@@ -463,16 +490,27 @@
 (defn- h-fcntl [w {:keys [arguments]}]
   (let [[fd cmd arg] (vec arguments)
         o-nonblock (target-const w :o-nonblock)]
-    (with-socket w fd
-                 (fn [s]
-                   (cond
-                     (= cmd (target-const w :f-getfl))
-                     [(bit-or o-rdwr (if (:nonblocking? s) o-nonblock 0)) 0]
-                     (= cmd (target-const w :f-setfl))
-                     (do (swap! (:state w) assoc-in [:sockets fd :nonblocking?]
-                                (not (zero? (bit-and arg o-nonblock))))
-                         (ok-pair))
-                     :else (err-pair (native-error w :einval)))))))
+    (if-let [{:keys [kind entry path]} (fd-resource w fd)]
+      (let [access-mode
+            (if (= :socket kind)
+              o-rdwr
+              (case (:role entry)
+                :reader o-rdonly
+                :writer o-wronly))]
+        (cond
+          (= cmd (target-const w :f-getfl))
+          [(bit-or access-mode
+                   (if (:nonblocking? entry) o-nonblock 0))
+           0]
+
+          (= cmd (target-const w :f-setfl))
+          (do
+            (swap! (:state w) assoc-in (conj path :nonblocking?)
+                   (not (zero? (bit-and arg o-nonblock))))
+            (ok-pair))
+
+          :else (err-pair (native-error w :einval))))
+      (err-pair (native-error w :ebadf)))))
 
 (defn- write-name-result [w addr-ptr addrlen-ptr port addr]
   (write-sockaddr-in!
@@ -686,11 +724,87 @@
              assoc :peer-write-shutdown? true :peer-closed? true))
     0))
 
+;; ---- pipe (self-pipe wake) handlers ------------------------------------
+
+(defn- h-pipe [w {:keys [arguments]}]
+  (let [[pipefd-ptr] (vec arguments)
+        rfd (claim-fd! w)
+        wfd (claim-fd! w)]
+    (invoke-mem w :write [pipefd-ptr :int 0 rfd])
+    (invoke-mem w :write [pipefd-ptr :int 4 wfd])
+    (swap! (:state w) assoc-in [:pipes rfd]
+           {:fd rfd :role :reader :peer-fd wfd
+            :nonblocking? false :fifo [] :writer-closed? false})
+    (swap! (:state w) assoc-in [:pipes wfd]
+           {:fd wfd :role :writer :peer-fd rfd
+            :nonblocking? false :reader-closed? false})
+    [0 0]))
+
+(defn- pipe-write-result [w s buf-ptr len]
+  (if (:reader-closed? s)
+    (err-pair (target-errno w :epipe))
+    (let [reader-fd (:peer-fd s)]
+      (if (pipe-of w reader-fd)
+        (do (when (pos? len)
+              (let [moved (ba->uvec (invoke-mem w :read-array [buf-ptr len]))]
+                (swap! (:state w) update-in [:pipes reader-fd :fifo]
+                       into moved)))
+            [len 0])
+        (err-pair (target-errno w :epipe))))))
+
+(defn- h-write [w {:keys [arguments]}]
+  (let [[fd buf-ptr len] (vec arguments)]
+    (if-let [s (pipe-of w fd)]
+      (if (= :writer (:role s))
+        (pipe-write-result w s buf-ptr len)
+        (err-pair (native-error w :ebadf)))
+      (err-pair (native-error w :ebadf)))))
+
+(defn- pipe-read-result [w s buf-ptr len]
+  (if (zero? len)
+    [0 0]
+    (let [q (:fifo s)]
+      (if (pos? (count q))
+        (let [n (min len (:progress-limit (:config w)) (count q))
+              got (subvec q 0 n)]
+          (swap! (:state w) assoc-in [:pipes (:fd s) :fifo] (subvec q n))
+          (invoke-mem w :write-array [buf-ptr (uvec->byte-array got)])
+          [n 0])
+        (cond
+          (:writer-closed? s) [0 0]
+          (:nonblocking? s) (err-pair (target-errno w :eagain))
+          :else
+          (fail! :jolt.sim.net.posix-loopback/blocking-pipe-read-unsupported
+                 "blocking empty pipe reads require the modeled poll/wait slice"
+                 {:fd (:fd s)}))))))
+
+(defn- h-read [w {:keys [arguments]}]
+  (let [[fd buf-ptr len] (vec arguments)]
+    (if-let [s (pipe-of w fd)]
+      (if (= :reader (:role s))
+        (pipe-read-result w s buf-ptr len)
+        (err-pair (native-error w :ebadf)))
+      (err-pair (native-error w :ebadf)))))
+
+(defn- close-pipe-endpoint [w s]
+  (let [fd (:fd s)
+        peer-fd (:peer-fd s)
+        mark (case (:role s)
+               :writer :writer-closed?
+               :reader :reader-closed?
+               nil)]
+    (swap! (:state w) update :pipes dissoc fd)
+    (swap! (:state w) update :closed-fds conj fd)
+    (when (and mark (pipe-of w peer-fd))
+      (swap! (:state w) assoc-in [:pipes peer-fd mark] true))
+    0))
+
 (defn- h-close [w {:keys [arguments]}]
   (let [[fd] (vec arguments)]
-    (if-let [s (socket-of w fd)]
-      (close-result w s)
-      -1)))
+    (cond
+      (socket-of w fd) (close-result w (socket-of w fd))
+      (pipe-of w fd) (close-pipe-endpoint w (pipe-of w fd))
+      :else -1)))
 
 (defn- posix-fns [w]
   {"getaddrinfo" (partial h-getaddrinfo w)
@@ -708,7 +822,10 @@
    "send" (partial h-send w)
    "recv" (partial h-recv w)
    "shutdown" (partial h-shutdown w)
-   "close" (partial h-close w)})
+   "close" (partial h-close w)
+   "pipe" (partial h-pipe w)
+   "read" (partial h-read w)
+   "write" (partial h-write w)})
 
 (defn foreign-handlers
   "Returns only the exact POSIX foreign-function handlers. Each transition is
@@ -734,11 +851,26 @@
 
 (defn state
   "Returns the current posix-loopback state (next-fd, next-ephemeral, sockets,
-  listeners) for evidence. Socket records carry state, local/peer ports, the
-  paired peer fd, the nonblocking flag, the independent write/read half-open
+  pipes, listeners) for evidence. Socket records carry state, local/peer ports,
+  the paired peer fd, the nonblocking flag, the independent write/read half-open
   flags, the recv FIFO, and (for listeners) the pending accept queue."
   [w]
   @(:state w))
+
+(defn pipe-snapshot
+  "Stable plain-data summary of every open modeled pipe endpoint, ordered by fd."
+  [w]
+  (->> (:pipes @(:state w))
+       vals
+       (sort-by :fd)
+       (mapv (fn [endpoint]
+               {:fd (:fd endpoint)
+                :role (:role endpoint)
+                :peer-fd (:peer-fd endpoint)
+                :nonblocking? (:nonblocking? endpoint)
+                :fifo-bytes (count (:fifo endpoint))
+                :writer-closed? (:writer-closed? endpoint)
+                :reader-closed? (:reader-closed? endpoint)}))))
 
 (defn snapshot
   "Stable plain-data summary of every open socket, ordered by fd. Each entry
@@ -761,11 +893,12 @@
                 :recv-bytes (count (:recv-q s))}))))
 
 (defn clean?
-  "True when the shared memory world has no live allocations and every modeled
-  socket has been closed. addrinfo/sockaddr allocations and socket fds are
-  distinct ownership domains; both must be retired."
+  "True when shared memory has no live allocations and every modeled socket and
+  pipe endpoint is closed. Native allocations, sockets, and pipes are distinct
+  ownership domains; all must be retired."
   [w]
   (and (memory/clean? (:memory w))
        (empty? (:sockets @(:state w)))
+       (empty? (:pipes @(:state w)))
        (empty? (:listeners @(:state w)))
        (empty? (:addrinfo-allocations @(:state w)))))

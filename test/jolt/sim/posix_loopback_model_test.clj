@@ -117,10 +117,18 @@
         (set (filter #(= :foreign-function (first %)) (keys handlers)))
         native-keys
         (set (filter #(= :native-operation (first %)) (keys handlers)))]
-    (is (= 17 (count posix/handler-keys)))
+    (is (= 20 (count posix/handler-keys)))
     (is (= (set posix/handler-keys) foreign-keys))
     (is (= 15 (count native-keys)))
-    (is (= 32 (count handlers)))
+    (is (= 35 (count handlers)))
+    (is (contains? foreign-keys
+                  [:foreign-function "pipe" [:pointer] :int false true]))
+    (is (contains? foreign-keys
+                  [:foreign-function "read" [:int :pointer :size_t]
+                   :ssize_t false true]))
+    (is (contains? foreign-keys
+                  [:foreign-function "write" [:int :pointer :size_t]
+                   :ssize_t false true]))
     (is (= #{true false}
            (set (map #(nth % 4)
                      (filter #(= "connect" (nth % 1))
@@ -267,3 +275,196 @@
     (native h :free target)
     (native h :free (:address listener))
     (is (true? (posix/clean? (:world h))))))
+
+;; ---- self-pipe wake boundary ------------------------------------------
+
+(defn- open-pipe [h]
+  (let [cell (native h :alloc 8)]
+    (is (= [0 0] (foreign h "pipe" false [cell])))
+    (let [rfd (native h :read cell :int 0)
+          wfd (native h :read cell :int 4)]
+      {:cell cell :reader rfd :writer wfd})))
+
+(defn- make-nonblocking! [h descriptor fd]
+  (let [getfl (get-in descriptor [:const :f-getfl])
+        setfl (get-in descriptor [:const :f-setfl])
+        o-nonblock (get-in descriptor [:const :o-nonblock])
+        [flags error] (foreign h "fcntl" false [fd getfl 0])]
+    (is (zero? error))
+    (is (= [0 0]
+           (foreign h "fcntl" false
+                    [fd setfl (bit-or flags o-nonblock)])))))
+
+(deftest pipe-writes-reader-and-writer-fds-at-offsets-zero-and-four
+  (doseq [descriptor [linux-descriptor darwin-descriptor]]
+    (let [h (harness descriptor)
+          cell (native h :alloc 8)
+          [result errno] (foreign h "pipe" false [cell])]
+      (is (zero? result))
+      (is (zero? errno))
+      (let [rfd (native h :read cell :int 0)
+            wfd (native h :read cell :int 4)]
+        (is (= 0x40000000 rfd))
+        (is (= (inc rfd) wfd))
+        (is (= rfd (native h :read cell :int 0)))
+        (is (= wfd (native h :read cell :int 4)))
+        (is (empty? (posix/snapshot (:world h))))
+        (is (= [[rfd :reader wfd false 0]
+                [wfd :writer rfd false 0]]
+               (mapv (juxt :fd :role :peer-fd :nonblocking? :fifo-bytes)
+                     (posix/pipe-snapshot (:world h)))))
+        (foreign h "close" false [rfd])
+        (foreign h "close" false [wfd]))
+      (native h :free cell)
+      (is (true? (posix/clean? (:world h)))))))
+
+(deftest pipe-endpoints-each-carry-an-independent-fcntl-nonblocking-state
+  (doseq [descriptor [linux-descriptor darwin-descriptor]]
+    (let [h (harness descriptor)
+          getfl (get-in descriptor [:const :f-getfl])
+          setfl (get-in descriptor [:const :f-setfl])
+          o-nonblock (get-in descriptor [:const :o-nonblock])
+          cell (native h :alloc 8)]
+      (foreign h "pipe" false [cell])
+      (let [rfd (native h :read cell :int 0)
+            wfd (native h :read cell :int 4)]
+        (is (= [0 0] (foreign h "fcntl" false [rfd getfl 0])))
+        (is (= [1 0] (foreign h "fcntl" false [wfd getfl 0])))
+        (is (= [0 0] (foreign h "fcntl" false [wfd setfl o-nonblock])))
+        (is (= [(bit-or 1 o-nonblock) 0]
+               (foreign h "fcntl" false [wfd getfl 0])))
+        (is (= [0 0] (foreign h "fcntl" false [rfd getfl 0])))
+        (is (= [0 0] (foreign h "fcntl" false [rfd setfl o-nonblock])))
+        (is (= [o-nonblock 0]
+               (foreign h "fcntl" false [rfd getfl 0])))
+        (foreign h "close" false [rfd])
+        (foreign h "close" false [wfd]))
+      (native h :free cell)
+      (is (true? (posix/clean? (:world h)))))))
+
+(deftest pipe-write-copies-all-bytes-and-read-drains-the-shared-fifo-in-slices
+  (let [h (harness linux-descriptor)
+        cell (native h :alloc 8)]
+    (foreign h "pipe" false [cell])
+    (let [rfd (native h :read cell :int 0)
+          wfd (native h :read cell :int 4)
+          payload (native h :alloc 5)
+          received (native h :alloc 5)]
+      (make-nonblocking! h linux-descriptor rfd)
+      (native h :write-array payload (byte-array [10 20 30 40 50]))
+      (is (= [5 0] (foreign h "write" false [wfd payload 5])))
+      (is (= 5 (:fifo-bytes
+                (first (posix/pipe-snapshot (:world h))))))
+      (is (= [2 0] (foreign h "read" false [rfd received 5])))
+      (is (= [2 0] (foreign h "read" false [rfd (+ received 2) 3])))
+      (is (= [1 0] (foreign h "read" false [rfd (+ received 4) 1])))
+      (is (= [-1 (get-in linux-descriptor [:errno :eagain])]
+             (foreign h "read" false [rfd received 4])))
+      (is (= [10 20 30 40 50]
+             (mapv unsigned (vec (native h :read-array received 5)))))
+      (foreign h "close" false [rfd])
+      (foreign h "close" false [wfd])
+      (native h :free received)
+      (native h :free payload))
+    (native h :free cell)
+    (is (true? (posix/clean? (:world h))))))
+
+(deftest pipe-empty-read-with-writer-open-would-block
+  (doseq [descriptor [linux-descriptor darwin-descriptor]]
+    (let [h (harness descriptor)
+          cell (native h :alloc 8)]
+      (foreign h "pipe" false [cell])
+      (let [rfd (native h :read cell :int 0)
+            wfd (native h :read cell :int 4)
+            received (native h :alloc 4)]
+        (is (= :jolt.sim.net.posix-loopback/blocking-pipe-read-unsupported
+               (:type (ex-data-of
+                       #(foreign h "read" false [rfd received 4])))))
+        (make-nonblocking! h descriptor rfd)
+        (is (= [-1 (get-in descriptor [:errno :eagain])]
+               (foreign h "read" false [rfd received 4])))
+        (is (= [-1 (get-in descriptor [:errno :eagain])]
+               (foreign h "read" false [rfd received 4])))
+        (foreign h "close" false [rfd])
+        (foreign h "close" false [wfd])
+        (native h :free received))
+      (native h :free cell)
+      (is (true? (posix/clean? (:world h)))))))
+
+(deftest pipe-read-drains-then-returns-eof-only-after-writer-close
+  (doseq [descriptor [linux-descriptor darwin-descriptor]]
+    (let [h (harness descriptor)
+          cell (native h :alloc 8)]
+      (foreign h "pipe" false [cell])
+      (let [rfd (native h :read cell :int 0)
+            wfd (native h :read cell :int 4)
+            payload (native h :alloc 3)
+            received (native h :alloc 4)]
+        (make-nonblocking! h descriptor rfd)
+        (is (= [-1 (get-in descriptor [:errno :eagain])]
+               (foreign h "read" false [rfd received 4])))
+        (native h :write-array payload (byte-array [7 8 9]))
+        (is (= [3 0] (foreign h "write" false [wfd payload 3])))
+        (is (= 0 (foreign h "close" false [wfd])))
+        (is (true? (:writer-closed?
+                    (first (posix/pipe-snapshot (:world h))))))
+        (is (= [2 0] (foreign h "read" false [rfd received 4])))
+        (is (= [1 0] (foreign h "read" false [rfd (+ received 2) 2])))
+        (is (= [7 8 9]
+               (mapv unsigned (vec (native h :read-array received 3)))))
+        (is (= [0 0] (foreign h "read" false [rfd received 4])))
+        (is (= [0 0] (foreign h "read" false [rfd received 4])))
+        (foreign h "close" false [rfd])
+        (native h :free received)
+        (native h :free payload))
+      (native h :free cell)
+      (is (true? (posix/clean? (:world h)))))))
+
+(deftest pipe-write-returns-epipe-once-the-reader-closes
+  (doseq [descriptor [linux-descriptor darwin-descriptor]]
+    (let [h (harness descriptor)
+          cell (native h :alloc 8)]
+      (foreign h "pipe" false [cell])
+      (let [rfd (native h :read cell :int 0)
+            wfd (native h :read cell :int 4)
+            payload (native h :alloc 3)]
+        (native h :write-array payload (byte-array [1 2 3]))
+        (is (= [3 0] (foreign h "write" false [wfd payload 3])))
+        (is (= 0 (foreign h "close" false [rfd])))
+        (is (= [-1 (get-in descriptor [:errno :epipe])]
+               (foreign h "write" false [wfd payload 3])))
+        (is (= [-1 (get-in descriptor [:errno :epipe])]
+               (foreign h "write" false [wfd payload 3])))
+        (foreign h "close" false [wfd])
+        (native h :free payload))
+      (native h :free cell)
+      (is (true? (posix/clean? (:world h)))))))
+
+(deftest pipe-close-retires-endpoints-idempotently
+  (doseq [descriptor [linux-descriptor darwin-descriptor]]
+    (let [h (harness descriptor)
+          p (open-pipe h)
+          rfd (:reader p)
+          wfd (:writer p)]
+      (is (= 0 (foreign h "close" false [rfd])))
+      (is (= -1 (foreign h "close" false [rfd])))
+      (is (= 0 (foreign h "close" false [wfd])))
+      (is (= -1 (foreign h "close" false [wfd])))
+      (is (= -1 (foreign h "close" false [rfd])))
+      (native h :free (:cell p))
+      (is (true? (posix/clean? (:world h))))
+      (is (empty? (:sockets (posix/state (:world h)))))
+      (is (empty? (:pipes (posix/state (:world h))))))))
+
+(deftest pipe-resources-stay-leak-free-across-many-pipes
+  (let [h (harness linux-descriptor)]
+    (dotimes [_ 5]
+      (let [p (open-pipe h)]
+        (foreign h "close" false [(:reader p)])
+        (foreign h "close" false [(:writer p)])
+        (native h :free (:cell p))))
+    (is (true? (posix/clean? (:world h))))
+    (is (empty? (:sockets (posix/state (:world h)))))
+    (is (empty? (:pipes (posix/state (:world h)))))
+    (is (empty? (:listeners (posix/state (:world h)))))
+    (is (empty? (get (posix/state (:world h)) :addrinfo-allocations)))))
