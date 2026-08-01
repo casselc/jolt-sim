@@ -244,37 +244,40 @@
 (defn- supervise-child
   [config child result-path stdout-path stderr-path]
   (let [schedule (:schedule config)
+        worker-pid (.pid (:proc child))
         wait-result
         (try
           {:finished? (boolean (timed-wait! child (:timeout-ms config)))}
           (catch :default error
             {:finished? false :error error}))]
-    (cond
-      (:error wait-result)
-      (let [exit (terminate-and-reap! child (:kill-grace-ms config))]
-        (worker-error-outcome
-         schedule :process-wait (:error wait-result)
-         (diagnostics stdout-path stderr-path)
-         exit))
+    (update
+     (cond
+       (:error wait-result)
+       (let [exit (terminate-and-reap! child (:kill-grace-ms config))]
+         (worker-error-outcome
+          schedule :process-wait (:error wait-result)
+          (diagnostics stdout-path stderr-path)
+          exit))
 
-      (:finished? wait-result)
-      (let [exit (reaped-exit child)]
-        (try
-          (read-worker-outcome
-           schedule exit result-path stdout-path stderr-path)
-          (catch :default error
-            (worker-error-outcome
-             schedule :process-result error
-             (diagnostics stdout-path stderr-path)
-             exit))))
+       (:finished? wait-result)
+       (let [exit (reaped-exit child)]
+         (try
+           (read-worker-outcome
+            schedule exit result-path stdout-path stderr-path)
+           (catch :default error
+             (worker-error-outcome
+              schedule :process-result error
+              (diagnostics stdout-path stderr-path)
+              exit))))
 
-      :else
-      (let [exit (terminate-and-reap! child (:kill-grace-ms config))]
-        {:status :timeout
-         :schedule schedule
-         :reason :deadline
-         :exit exit
-         :diagnostics (diagnostics stdout-path stderr-path)}))))
+       :else
+       (let [exit (terminate-and-reap! child (:kill-grace-ms config))]
+         {:status :timeout
+          :schedule schedule
+          :reason :deadline
+          :exit exit
+          :diagnostics (diagnostics stdout-path stderr-path)}))
+     :diagnostics assoc :worker-pid worker-pid)))
 
 (defn- captured [thunk]
   (try
