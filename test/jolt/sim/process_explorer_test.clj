@@ -63,6 +63,8 @@
         (resolve 'jolt.sim.process-explorer/supervise-child)
         wait-var
         (resolve 'jolt.sim.process-explorer/timed-wait!)
+        pid-var
+        (resolve 'jolt.sim.process-explorer/child-pid)
         exit-var
         (resolve 'jolt.sim.process-explorer/reaped-exit)
         retain-var
@@ -74,6 +76,7 @@
         thrown
         (with-redefs-fn
           {wait-var (fn [_ _] true)
+           pid-var (fn [_] 42)
            exit-var (fn [_] (throw unobserved))}
           #(ex-of
             (fn []
