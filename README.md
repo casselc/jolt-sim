@@ -60,6 +60,10 @@ baseline and remints the affected contracts and tests in place.
   deterministic shallow matching, match/firing ordinals, bounded activation,
   first-eligible priority, and exact evidence that separates activation from
   actual firing;
+- a deterministic POSIX fault frontend that validates one closed captured
+  `EINTR` outcome algebra up front, interposes only target-exact `poll(2)`,
+  retains replay-checked attempt evidence, and delegates every nonfiring poll
+  through the original modeled handler outside its serialization lock;
 - a deterministic native-memory world with configurable ABI widths and byte
   order, exact bounds/lifetime failures, copy-safe byte buffers, owned C
   strings, and leak snapshots;
@@ -83,9 +87,9 @@ only the application surfaces and modes exercised by a durable gate.
 | Scenario | Ordinary library surface | Real lane | Simulated lane | Current boundary |
 | --- | --- | --- | --- | --- |
 | SQLite BLOB round trip | `jdbc.core`, `db.sqlite`, `jolt.ffi`, byte arrays | System SQLite | Scripted SQLite over FFI memory | Sequential statements; local workspace gate |
-| POSIX loopback stream/poller | `jolt.net`, `jolt.ffi` | Not in the durable gate | Modeled sockets, pipe, and `poll(2)` | Finite stream/self-pipe capacity; no virtual time |
+| POSIX loopback stream/poller | `jolt.net`, `jolt.ffi` | Not in the durable gate | Modeled sockets, pipe, and `poll(2)` | Finite stream/self-pipe capacity; one exact captured `EINTR` retry; no virtual time |
 | HTTP Hello World | `jolt-http`, `jolt-tcp`, `jolt.net`, `jolt.ffi` | Not in the durable gate | Modeled POSIX loopback | One request; public CI, no faults |
-| HTTP SQLite BLOB | `jolt-http`, `jolt-tcp`, `jolt.net`, `jdbc.core`, `db.sqlite`, `jolt.ffi`, byte arrays | Host sockets plus system SQLite | Shared FFI-memory, POSIX, and SQLite worlds | One request at one-byte stream capacity; local gate, no schedule/fault search |
+| HTTP SQLite BLOB | `jolt-http`, `jolt-tcp`, `jolt.net`, `jdbc.core`, `db.sqlite`, `jolt.ffi`, byte arrays | Host sockets plus system SQLite | Shared FFI-memory, POSIX, and SQLite worlds | One request at one-byte capacities plus one captured first-poll `EINTR`; local gate, no generated schedule/fault search |
 | Maelstrom Echo | `jolt.maelstrom` node/handler code | JSON-lines lane reviewed but not integrated | Deterministic memory transport | FIFO/history integrity only; no nemesis or liveness claim |
 
 These capabilities belong to two deliberately different execution tracks:
@@ -251,15 +255,17 @@ nested native access and exception cleanup:
 ```
 
 The adapter still does not discover future counts, choose high-utility
-interleavings, advance virtual time, or inject a fault into a runtime or model
-boundary. The pure fault director described below now owns plan policy and
-evidence, but no frontend consumes it yet. `schedule-plans` can
+interleavings, or advance virtual time. The pure fault director described below
+now owns plan policy and evidence, and the first POSIX frontend consumes it at
+the modeled `poll(2)` seam; no runtime-controller fault hook exists yet.
+`schedule-plans` can
 enumerate the first bounded lexicographic top-level admission permutations, but
 that is not Hegel/swarm search, partial-order reduction, or explicit-state
 exploration. SQLite and the first POSIX loopback stream, self-pipe, and
 readiness wait now have deterministic boundary models; unchanged public
 `jolt.net`, `jolt-tcp`, and `jolt-http` code runs over the loopback world in the
-current Hello World fixture. Real/sim HTTP parity, virtual network faults, and
+current Hello World and HTTP/SQLite fixtures. Real/sim HTTP/SQLite parity and
+one deterministic captured `EINTR` retry are live; virtual network faults and
 OpenTelemetry export remain open. The traces still do not describe arbitrary
 production execution.
 
@@ -506,8 +512,15 @@ and returned evidence fail closed outside the stable trace domain.
 This core does not itself simulate errno, delay, loss, partitions, clocks, or
 transport behavior. A boundary frontend must construct attempts, interpret only
 the outcomes it owns, and retain its real buffer/readiness/ownership semantics.
-The first planned frontend is a one-shot captured `EINTR` at the existing
-POSIX `poll(2)` handler seam, exercised through unchanged HTTP/SQLite code.
+`jolt.sim.net.posix-fault` is the first such frontend. It accepts only
+`{:kind :captured-error :errno :eintr}` rules, requires an exact positive EINTR
+value in the supplied target, and rejects every rule before returning a
+frontend if either contract is unsatisfied. Every admitted poll receives a
+sequential attempt ID and canonical evidence. A firing returns captured
+`[-1 EINTR]` without touching modeled poll state; a nonfiring attempt invokes
+the original target-exact handler exactly once. Full world and evidence replay
+validation occurs at handler-pack and evidence boundaries, while the poll hot
+path is independent of history length.
 
 ### FFI interception and routing caveats
 
@@ -622,6 +635,15 @@ correctly accepts the full-pipe `EAGAIN` path. The ordinary HTTP and HTTP/SQLite
 lanes also remain correct at one-byte self-pipe capacity without making a
 scheduling-dependent claim about which close attempt observes `EAGAIN`.
 
+That same poller fixture now injects captured EINTR on its second native poll.
+Unchanged pinned `jolt.net` retries against its existing absolute deadline,
+then completes with all sockets, pipes, registrations, memory, and waiters
+retired. The HTTP/SQLite fixture injects one first-poll EINTR through the same
+frontend while preserving the exact DB-backed response and cleanup evidence.
+The reviewed checkpoint passed the poller gate at 3 tests / 69 assertions, the
+source-only HTTP/SQLite gate at 1 / 26, and the combined real-plus-sim gate at
+1 / 30.
+
 ### Deterministic SQLite driver model
 
 `jolt.sim.sqlite` implements the exact 22 foreign-function descriptors used by
@@ -709,8 +731,10 @@ clean SQLite handles, sockets, pipes, waiters, resolver allocations, and shared
 native memory. Its simulated run additionally fixes both socket receive and
 self-pipe capacity at one byte. It proves a capacity-limited stream write,
 `EAGAIN`/poll retry, maximum one-byte stream occupancy, and bounded self-pipe
-occupancy. It does not yet claim concurrent requests, generated schedules,
-fault injection, database locking/durability, or bounded liveness.
+occupancy. Its simulated half also injects one deterministic captured EINTR at
+the first poll and proves the unchanged stack recovers. It does not yet claim
+concurrent requests, generated schedules or fault plans, database
+locking/durability, other native failures, or bounded liveness.
 
 ### Composing handler packs
 
@@ -838,11 +862,11 @@ checked offline.
    one unchanged Jolt namespace in normal and controlled modes through
    nested spawns, promises, clocks, and entropy.
 2. The transport-neutral fault-plan validation, matching, activation, ordinal,
-   and evidence core is landed. Extend the memory, SQLite, and POSIX
-   loopback/poll models with bounded error/cleanup frontends and add handler
-   packs for codecs on the same fail-closed interception seam. Finite socket
-   and self-pipe capacity are landed and exercised by unchanged public-library
-   lanes.
+   and evidence core is landed, along with the first POSIX poll frontend for a
+   captured EINTR retry. Extend memory, SQLite, and POSIX with deterministic
+   timer, cancellation, and bounded cleanup outcomes, and add codec handler
+   packs on the same fail-closed interception seam. Finite socket and self-pipe
+   capacity are landed and exercised by unchanged public-library lanes.
 3. Drive unchanged public nonblocking connect/accept through readiness, then
    add operation effects for cancel and deadlines followed by deterministic
    network and storage fault models.
