@@ -1,12 +1,13 @@
 (ns jolt.sim.process-explorer
-  "Sequential process supervisor for ordinary-future schedule exploration.
+  "Sequential process supervisor for ordinary-runtime controlled cases.
 
   Each candidate schedule runs in a fresh Jolt child through the versioned
   `jolt.sim.explore-worker` file protocol. A child that does not exit before its
   deadline is terminated and reaped; it is reported as `:timeout`, not
   mislabeled as a proven deadlock. Poisoned controller state, blocked future
   gates, raw threads, and other process-global damage therefore cannot leak
-  into the next schedule.
+  into the next case. It enumerates supplied top-level future-admission plans;
+  it is not an explicit-state explorer or model checker.
 
   This is harness code and must run outside `run-controlled`. It launches real
   operating-system processes through `jolt.process`; it is not a simulated
@@ -426,8 +427,8 @@
     (run-worker! config (:schedule config) nil)))
 
 (defn run-case
-  "Runs one general exploration case in a fresh worker process, carrying an
-  optional canonical `:input` value and optional exact `:schedule`.
+  "Runs one general controlled-execution case in a fresh worker process,
+  carrying an optional canonical `:input` value and optional exact `:schedule`.
 
   Required config is the same as `run-schedule` except `:schedule` is optional;
   nil or absence drives no `:future-schedule` override. `:input` is optional and

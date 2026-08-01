@@ -15,19 +15,22 @@ and simulated worlds belong here.
 ## Development baseline and CI
 
 Current development targets `casselc/jolt` commit
-`757389df094fa9afb7fa1f1eba5ba83ab297f1a4`, based on upstream Jolt 0.5.12,
+`56d0694af7b815b61d9ad73924b0df19d4ad324c`, based on upstream Jolt 0.5.12,
 with Chez Scheme 10.4.1. The full suite requires the special Jolt simulation
 image from that commit; an ordinary Jolt image can run only the controller-free
 portion of the suite.
 
-Public CI builds that exact simulation image and runs the main suite plus the
-process-isolated controller-poison, pointer-loan, scheduler-deadlock, and
-process-exploration gates on Linux x86_64/aarch64, macOS x86_64/arm64, and
-Windows x86_64. Hegel schedule generation and shrinking run on Linux x86_64.
-The Windows ARM64 lane currently runs the controller-free source suite because
-its Chez toolchain intentionally provides a source runtime but no GNU-compatible
-kernel development pack for linking the simulation image. That narrower lane is
-nonblocking until its first hosted runs establish a stable baseline.
+Public CI builds that exact simulation image. Linux x86_64/aarch64 and macOS
+x86_64/arm64 run the main suite plus the controller-poison, pointer-loan,
+scheduler-deadline, POSIX/HTTP integration, and fresh-process case gates.
+Windows x86_64 runs the main, controller-poison, pointer-loan, and scheduler
+deadline gates, but not the fresh-process supervisor: the current Jolt process
+host uses a POSIX shell plus `waitpid`/`kill`. Hegel schedule generation and
+shrinking run on Linux x86_64. The Windows ARM64 lane currently runs the
+controller-free source suite because its Chez toolchain intentionally provides
+a source runtime but no GNU-compatible kernel development pack for linking the
+simulation image. That narrower lane is nonblocking until its first hosted runs
+establish a stable baseline.
 
 No CI lane carries historical prerelease controller implementations. When the
 current Jolt fork changes, this repository advances its one pinned development
@@ -35,7 +38,7 @@ baseline and remints the affected contracts and tests in place.
 
 ## Current foundation
 
-- a pure cooperative scheduler with virtual integer time;
+- a pure cooperative-model scheduler with virtual integer time;
 - seeded and scripted task selection;
 - immutable exactly-once operation completions with deterministic wakeups;
 - byte-stable, versioned EDN traces and exact replay;
@@ -47,8 +50,8 @@ baseline and remints the affected contracts and tests in place.
   unchanged while gating ordinary future starts, substituting registered
   FFI/native effects, observing real native execution, or mixing modeled
   boundaries with guarded native fallback;
-- capped lexicographic enumeration of exact top-level future schedules and a
-  fresh-process supervisor that runs each plan with a deadline, canonical
+- capped lexicographic enumeration of exact top-level future-admission plans
+  and a fresh-process supervisor that runs each case with a deadline, canonical
   result transport, and bounded termination/reaping;
 - an optional Hegel adapter that either selects from an ordered schedule domain
   or directly generates a count-based permutation, shrinks a failing choice,
@@ -62,6 +65,20 @@ baseline and remints the affected contracts and tests in place.
   executes unchanged public `jolt.net` code against either real sockets or a
   hermetic in-memory stream, including partial I/O, directional half-close,
   target-exact `poll(2)`, and the real public poller/self-pipe wake machinery.
+
+These capabilities belong to two deliberately different execution tracks:
+
+- **Cooperative-model execution** runs a finite transition system through the
+  pure kernel. Its canonical state, enabled actions, transitions, virtual time,
+  and bounds can support explicitly scoped reachability or completeness claims.
+- **Ordinary-runtime controlled execution** runs unchanged Jolt code through
+  the controller hooks and modeled/native effect seam. Its current scheduler
+  serially admits a declared number of top-level future bodies. It supports
+  controlled execution and exact case replay within the documented hook and
+  escape bounds; it is not model checking of arbitrary Jolt programs.
+
+Hegel supplies generated cases and shrinking around either suitable boundary.
+It is not itself the scheduler or an exhaustive-state explorer.
 
 The runtime adapter accepts one exact current controller contract, presently
 prerelease ABI 5. All current controller vars are required. If every var is
@@ -213,12 +230,14 @@ nested native access and exception cleanup:
 
 The adapter still does not discover future counts, choose high-utility
 interleavings, advance virtual time, or inject faults. `schedule-plans` can
-enumerate the first bounded lexicographic top-level permutations, but that is
-not yet Hegel/swarm search or partial-order reduction. SQLite and the first
-POSIX loopback stream, self-pipe, and readiness wait now have deterministic
-boundary models; unchanged public `jolt.net` poller code runs over them. TCP and
-HTTP servers, virtual network faults, and OpenTelemetry export remain open. The
-traces still do not describe arbitrary production execution.
+enumerate the first bounded lexicographic top-level admission permutations, but
+that is not Hegel/swarm search, partial-order reduction, or explicit-state
+exploration. SQLite and the first POSIX loopback stream, self-pipe, and
+readiness wait now have deterministic boundary models; unchanged public
+`jolt.net`, `jolt-tcp`, and `jolt-http` code runs over the loopback world in the
+current Hello World fixture. Real/sim HTTP parity, virtual network faults, and
+OpenTelemetry export remain open. The traces still do not describe arbitrary
+production execution.
 
 ### First coarse scripted scheduler (`:future-schedule`)
 
@@ -281,10 +300,12 @@ in-process test that would hang the suite:
 /path/to/current-sim/target/sim/jolt -M:future-schedule-poison-test
 ```
 
-### Fresh-process case and schedule exploration
+### Fresh-process cases and bounded future-admission enumeration
 
 `jolt.sim.process-explorer` now supplies the external supervision required by
-that nonclaim. `defsim` vars are marked and retain their original no-argument
+that nonclaim. Despite the prerelease namespace name, this layer is a process
+supervisor and case runner; it does not explore an application state graph.
+`defsim` vars are marked and retain their original no-argument
 form. The original declaration form accepts runtime overrides but no nonnil
 scenario input. An optional one-symbol binding form exposes a canonical input
 to both the declared configuration and the otherwise ordinary Jolt body:
@@ -569,7 +590,9 @@ export JOLT_SIM_BIN=/path/to/a/sim-enabled/jolt
 
 These workspace-local aliases expect the `db` checkout to be a sibling of the
 canonical `jolt-sim` checkout. They deliberately do not fall back to an older
-installed `db`. The first command proves real/sim result parity, but resolving
+installed `db`. Public CI does not currently run either alias, so this is
+locally verified parity rather than public platform evidence. The first command
+proves real/sim result parity, but resolving
 `db` as a normal dependency lets Jolt process its native-library metadata
 before the controlled scope begins. The second command adds the `db` source
 path without that metadata: it proves the fixture does not need SQLite
@@ -661,6 +684,21 @@ should retain their normal public APIs while native effects are intercepted
 underneath them. In simulation mode, a raw native call without a registered
 handler is an uncontrolled effect and must fail closed rather than reaching
 the real operating system.
+
+## Canonical example and extension boundary
+
+The co-located `jolt.maelstrom` namespaces are the first canonical application
+example and an extraction candidate for a future `jolt-maelstrom` package.
+They are not part of the simulator kernel and must not depend on `jolt.sim`.
+The node and handlers run over injected transports; `jolt-sim` owns only the
+optional deterministic transport, fault, replay, and checker adapters used by
+scenarios. JSON-lines framing remains a real process boundary.
+
+Echo alone is application-core evidence, not distributed-safety, liveness, or
+Maelstrom interoperability evidence. No additional workload should land until
+the same Echo handler has passed both the real JSON-lines and in-process
+transport seams and its minimum run/message/causal evidence can replay and be
+checked offline.
 
 ## Roadmap
 
