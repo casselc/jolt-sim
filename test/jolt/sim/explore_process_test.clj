@@ -4,8 +4,10 @@
   This namespace is intentionally absent from the shared test runner. Its
   `-main` obtains the canonical sim-enabled Jolt image and project directory from
   the environment, then launches one fresh worker for every schedule."
-  (:require [clojure.test :as test :refer [deftest is testing]]
+  (:require [clojure.edn :as edn]
+            [clojure.test :as test :refer [deftest is testing]]
             [jolt.fs :as fs]
+            [jolt.host :as host]
             [jolt.sim.explore :as explore]
             [jolt.sim.process-explorer :as process-explorer]))
 
@@ -202,7 +204,12 @@
                {"JOLT_SIM_STARTED_PATH" started-path
                 "JOLT_SIM_LATE_PATH" late-path
                 "JOLT_SIM_LATE_DELAY_MS" (str late-delay-ms)})
-              outcome (process-explorer/run-schedule config)]
+              supervisor-start (host/monotonic-nanos)
+              outcome (process-explorer/run-schedule config)
+              supervisor-end (host/monotonic-nanos)
+              started
+              (when (fs/exists? started-path)
+                (edn/read-string (slurp started-path)))]
           ;; A returned timeout means terminate-and-reap! observed child exit.
           ;; If it throws because death was not observed, retain this directory
           ;; and its witnesses for diagnosis instead of racing a live child.
@@ -211,6 +218,11 @@
           (is (= :deadline (:reason outcome)))
           (is (fs/exists? started-path)
               "the child must reach the fixture before its deadline")
+          (is (= (get-in outcome [:diagnostics :worker-pid]) (:pid started))
+              (str "the supervisor must track the actual Jolt worker: "
+                   (pr-str {:tracked-pid
+                            (get-in outcome [:diagnostics :worker-pid])
+                            :started started})))
           ;; Hosted runners may spend more than 750 ms starting a fresh Jolt
           ;; image. Give startup a real budget, then wait longer than the
           ;; fixture's independently configured poison delay after the
@@ -219,8 +231,24 @@
           ;; Since the started witness predates the supervisor return, absence
           ;; of the late witness still proves process death.
           (Thread/sleep post-timeout-wait-ms)
-          (is (not (fs/exists? late-path))
-              "a reaped worker cannot write its delayed witness"))
+          (let [late
+                (when (fs/exists? late-path)
+                  (edn/read-string (slurp late-path)))]
+            (is (nil? late)
+                (str
+                 "a reaped worker cannot write its delayed witness: "
+                 (pr-str
+                  {:tracked-pid (get-in outcome [:diagnostics :worker-pid])
+                   :exit (:exit outcome)
+                   :supervisor-elapsed-ms
+                   (/ (- supervisor-end supervisor-start) 1000000.0)
+                   :started started
+                   :late late
+                   :worker-delay-ms
+                   (when (and started late)
+                     (/ (- (:monotonic-nanos late)
+                           (:monotonic-nanos started))
+                        1000000.0))})))))
         (finally
           (when (and @safe-to-clean? (fs/exists? temp-dir))
             (fs/delete-tree temp-dir)))))))

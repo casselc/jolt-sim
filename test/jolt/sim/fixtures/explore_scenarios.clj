@@ -6,8 +6,11 @@
   controller, event capture, and cleanup around it. A calling test resolves one
   scenario by its namespaced symbol and drives it through a fresh worker
   process with an explicit `:future-schedule` runtime override."
-  (:require [jolt.host :as host]
+  (:require [jolt.ffi :as ffi]
+            [jolt.host :as host]
             [jolt.sim.runtime :as rt]))
+
+(ffi/defcfn c-getpid "getpid" [] :int)
 
 (defn- sleep-for-at-least!
   "Sleeps until a monotonic deadline even when a host signal interrupts the
@@ -74,7 +77,7 @@
     @worker
     (fn [] :unencodable)))
 
-(rt/defsim kill-witness {}
+(rt/defsim kill-witness {:ffi-mode :observe}
   ;; Writes a started witness immediately, then a raw daemon thread sleeps
   ;; past any short test timeout before writing a late witness. A supervisor
   ;; that actually kills this worker on timeout observes the started file but
@@ -87,18 +90,24 @@
         late-delay-raw (System/getenv "JOLT_SIM_LATE_DELAY_MS")
         late-delay-ms (if late-delay-raw
                         (parse-long late-delay-raw)
-                        1500)]
+                        1500)
+        worker-pid (c-getpid)]
     (when-not (and late-delay-ms (pos? late-delay-ms))
       (throw
        (ex-info
         "JOLT_SIM_LATE_DELAY_MS must be a positive integer"
         {:value late-delay-raw})))
-    (spit started-path "started")
+    (spit started-path
+          (pr-str {:pid worker-pid
+                   :monotonic-nanos (host/monotonic-nanos)}))
     (let [late-writer
           (Thread.
            (fn []
              (sleep-for-at-least! late-delay-ms)
-             (spit late-path "late")))]
+             (spit late-path
+                   (pr-str {:pid worker-pid
+                            :monotonic-nanos
+                            (host/monotonic-nanos)}))))]
       (.setDaemon late-writer true)
       (.start late-writer))
     (let [a (future :a)
