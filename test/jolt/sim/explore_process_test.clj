@@ -187,8 +187,8 @@
           started-path (str (fs/path temp-dir "started"))
           late-path (str (fs/path temp-dir "late"))
           worker-timeout-ms 5000
-          late-delay-ms 5000
-          post-timeout-wait-ms 5500
+          late-delay-ms 8000
+          post-timeout-wait-ms 8500
           safe-to-clean? (volatile! false)]
       (try
         (let [config
@@ -214,8 +214,10 @@
           ;; Hosted runners may spend more than 750 ms starting a fresh Jolt
           ;; image. Give startup a real budget, then wait longer than the
           ;; fixture's independently configured poison delay after the
-          ;; supervisor returns. Since the started witness predates that
-          ;; return, absence of the late witness still proves process death.
+          ;; supervisor returns. The poison delay also exceeds the deadline
+          ;; plus TERM grace, so it cannot race a correctly reaped child.
+          ;; Since the started witness predates the supervisor return, absence
+          ;; of the late witness still proves process death.
           (Thread/sleep post-timeout-wait-ms)
           (is (not (fs/exists? late-path))
               "a reaped worker cannot write its delayed witness"))
