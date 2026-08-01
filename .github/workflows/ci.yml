@@ -119,6 +119,9 @@ jobs:
           "$sim" -M:test
           "$sim" -M:runtime-poison-test
           "$sim" -M:ffi-pointer-loan-test
+          # The portable loopback model runs in -M:test on every host; this
+          # unchanged jolt.net integration lane is intentionally POSIX-only.
+          "$sim" -M:posix-loopback-test
           "$sim" -M:future-schedule-poison-test
           JOLT_SIM_BIN="$sim" JOLT_SIM_PROJECT_DIR="$PWD" \
             "$sim" -M:explore-process-test

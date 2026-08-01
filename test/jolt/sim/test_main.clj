@@ -9,6 +9,7 @@
             [jolt.sim.handler-pack-test]
             [jolt.sim.kernel-test]
             [jolt.sim.monitor-test]
+            [jolt.sim.posix-loopback-model-test]
             [jolt.sim.process-explorer-test]
             [jolt.sim.replay-test]
             [jolt.sim.runtime-test]
@@ -25,6 +26,7 @@
                         'jolt.sim.handler-pack-test
                         'jolt.sim.kernel-test
                         'jolt.sim.monitor-test
+                        'jolt.sim.posix-loopback-model-test
                         'jolt.sim.process-explorer-test
                         'jolt.sim.replay-test
                         'jolt.sim.runtime-test
