@@ -58,13 +58,30 @@ baseline and remints the affected contracts and tests in place.
   and exactly replays it in another fresh worker;
 - a deterministic native-memory world with configurable ABI widths and byte
   order, exact bounds/lifetime failures, copy-safe byte buffers, owned C
-  strings, and leak snapshots; and
+  strings, and leak snapshots;
 - a deterministic SQLite handler model plus a real/sim parity fixture that
-  executes unchanged `jdbc.core` application code; and
+  executes unchanged `jdbc.core` application code;
 - a descriptor-driven POSIX IPv4 loopback handler model whose dual-use fixture
   executes unchanged public `jolt.net` code against either real sockets or a
   hermetic in-memory stream, including partial I/O, directional half-close,
-  target-exact `poll(2)`, and the real public poller/self-pipe wake machinery.
+  target-exact `poll(2)`, and the real public poller/self-pipe wake machinery;
+- an ordinary HTTP-plus-SQLite application fixture whose unchanged
+  `jolt-http` handler uses public `jdbc.core`, returns a byte-exact BLOB, and
+  passes both real-socket/real-SQLite parity and one shared hermetic
+  POSIX/SQLite native boundary.
+
+### Executed scenario coverage
+
+This is an execution manifest, not a namespace-import checklist. A row records
+only the application surfaces and modes exercised by a durable gate.
+
+| Scenario | Ordinary library surface | Real lane | Simulated lane | Current boundary |
+| --- | --- | --- | --- | --- |
+| SQLite BLOB round trip | `jdbc.core`, `db.sqlite`, `jolt.ffi`, byte arrays | System SQLite | Scripted SQLite over FFI memory | Sequential statements; local workspace gate |
+| POSIX loopback stream/poller | `jolt.net`, `jolt.ffi` | Not in the durable gate | Modeled sockets, pipe, and `poll(2)` | No finite socket/pipe capacity or virtual time |
+| HTTP Hello World | `jolt-http`, `jolt-tcp`, `jolt.net`, `jolt.ffi` | Not in the durable gate | Modeled POSIX loopback | One request; public CI, no faults |
+| HTTP SQLite BLOB | `jolt-http`, `jolt-tcp`, `jolt.net`, `jdbc.core`, `db.sqlite`, `jolt.ffi`, byte arrays | Host sockets plus system SQLite | Shared FFI-memory, POSIX, and SQLite worlds | One request; local workspace gate, no schedule/fault search |
+| Maelstrom Echo | `jolt.maelstrom` node/handler code | JSON-lines lane reviewed but not integrated | Deterministic memory transport | FIFO/history integrity only; no nemesis or liveness claim |
 
 These capabilities belong to two deliberately different execution tracks:
 
@@ -605,6 +622,34 @@ This first model intentionally describes sequential statement executions. It
 does not parse SQL, simulate SQLite locking or durability, choose concurrent
 schedules, or inject step/cleanup failures yet.
 
+### Canonical HTTP plus SQLite vertical slice
+
+`jolt.sim.fixtures.http-sqlite` is an ordinary application fixture: it imports
+no simulator namespace. Its synchronous `jolt-http` handler opens an in-memory
+database through `jdbc.core`, creates a table, inserts and reads a BLOB
+containing `0`, `65`, `127`, `128`, and `255`, and returns the fetched byte
+array as an `application/octet-stream` response. The client uses the public
+`teensyp.client`/`jolt.net` path and preserves the body byte-exact while parsing
+only the fixed HTTP response framing.
+
+The full lane runs that same body first against host sockets and system SQLite,
+then under one controlled run whose POSIX and SQLite worlds share one FFI-memory
+heap. The source-only lane omits `db`'s native-library metadata and proves the
+modeled SQLite calls do not require the system SQLite library to initialize:
+
+```sh
+/path/to/current-sim/target/sim/jolt -M:http-sqlite-test
+/path/to/current-sim/target/sim/jolt -M:http-sqlite-sim-test
+```
+
+Both aliases currently expect the reviewed `db` checkout beside the canonical
+`jolt-sim` checkout and are local evidence, not public CI platform evidence.
+The gate asserts real/sim response parity, the exact POSIX-plus-SQLite foreign
+symbol set, handler-only routing, complete statement-plan consumption, and
+clean SQLite handles, sockets, pipes, waiters, resolver allocations, and shared
+native memory. It does not yet claim concurrent requests, generated schedules,
+fault injection, database locking/durability, or bounded liveness.
+
 ### Composing handler packs
 
 `jolt.sim.handler-pack` is a small public helper for assembling one
@@ -643,6 +688,29 @@ duplicate pack id or on any canonical handler key registered by more than one
 pack — even when the two registered values are identical — carrying the
 colliding key and both pack ids so an accidental double-registration can never
 silently overwrite a handler.
+
+When several modeled native libraries share one pointer space, register the
+memory handlers exactly once and compose each library's foreign-only pack:
+
+```clojure
+(require '[jolt.net :as net]
+         '[jolt.sim.ffi-memory :as memory]
+         '[jolt.sim.handler-pack :as hp]
+         '[jolt.sim.net.posix-loopback :as posix]
+         '[jolt.sim.sqlite :as sqlite])
+
+(let [mem (memory/world)
+      db-world (sqlite/world mem statement-plans)
+      net-world (posix/world mem (net/target-descriptor))]
+  (hp/compose
+   (hp/pack :my.scenario/memory (memory/handlers mem))
+   (hp/pack :my.scenario/sqlite (sqlite/foreign-handlers db-world))
+   (hp/pack :my.scenario/posix (posix/foreign-handlers net-world))))
+```
+
+Composing `sqlite/handlers` and `posix/handlers` directly is intentionally
+rejected: both complete packs own the same native-memory keys. The foreign-only
+functions make ownership explicit without weakening collision detection.
 
 A library can ship a function such as the hypothetical
 `my.codec.sim/handler-pack` in an optional simulation-only namespace or
