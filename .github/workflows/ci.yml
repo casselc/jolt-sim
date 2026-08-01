@@ -1,0 +1,311 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  JOLT_CORE_SHA: 757389df094fa9afb7fa1f1eba5ba83ab297f1a4
+  CHEZ_RELEASE_TAG: chez-ci-10.4.1.1
+
+jobs:
+  sim-posix:
+    name: sim image (${{ matrix.name }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux x86_64
+            runner: ubuntu-24.04
+            toolchain: linux-x86_64
+            machine: ta6le
+            chez-sha256: 16476cd98fb5cb2e2c0285e88fcd6d57ade9392ca8d7cf603ca38432b4118526
+            hegel: true
+          - name: Linux aarch64
+            runner: ubuntu-24.04-arm
+            toolchain: linux-aarch64
+            machine: tarm64le
+            chez-sha256: b5b2306d3d6468b5fc7d5836721b09c704c7750f887a6232f1aeeb567d55f5d9
+            hegel: false
+          - name: macOS x86_64
+            runner: macos-15-intel
+            toolchain: macos-x86_64
+            machine: ta6osx
+            chez-sha256: e4577ad71b1f1e1062c361fa612af60d75378e64dc2869d8c8eefd3d7efdbc62
+            hegel: false
+          - name: macOS arm64
+            runner: macos-15
+            toolchain: macos-arm64
+            machine: tarm64osx
+            chez-sha256: d5b5a504eed1e0f117b4a3dd23ad0030bb3e5c0da6d6b9d9f990f5f2fa32478f
+            hegel: false
+    steps:
+      - name: Checkout jolt-sim
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+          path: jolt-sim
+
+      - name: Checkout pinned Jolt simulation core
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          repository: casselc/jolt
+          ref: ${{ env.JOLT_CORE_SHA }}
+          submodules: recursive
+          persist-credentials: false
+          path: jolt-core
+
+      - name: Install build dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential liblz4-dev zlib1g-dev libncurses-dev uuid-dev zstd
+
+      - name: Install build dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install lz4 zstd
+
+      - name: Install verified Chez 10.4.1 toolchain
+        id: chez
+        uses: casselc/jolt-toolchains/setup-chez@095108ae32659757808064d004855092567d3ad3
+        with:
+          target: ${{ matrix.toolchain }}
+          release-tag: ${{ env.CHEZ_RELEASE_TAG }}
+          sha256: ${{ matrix.chez-sha256 }}
+          capabilities: source-runtime,gnu-kernel-dev
+
+      - name: Verify native Chez target
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$CHEZ" --version
+          probe="$RUNNER_TEMP/machine-type.ss"
+          printf '(import (chezscheme))\n(display (machine-type))\n(newline)\n' > "$probe"
+          machine="$("$CHEZ" --script "$probe")"
+          test "$machine" = "${{ matrix.machine }}"
+
+      - name: Build current Jolt simulation image
+        shell: bash
+        env:
+          JOLT_AOT_CACHE: "0"
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/jolt-core"
+          "$CHEZ" --script host/chez/build-jolt.ss sim target/sim/jolt
+          test -x target/sim/jolt
+
+      - name: Run simulator and process-isolated gates
+        shell: bash
+        env:
+          JOLT_AOT_CACHE: "0"
+        run: |
+          set -euo pipefail
+          export HOME="$RUNNER_TEMP/jolt-home"
+          export JOLT_CACHE_DIR="$RUNNER_TEMP/jolt-cache"
+          export TMPDIR="$RUNNER_TEMP/jolt-tmp"
+          mkdir -p "$HOME" "$JOLT_CACHE_DIR" "$TMPDIR"
+          sim="$GITHUB_WORKSPACE/jolt-core/target/sim/jolt"
+          cd "$GITHUB_WORKSPACE/jolt-sim"
+          "$sim" -M:test
+          "$sim" -M:runtime-poison-test
+          "$sim" -M:ffi-pointer-loan-test
+          "$sim" -M:future-schedule-poison-test
+          JOLT_SIM_BIN="$sim" JOLT_SIM_PROJECT_DIR="$PWD" \
+            "$sim" -M:explore-process-test
+
+      - name: Run Hegel schedule exploration
+        if: matrix.hegel
+        shell: bash
+        env:
+          JOLT_AOT_CACHE: "0"
+        run: |
+          set -euo pipefail
+          export HOME="$RUNNER_TEMP/jolt-home"
+          export JOLT_CACHE_DIR="$RUNNER_TEMP/jolt-cache"
+          export TMPDIR="$RUNNER_TEMP/jolt-tmp"
+          mkdir -p "$HOME" "$JOLT_CACHE_DIR" "$TMPDIR"
+          sim="$GITHUB_WORKSPACE/jolt-core/target/sim/jolt"
+          cd "$GITHUB_WORKSPACE/jolt-sim"
+          "$sim" -A:hegel-explore-test -m hegel.install
+          JOLT_SIM_BIN="$sim" JOLT_SIM_PROJECT_DIR="$PWD" \
+            "$sim" -M:hegel-explore-test
+
+  sim-windows-x86-64:
+    name: sim image (Windows x86_64)
+    runs-on: windows-2022
+    timeout-minutes: 45
+    steps:
+      - name: Checkout jolt-sim
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+          path: jolt-sim
+
+      - name: Checkout pinned Jolt simulation core
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          repository: casselc/jolt
+          ref: ${{ env.JOLT_CORE_SHA }}
+          submodules: recursive
+          persist-credentials: false
+          path: jolt-core
+
+      - name: Install MinGW build dependencies
+        uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884
+        with:
+          msystem: MINGW64
+          update: false
+          path-type: inherit
+          install: >-
+            git make
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-lz4
+            mingw-w64-x86_64-zlib
+
+      - name: Install verified Chez 10.4.1 toolchain
+        id: chez
+        uses: casselc/jolt-toolchains/setup-chez@095108ae32659757808064d004855092567d3ad3
+        with:
+          target: windows-x86_64
+          release-tag: ${{ env.CHEZ_RELEASE_TAG }}
+          sha256: 360c60496eea2f8aab0e557eb77e9e18b315bb9181938158ae57655aa541b7f8
+          capabilities: source-runtime,gnu-kernel-dev
+
+      - name: Verify native Chez target
+        shell: pwsh
+        run: |
+          & $env:CHEZ --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $probe = Join-Path $env:RUNNER_TEMP 'machine-type.ss'
+          Set-Content -LiteralPath $probe -Value @(
+            '(import (chezscheme))'
+            '(display (machine-type))'
+            '(newline)'
+          )
+          $machine = (& $env:CHEZ --script $probe | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($machine -ne 'ta6nt') { throw "expected ta6nt, got '$machine'" }
+
+      - name: Build current Jolt simulation image
+        shell: msys2 {0}
+        env:
+          JOLT_AOT_CACHE: "0"
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/jolt-core"
+          "$JOLT_CHEZ" --script host/chez/build-jolt.ss sim target/sim/jolt
+          test -x target/sim/jolt.exe
+
+      - name: Run simulator and process-isolated gates
+        shell: pwsh
+        run: |
+          $homeDir = Join-Path $env:RUNNER_TEMP 'jolt-home'
+          $cacheDir = Join-Path $env:RUNNER_TEMP 'jolt-cache'
+          $tempDir = Join-Path $env:RUNNER_TEMP 'jolt-tmp'
+          New-Item -ItemType Directory -Force $homeDir, $cacheDir, $tempDir | Out-Null
+          $env:HOME = $homeDir
+          $env:JOLT_CACHE_DIR = $cacheDir
+          $env:TMPDIR = $tempDir
+          $env:JOLT_AOT_CACHE = '0'
+          $shell = @(
+            "$env:ProgramFiles\Git\bin\sh.exe",
+            "${env:ProgramFiles(x86)}\Git\bin\sh.exe"
+          ) | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
+          if (-not $shell) { throw 'no sh.exe found for Jolt dependency tooling' }
+          $env:JOLT_SH = $shell
+          $sim = Join-Path $env:GITHUB_WORKSPACE 'jolt-core\target\sim\jolt.exe'
+          $project = Join-Path $env:GITHUB_WORKSPACE 'jolt-sim'
+          $env:JOLT_SIM_BIN = $sim
+          $env:JOLT_SIM_PROJECT_DIR = $project
+          Push-Location $project
+          try {
+            foreach ($alias in @(
+              '-M:test',
+              '-M:runtime-poison-test',
+              '-M:ffi-pointer-loan-test',
+              '-M:future-schedule-poison-test',
+              '-M:explore-process-test')) {
+              & $sim $alias
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            }
+          }
+          finally { Pop-Location }
+
+  source-windows-arm64:
+    name: source suite (Windows aarch64)
+    runs-on: windows-11-arm
+    continue-on-error: true
+    timeout-minutes: 30
+    steps:
+      - name: Checkout jolt-sim
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+          path: jolt-sim
+
+      - name: Checkout pinned Jolt core
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          repository: casselc/jolt
+          ref: ${{ env.JOLT_CORE_SHA }}
+          submodules: recursive
+          persist-credentials: false
+          path: jolt-core
+
+      - name: Install verified Chez 10.4.1 toolchain
+        id: chez
+        uses: casselc/jolt-toolchains/setup-chez@095108ae32659757808064d004855092567d3ad3
+        with:
+          target: windows-arm64
+          release-tag: ${{ env.CHEZ_RELEASE_TAG }}
+          sha256: 9bc28462823a1447de6d849e129758a6317cc9deafb8e87414817e7244f149c8
+          capabilities: source-runtime
+
+      - name: Run current source suite natively
+        shell: pwsh
+        run: |
+          if ('${{ runner.arch }}' -ne 'ARM64') {
+            throw "expected ARM64 runner, got '${{ runner.arch }}'"
+          }
+          $probe = Join-Path $env:RUNNER_TEMP 'machine-type.ss'
+          Set-Content -LiteralPath $probe -Value @(
+            '(import (chezscheme))'
+            '(display (machine-type))'
+            '(newline)'
+          )
+          $machine = (& $env:CHEZ --script $probe | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($machine -ne 'tarm64nt') { throw "expected tarm64nt, got '$machine'" }
+          $homeDir = Join-Path $env:RUNNER_TEMP 'jolt-home'
+          $cacheDir = Join-Path $env:RUNNER_TEMP 'jolt-cache'
+          $tempDir = Join-Path $env:RUNNER_TEMP 'jolt-tmp'
+          New-Item -ItemType Directory -Force $homeDir, $cacheDir, $tempDir | Out-Null
+          $env:HOME = $homeDir
+          $env:JOLT_CACHE_DIR = $cacheDir
+          $env:TMPDIR = $tempDir
+          $env:JOLT_AOT_CACHE = '0'
+          $shell = @(
+            "$env:ProgramFiles\Git\bin\sh.exe",
+            "${env:ProgramFiles(x86)}\Git\bin\sh.exe"
+          ) | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
+          if (-not $shell) { throw 'no sh.exe found for Jolt dependency tooling' }
+          $env:JOLT_SH = $shell
+          $project = Join-Path $env:GITHUB_WORKSPACE 'jolt-sim'
+          $core = Join-Path $env:GITHUB_WORKSPACE 'jolt-core'
+          $env:JOLT_PWD = $project
+          Push-Location $core
+          try {
+            & $env:CHEZ --script host\chez\cli.ss '-M:test'
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          finally { Pop-Location }

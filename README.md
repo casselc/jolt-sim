@@ -5,6 +5,34 @@ toolkit for Jolt. The production runtime should expose only small control and
 event hooks; schedule search, virtual time, fault injection, replay, monitoring,
 and simulated worlds belong here.
 
+> [!WARNING]
+> This is public pre-release research code, not a supported release. APIs,
+> controller ABIs, trace schemas, and model contracts may change or be replaced
+> without compatibility shims or a deprecation period. Git history is the only
+> compatibility archive until the first real release establishes a versioned
+> public boundary.
+
+## Development baseline and CI
+
+Current development targets `casselc/jolt` commit
+`757389df094fa9afb7fa1f1eba5ba83ab297f1a4`, based on upstream Jolt 0.5.12,
+with Chez Scheme 10.4.1. The full suite requires the special Jolt simulation
+image from that commit; an ordinary Jolt image can run only the controller-free
+portion of the suite.
+
+Public CI builds that exact simulation image and runs the main suite plus the
+process-isolated controller-poison, pointer-loan, scheduler-deadlock, and
+process-exploration gates on Linux x86_64/aarch64, macOS x86_64/arm64, and
+Windows x86_64. Hegel schedule generation and shrinking run on Linux x86_64.
+The Windows ARM64 lane currently runs the controller-free source suite because
+its Chez toolchain intentionally provides a source runtime but no GNU-compatible
+kernel development pack for linking the simulation image. That narrower lane is
+nonblocking until its first hosted runs establish a stable baseline.
+
+No CI lane carries historical prerelease controller implementations. When the
+current Jolt fork changes, this repository advances its one pinned development
+baseline and remints the affected contracts and tests in place.
+
 ## Current foundation
 
 - a pure cooperative scheduler with virtual integer time;

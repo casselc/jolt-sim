@@ -1,0 +1,7 @@
+/.hegel-lib/
+/.jolt/
+/.jolt-cache/
+/target/
+/.nrepl-port
+*.log
+.DS_Store
