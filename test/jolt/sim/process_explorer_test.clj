@@ -58,6 +58,31 @@
     (is (= :inconsistent-schedule-size (:reason inconsistent)))
     (is (= [1 2] (:sizes inconsistent)))))
 
+(deftest timed-wait-enforces-real-elapsed-time
+  (let [wait-var (resolve 'jolt.sim.process-explorer/timed-wait!)
+        alive-var (resolve 'jolt.sim.process-explorer/child-alive?)
+        clock-var (resolve 'jolt.sim.process-explorer/monotonic-nanos)
+        sleep-var (resolve 'jolt.sim.process-explorer/sleep-ms!)
+        now (atom 0)
+        sleeps (atom [])
+        finished?
+        (with-redefs-fn
+          {alive-var
+           (fn [_]
+             ;; Model a native waitpid/liveness probe whose overhead already
+             ;; exceeds the complete timeout budget.
+             (swap! now + 50000000)
+             true)
+           clock-var (fn [] @now)
+           sleep-var
+           (fn [millis]
+             (swap! sleeps conj millis)
+             (swap! now + (* millis 1000000)))}
+          #(@wait-var :fake-child 20))]
+    (is (false? finished?))
+    (is (empty? @sleeps)
+        "probe overhead counts against the deadline instead of adding polls")))
+
 (deftest an-unobserved-exit-is-never-downgraded-to-a-returned-outcome
   (let [supervise-var
         (resolve 'jolt.sim.process-explorer/supervise-child)

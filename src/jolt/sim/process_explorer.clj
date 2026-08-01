@@ -26,6 +26,7 @@
     :dir :extra-env :temp-dir})
 
 (def ^:private diagnostic-byte-limit 65536)
+(def ^:private wait-poll-ms 10)
 
 (defn- invalid-config [reason data]
   (ex-info
@@ -133,11 +134,34 @@
   {:stdout (file-diagnostic stdout-path)
    :stderr (file-diagnostic stderr-path)})
 
+(defn- monotonic-nanos []
+  (System/nanoTime))
+
+(defn- child-alive? [child]
+  (.isAlive (:proc child)))
+
+(defn- sleep-ms! [millis]
+  (Thread/sleep millis))
+
 (defn- timed-wait! [child timeout-ms]
   ;; Jolt's process record does not currently dispatch IBlockingDeref by arity:
-  ;; `(deref child timeout default)` blocks. The exact Process host shim does
-  ;; implement timed waitFor and ignores the unavailable TimeUnit object.
-  (.waitFor (:proc child) timeout-ms nil))
+  ;; `(deref child timeout default)` blocks. Do not delegate the deadline to the
+  ;; host Process.waitFor shim either: its polling loop subtracts a nominal
+  ;; sleep step, so sleep re-activation, scheduling, and liveness-probe overhead
+  ;; can stretch a short timeout by many seconds. Poll liveness here against an
+  ;; actual monotonic deadline instead.
+  (let [deadline (+ (monotonic-nanos) (* timeout-ms 1000000))]
+    (loop []
+      (if-not (child-alive? child)
+        true
+        (let [remaining (- deadline (monotonic-nanos))]
+          (if (<= remaining 0)
+            false
+            (do
+              (sleep-ms!
+               (min wait-poll-ms
+                    (max 1 (quot remaining 1000000))))
+              (recur))))))))
 
 (defn- child-pid [child]
   (.pid (:proc child)))
