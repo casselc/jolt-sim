@@ -3,6 +3,7 @@
             [jolt.maelstrom.echo-sim-test]
             [jolt.maelstrom.echo-test]
             [jolt.sim.completion-test]
+            [jolt.sim.explore-states-test]
             [jolt.sim.explore-test]
             [jolt.sim.explore-worker-test]
             [jolt.sim.fault-test]
@@ -26,6 +27,7 @@
         (test/run-tests 'jolt.maelstrom.echo-sim-test
                         'jolt.maelstrom.echo-test
                         'jolt.sim.completion-test
+                        'jolt.sim.explore-states-test
                         'jolt.sim.explore-test
                         'jolt.sim.explore-worker-test
                         'jolt.sim.fault-test

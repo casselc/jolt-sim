@@ -307,6 +307,88 @@
          (dissoc :step :max-steps :selector))
      selector]))
 
+(defn- classify
+  "Pure one-step decision for a wake-due-normalized task map.
+
+  The single shared owner of the kernel's classification/transition/time-advance
+  semantics: both `execute` (with its selector) and the explicit-state machine
+  API below interpret the same decision. `tasks` must already reflect every
+  sleeping task due at or before `now`; `steps`/`max-steps` carry the budget."
+  [tasks steps max-steps]
+  (let [failed-ids (ids-with-status tasks :failed)
+        completed-ids (ids-with-status tasks :completed)
+        runnable-ids (ids-with-status tasks :runnable)
+        wake-at (next-wake-time tasks)]
+    (cond
+      (seq failed-ids)
+      (let [task-id (first failed-ids)]
+        {:kind :failed
+         :task-id task-id
+         :error (trace/canonical-value (:error (get tasks task-id)))})
+
+      (= (count completed-ids) (count tasks))
+      {:kind :completed}
+
+      (seq runnable-ids)
+      (if (>= steps max-steps)
+        {:kind :step-limit}
+        {:kind :runnable :enabled runnable-ids})
+
+      (some? wake-at)
+      {:kind :advance :wake-at wake-at}
+
+      :else
+      {:kind :deadlock :blocked (ids-with-status tasks :blocked)})))
+
+(defn- apply-run-action
+  "Applies one chosen run action to `state` and returns the next state.
+
+  `state` must already be wake-due-normalized and `enabled` must be its sorted
+  runnable task-ID vector. Returns the post-transition state with `:steps`
+  incremented and `:trace` extended with the choice and transition events. It
+  does not touch `:selector` (the caller owns that) and does not re-run
+  `wake-due` (the caller applies it at its next step, mirroring `execute`)."
+  [state enabled task-id]
+  (let [step-count (:steps state)
+        now (:now state)
+        choice-event (trace/choose-event step-count now enabled task-id)
+        task (get (:tasks state) task-id)
+        context {:task task-id :now now :world (:world state)}
+        transition
+        (try
+          ((:step state) context (:state task))
+          (catch :default error
+            (step-fail (trace/normalize-error error))))
+        [next-state wake-ids transition]
+        (apply-transition state task-id transition)
+        next-state (update next-state :steps inc)
+        transition-event
+        (trace/transition-event
+          step-count
+          now
+          task-id
+          (:op transition)
+          (trace/canonical-value (:site transition))
+          wake-ids
+          (when (= :sleep (:op transition))
+            (:wake-at transition))
+          (state-projection next-state))]
+    (update next-state :trace conj choice-event transition-event)))
+
+(defn- apply-time-advance
+  "Advances virtual time to `wake-at`, waking every due task, and returns the
+  next state with `:trace` extended with the time/advance event."
+  [state wake-at]
+  (let [step-count (:steps state)
+        now (:now state)
+        woken-tasks (wake-due (:tasks state) wake-at)
+        awakened (ids-with-status woken-tasks :runnable)
+        next-state (assoc state :now wake-at :tasks woken-tasks)
+        event (trace/time-event
+                step-count now wake-at awakened
+                (state-projection next-state))]
+    (update next-state :trace conj event)))
+
 (defn- execute [config selector]
   (let [prepared (prepare-config config)
         initial-state {:tasks (:tasks prepared)
@@ -317,84 +399,226 @@
                        :max-steps (:max-steps prepared)
                        :selector selector}
         initial-event (trace/initial-event
-                       (state-projection initial-state))]
+                        (state-projection initial-state))]
     (loop [state (assoc initial-state :trace [initial-event])]
       (let [now (:now state)
             tasks (wake-due (:tasks state) now)
             state (assoc state :tasks tasks)
-            failed-ids (ids-with-status tasks :failed)
-            completed-ids (ids-with-status tasks :completed)
-            runnable-ids (ids-with-status tasks :runnable)
-            step-count (:steps state)]
-        (cond
-          (seq failed-ids)
-          (let [task-id (first failed-ids)
-                error (:error (get tasks task-id))]
-            (terminal-result
-             state
-             :failed
-             #(trace/failed-event
-               step-count now task-id (trace/canonical-value error) %)))
+            step-count (:steps state)
+            decision (classify tasks step-count (:max-steps state))]
+        (case (:kind decision)
+          :failed
+          (terminal-result
+           state
+           :failed
+           #(trace/failed-event
+             step-count now (:task-id decision) (:error decision) %))
 
-          (= (count completed-ids) (count tasks))
+          :completed
           (terminal-result
            state
            :completed
            #(trace/completed-event step-count now %))
 
-          (seq runnable-ids)
-          (if (>= step-count (:max-steps state))
-            (terminal-result
-             state
-             :step-limit
-             #(trace/step-limit-event step-count now %))
-            (let [[task-id next-selector]
-                  (select-task (:selector state) runnable-ids)
-                  choice-event
-                  (trace/choose-event step-count now runnable-ids task-id)
-                  task (get tasks task-id)
-                  context {:task task-id
-                           :now now
-                           :world (:world state)}
-                  transition
-                  (try
-                    ((:step state) context (:state task))
-                    (catch :default error
-                      (step-fail (trace/normalize-error error))))
-                  [next-state wake-ids transition]
-                  (apply-transition state task-id transition)
-                  next-state
-                  (-> next-state
-                      (assoc :selector next-selector)
-                      (update :steps inc))
-                  transition-event
-                  (trace/transition-event
-                   step-count
-                   now
-                   task-id
-                   (:op transition)
-                   (trace/canonical-value (:site transition))
-                   wake-ids
-                   (when (= :sleep (:op transition))
-                     (:wake-at transition))
-                   (state-projection next-state))]
-              (recur (update next-state
-                             :trace conj choice-event transition-event))))
+          :step-limit
+          (terminal-result
+           state
+           :step-limit
+           #(trace/step-limit-event step-count now %))
 
-          :else
-          (if-let [wake-at (next-wake-time tasks)]
-            (let [tasks (wake-due tasks wake-at)
-                  awakened (ids-with-status tasks :runnable)
-                  next-state (assoc state :now wake-at :tasks tasks)
-                  event (trace/time-event
-                         step-count now wake-at awakened
-                         (state-projection next-state))]
-              (recur (update next-state :trace conj event)))
-            (let [blocked-ids (ids-with-status tasks :blocked)]
-              (terminal-result
-               state
-               :deadlock
-               #(trace/deadlock-event step-count now blocked-ids %)))))))))
+          :deadlock
+          (terminal-result
+           state
+           :deadlock
+           #(trace/deadlock-event step-count now (:blocked decision) %))
+
+          :advance
+          (recur (apply-time-advance state (:wake-at decision)))
+
+          :runnable
+          (let [enabled (:enabled decision)
+                [task-id next-selector]
+                (select-task (:selector state) enabled)
+                next-state (apply-run-action state enabled task-id)]
+            (recur (assoc next-state :selector next-selector))))))))
+
+;; Explicit-state machine over the same one-step semantics.
+;;
+;; The machine exposes the cooperative kernel as a finite transition system for
+;; scoped reachability/completeness exploration. It is constructed from the same
+;; config map `run` accepts (its `:strategy` is ignored: the machine enumerates
+;; every enabled action rather than selecting one) and reuses `classify`,
+;; `apply-run-action`, and `apply-time-advance`, so a single owner owns every
+;; classification/transition/time-advance decision.
+;;
+;; A machine value carries the prepared tasks/world/now/steps plus the kernel
+;; trace. Its canonical semantic projection includes the task-transition budget
+;; because classification and enabled actions depend on that budget. The trace
+;; and step function remain engine/path data rather than canonical state.
+
+(defn- machine-error! [message data]
+  (throw (ex-info message (assoc data :type ::invalid-machine-action))))
+
+(defn- machine-normalized
+  "Returns `machine` with every sleeping task due at its current tick woken.
+
+  Mirrors `execute`'s top-of-loop `wake-due`: a machine stores the raw
+  post-action task map so its execution-prefix events use the same projections
+  as `run`, then applies `wake-due` lazily at every observation. Terminal
+  observation does not append `run`'s terminal trace event."
+  [machine]
+  (assoc machine :tasks (wake-due (:tasks machine) (:now machine))))
+
+(defn- stable-copy [value]
+  (trace/restore-value (trace/canonical-value value)))
+
+(defn- stable-task-copy [tasks]
+  (reduce-kv (fn [result task-id task]
+               (assoc result task-id task))
+             (sorted-map)
+             (stable-copy tasks)))
+
+(defn- machine-branch-copy
+  "Returns an isolated value-semantic branch of `machine`.
+
+  Canonical round-tripping freezes mutable byte-array leaves before invoking a
+  step callback, so expanding one sibling action cannot mutate the parent seen
+  by another sibling. The callback must still be deterministic and free of
+  effects through closed-over host state, entropy, clocks, or I/O; those values
+  are outside the cooperative completeness boundary."
+  [machine]
+  (assoc machine
+         :tasks (stable-task-copy (:tasks machine))
+         :world (stable-copy (:world machine))))
+
+(defn machine
+  "Constructs an explicit-state machine from a kernel config map.
+
+  Accepts the same map `run` consumes (`:tasks`, `:world`, `:step`, `:now`,
+  `:max-steps`) and validates it through the same `prepare-config` path, so a
+  malformed config, task state, or non-canonical value fails closed identically.
+  `:strategy` is accepted for source compatibility but has no effect: the
+  machine exposes every enabled action instead of selecting one."
+  [config]
+  (let [prepared (prepare-config config)
+        initial {:tasks (stable-task-copy (:tasks prepared))
+                 :world (stable-copy (:world prepared))
+                 :now (:now prepared)
+                 :steps 0
+                 :step (:step prepared)
+                 :max-steps (:max-steps prepared)}
+        initial-event (trace/initial-event (state-projection initial))]
+    (assoc initial :trace [initial-event])))
+
+(defn machine-projection
+  "Returns the stable canonical semantic projection of `machine`.
+
+  The projection is `{:tasks :world :now :steps :max-steps}` projected through
+  `jolt.sim.trace/canonical-value` after wake-due normalization. It deliberately
+  excludes the trace and step function. Consumed and maximum budget are state:
+  they affect terminal classification and the enabled action set even though a
+  step callback cannot observe them directly."
+  [machine]
+  (let [normalized (machine-normalized machine)]
+    (trace/canonical-value
+     {:tasks (:tasks normalized)
+      :world (:world normalized)
+      :now (:now normalized)
+      :steps (:steps normalized)
+      :max-steps (:max-steps normalized)})))
+
+(defn machine-status
+  "Returns the terminal status of `machine`, or nil when non-terminal.
+
+  Non-terminal means at least one enabled action remains (a runnable task or a
+  forced earliest time advance). Terminal statuses mirror `run`: `:failed`,
+  `:completed`, `:deadlock`, and `:step-limit`."
+  [machine]
+  (let [normalized (machine-normalized machine)
+        decision (classify (:tasks normalized)
+                           (:steps normalized)
+                           (:max-steps normalized))]
+    (case (:kind decision)
+      (:runnable :advance) nil
+      (:kind decision))))
+
+(defn machine-actions
+  "Returns the enabled actions of `machine` as a deterministic vector.
+
+  A runnable state yields one `[:run task-id]` action per runnable task in
+  ascending task-ID order. A state with no runnable task but a pending timer
+  yields exactly one forced `[:advance wake-at]` action whose `wake-at` is the
+  earliest sleeping time. A terminal state yields an empty vector."
+  [machine]
+  (let [normalized (machine-normalized machine)
+        decision (classify (:tasks normalized)
+                           (:steps normalized)
+                           (:max-steps normalized))]
+    (case (:kind decision)
+      :runnable (mapv #(vector :run %) (:enabled decision))
+      :advance [[:advance (:wake-at decision)]]
+      [])))
+
+(defn machine-apply
+  "Applies one validated enabled `action` to `machine`, returning the next
+  machine.
+
+  `action` must be a member of `(machine-actions machine)`. A `[:run task-id]`
+  action whose task is not currently runnable, an `[:advance wake-at]` action
+  whose wake time is not the current earliest timer, any action applied to a
+  terminal machine, or any malformed action shape, fails closed with an
+  ex-info tagged `::invalid-machine-action` carrying the offending action, the
+  current decision kind, and the enabled set."
+  [machine action]
+  (when-not (and (vector? action) (= 2 (count action)))
+    (machine-error! "Machine action must be a two-element vector"
+                    {:action action :reason :shape}))
+  (let [[tag payload] action]
+    (when-not (contains? #{:run :advance} tag)
+      (machine-error! "Unknown machine action"
+                      {:action action :reason :tag :tag tag}))
+    (when (and (= :run tag) (not (task-id? payload)))
+      (machine-error! "Run action requires a non-negative integer task ID"
+                      {:action action :reason :task-id :task-id payload}))
+    (when (and (= :advance tag) (not (integer? payload)))
+      (machine-error! "Advance action requires an integer wake time"
+                      {:action action :reason :wake-at :wake-at payload})))
+  (let [normalized (-> machine machine-branch-copy machine-normalized)
+        decision (classify (:tasks normalized)
+                           (:steps normalized)
+                           (:max-steps normalized))
+        tag (nth action 0 nil)]
+    (case (:kind decision)
+      :runnable
+      (do
+        (when-not (= :run tag)
+          (machine-error! "Only a :run action is enabled at this machine state"
+                          {:action action :kind :runnable
+                           :enabled (:enabled decision)}))
+        (let [task-id (nth action 1 nil)]
+          (when-not (some #(= task-id %) (:enabled decision))
+            (machine-error!
+             "Run action targets a task outside the runnable set"
+             {:action action :kind :runnable
+              :task-id task-id :enabled (:enabled decision)}))
+          (apply-run-action normalized (:enabled decision) task-id)))
+
+      :advance
+      (do
+        (when-not (= :advance tag)
+          (machine-error! "Only an :advance action is enabled at this machine state"
+                          {:action action :kind :advance
+                           :enabled (:wake-at decision)}))
+        (let [wake-at (nth action 1 nil)]
+          (when-not (= wake-at (:wake-at decision))
+            (machine-error!
+             "Advance action wake time is not the current earliest timer"
+             {:action action :kind :advance
+              :wake-at wake-at :earliest (:wake-at decision)}))
+        (apply-time-advance normalized (:wake-at decision))))
+
+      (machine-error! "No action is enabled at a terminal machine state"
+                      {:action action :kind (:kind decision)}))))
 
 (defn run
   "Runs a cooperative simulation to completion, failure, deadlock, or its bound.

@@ -39,6 +39,9 @@ baseline and remints the affected contracts and tests in place.
 ## Current foundation
 
 - a pure cooperative-model scheduler with virtual integer time;
+- deterministic full enabled-action BFS for cooperative models, with
+  budget-bearing canonical state, bounded state admission, frozen invariant
+  evidence, replayable shortest witnesses, and isolated byte-array branches;
 - seeded and scripted task selection;
 - immutable exactly-once operation completions with deterministic wakeups;
 - byte-stable, versioned EDN traces and exact replay;
@@ -105,6 +108,23 @@ These capabilities belong to two deliberately different execution tracks:
 
 Hegel supplies generated cases and shrinking around either suitable boundary.
 It is not itself the scheduler or an exhaustive-state explorer.
+
+The cooperative explicit-state API is deliberately low level:
+`jolt.sim.kernel/machine`, `machine-actions`, `machine-apply`,
+`machine-status`, and `machine-projection` expose the same transition owner used
+by `kernel/run`; `jolt.sim.explore-states/explore-states` branches over every
+enabled action and deduplicates canonical budget-bearing states. A finite
+capacity-one mailbox control now explores same-tick reply, timeout, and cancel
+claims, proves first-writer-wins plus exactly-once terminal cleanup, and retains
+a replayable deliberately buggy double-cleanup witness.
+
+Its bounded completeness statement applies only to deterministic,
+side-effect-free cooperative steps and invariants over value-semantic state and
+a nonbinding state cap. Machine branches copy accepted byte-array leaves, but
+closed-over mutation, host entropy, clocks, native I/O, and other effects remain
+outside that proof boundary. This is not a claim that ordinary Jolt executions
+are exhaustively model checked. The separate controlled-runtime track remains
+the route for unchanged application and library code.
 
 The runtime adapter accepts one exact current controller contract, presently
 prerelease ABI 5. All current controller vars are required. If every var is
@@ -807,8 +827,8 @@ production configuration rather than a simulator world.
 
 ## Execution model
 
-The cooperative step API is the scheduler kernel and a low-level model-testing
-tool. It is not the intended way to author simulated applications.
+The cooperative step API is the scheduler kernel and a low-level bounded
+reachability tool. It is not the intended way to author simulated applications.
 
 The public direction is a `defsim` scenario form whose configuration declares
 the controlled world while its body runs ordinary Jolt code:
@@ -863,10 +883,13 @@ checked offline.
    nested spawns, promises, clocks, and entropy.
 2. The transport-neutral fault-plan validation, matching, activation, ordinal,
    and evidence core is landed, along with the first POSIX poll frontend for a
-   captured EINTR retry. Extend memory, SQLite, and POSIX with deterministic
-   timer, cancellation, and bounded cleanup outcomes, and add codec handler
-   packs on the same fail-closed interception seam. Finite socket and self-pipe
-   capacity are landed and exercised by unchanged public-library lanes.
+   captured EINTR retry. The cooperative explicit-state track now has a
+   deterministic timer-tie/reply/cancel/cleanup control. Still open is carrying
+   those semantics through the ordinary-runtime clock coordinator and the
+   unchanged HTTP/SQLite boundary; then extend memory, SQLite, and POSIX fault
+   outcomes and add codec handler packs on the same fail-closed interception
+   seam. Finite socket and self-pipe capacity are landed and exercised by
+   unchanged public-library lanes.
 3. Drive unchanged public nonblocking connect/accept through readiness, then
    add operation effects for cancel and deadlines followed by deterministic
    network and storage fault models.
