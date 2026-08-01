@@ -28,7 +28,7 @@
 
     2. From an agent or shell, require the helpers once:
 
-         clj-nrepl-eval -p 7888 \"(require '[jolt.sim.repl :as sim-repl])\"
+         clj-nrepl-eval -p 7888 \"(do (require 'jolt.sim.repl :reload) (require '[jolt.sim.repl :as sim-repl]))\"
 
     3. Run a case exactly as you would call process-explorer/run-case, then
        inspect/repeat/discard:
