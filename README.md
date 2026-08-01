@@ -72,8 +72,9 @@ The current contract also exposes a scoped, owner-thread, single-use native
   substitute results, and an unhandled effect is blocked before OS access.
 - `:observe` accepts no `:ffi-handlers` and proceeds every
   intercepted call through its exact native branch while recording the route.
-- `:hybrid` lets a registered handler substitute its result; a
-  handler miss proceeds through the exact native branch unless model-owned
+- `:hybrid` lets a registered handler substitute its result, or explicitly
+  request native routing for its exact call; a handler miss (or an explicit
+  request) proceeds through the exact native branch unless model-owned
   resource provenance makes that fallback unsafe.
 
 Every successful run returns the `:effects` vector plus a positionally
@@ -92,8 +93,9 @@ FFI ABI/schema numbering will be consolidated and reset to version 1,
 establishing the first compatibility boundary.
 
 Hybrid handler functions must classify results explicitly with
-`jolt.sim.runtime/substitute` or `jolt.sim.runtime/modeled-resource`; a literal
-`nil` handler-map value remains an explicit nil substitution. `substitute` is
+`jolt.sim.runtime/substitute`, `jolt.sim.runtime/modeled-resource`, or
+`jolt.sim.runtime/proceed`; a literal `nil` handler-map value remains an
+explicit nil substitution. `substitute` is
 an assertion that the result is a non-resource scalar/value; known non-null
 pointer results (`alloc`, `string->ptr`, pointer-typed `read`, and foreign
 `:pointer`/`:void*` results) reject that classification. A handled
@@ -130,6 +132,36 @@ A matching modeled `free`/read/write boundary should also be registered by a
 real handler pack; otherwise use of that fake range on a handler miss is
 reported as `:jolt.sim.runtime/modeled-resource-native-fallback` before native
 execution.
+
+A registered hybrid handler may also return `jolt.sim.runtime/proceed`
+instead of a classified result, explicitly requesting native routing for that
+exact call rather than an ordinary unhandled-descriptor miss. The same
+modeled-resource provenance guard still runs first, so a selected proceed is
+blocked exactly like a miss would be when the call's live arguments already
+alias a registered resource; only when the guard passes does the real native
+`proceed` continuation run. `proceed` is rejected outright outside `:hybrid`
+routing. The resulting `:effect-trace` entry uses `:route :native` and still
+carries the selecting handler's identity, distinguishing an explicit
+selection from an ordinary miss.
+
+`jolt.sim.runtime/with-additional-resources` composes with `substitute` or
+`modeled-resource` to register zero or more further modeled resources
+alongside a handler's primary classified result, each an exact `{:base
+nonnegative-integer :span positive-integer}` map. This covers APIs such as
+POSIX `pipe`, whose primary return is an ordinary status while separate
+output pointers receive modeled descriptors:
+
+```clojure
+(fn [_descriptor]
+  (sim/with-additional-resources
+   (sim/substitute 0)
+   [{:base 9000 :span 1} {:base 9100 :span 1}]))
+```
+
+Every addition is validated before any of them -- or the primary resource --
+reaches the ledger; a malformed addition throws immediately and leaves the
+ledger completely unchanged. This wrapper does not add resource retirement or
+typed resource domains.
 
 The non-restoration case intentionally poisons its process, so its permanent
 regression is isolated from the reusable test session:

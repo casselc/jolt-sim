@@ -32,10 +32,14 @@
   controller substitutes registered handlers and blocks unhandled effects
   before OS access. :observe proceeds every intercepted call through its exact
   native branch. :hybrid substitutes registered handlers and permits a native
-  miss only when modeled-resource provenance makes it safe. Every controlled
-  run records lifecycle events, exact FFI descriptors, and correlated route
-  evidence. Optional :future-schedule gates ordinary futures over the same
-  current lifecycle contract.
+  miss only when modeled-resource provenance makes it safe. A registered
+  hybrid handler may also return proceed to explicitly request native routing
+  for that exact call, still subject to the same provenance guard, and may
+  return with-additional-resources to register extra modeled resources --
+  such as POSIX pipe's output descriptors -- alongside its primary classified
+  result. Every controlled run records lifecycle events, exact FFI
+  descriptors, and correlated route evidence. Optional :future-schedule gates
+  ordinary futures over the same current lifecycle contract.
 
   Raw threads and executor tasks do not emit lifecycle ownership events. A
   controlled body must join them before returning if they can perform FFI;
@@ -535,6 +539,7 @@
 (def ^:private handler-result-kind-key ::handler-result)
 (def ^:private handler-result-value-key ::value)
 (def ^:private handler-result-span-key ::span)
+(def ^:private additional-resources-key ::additional-resources)
 (def ^:private substitute-result-keys
   (set [handler-result-kind-key handler-result-value-key]))
 (def ^:private modeled-resource-result-keys
@@ -542,6 +547,25 @@
 (def ^:private modeled-resource-span-result-keys
   (set [handler-result-kind-key handler-result-value-key
         handler-result-span-key]))
+(def ^:private proceed-result-keys
+  (set [handler-result-kind-key]))
+
+(defn- exact-base-handler-result? [result]
+  (when (map? result)
+    (let [kind (get result handler-result-kind-key)
+          keys-set (set (keys result))]
+      (case kind
+        :substitute
+        (= substitute-result-keys keys-set)
+
+        :modeled-resource
+        (and (or (= modeled-resource-result-keys keys-set)
+                 (= modeled-resource-span-result-keys keys-set))
+             (or (not (contains? result handler-result-span-key))
+                 (let [span (get result handler-result-span-key)]
+                   (and (integer? span) (pos? span)))))
+
+        false))))
 
 (defn substitute
   "Marks value as an intentional non-resource substitution for hybrid routing.
@@ -581,6 +605,68 @@
     handler-result-value-key value
     handler-result-span-key span}))
 
+(defn proceed
+  "Marks a registered hybrid handler's return as an explicit request to route
+  this exact intercepted call to its native implementation, instead of
+  substituting a modeled value. Valid only from a registered hybrid handler;
+  :hermetic dispatch rejects it outright, since no native proceed continuation
+  is ever offered to a hermetic handler. The existing modeled-resource
+  provenance guard still runs before native execution, so a call whose live
+  arguments alias an already-registered modeled resource remains blocked even
+  when the selecting handler asks for proceed. The resulting effect-trace
+  entry uses :route :native while retaining the selecting handler's identity,
+  distinguishing an explicit selection from an ordinary unhandled-descriptor
+  native miss."
+  []
+  {handler-result-kind-key :proceed})
+
+(defn- valid-additional-resource? [resource]
+  (and (map? resource)
+       (= #{:base :span} (set (keys resource)))
+       (integer? (:base resource))
+       (not (neg? (:base resource)))
+       (integer? (:span resource))
+       (pos? (:span resource))))
+
+(defn- invalid-additional-resource! [reason value]
+  (throw
+   (ex-info
+    "An additional modeled resource must be an exact {:base nonnegative-integer :span positive-integer} map"
+    {:type :jolt.sim.runtime/invalid-modeled-resource
+     :reason reason
+     :value value})))
+
+(defn- validate-additional-resources! [additional-resources]
+  (when-not (vector? additional-resources)
+    (invalid-additional-resource! :not-a-vector additional-resources))
+  (doseq [resource additional-resources]
+    (when-not (valid-additional-resource? resource)
+      (invalid-additional-resource! :malformed-additional-resource resource)))
+  additional-resources)
+
+(defn with-additional-resources
+  "Wraps a classified substitute or modeled-resource handler result so that,
+  once the wrapped result is registered, zero or more additional modeled
+  resources are also atomically appended to the same run's resource ledger.
+  Each addition must be an exact {:base nonnegative-integer :span
+  positive-integer} map declaring its own disjoint half-open interval; the
+  base result's own value/span are unaffected. This supports APIs such as
+  POSIX pipe, whose primary return is an ordinary status while separate output
+  pointers receive modeled descriptors that later native calls must not
+  silently alias. Every addition is validated here, eagerly, before any are
+  attached; a malformed resource throws immediately rather than reaching the
+  ledger. Does not add resource retirement or typed resource domains."
+  [handler-result additional-resources]
+  (when-not (exact-base-handler-result? handler-result)
+    (throw
+     (ex-info
+      "with-additional-resources must wrap a substitute or modeled-resource result"
+      {:type :jolt.sim.runtime/invalid-handler-result
+       :reason :additional-resources-target
+       :result handler-result})))
+  (validate-additional-resources! additional-resources)
+  (assoc handler-result additional-resources-key additional-resources))
+
 (defn- invalid-capture-result! [descriptor result]
   (throw
    (ex-info
@@ -599,31 +685,55 @@
      :result result})))
 
 (defn- decode-handler-result!
-  "Returns {:kind :legacy/:substitute/:modeled-resource :value value}.
-  Legacy raw function returns are accepted only by hermetic routing."
+  "Returns {:kind :legacy/:substitute/:modeled-resource/:proceed :value value}
+  plus :additional-resources when the wrapped substitute or modeled-resource
+  result was built by with-additional-resources. Legacy raw function returns
+  are accepted only by hermetic routing. :proceed is accepted only by hybrid
+  routing; hermetic dispatch always rejects it."
   [ffi-mode descriptor handler-fn result]
   (if (nil? handler-fn)
     {:kind :substitute :value nil}
     (let [tagged? (and (map? result)
                        (contains? result handler-result-kind-key))
           kind (when tagged? (get result handler-result-kind-key))
-          keys-set (when tagged? (set (keys result)))]
+          keys-set (when tagged? (set (keys result)))
+          has-additional? (and tagged?
+                               (contains? result additional-resources-key))
+          base-keys-set (if has-additional?
+                          (disj keys-set additional-resources-key)
+                          keys-set)
+          additional (when has-additional?
+                       (get result additional-resources-key))]
+      (when has-additional?
+        (validate-additional-resources! additional))
       (cond
         (= :substitute kind)
-        (if (= substitute-result-keys keys-set)
-          {:kind :substitute
-           :value (get result handler-result-value-key)}
+        (if (= substitute-result-keys base-keys-set)
+          (cond-> {:kind :substitute
+                   :value (get result handler-result-value-key)}
+            has-additional? (assoc :additional-resources additional))
           (invalid-handler-result! :malformed-substitute descriptor result))
 
         (= :modeled-resource kind)
-        (if (or (= modeled-resource-result-keys keys-set)
-                (= modeled-resource-span-result-keys keys-set))
+        (if (or (= modeled-resource-result-keys base-keys-set)
+                (= modeled-resource-span-result-keys base-keys-set))
           (cond-> {:kind :modeled-resource
                    :value (get result handler-result-value-key)}
             (contains? result handler-result-span-key)
-            (assoc :span (get result handler-result-span-key)))
+            (assoc :span (get result handler-result-span-key))
+            has-additional? (assoc :additional-resources additional))
           (invalid-handler-result! :malformed-modeled-resource
                                    descriptor result))
+
+        (= :proceed kind)
+        (cond
+          (not= :hybrid ffi-mode)
+          (invalid-handler-result! :proceed-requires-hybrid-mode
+                                   descriptor result)
+          (not= proceed-result-keys keys-set)
+          (invalid-handler-result! :malformed-proceed descriptor result)
+          :else
+          {:kind :proceed})
 
         tagged?
         (invalid-handler-result! :unknown-wrapper-kind descriptor result)
@@ -704,33 +814,59 @@
             nil))]
     (if (and (integer? candidate) (pos? candidate)) candidate 1)))
 
+(defn- additional-ledger-entries
+  "Validates and shapes zero or more with-additional-resources additions into
+  ledger entries. Throws on the first malformed resource, before any entry --
+  primary or additional -- reaches the ledger."
+  [descriptor handler-key additional-resources]
+  (let [additional-resources (or additional-resources [])]
+    (validate-additional-resources! additional-resources)
+    (mapv
+     (fn [resource]
+       {:base (:base resource)
+        :span (:span resource)
+        :handler-key handler-key
+        :descriptor descriptor})
+     additional-resources)))
+
 (defn- register-modeled-resource!
+  "Validates the primary modeled-resource result (if any) and every
+  with-additional-resources addition, then appends every resulting ledger
+  entry in one atomic swap!. A malformed primary or additional resource throws
+  before that swap!, leaving the ledger completely unchanged."
   [resource-ledger descriptor handler-key decoded]
-  (when (= :modeled-resource (:kind decoded))
-    (let [result (:value decoded)
-          base (primary-handler-result descriptor result)
-          span (if (contains? decoded :span)
-                 (:span decoded)
-                 (inferred-resource-span descriptor))]
-      (when-not (and (integer? base) (not (neg? base)))
-        (throw
-         (ex-info
-          "modeled-resource must wrap a non-negative integer primary result"
-          {:type :jolt.sim.runtime/invalid-modeled-resource
-           :descriptor descriptor
-           :result result})))
-      (when-not (and (integer? span) (pos? span))
-        (throw
-         (ex-info
-          "modeled-resource span must be a positive integer"
-          {:type :jolt.sim.runtime/invalid-modeled-resource
-           :descriptor descriptor
-           :span span})))
-      (swap! resource-ledger conj
-             {:base base
-              :span span
-              :handler-key handler-key
-              :descriptor descriptor})))
+  (let [primary-entry
+        (when (= :modeled-resource (:kind decoded))
+          (let [result (:value decoded)
+                base (primary-handler-result descriptor result)
+                span (if (contains? decoded :span)
+                       (:span decoded)
+                       (inferred-resource-span descriptor))]
+            (when-not (and (integer? base) (not (neg? base)))
+              (throw
+               (ex-info
+                "modeled-resource must wrap a non-negative integer primary result"
+                {:type :jolt.sim.runtime/invalid-modeled-resource
+                 :descriptor descriptor
+                 :result result})))
+            (when-not (and (integer? span) (pos? span))
+              (throw
+               (ex-info
+                "modeled-resource span must be a positive integer"
+                {:type :jolt.sim.runtime/invalid-modeled-resource
+                 :descriptor descriptor
+                 :span span})))
+            {:base base
+             :span span
+             :handler-key handler-key
+             :descriptor descriptor}))
+        additional-entries
+        (additional-ledger-entries
+         descriptor handler-key (:additional-resources decoded))
+        entries (into (if primary-entry [primary-entry] [])
+                      additional-entries)]
+    (when (seq entries)
+      (swap! resource-ledger into entries)))
   nil)
 
 (defn- native-truncated-number [argument]
@@ -766,9 +902,20 @@
     (:arguments descriptor))))
 
 (defn- record-arrival! [effect-trace-log entry]
-  "Atomically appends one route decision in interception-arrival order.
-  Handler or native completion order cannot reorder this evidence."
-  (swap! effect-trace-log conj entry)
+  "Atomically appends one route decision in interception-arrival order and
+  returns its index. Handler or native completion order cannot reorder this
+  evidence."
+  (let [after (swap! effect-trace-log conj entry)]
+    (dec (count after))))
+
+(defn- finalize-arrival!
+  "Replaces a previously reserved arrival entry in place at index, preserving
+  its interception-arrival position. Used only when the final route decision
+  for an already-reserved call is not known until after its handler has run,
+  e.g. an explicit selected native proceed or the provenance guard blocking
+  one."
+  [effect-trace-log index entry]
+  (swap! effect-trace-log assoc index entry)
   nil)
 
 (defn- effect-evidence [effect-trace-log]
@@ -860,9 +1007,15 @@
   "Returns the two-argument routing controller for :observe or :hybrid.
   Observe always invokes proceed. Hybrid dispatches configured handlers first
   and otherwise invokes proceed only when no model-owned numeric resource is
-  present in the descriptor's top-level arguments. Native exceptions propagate
-  with ordinary application semantics and are deliberately not controller
-  errors. Policy, handler, and provenance failures remain latched fail closed."
+  present in the descriptor's top-level arguments. A dispatched hybrid handler
+  may itself return proceed to explicitly select that same native branch for
+  its exact call; the modeled-resource provenance guard still runs first, and
+  the arrival-order effect-trace entry reserved for the handler dispatch is
+  finalized in place as :route :native (or :blocked, if the guard fires)
+  rather than :route :handler, retaining the selecting handler's identity.
+  Native exceptions propagate with ordinary application semantics and are
+  deliberately not controller errors. Policy, handler, and provenance failures
+  remain latched fail closed."
   [ffi-mode handlers state effect-trace-log resource-ledger]
   (fn ffi-routing-controller [descriptor proceed]
     (let [latched? (volatile! false)
@@ -884,22 +1037,50 @@
               (proceed))
             (if entry
               (let [handler-fn (val entry)
-                    _ (record-arrival!
-                       effect-trace-log
-                       {:mode :hybrid :route :handler
-                        :handler-key key :descriptor descriptor})
+                    arrival-index
+                    (record-arrival!
+                     effect-trace-log
+                     {:mode :hybrid :route :handler
+                      :handler-key key :descriptor descriptor})
                     raw-result (if (some? handler-fn)
                                  (handler-fn descriptor)
                                  nil)
                     decoded (decode-handler-result!
-                             :hybrid descriptor handler-fn raw-result)
-                    result (validate-capture-result!
-                            descriptor (:value decoded))
-                    decoded (validate-hybrid-classification!
-                             descriptor (assoc decoded :value result))]
-                (register-modeled-resource!
-                 resource-ledger descriptor key decoded)
-                result)
+                             :hybrid descriptor handler-fn raw-result)]
+                (if (= :proceed (:kind decoded))
+                  (if-let [hit (modeled-resource-hit resource-ledger descriptor)]
+                    (let [error
+                          (ex-info
+                           "A model-owned resource cannot cross into native fallback"
+                           {:type :jolt.sim.runtime/modeled-resource-native-fallback
+                            :descriptor descriptor
+                            :argument-index (:argument-index hit)
+                            :argument (:argument hit)
+                            :native-argument (:native-argument hit)
+                            :resource (:resource hit)})]
+                      (finalize-arrival!
+                       effect-trace-log arrival-index
+                       {:mode :hybrid :route :blocked
+                        :reason :modeled-resource-native-fallback
+                        :handler-key key :descriptor descriptor})
+                      (record-ffi-error!
+                       state descriptor :modeled-resource-native-fallback error)
+                      (vreset! latched? true)
+                      (throw error))
+                    (do
+                      (finalize-arrival!
+                       effect-trace-log arrival-index
+                       {:mode :hybrid :route :native
+                        :handler-key key :descriptor descriptor})
+                      (vreset! proceeding? true)
+                      (proceed)))
+                  (let [result (validate-capture-result!
+                                descriptor (:value decoded))
+                        decoded (validate-hybrid-classification!
+                                 descriptor (assoc decoded :value result))]
+                    (register-modeled-resource!
+                     resource-ledger descriptor key decoded)
+                    result)))
               (if-let [hit (modeled-resource-hit resource-ledger descriptor)]
                 (let [error
                       (ex-info
@@ -1171,7 +1352,12 @@
    :ffi-mode defaults to :hermetic and uses the established one-argument
    fail-closed controller. :observe/:hybrid install the routing controller;
    observe proceeds every call, while hybrid proceeds misses only after its
-   modeled-resource guard. Restoration is FFI then future, with both attempted.
+   modeled-resource guard. A registered hybrid handler may return
+   jolt.sim.runtime/proceed to select that native branch explicitly for its
+   exact call (still subject to the same guard), and may return
+   jolt.sim.runtime/with-additional-resources to atomically register extra
+   modeled resources alongside its primary classified result. Restoration is
+   FFI then future, with both attempted.
 
    The future controller records an ordered event log of exact
    {:event :task :parent} maps and forwards each to the optional (:on-event

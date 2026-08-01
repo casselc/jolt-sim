@@ -587,6 +587,9 @@
 (def ^:private make-ffi-routing-controller-var
   (resolve 'jolt.sim.runtime/make-ffi-routing-controller))
 
+(def ^:private register-modeled-resource-var
+  (resolve 'jolt.sim.runtime/register-modeled-resource!))
+
 (deftest exact-current-capability-descriptor-is-accepted-and-mismatches-rejected
   ;; Pure structural validation, independent of the running image.
   (is (= supported-descriptor
@@ -2073,6 +2076,258 @@
       (is (= :jolt.sim.runtime/modeled-resource-native-fallback (:type data)))
       (is (false? @proceeded?))
       (is (= [:handler :blocked] (mapv :route @effect-trace))))))
+
+;; ---- Selected native proceed and additional modeled resources ---------
+
+(deftest hybrid-selected-proceed-routes-to-native-and-keeps-handler-identity
+  (let [state (atom {:ffi-errors []})
+        effect-trace (atom [])
+        ledger (atom [])
+        proceeded? (atom false)
+        key [:native-operation :sizeof]
+        descriptor (native-descriptor :sizeof [:int])
+        controller
+        (make-ffi-routing-controller-var
+         :hybrid {key (fn [_] (rt/proceed))} state effect-trace ledger)
+        result (controller descriptor
+                           (fn [] (reset! proceeded? true) 4))]
+    (is (= 4 result))
+    (is (true? @proceeded?))
+    (is (= [{:mode :hybrid :route :native
+             :handler-key key :descriptor descriptor}]
+           @effect-trace))
+    (is (empty? (:ffi-errors @state)))
+    (is (empty? @ledger))))
+
+(deftest hybrid-selected-proceed-is-blocked-by-prior-modeled-provenance
+  ;; A handler that selects proceed still passes through the existing
+  ;; provenance guard first; proceed is never invoked once a call's live
+  ;; arguments alias an already-registered modeled resource.
+  (let [state (atom {:ffi-errors []})
+        effect-trace (atom [])
+        ledger (atom [])
+        alloc-descriptor (native-descriptor :alloc [8])
+        free-descriptor (native-descriptor :free [1042000000])
+        free-key [:native-operation :free]
+        proceeded? (atom false)
+        controller
+        (make-ffi-routing-controller-var
+         :hybrid
+         {[:native-operation :alloc]
+          (fn [_] (rt/modeled-resource 1042000000 8))
+          free-key
+          (fn [_] (rt/proceed))}
+         state effect-trace ledger)]
+    (is (= 1042000000 (controller alloc-descriptor (fn [] :wrong))))
+    (let [data
+          (ex-data-of
+           #(controller free-descriptor
+                        (fn [] (reset! proceeded? true) nil)))]
+      (is (= :jolt.sim.runtime/modeled-resource-native-fallback (:type data)))
+      (is (false? @proceeded?))
+      (is (= [:handler :blocked] (mapv :route @effect-trace)))
+      (is (= free-key (:handler-key (second @effect-trace))))
+      (is (= :modeled-resource-native-fallback
+             (:ffi-error (first (:ffi-errors @state))))))))
+
+(deftest selected-proceed-is-invalid-in-hermetic-mode
+  (let [state (atom {:ffi-errors []})
+        effects (atom [])
+        descriptor (native-descriptor :sizeof [])
+        controller
+        (make-ffi-controller-var
+         {[:native-operation :sizeof] (fn [_] (rt/proceed))}
+         state effects)
+        data (ex-data-of #(controller descriptor))]
+    (is (= :jolt.sim.runtime/invalid-handler-result (:type data)))
+    (is (= :proceed-requires-hybrid-mode (:reason data)))
+    (is (= :invalid-handler-result (:ffi-error (first (:ffi-errors @state)))))))
+
+(deftest hybrid-selected-proceed-passes-through-a-captured-native-result
+  (let [state (atom {:ffi-errors []})
+        effect-trace (atom [])
+        ledger (atom [])
+        descriptor
+        {:kind :foreign-function :task 0 :arguments []
+         :symbol "pipe_status" :argument-types [] :return-type :int
+         :blocking? false :capture-native-error? true}
+        key (descriptor-handler-key-var descriptor)
+        controller
+        (make-ffi-routing-controller-var
+         :hybrid {key (fn [_] (rt/proceed))} state effect-trace ledger)
+        result (controller descriptor (fn [] [0 nil]))]
+    (is (= [0 nil] result))
+    (is (= [{:mode :hybrid :route :native
+             :handler-key key :descriptor descriptor}]
+           @effect-trace))
+    (is (empty? (:ffi-errors @state)))))
+
+(deftest hybrid-selected-proceed-native-exception-remains-catchable
+  (let [state (atom {:ffi-errors []})
+        effect-trace (atom [])
+        ledger (atom [])
+        key [:native-operation :sizeof]
+        descriptor (native-descriptor :sizeof [])
+        controller
+        (make-ffi-routing-controller-var
+         :hybrid {key (fn [_] (rt/proceed))} state effect-trace ledger)
+        caught
+        (try
+          (controller descriptor
+                      (fn [] (throw (ex-info "native failure" {:source :native}))))
+          :not-thrown
+          (catch :default error (:source (ex-data error))))]
+    (is (= :native caught))
+    (is (empty? (:ffi-errors @state))
+        "a native proceed exception must not be latched as a controller error")
+    (is (= [{:mode :hybrid :route :native
+             :handler-key key :descriptor descriptor}]
+           @effect-trace))))
+
+(deftest hybrid-effect-trace-preserves-arrival-order-across-a-slow-selected-proceed
+  ;; Two concurrent handler calls arrive in order A then B, but A's handler
+  ;; (which selects proceed) only completes after B's (which substitutes)
+  ;; finishes. The reserved effect-trace slot for A is finalized in place, so
+  ;; its position still reflects arrival order rather than completion order.
+  (let [state (atom {:ffi-errors []})
+        effect-trace (atom [])
+        ledger (atom [])
+        a-started (promise)
+        release-a (promise)
+        a-proceeded? (atom false)
+        alloc-key [:native-operation :alloc]
+        sizeof-key [:native-operation :sizeof]
+        a-descriptor (native-descriptor :alloc [8])
+        b-descriptor (native-descriptor :sizeof [:int])
+        controller
+        (make-ffi-routing-controller-var
+         :hybrid
+         {alloc-key
+          (fn [_]
+            (deliver a-started true)
+            @release-a
+            (rt/proceed))
+          sizeof-key
+          (fn [_] (rt/substitute 4))}
+         state effect-trace ledger)
+        a-result (promise)
+        a-thread
+        (Thread.
+         (fn []
+           (deliver
+            a-result
+            (try
+              {:value
+               (controller a-descriptor
+                           (fn [] (reset! a-proceeded? true) :native-a))}
+              (catch :default error
+                {:error error})))))]
+    ;; The assertions and release below still bound and join the worker. Make
+    ;; it daemon as a final test-harness guard so a controller deadlock cannot
+    ;; retain the entire shared suite after those bounds report failure.
+    (.setDaemon a-thread true)
+    (.start a-thread)
+    (try
+      (is (not= :timeout (deref a-started 5000 :timeout)))
+      (let [b-result (controller b-descriptor (fn [] :wrong-b))]
+        (is (= 4 b-result)))
+      (finally
+        (deliver release-a true)
+        (.join a-thread 5000)))
+    (is (= {:value :native-a} (deref a-result 5000 :timeout)))
+    (is (true? @a-proceeded?))
+    (is (= [a-descriptor b-descriptor] (mapv :descriptor @effect-trace)))
+    (is (= [:native :handler] (mapv :route @effect-trace)))
+    (is (= alloc-key (:handler-key (first @effect-trace))))))
+
+(deftest hybrid-additional-resources-block-later-native-misses
+  (let [state (atom {:ffi-errors []})
+        effect-trace (atom [])
+        ledger (atom [])
+        alloc-key [:native-operation :alloc]
+        pipe-descriptor (native-descriptor :alloc [8])
+        read-fd-descriptor (native-descriptor :free [9000])
+        write-fd-descriptor (native-descriptor :free [9100])
+        controller
+        (make-ffi-routing-controller-var
+         :hybrid
+         {alloc-key
+          (fn [_]
+            (rt/with-additional-resources
+             (rt/substitute 0)
+             [{:base 9000 :span 1} {:base 9100 :span 1}]))}
+         state effect-trace ledger)]
+    (is (= 0 (controller pipe-descriptor (fn [] :wrong))))
+    (is (= [{:base 9000 :span 1 :handler-key alloc-key :descriptor pipe-descriptor}
+            {:base 9100 :span 1 :handler-key alloc-key :descriptor pipe-descriptor}]
+           @ledger))
+    (doseq [descriptor [read-fd-descriptor write-fd-descriptor]]
+      (let [data (ex-data-of #(controller descriptor (fn [] :wrong)))]
+        (is (= :jolt.sim.runtime/modeled-resource-native-fallback (:type data))
+            (pr-str descriptor))))))
+
+(deftest with-additional-resources-validates-eagerly-and-rejects-bad-targets
+  (let [data (ex-data-of
+              #(rt/with-additional-resources
+                (rt/substitute 0)
+                [{:base 0 :span 1} {:base -1 :span 1}]))]
+    (is (= :jolt.sim.runtime/invalid-modeled-resource (:type data))))
+  (let [data (ex-data-of
+              #(rt/with-additional-resources
+                (rt/substitute 0)
+                [{:base 0 :span 0}]))]
+    (is (= :jolt.sim.runtime/invalid-modeled-resource (:type data))))
+  (let [data (ex-data-of #(rt/with-additional-resources 42 []))]
+    (is (= :jolt.sim.runtime/invalid-handler-result (:type data)))
+    (is (= :additional-resources-target (:reason data))))
+  (let [data (ex-data-of #(rt/with-additional-resources (rt/proceed) []))]
+    (is (= :jolt.sim.runtime/invalid-handler-result (:type data)))
+    (is (= :additional-resources-target (:reason data))))
+  (let [data
+        (ex-data-of
+         #(rt/with-additional-resources
+           (assoc (rt/substitute 0) :unexpected true)
+           []))]
+    (is (= :jolt.sim.runtime/invalid-handler-result (:type data)))
+    (is (= :additional-resources-target (:reason data))))
+  (let [data
+        (ex-data-of
+         #(rt/with-additional-resources
+           (rt/substitute 0)
+           (list {:base 0 :span 1})))]
+    (is (= :jolt.sim.runtime/invalid-modeled-resource (:type data)))
+    (is (= :not-a-vector (:reason data))))
+  ;; Zero additional resources is a valid, no-op composition: wrapping still
+  ;; decodes and dispatches as an ordinary substitute.
+  (let [state (atom {:ffi-errors []})
+        effect-trace (atom [])
+        ledger (atom [])
+        key [:native-operation :sizeof]
+        descriptor (native-descriptor :sizeof [:int])
+        controller
+        (make-ffi-routing-controller-var
+         :hybrid
+         {key (fn [_] (rt/with-additional-resources (rt/substitute 4) []))}
+         state effect-trace ledger)]
+    (is (= 4 (controller descriptor (fn [] :wrong))))
+    (is (empty? @ledger))))
+
+(deftest malformed-additional-resources-leave-the-ledger-unchanged
+  ;; A hand-built decoded map exercises register-modeled-resource!'s own
+  ;; defensive validation directly, independent of with-additional-resources'
+  ;; eager checks. A valid primary plus one valid and one malformed addition
+  ;; must leave the ledger with none of the three appended.
+  (let [ledger (atom [])
+        descriptor (native-descriptor :alloc [8])
+        decoded {:kind :modeled-resource :value 1042000000 :span 8
+                 :additional-resources
+                 [{:base 9000 :span 1} {:base -1 :span 1}]}
+        data (ex-data-of
+              #(register-modeled-resource-var
+                ledger descriptor [:native-operation :alloc] decoded))]
+    (is (= :jolt.sim.runtime/invalid-modeled-resource (:type data)))
+    (is (empty? @ledger)
+        "a malformed later addition must not leave earlier additions or the primary resource behind")))
 
 (deftest live-observe-proceeds-real-ffi-and-does-not-latch-native-errors
   (if (rt/available?)
