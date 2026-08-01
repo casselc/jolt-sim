@@ -6,7 +6,20 @@
   controller, event capture, and cleanup around it. A calling test resolves one
   scenario by its namespaced symbol and drives it through a fresh worker
   process with an explicit `:future-schedule` runtime override."
-  (:require [jolt.sim.runtime :as rt]))
+  (:require [jolt.host :as host]
+            [jolt.sim.runtime :as rt]))
+
+(defn- sleep-for-at-least!
+  "Sleeps until a monotonic deadline even when a host signal interrupts the
+  underlying nanosleep early."
+  [delay-ms]
+  (let [deadline (+ (host/monotonic-nanos) (* delay-ms 1000000))]
+    (loop []
+      (let [remaining (- deadline (host/monotonic-nanos))]
+        (when (pos? remaining)
+          (Thread/sleep
+           (max 1 (quot (+ remaining 999999) 1000000)))
+          (recur))))))
 
 (rt/defsim independent {}
   ;; Two ordinary futures with no dependency between them: both are spawned
@@ -84,7 +97,7 @@
     (let [late-writer
           (Thread.
            (fn []
-             (Thread/sleep late-delay-ms)
+             (sleep-for-at-least! late-delay-ms)
              (spit late-path "late")))]
       (.setDaemon late-writer true)
       (.start late-writer))
