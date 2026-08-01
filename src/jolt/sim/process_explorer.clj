@@ -139,6 +139,9 @@
   ;; implement timed waitFor and ignores the unavailable TimeUnit object.
   (.waitFor (:proc child) timeout-ms nil))
 
+(defn- child-pid [child]
+  (.pid (:proc child)))
+
 (defn- reaped-exit [child]
   ;; `timed-wait!` has already observed and cached process exit. Reading the
   ;; native exit value is therefore nonblocking and avoids the process record's
@@ -244,7 +247,7 @@
 (defn- supervise-child
   [config child result-path stdout-path stderr-path]
   (let [schedule (:schedule config)
-        worker-pid (.pid (:proc child))
+        worker-pid (child-pid child)
         wait-result
         (try
           {:finished? (boolean (timed-wait! child (:timeout-ms config)))}
