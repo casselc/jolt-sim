@@ -770,3 +770,191 @@
         (doseq [ptr [payload e1 e2 (:cell p1) (:cell p2)]]
           (native h :free ptr))))
     (is (true? (posix/clean? (:world h))))))
+
+;; ---- per-socket receive FIFO stream capacity ---------------------------
+
+(defn- connected-pair [h descriptor]
+  (let [listener (open-listener h descriptor)
+        target (alloc-sockaddr h descriptor (:port listener))
+        [client _] (foreign h "socket" false [2 1 0])]
+    (is (= [0 0] (foreign h "connect" true [client target 16])))
+    (let [[server accept-error]
+          (foreign h "accept" false [(:fd listener) 0 0])]
+      (is (zero? accept-error))
+      {:listener listener :target target
+       :client client :server server})))
+
+(defn- snap-by-fd [world fd]
+  (some #(when (= (:fd %) fd) %) (posix/snapshot world)))
+
+(defn- close-pair [h pair]
+  (foreign h "close" false [(:client pair)])
+  (foreign h "close" false [(:server pair)])
+  (foreign h "close" false [(:fd (:listener pair))])
+  (native h :free (:target pair))
+  (native h :free (:address (:listener pair))))
+
+(deftest stream-capacity-default-is-finite-and-invalid-values-fail-closed
+  (is (= {:stream-capacity 65536
+          :stream-would-blocks 0
+          :stream-capacity-limited-writes 0
+          :max-stream-recv-bytes 0}
+         (posix/capacity-summary
+          (posix/world (memory/world) linux-descriptor))))
+  (is (= {:stream-capacity 3
+          :stream-would-blocks 0
+          :stream-capacity-limited-writes 0
+          :max-stream-recv-bytes 0}
+         (posix/capacity-summary
+          (posix/world (memory/world) linux-descriptor
+                       {:stream-capacity 3}))))
+  (doseq [bad [0 -1 nil "3" 3.0]]
+    (is (= :jolt.sim.net.posix-loopback/invalid-config
+           (:type (ex-data-of
+                   #(posix/world (memory/world) linux-descriptor
+                                 {:stream-capacity bad}))))
+        (str "capacity " (pr-str bad) " must be rejected"))))
+
+(deftest stream-capacity-limits-nonblocking-sends-and-poll-readiness
+  (let [h (harness linux-descriptor {:stream-capacity 3 :progress-limit 2})
+        pair (connected-pair h linux-descriptor)
+        client (:client pair)
+        server (:server pair)
+        pollout (get-in linux-descriptor [:const :pollout])
+        eagain (get-in linux-descriptor [:errno :eagain])
+        payload (native h :alloc 5)
+        received (native h :alloc 5)
+        entries (alloc-poll-entries h [[client pollout]])]
+    (try
+      (native h :write-array payload (byte-array [0 1 2 3 4]))
+      (make-nonblocking! h linux-descriptor client)
+      ;; The client is writable while room == capacity.
+      (is (= [1 0] (foreign h "poll" true [entries 1 0])))
+      (is (= pollout (poll-revents h entries 0)))
+      ;; Send 1: progress-limit 2 caps progress, room 3 allows both bytes.
+      (is (= [2 0] (foreign h "send" false [client payload 5 0])))
+      (is (= 2 (:recv-bytes (snap-by-fd (:world h) server))))
+      (is (= 3 (:recv-capacity (snap-by-fd (:world h) server))))
+      (is (= 1 (:recv-available (snap-by-fd (:world h) server))))
+      ;; Still writable: one byte of room remains.
+      (is (= [1 0] (foreign h "poll" true [entries 1 0])))
+      (is (= pollout (poll-revents h entries 0)))
+      ;; Send 2: room 1 reduces progress below min(3, 2) = 2.
+      (is (= [1 0] (foreign h "send" false [client (+ payload 2) 3 0])))
+      (is (= 3 (:recv-bytes (snap-by-fd (:world h) server)))
+          "the receive queue never exceeds capacity")
+      (is (= 0 (:recv-available (snap-by-fd (:world h) server))))
+      ;; POLLOUT clears once the peer FIFO is full.
+      (is (= [0 0] (foreign h "poll" true [entries 1 0])))
+      (is (zero? (poll-revents h entries 0)))
+      ;; Send 3: full FIFO, nonblocking descriptor captures EAGAIN.
+      (is (= [-1 eagain] (foreign h "send" false [client payload 1 0])))
+      (is (= 3 (:recv-bytes (snap-by-fd (:world h) server)))
+          "a would-block leaves the queue at capacity")
+      ;; A recv on the server publishes readiness and frees one byte of room.
+      (is (= [1 0] (foreign h "recv" false [server received 1 0])))
+      (is (= 2 (:recv-bytes (snap-by-fd (:world h) server))))
+      (is (= 1 (:recv-available (snap-by-fd (:world h) server))))
+      ;; POLLOUT reappears once capacity returns.
+      (is (= [1 0] (foreign h "poll" true [entries 1 0])))
+      (is (= pollout (poll-revents h entries 0)))
+      ;; Capacity evidence is exact after this transition sequence.
+      (is (= {:stream-capacity 3
+              :stream-would-blocks 1
+              :stream-capacity-limited-writes 1
+              :max-stream-recv-bytes 3}
+             (posix/capacity-summary (:world h))))
+      (finally
+        (native h :free payload)
+        (native h :free received)
+        (native h :free entries)
+        (close-pair h pair)))
+    (is (true? (posix/clean? (:world h))))))
+
+(deftest blocking-stream-send-into-full-fifo-fails-closed
+  (let [h (harness linux-descriptor {:stream-capacity 1})
+        pair (connected-pair h linux-descriptor)
+        client (:client pair)
+        payload (native h :alloc 1)]
+    (try
+      ;; The client is blocking by default. Fill the single-byte FIFO.
+      (is (= [1 0] (foreign h "send" false [client payload 1 0])))
+      ;; A blocking send into the now-full FIFO cannot wait inside the model
+      ;; and fails closed with the typed transition.
+      (let [data (ex-data-of #(foreign h "send" false [client payload 1 0]))]
+        (is (= :jolt.sim.net.posix-loopback/blocking-stream-send-unsupported
+               (:type data)))
+        (is (= 1 (:capacity data))))
+      ;; Evidence records the would-block even on the closed failure path.
+      (is (= 1 (:stream-would-blocks
+                (posix/capacity-summary (:world h)))))
+      (finally
+        (native h :free payload)
+        (close-pair h pair)))
+    (is (true? (posix/clean? (:world h))))))
+
+(deftest parked-write-poll-wakes-when-recv-releases-capacity
+  (let [h (harness linux-descriptor {:stream-capacity 1 :progress-limit 2})
+        pair (connected-pair h linux-descriptor)
+        client (:client pair)
+        server (:server pair)
+        pollout (get-in linux-descriptor [:const :pollout])
+        payload (native h :alloc 1)
+        received (native h :alloc 1)
+        entry (alloc-poll-entries h [[client pollout]])]
+    (try
+      (make-nonblocking! h linux-descriptor client)
+      ;; Fill the single-byte FIFO; POLLOUT then clears.
+      (is (= [1 0] (foreign h "send" false [client payload 1 0])))
+      (is (= [0 0] (foreign h "poll" true [entry 1 0])))
+      (is (zero? (poll-revents h entry 0)))
+      ;; Park a blocking poll for write readiness on the full socket.
+      (let [waiting (future (foreign h "poll" true [entry 1 3000]))]
+        (is (true? (wait-for-waiter-count (:world h) 1 2000)))
+        ;; A recv on the server publishes readiness and must wake the parked
+        ;; writer even though it was already parked while capacity was zero.
+        (is (= [1 0] (foreign h "recv" false [server received 1 0])))
+        (is (= [1 0] (deref waiting 3000 :timeout)))
+        (is (= pollout (poll-revents h entry 0))))
+      (finally
+        (native h :free payload)
+        (native h :free received)
+        (native h :free entry)
+        (close-pair h pair)))
+    (is (true? (posix/clean? (:world h))))))
+
+(deftest epipe-precedence-beats-stream-capacity
+  (let [h (harness linux-descriptor {:stream-capacity 1})
+        shut-rd (get-in linux-descriptor [:const :shut-rd])
+        epipe (get-in linux-descriptor [:errno :epipe])]
+    ;; Case 1: peer read-shutdown. Fill the FIFO, then the peer stops reading.
+    (let [pair (connected-pair h linux-descriptor)
+          client (:client pair)
+          server (:server pair)
+          payload (native h :alloc 1)]
+      (try
+        (make-nonblocking! h linux-descriptor client)
+        (is (= [1 0] (foreign h "send" false [client payload 1 0])))
+        (is (= [0 0] (foreign h "shutdown" false [server shut-rd])))
+        (is (= [-1 epipe]
+               (foreign h "send" false [client payload 1 0]))
+            "EPIPE beats capacity when the peer read half is shut down")
+        (finally
+          (native h :free payload)
+          (close-pair h pair))))
+    ;; Case 2: peer gone (closed). Fill the FIFO, then the peer retires.
+    (let [pair (connected-pair h linux-descriptor)
+          client (:client pair)
+          server (:server pair)
+          payload (native h :alloc 1)]
+      (try
+        (make-nonblocking! h linux-descriptor client)
+        (is (= [1 0] (foreign h "send" false [client payload 1 0])))
+        (is (= 0 (foreign h "close" false [server])))
+        (is (= [-1 epipe]
+               (foreign h "send" false [client payload 1 0]))
+            "EPIPE beats capacity when the peer is gone")
+        (finally
+          (native h :free payload)
+          (close-pair h pair))))
+    (is (true? (posix/clean? (:world h))))))

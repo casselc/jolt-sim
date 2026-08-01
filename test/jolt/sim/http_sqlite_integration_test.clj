@@ -78,7 +78,11 @@
                       (fixture/exercise-http-sqlite))
         mem (memory/world)
         sqlite-world (sqlite/world mem (statement-plans))
-        posix-world (posix/world mem (net/target-descriptor))
+        ;; A one-byte per-socket receive FIFO forces every HTTP octet through
+        ;; the capacity model: the writer poll/recv handshake is exercised
+        ;; end to end while ordinary library behavior and cleanup are retained.
+        posix-world (posix/world mem (net/target-descriptor)
+                                 {:stream-capacity 1})
         ;; Three named packs: the shared memory native-operation handlers
         ;; registered exactly once, plus the SQLite and POSIX foreign packs
         ;; that contribute only their foreign-function keys over that same
@@ -133,6 +137,16 @@
     (is (zero? (:waiter-count (posix/readiness-snapshot posix-world))))
     (is (empty? (get (posix/state posix-world) :listeners)))
     (is (empty? (get (posix/state posix-world) :addrinfo-allocations)))
+
+    ;; The one-byte stream capacity was honored end to end: the configured
+    ;; capacity is exactly 1, the back-pressure path produced both a partial
+    ;; capacity-limited write and a would-block/retry, and a connected socket's
+    ;; receive FIFO reached but never exceeded one byte.
+    (let [summary (posix/capacity-summary posix-world)]
+      (is (= 1 (:stream-capacity summary)))
+      (is (pos? (:stream-capacity-limited-writes summary)))
+      (is (pos? (:stream-would-blocks summary)))
+      (is (= 1 (:max-stream-recv-bytes summary))))
 
     ;; The single shared memory world backs SQLite and POSIX, and is clean.
     (is (true? (memory/clean? mem)))

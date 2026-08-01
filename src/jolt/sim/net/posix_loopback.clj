@@ -139,13 +139,18 @@
 ;; ---- config ------------------------------------------------------------
 
 (def ^:private supported-config-keys
-  #{:first-fd :ephemeral-base :ephemeral-max :progress-limit})
+  #{:first-fd :ephemeral-base :ephemeral-max :progress-limit
+    :stream-capacity})
 
 (def ^:private default-config
   {:first-fd 0x40000000
    :ephemeral-base 40000
    :ephemeral-max 65535
-   :progress-limit 2})
+   :progress-limit 2
+   ;; Each connected socket's receive FIFO is capped globally by a finite
+   ;; positive-integer capacity. There is deliberately no nil/unbounded
+   ;; compatibility mode: every world commits to one exact bound.
+   :stream-capacity 65536})
 
 (defn- validate-config [config]
   (let [cfg (or config {})]
@@ -162,7 +167,8 @@
       (doseq [[k v] {:first-fd (:first-fd merged)
                      :ephemeral-base (:ephemeral-base merged)
                      :ephemeral-max (:ephemeral-max merged)
-                     :progress-limit (:progress-limit merged)}]
+                     :progress-limit (:progress-limit merged)
+                     :stream-capacity (:stream-capacity merged)}]
         (when-not (and (integer? v) (pos? v))
           (fail! :jolt.sim.net.posix-loopback/invalid-config
                  (str "posix-loopback " (name k) " must be a positive integer")
@@ -261,7 +267,12 @@
                     :pipes {}
                     :listeners {}
                     :closed-fds #{}
-                    :addrinfo-allocations {}})
+                    :addrinfo-allocations {}
+                    :capacity-evidence
+                    {:stream-capacity (:stream-capacity cfg)
+                     :stream-would-blocks 0
+                     :stream-capacity-limited-writes 0
+                     :max-stream-recv-bytes 0}})
       ;; Waiters deliberately live outside the public resource state. They are
       ;; host synchronization objects, not simulated POSIX resources or trace
       ;; values, and must never leak into a replay snapshot.
@@ -470,10 +481,18 @@
                           (:read-shutdown? socket)
                           (:peer-write-shutdown? socket)
                           (:peer-closed? socket))
-            ;; The model has no send-buffer capacity. A send while the peer is
-            ;; unavailable fails immediately rather than blocking, which still
-            ;; makes the descriptor writable in poll's sense.
-            writable? (not (:write-shutdown? socket))]
+            capacity (:stream-capacity (:config w))
+            peer (socket-of w (:peer-fd socket))
+            ;; POLLOUT is present for a live readable peer only while its
+            ;; receive FIFO has room. A missing/closed peer, or one that
+            ;; stopped reading, remains writable in poll's sense so the
+            ;; subsequent send exposes EPIPE; local write shutdown is never
+            ;; writable.
+            writable?
+            (and (not (:write-shutdown? socket))
+                 (or (nil? peer)
+                     (:read-shutdown? peer)
+                     (pos? (- capacity (count (:recv-q peer))))))]
         (bit-or
          (if (and (requested? events pollin) readable?) pollin 0)
          (if (and (requested? events pollout) writable?) pollout 0)
@@ -822,13 +841,50 @@
     :else
     (if-let [peer (socket-of w (:peer-fd s))]
       (if (:read-shutdown? peer)
+        ;; EPIPE precedence: a peer that stopped reading is honored before
+        ;; the receive-FIFO capacity model.
         (err-pair (target-errno w :epipe))
-        (let [n (min len (:progress-limit (:config w)))
-              moved (ba->uvec (invoke-mem w :read-array [buf-ptr n]))]
-          (swap! (:state w) update-in [:sockets (:fd peer) :recv-q]
-                 into moved)
-          (notify-readiness! w)
-          [n 0]))
+        (let [capacity (:stream-capacity (:config w))
+              occupied (count (:recv-q peer))
+              room (- capacity occupied)]
+          (if (zero? room)
+            ;; The peer's receive FIFO is full. A nonblocking descriptor
+            ;; captures EAGAIN exactly; a blocking one cannot wait inside the
+            ;; model and fails closed with a typed transition.
+            (do (swap! (:state w)
+                       update :capacity-evidence
+                       (fn [ev] (update ev :stream-would-blocks inc)))
+                (if (:nonblocking? s)
+                  (err-pair (target-errno w :eagain))
+                  (fail! :jolt.sim.net.posix-loopback/blocking-stream-send-unsupported
+                         "blocking stream send into a full receive FIFO requires the modeled poll/wait slice"
+                         {:fd (:fd s) :peer-fd (:fd peer) :capacity capacity})))
+            (let [progress-limit (:progress-limit (:config w))
+                  wanted (min len progress-limit)
+                  n (min wanted room)
+                  ;; Capacity-limited means room reduced the progress that
+                  ;; min(length, progress-limit) otherwise allowed.
+                  capacity-limited? (< n wanted)
+                  moved (ba->uvec (invoke-mem w :read-array [buf-ptr n]))]
+              ;; The queue and its evidence transition in one state swap so a
+              ;; concurrent readiness observer never sees occupancy without
+              ;; its matching evidence.
+              (swap! (:state w)
+                     (fn [cur]
+                       (let [new-occ (+ occupied n)]
+                         (-> cur
+                             (update-in [:sockets (:fd peer) :recv-q]
+                                        #(into % moved))
+                             (update :capacity-evidence
+                                     (fn [ev]
+                                       (cond-> (assoc ev :max-stream-recv-bytes
+                                                      (max (:max-stream-recv-bytes ev)
+                                                           new-occ))
+                                         capacity-limited?
+                                         (update :stream-capacity-limited-writes inc))))))))
+              (notify-readiness! w)
+              [n 0]))))
+      ;; Missing peer (closed): EPIPE precedence before capacity.
       (err-pair (target-errno w :epipe)))))
 
 (defn- h-send [w {:keys [arguments]}]
@@ -1083,22 +1139,40 @@
 (defn snapshot
   "Stable plain-data summary of every open socket, ordered by fd. Each entry
   carries its state machine value, local/peer loopback ports, the nonblocking
-  flag, the two independent half-open flags, and the number of bytes pending in
-  its recv FIFO."
+  flag, the two independent half-open flags, the number of bytes pending in its
+  recv FIFO, the configured receive capacity, and the remaining room."
   [w]
-  (->> (:sockets @(:state w))
-       vals
-       (sort-by :fd)
-       (mapv (fn [s]
-               {:fd (:fd s)
-                :state (:state s)
-                :local-port (:local-port s)
-                :peer-port (:peer-port s)
-                :nonblocking? (:nonblocking? s)
-                :write-shutdown? (:write-shutdown? s)
-                :peer-write-shutdown? (:peer-write-shutdown? s)
-                :peer-closed? (:peer-closed? s)
-                :recv-bytes (count (:recv-q s))}))))
+  (let [capacity (:stream-capacity (:config w))]
+    (->> (:sockets @(:state w))
+         vals
+         (sort-by :fd)
+         (mapv (fn [s]
+                 (let [occupied (count (:recv-q s))]
+                   {:fd (:fd s)
+                    :state (:state s)
+                    :local-port (:local-port s)
+                    :peer-port (:peer-port s)
+                    :nonblocking? (:nonblocking? s)
+                    :write-shutdown? (:write-shutdown? s)
+                    :peer-write-shutdown? (:peer-write-shutdown? s)
+                    :peer-closed? (:peer-closed? s)
+                    :recv-bytes occupied
+                    :recv-capacity capacity
+                    :recv-available (- capacity occupied)}))))))
+
+(defn capacity-summary
+  "Stable evidence for the per-socket receive FIFO capacity model: the
+  configured finite capacity, the count of sends that would block on a full
+  FIFO, the count of writes whose progress capacity reduced below
+  min(length, progress-limit), and the maximum byte occupancy observed on any
+  one connected socket's receive FIFO."
+  [w]
+  (let [evidence (:capacity-evidence @(:state w))]
+    {:stream-capacity (:stream-capacity evidence)
+     :stream-would-blocks (:stream-would-blocks evidence)
+     :stream-capacity-limited-writes
+     (:stream-capacity-limited-writes evidence)
+     :max-stream-recv-bytes (:max-stream-recv-bytes evidence)}))
 
 (defn clean?
   "True when shared memory has no live allocations and every modeled socket and
