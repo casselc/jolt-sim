@@ -229,12 +229,14 @@ jobs:
           $env:JOLT_SIM_PROJECT_DIR = $project
           Push-Location $project
           try {
+            # Current Jolt ProcessBuilder supervision uses the POSIX
+            # /bin/sh + waitpid/kill host surface. Keep its fresh-process gate
+            # in the POSIX matrix until Jolt exposes an equivalent Windows host.
             foreach ($alias in @(
               '-M:test',
               '-M:runtime-poison-test',
               '-M:ffi-pointer-loan-test',
-              '-M:future-schedule-poison-test',
-              '-M:explore-process-test')) {
+              '-M:future-schedule-poison-test')) {
               & $sim $alias
               if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             }
