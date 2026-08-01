@@ -678,16 +678,33 @@
    "sqlite3_changes" (partial h-changes w)
    "sqlite3_last_insert_rowid" (partial h-last-rowid w)})
 
+(defn foreign-handlers
+  "Returns only the exact 22 SQLite foreign-function handlers keyed by the
+  runtime's accepted five-element descriptor shorthands. Handler-pack/runtime
+  validation normalizes them to canonical six-element keys. The memory world's
+  native-operation handlers are not included; compose them separately (e.g.
+  through jolt.sim.handler-pack/compose) when one memory world must back SQLite
+  alongside other foreign handler packs without double-registering the shared
+  native operations."
+  [w]
+  (let [fns (sqlite-fns w)]
+    (into {}
+          (map (fn [key]
+                 (let [symbol (nth key 1)
+                       handler (get fns symbol)]
+                   (when-not (fn? handler)
+                     (fail! :jolt.sim.sqlite/invalid-handler-registry
+                            "SQLite handler registry is incomplete"
+                            {:symbol symbol :handler handler}))
+                   [key handler])))
+          handler-keys)))
+
 (defn handlers
   "Returns the memory world's 15 native-operation handlers merged with exactly
   the 22 SQLite foreign-function keys, as one :ffi-handlers map. Both layers
   share the single memory world."
   [w]
-  (let [fns (sqlite-fns w)]
-    (reduce (fn [m key]
-              (assoc m key (get fns (nth key 1))))
-            (:memory-handlers w)
-            handler-keys)))
+  (merge (:memory-handlers w) (foreign-handlers w)))
 
 ;; ---- evidence -----------------------------------------------------------
 

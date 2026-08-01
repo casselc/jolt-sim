@@ -359,6 +359,15 @@
 
 ;; ---- merged native operations still work --------------------------------
 
+(deftest foreign-handlers-exclude-shared-native-operations
+  (let [w (sqlite/world [])
+        foreign (sqlite/foreign-handlers w)]
+    (is (= 22 (count foreign)))
+    (is (= (set sqlite/handler-keys) (set (keys foreign))))
+    (is (every? fn? (vals foreign)))
+    (is (every? #(= :foreign-function (first %)) (keys foreign)))
+    (is (empty? (filter #(= :native-operation (first %)) (keys foreign))))))
+
 (deftest native-memory-operations-still-work-through-the-merged-handlers
   (let [w (sqlite/world [])
         H (sqlite/handlers w)
