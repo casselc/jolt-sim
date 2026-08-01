@@ -56,6 +56,10 @@ baseline and remints the affected contracts and tests in place.
 - an optional Hegel adapter that either selects from an ordered schedule domain
   or directly generates a count-based permutation, shrinks a failing choice,
   and exactly replays it in another fresh worker;
+- a pure transport-neutral fault-plan director with closed canonical plans,
+  deterministic shallow matching, match/firing ordinals, bounded activation,
+  first-eligible priority, and exact evidence that separates activation from
+  actual firing;
 - a deterministic native-memory world with configurable ABI widths and byte
   order, exact bounds/lifetime failures, copy-safe byte buffers, owned C
   strings, and leak snapshots;
@@ -247,7 +251,9 @@ nested native access and exception cleanup:
 ```
 
 The adapter still does not discover future counts, choose high-utility
-interleavings, advance virtual time, or inject faults. `schedule-plans` can
+interleavings, advance virtual time, or inject a fault into a runtime or model
+boundary. The pure fault director described below now owns plan policy and
+evidence, but no frontend consumes it yet. `schedule-plans` can
 enumerate the first bounded lexicographic top-level admission permutations, but
 that is not Hegel/swarm search, partial-order reduction, or explicit-state
 exploration. SQLite and the first POSIX loopback stream, self-pipe, and
@@ -399,8 +405,8 @@ It is not a deadlock proof. General case transport does not itself generate or
 interpret workloads and faults: the current plan space is still just serial
 admission of a known number of top-level ordinary-future bodies. Nested
 futures, competing raw spawners, clocks, synchronization-boundary choices,
-fault-plan semantics, workload/fault shrinking, and coverage-guided sampling
-remain later work.
+fault-plan generation/shrinking and transport frontends, workload shrinking,
+and coverage-guided sampling remain later work.
 
 ### Optional Hegel selection and shrinking
 
@@ -463,6 +469,45 @@ distribution for its integer draws, so the direct generator makes no uniform
 sampling claim. Hegel runs cases sequentially; stateful swarm rules,
 coverage/resource-order scores, targeted sampling, workload and fault
 generation, and partial-order reduction remain separate later work.
+
+### Transport-neutral deterministic fault plans
+
+`jolt.sim.fault` is the single pure policy core shared by future message,
+POSIX, SQLite, and other boundary frontends. It validates one ordered vector of
+closed rule maps and returns immutable director state. `step` consumes a plain
+canonical attempt map and returns the next state plus exact evidence; it never
+performs I/O or interprets a rule's opaque outcome:
+
+```clojure
+(require '[jolt.sim.fault :as fault])
+
+(def d0
+  (fault/director
+   [{:id :example/interrupt-first-poll
+     :match {:boundary :posix :operation :poll}
+     :activation {:on-match 1 :times 1}
+     :outcome {:kind :captured-error :errno :eintr}}]))
+
+(fault/step d0
+            {:attempt-id [:posix/poll 1]
+             :boundary :posix
+             :operation :poll})
+```
+
+Matching is a shallow top-level subset whose values compare by canonical
+projection, so byte arrays compare by content and nested maps compare exactly.
+Every matching rule advances its match ordinal. A rule activates at
+`:on-match` while it has fewer than the total `:times` firings; the first
+activated rule in vector order fires. Evidence records every matching rule's
+activation and firing decision plus the chosen rule's global and per-rule
+firing ordinals and a fresh copy of its outcome. Plans, attempts, public state,
+and returned evidence fail closed outside the stable trace domain.
+
+This core does not itself simulate errno, delay, loss, partitions, clocks, or
+transport behavior. A boundary frontend must construct attempts, interpret only
+the outcomes it owns, and retain its real buffer/readiness/ownership semantics.
+The first planned frontend is a one-shot captured `EINTR` at the existing
+POSIX `poll(2)` handler seam, exercised through unchanged HTTP/SQLite code.
 
 ### FFI interception and routing caveats
 
@@ -792,10 +837,12 @@ checked offline.
    order, single-concurrency admission) has landed; still open is running
    one unchanged Jolt namespace in normal and controlled modes through
    nested spawns, promises, clocks, and entropy.
-2. Extend the landed memory, SQLite, and POSIX loopback/poll models with bounded
-   error and cleanup plans, fault seams, and handler packs for codecs on the
-   same fail-closed interception seam. Finite socket and self-pipe capacity are
-   landed and exercised by unchanged public-library lanes.
+2. The transport-neutral fault-plan validation, matching, activation, ordinal,
+   and evidence core is landed. Extend the memory, SQLite, and POSIX
+   loopback/poll models with bounded error/cleanup frontends and add handler
+   packs for codecs on the same fail-closed interception seam. Finite socket
+   and self-pipe capacity are landed and exercised by unchanged public-library
+   lanes.
 3. Drive unchanged public nonblocking connect/accept through readiness, then
    add operation effects for cancel and deadlines followed by deterministic
    network and storage fault models.
