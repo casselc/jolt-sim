@@ -246,6 +246,17 @@
                {:firings (:firings value) :rule-firings sum}))))
   value)
 
+(defn validate-director
+  "Validates and returns an existing plain-data fault director.
+
+  Boundary frontends use this when accepting restored or caller-supplied
+  director state without consuming an attempt. The validation is identical to
+  [[step]]'s director validation: exact closed shapes, canonical frozen fields,
+  unique rule ids, coherent counters, and the global firing invariant. Invalid
+  values throw typed ``invalid-director`` ex-info."
+  [value]
+  (validate-director! value))
+
 (defn- project-attempt [attempt]
   ;; Validates the whole attempt is stable trace-domain data and returns a map
   ;; from each natural key to its canonical projection, for shallow-subset
@@ -274,7 +285,7 @@
   ``:firing`` is nil or the fired rule's ordinals plus a freshly restored
   outcome."
   [director attempt]
-  (validate-director! director)
+  (validate-director director)
   (when-not (plain-map? attempt)
     (fail! invalid-attempt :attempt-must-be-map
            {:attempt-class (str (class attempt))}))

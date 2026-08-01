@@ -5,6 +5,7 @@
             [jolt.sim.ffi-memory :as memory]
             [jolt.sim.fixtures.http-sqlite :as fixture]
             [jolt.sim.handler-pack :as hp]
+            [jolt.sim.net.posix-fault :as posix-fault]
             [jolt.sim.net.posix-loopback :as posix]
             [jolt.sim.runtime :as runtime]
             [jolt.sim.sqlite :as sqlite]))
@@ -12,6 +13,12 @@
 (def ^:dynamic *sim-only?* false)
 
 (def ^:private expected-blob-octets [0 65 127 128 255])
+
+(def ^:private interrupt-first-poll-plan
+  [{:id :http-sqlite/interrupt-first-poll
+    :match {:boundary :posix :operation :poll}
+    :activation {:on-match 1 :times 1}
+    :outcome {:kind :captured-error :errno :eintr}}])
 
 ;; Opening the connection runs "PRAGMA foreign_keys=1;" via the db.sqlite
 ;; connection initialization, so the four plans are exactly: PRAGMA, create,
@@ -84,6 +91,8 @@
         posix-world (posix/world mem (net/target-descriptor)
                                  {:stream-capacity 1
                                   :pipe-capacity 1})
+        fault-frontend
+        (posix-fault/frontend posix-world interrupt-first-poll-plan)
         ;; Three named packs: the shared memory native-operation handlers
         ;; registered exactly once, plus the SQLite and POSIX foreign packs
         ;; that contribute only their foreign-function keys over that same
@@ -92,7 +101,8 @@
         (hp/compose
          (hp/pack :jolt.sim/memory (memory/handlers mem))
          (hp/pack :jolt.sim/sqlite (sqlite/foreign-handlers sqlite-world))
-         (hp/pack :jolt.sim/posix (posix/foreign-handlers posix-world)))
+         (hp/pack :jolt.sim/posix
+                  (posix-fault/foreign-handlers fault-frontend)))
         controlled
         (runtime/run-controlled
          {:ffi-handlers handlers
@@ -123,6 +133,19 @@
     (is (= (set/union expected-sqlite-foreign-symbols
                       expected-posix-foreign-symbols)
            (foreign-symbols (:effects controlled))))
+
+    ;; One deterministic captured EINTR crossed the ordinary public HTTP/net
+    ;; stack through the existing poll handler. The application still produced
+    ;; the exact DB-backed response, and every later poll delegated normally.
+    (let [fault-snapshot (posix-fault/snapshot fault-frontend)
+          history (posix-fault/evidence-history fault-frontend)]
+      (is (pos? (posix-fault/attempts fault-frontend)))
+      (is (= 1 (:firings fault-snapshot)))
+      (is (= 1 (count (keep :firing history))))
+      (is (= :http-sqlite/interrupt-first-poll
+             (get-in history [0 :firing :rule-id])))
+      (is (= {:kind :captured-error :errno :eintr}
+             (get-in history [0 :firing :outcome]))))
 
     ;; SQLite: all four plans consumed; no live connections or statements.
     (is (= {:plan-index 4

@@ -245,6 +245,32 @@
 
 ;; ---- world -------------------------------------------------------------
 
+(def ^:private world-keys
+  #{:memory :memory-handlers :state :readiness :lock :target :config :type})
+
+(def ^:private memory-world-keys #{:state :lock :config :type})
+(def ^:private memory-config-keys
+  #{:byte-order :pointer-size :long-size :base-address
+    :alignment :available-libraries})
+(def ^:private memory-state-keys #{:next-base :heap :loaded-libraries})
+(def ^:private world-state-keys
+  #{:next-fd :next-ephemeral :sockets :pipes :listeners :closed-fds
+    :addrinfo-allocations :capacity-evidence :pipe-evidence})
+(def ^:private capacity-evidence-keys
+  #{:stream-capacity :stream-would-blocks
+    :stream-capacity-limited-writes :max-stream-recv-bytes})
+(def ^:private pipe-evidence-keys
+  #{:pipe-capacity :pipe-would-blocks :max-pipe-fifo-bytes})
+(def ^:private readiness-state-keys #{:epoch :next-waiter :waiters})
+
+(defn- deref-world-field [value field]
+  (try
+    @value
+    (catch :default _
+      (fail! :jolt.sim.net.posix-loopback/invalid-world
+             "posix-loopback world contains a non-derefable state field"
+             {:field field}))))
+
 (defn world
   "Returns a deterministic IPv4 loopback world for one exact live jolt.net
   POSIX target descriptor. An optional shared memory world and config map let a
@@ -290,6 +316,91 @@
       :target target
       :config cfg
       :type ::world})))
+
+(defn validate-world
+  "Validates and returns a live world produced by [[world]].
+
+  Boundary frontends use this before retaining a caller-supplied world. The
+  validator checks the exact closed outer shape, the shared memory-world and
+  handler registry shapes, the target and config contracts, and the coherent
+  top-level shapes of mutable resource and readiness state. It deliberately
+  does not snapshot or otherwise mutate live modeled resources."
+  [value]
+  (when-not (and (map? value)
+                 (= world-keys (set (keys value)))
+                 (= ::world (:type value))
+                 (some? (:lock value)))
+    (fail! :jolt.sim.net.posix-loopback/invalid-world
+           "value is not an exact posix-loopback world"
+           {:provided-class (str (class value))}))
+  (let [memory-world (:memory value)
+        memory-state
+        (when (and (map? memory-world)
+                   (= memory-world-keys (set (keys memory-world)))
+                   (= :jolt.sim.ffi-memory/world (:type memory-world))
+                   (some? (:lock memory-world)))
+          (deref-world-field (:state memory-world) :memory-state))]
+    (when-not (and (map? memory-state)
+                   (= memory-state-keys (set (keys memory-state)))
+                   (integer? (:next-base memory-state))
+                   (pos? (:next-base memory-state))
+                   (map? (:heap memory-state))
+                   (set? (:loaded-libraries memory-state))
+                   (map? (:config memory-world))
+                   (= memory-config-keys
+                      (set (keys (:config memory-world))))
+                   (= 8 (get-in memory-world [:config :pointer-size])))
+      (fail! :jolt.sim.net.posix-loopback/invalid-world
+             "posix-loopback world contains an invalid shared memory world"
+             {}))
+    (when-not (and (map? (:memory-handlers value))
+                   (= (set (keys (memory/handlers memory-world)))
+                      (set (keys (:memory-handlers value)))))
+      (fail! :jolt.sim.net.posix-loopback/invalid-world
+             "posix-loopback world contains an invalid memory handler registry"
+             {})))
+  (let [validated-config (validate-config (:config value))]
+    (when-not (= validated-config (:config value))
+      (fail! :jolt.sim.net.posix-loopback/invalid-world
+             "posix-loopback world config is not canonical"
+             {:config (:config value)})))
+  (validate-target-descriptor (:target value))
+  (let [state (deref-world-field (:state value) :state)
+        readiness (deref-world-field (:readiness value) :readiness)
+        capacity (:capacity-evidence state)
+        pipe-capacity (:pipe-evidence state)]
+    (when-not
+     (and (map? state)
+          (= world-state-keys (set (keys state)))
+          (integer? (:next-fd state))
+          (pos? (:next-fd state))
+          (integer? (:next-ephemeral state))
+          (pos? (:next-ephemeral state))
+          (every? map? (map state [:sockets :pipes :listeners
+                                   :addrinfo-allocations]))
+          (set? (:closed-fds state))
+          (map? capacity)
+          (= capacity-evidence-keys (set (keys capacity)))
+          (every? #(and (integer? %) (not (neg? %))) (vals capacity))
+          (pos? (:stream-capacity capacity))
+          (map? pipe-capacity)
+          (= pipe-evidence-keys (set (keys pipe-capacity)))
+          (every? #(and (integer? %) (not (neg? %))) (vals pipe-capacity))
+          (pos? (:pipe-capacity pipe-capacity)))
+      (fail! :jolt.sim.net.posix-loopback/invalid-world
+             "posix-loopback world contains invalid resource state"
+             {}))
+    (when-not (and (map? readiness)
+                   (= readiness-state-keys (set (keys readiness)))
+                   (integer? (:epoch readiness))
+                   (not (neg? (:epoch readiness)))
+                   (integer? (:next-waiter readiness))
+                   (not (neg? (:next-waiter readiness)))
+                   (map? (:waiters readiness)))
+      (fail! :jolt.sim.net.posix-loopback/invalid-world
+             "posix-loopback world contains invalid readiness state"
+             {})))
+  value)
 
 ;; ---- memory bridge -----------------------------------------------------
 

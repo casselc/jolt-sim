@@ -3,8 +3,15 @@
             [jolt.net :as net]
             [jolt.sim.ffi-memory :as memory]
             [jolt.sim.fixtures.net-poller :as fixture]
+            [jolt.sim.net.posix-fault :as posix-fault]
             [jolt.sim.net.posix-loopback :as posix]
             [jolt.sim.runtime :as runtime]))
+
+(def ^:private interrupt-second-poll-plan
+  [{:id :poller/interrupt-second-poll
+    :match {:boundary :posix :operation :poll}
+    :activation {:on-match 2 :times 1}
+    :outcome {:kind :captured-error :errno :eintr}}])
 
 (defn- foreign-symbols [effects]
   (set
@@ -24,9 +31,10 @@
 (deftest unchanged-jolt-net-poller-code-runs-in-the-hermetic-loopback-world
   (let [mem (memory/world)
         world (posix/world mem (net/target-descriptor) {:pipe-capacity 1})
+        fault-frontend (posix-fault/frontend world interrupt-second-poll-plan)
         controlled
         (runtime/run-controlled
-         {:ffi-handlers (posix/handlers world)}
+         {:ffi-handlers (posix-fault/handlers fault-frontend)}
          fixture/exercise-poller)
         result (:result controlled)
         listener (:listener result)
@@ -68,6 +76,22 @@
       (is (contains? symbols "poll"))
       (is (every? #(contains? symbols %) ["pipe" "read" "write"])))
     (is (every? #(= :handler (:route %)) (:effect-trace controlled)))
+
+    ;; The fixture's first await is the intentional zero-timeout idle probe.
+    ;; The second native poll belongs to the positive-timeout readable wait:
+    ;; it receives captured EINTR, and unchanged pinned jolt.net retries through
+    ;; the same FFI boundary before producing the readable result above.
+    (let [fault-snapshot (posix-fault/snapshot fault-frontend)
+          history (posix-fault/evidence-history fault-frontend)
+          firing (get-in history [1 :firing])]
+      (is (> (posix-fault/attempts fault-frontend) 2))
+      (is (= 1 (:firings fault-snapshot)))
+      (is (= [:jolt.sim.net.posix-fault/poll 2]
+             (:attempt-id (nth history 1))))
+      (is (= :poller/interrupt-second-poll (:rule-id firing)))
+      (is (= 2 (:match-ordinal firing)))
+      (is (= {:kind :captured-error :errno :eintr} (:outcome firing)))
+      (is (= 1 (count (keep :firing history)))))
 
     (is (empty? (posix/snapshot world)))
     (is (empty? (posix/pipe-snapshot world)))
