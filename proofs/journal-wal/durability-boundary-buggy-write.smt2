@@ -1,0 +1,26 @@
+(set-logic QF_LIA)
+
+(declare-const accepted0 Int)
+(declare-const synced0 Int)
+(declare-const frame-length Int)
+(declare-const write-complete Bool)
+(declare-const power-mode Bool)
+(declare-const sync-complete Bool)
+(declare-const accepted1 Int)
+(declare-const synced1 Int)
+(declare-const false-durable-claim Bool)
+
+(assert (= accepted0 100))
+(assert (= synced0 80))
+(assert (= frame-length 16))
+(assert write-complete)
+(assert power-mode)
+(assert (not sync-complete))
+(assert (= accepted1 (+ accepted0 frame-length)))
+; Bug: a completed write is reported power-durable after failed sync.
+(assert (= synced1 accepted1))
+(assert (= false-durable-claim
+           (and (not sync-complete) (> synced1 synced0))))
+(assert false-durable-claim)
+(check-sat)
+(get-model)
