@@ -9,6 +9,7 @@
             [jolt.sim.fault-test]
             [jolt.sim.ffi-world-integration-test]
             [jolt.sim.ffi-memory-test]
+            [jolt.sim.ffi-schedule-test]
             [jolt.sim.future-schedule-test]
             [jolt.sim.handler-pack-test]
             [jolt.sim.kernel-test]
@@ -33,6 +34,7 @@
                         'jolt.sim.fault-test
                         'jolt.sim.ffi-world-integration-test
                         'jolt.sim.ffi-memory-test
+                        'jolt.sim.ffi-schedule-test
                         'jolt.sim.future-schedule-test
                         'jolt.sim.handler-pack-test
                         'jolt.sim.kernel-test
