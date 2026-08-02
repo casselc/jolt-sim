@@ -20,7 +20,7 @@
   borrowed pointer; an empty :blob cell with :null-pointer? true returns 0 so
   callers can exercise SQLite's ambiguous empty-BLOB pointer contract.
 
-  handlers returns the 15 native-operation handlers from the memory world
+  handlers returns the 16 native-operation handlers from the memory world
   merged with exactly the 22 SQLite foreign-function keys required by
   db.sqlite, so a single :ffi-handlers map drives both layers unchanged."
   (:require [jolt.sim.ffi-memory :as memory]))
@@ -700,7 +700,7 @@
           handler-keys)))
 
 (defn handlers
-  "Returns the memory world's 15 native-operation handlers merged with exactly
+  "Returns the memory world's 16 native-operation handlers merged with exactly
   the 22 SQLite foreign-function keys, as one :ffi-handlers map. Both layers
   share the single memory world."
   [w]

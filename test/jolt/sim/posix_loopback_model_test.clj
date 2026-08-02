@@ -125,8 +125,8 @@
         (set (filter #(= :native-operation (first %)) (keys handlers)))]
     (is (= 21 (count (posix/handler-keys linux-descriptor))))
     (is (= (set (posix/handler-keys linux-descriptor)) foreign-keys))
-    (is (= 15 (count native-keys)))
-    (is (= 36 (count handlers)))
+    (is (= 16 (count native-keys)))
+    (is (= 37 (count handlers)))
     (is (contains? foreign-keys
                   [:foreign-function "pipe" [:pointer] :int false true]))
     (is (contains? foreign-keys

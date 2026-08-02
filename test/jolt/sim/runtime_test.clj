@@ -12,25 +12,46 @@
 ;; prerelease development a future ABI bump replaces this contract in place;
 ;; it does not add another accepted compatibility descriptor.
 (def supported-descriptor
-  {:abi-version 5
+  {:abi-version 6
    :future-lifecycle true
    :controller-errors true
    :events [:spawn :start :finish :cancel :exit :abort]
-   :ffi-interception {:descriptor-version 4
+   :installation
+   {:configuration-keys [:future :ffi :clock]
+    :install-arity 1 :restore-arity 1
+    :atomic? true :strict-lifo? true
+    :future-controller-arity 3
+    :ffi-controller-arity 2
+    :clock-controller-arity 2}
+   :ffi-interception {:descriptor-version 5
                       :kinds [:foreign-function :native-operation]
                       :arguments :live
                       :task-identity :future-lifecycle
                       :native-operations [:load-library :loaded? :alloc :free
                                           :read :write :sizeof :read-bytes
-                                          :write-bytes :read-array :write-array
-                                          :borrow-byte-array :release-byte-array
+                                          :write-bytes :read-array :read-array!
+                                          :write-array :borrow-byte-array
+                                          :release-byte-array
                                           :ptr->string :string->ptr]
                       :proceed-routing {:controller-arity 2
                                         :proceed-arity 0
                                         :single-use true
                                         :dynamic-extent true
                                         :owner-thread true
-                                        :scoped-byte-array-release :runtime-owned}}})
+                                        :lifo true
+                                        :scoped-byte-array-release :runtime-owned}}
+   :clock-interception
+   {:descriptor-version 1
+    :operations [:mono-nanos]
+    :result :exact-integer-nanoseconds
+    :nondecreasing? true
+    :supervisor-operation :supervisor-mono-nanos
+    :proceed-routing {:controller-arity 2
+                      :proceed-arity 0
+                      :single-use true
+                      :dynamic-extent true
+                      :owner-thread true
+                      :lifo true}}})
 
 ;; Binding is safe on every image because native symbol resolution is lazy.
 ;; Calling this nonexistent symbol is safe only under the sim controller,
@@ -346,7 +367,7 @@
   (if (rt/available?)
     (let [result (sample-scenario)]
       (is (= :scenario-result (:result result)))
-      (is (= 5 (:abi-version (:capabilities result)))))
+      (is (= 6 (:abi-version (:capabilities result)))))
     (ordinary-reports-unavailable sample-scenario)))
 
 (deftest defsim-runtime-overrides-require-a-map-before-abi-resolution
@@ -675,6 +696,13 @@
 (def ^:private make-ffi-controller-var
   (resolve 'jolt.sim.runtime/make-ffi-controller))
 
+;; The unified FFI callback is arity 2. Hermetic routing ignores proceed and
+;; must never invoke it, so this sentinel throws if a hermetic controller
+;; accidentally calls its proceed continuation.
+(def ^:private ignored-proceed
+  (fn [] (throw (ex-info "hermetic routing must not invoke proceed"
+                         {:type :test/proceed-invoked}))))
+
 (def ^:private make-ffi-routing-controller-var
   (resolve 'jolt.sim.runtime/make-ffi-routing-controller))
 
@@ -689,7 +717,7 @@
          @(resolve 'jolt.sim.runtime/supported-descriptor)))
   ;; Prerelease versions are exact: stale and future ABI numbers are rejected
   ;; rather than accumulating compatibility branches.
-  (doseq [version [3 4 6 7]]
+  (doseq [version [3 4 5 7 8]]
     (let [bad (assoc supported-descriptor :abi-version version)
           data (ex-data-of #(validate-descriptor-var bad))]
       (is (= :jolt.sim.runtime/abi-incompatible (:type data))
@@ -724,11 +752,61 @@
     (is (= :jolt.sim.runtime/abi-incompatible (:type data))))
   (let [bad (dissoc supported-descriptor :controller-errors)
         data (ex-data-of #(validate-descriptor-var bad))]
+    (is (= :jolt.sim.runtime/abi-incompatible (:type data))))
+  ;; The composite installation contract is exact: a wrong callback arity or a
+  ;; missing callback slot is rejected.
+  (let [bad (assoc-in supported-descriptor
+                      [:installation :ffi-controller-arity] 1)
+        data (ex-data-of #(validate-descriptor-var bad))]
+    (is (= :jolt.sim.runtime/abi-incompatible (:type data))))
+  (let [bad (update-in supported-descriptor
+                       [:installation :configuration-keys] pop)
+        data (ex-data-of #(validate-descriptor-var bad))]
+    (is (= :jolt.sim.runtime/abi-incompatible (:type data))))
+  ;; The clock descriptor is exact: a wrong version, operation, supervisor
+  ;; operation, or nondecreasing flag is rejected, validating before user code.
+  (let [bad (assoc-in supported-descriptor
+                      [:clock-interception :descriptor-version] 2)
+        data (ex-data-of #(validate-descriptor-var bad))]
+    (is (= :jolt.sim.runtime/abi-incompatible (:type data))))
+  (let [bad (assoc-in supported-descriptor
+                      [:clock-interception :operations] [:mono-nanos :extra])
+        data (ex-data-of #(validate-descriptor-var bad))]
+    (is (= :jolt.sim.runtime/abi-incompatible (:type data))))
+  (let [bad (assoc-in supported-descriptor
+                      [:clock-interception :supervisor-operation]
+                      :other-mono-nanos)
+        data (ex-data-of #(validate-descriptor-var bad))]
+    (is (= :jolt.sim.runtime/abi-incompatible (:type data))))
+  (let [bad (assoc-in supported-descriptor
+                      [:clock-interception :nondecreasing?] false)
+        data (ex-data-of #(validate-descriptor-var bad))]
+    (is (= :jolt.sim.runtime/abi-incompatible (:type data))))
+  (let [bad (dissoc supported-descriptor :clock-interception)
+        data (ex-data-of #(validate-descriptor-var bad))]
     (is (= :jolt.sim.runtime/abi-incompatible (:type data)))))
 
 (def ^:private base-foreign-function-descriptor
   {:kind :foreign-function :task 0 :arguments [0]
    :symbol "s" :argument-types [:int] :return-type :int :blocking? false})
+
+(def ^:private native-operation-valid-arguments
+  {:load-library []
+   :loaded? [nil]
+   :alloc [nil]
+   :free [nil]
+   :read [nil nil]
+   :write [nil nil nil nil]
+   :sizeof [nil]
+   :read-bytes [nil nil]
+   :write-bytes [nil nil]
+   :read-array [nil nil]
+   :read-array! [nil nil nil nil]
+   :write-array [nil nil]
+   :borrow-byte-array [nil nil nil]
+   :release-byte-array [nil]
+   :ptr->string [nil]
+   :string->ptr [nil]})
 
 (deftest ffi-descriptor-shape-is-exact-for-the-current-contract
   (let [descriptor (assoc base-foreign-function-descriptor
@@ -748,10 +826,17 @@
     (is (= :argument-count-mismatch (:reason data))))
   (doseq [op (get-in supported-descriptor
                      [:ffi-interception :native-operations])]
-    (let [op-descriptor {:kind :native-operation :task 0 :arguments []
+    (let [op-descriptor {:kind :native-operation :task 0
+                         :arguments (get native-operation-valid-arguments op)
                          :operation op}]
       (is (= op-descriptor (validate-ffi-descriptor-var op-descriptor))
           (pr-str op))))
+  (doseq [op (keys native-operation-valid-arguments)]
+    (let [bad {:kind :native-operation :task 0
+               :arguments [nil nil nil nil nil]
+               :operation op}
+          data (ex-data-of #(validate-ffi-descriptor-var bad))]
+      (is (= :invalid-native-operation-arity (:reason data)) (pr-str op))))
   (let [bad {:kind :native-operation :task 0 :arguments []
              :operation :not-current}
         data (ex-data-of #(validate-ffi-descriptor-var bad))]
@@ -794,7 +879,13 @@
   (let [too-long [:foreign-function "s" [:int] :int false true true]
         data (ex-data-of
               #(validate-ffi-handlers-var {too-long (fn [_])}))]
-    (is (= :jolt.sim.runtime/invalid-config (:type data)))))
+    (is (= :jolt.sim.runtime/invalid-config (:type data))))
+  (let [namespaced-return
+        [:foreign-function "s" [:int] :jolt.sim.test/int false true]
+        data (ex-data-of
+              #(validate-ffi-handlers-var {namespaced-return (fn [_])}))]
+    (is (= :jolt.sim.runtime/invalid-config (:type data)))
+    (is (= namespaced-return (:handler-key data)))))
 
 (deftest ambiguous-shorthand-and-six-element-false-handler-keys-are-rejected
   (let [five-key [:foreign-function "s" [:int] :int false]
@@ -822,118 +913,52 @@
         controller (make-ffi-controller-var handlers state effects)]
     (is (= (conj five-key false)
            (descriptor-handler-key-var descriptor)))
-    (is (= :matched (controller descriptor)))
+    (is (= :matched (controller descriptor ignored-proceed)))
     (is (empty? (:ffi-errors @state)))))
 
-;; ---- Recursive foreign argument-type identity (descriptor-version 4) ----
+;; ---- Scalar-only foreign argument types (descriptor-version 5) ----------
 ;;
-;; A public argument type is a primitive keyword or exactly
-;; [:by-value [:struct [[field-name field-type] ...]]]. Structs are nonempty,
-;; field names are unqualified keywords, nested field types are primitive
-;; keywords or a bare nested [:struct ...], and a nested :by-value wrapper is
-;; invalid. These are pure structural tests, independent of the running image.
+;; A public foreign argument type is now a primitive keyword only; recursive
+;; by-value aggregate argument types and variadic descriptors are no longer
+;; accepted. These are pure structural tests, independent of the running image.
 
-(def ^:private flat-struct-type
-  [:by-value [:struct [[:x :int] [:y :pointer]]]])
+(deftest scalar-foreign-argument-types-are-valid-ffi-descriptors
+  (let [descriptor (-> base-foreign-function-descriptor
+                       (assoc :argument-types [:int :pointer]
+                              :arguments [0 1]
+                              :capture-native-error? false))]
+    (is (= descriptor (validate-ffi-descriptor-var descriptor)))))
 
-(def ^:private nested-struct-type
-  [:by-value [:struct [[:tag :int]
-                      [:point [:struct [[:x :int] [:y :int]]]]]]])
-
-(defn- struct-foreign-descriptor
-  "Builds a valid foreign-function descriptor whose single argument has the
-  supplied argument type."
-  ([argument-type]
-   (struct-foreign-descriptor argument-type false))
-  ([argument-type capture?]
-   (-> base-foreign-function-descriptor
-       (assoc :argument-types [argument-type]
-              :capture-native-error? capture?))))
-
-(deftest recursive-struct-argument-types-are-valid-ffi-descriptors
-  (is (= (struct-foreign-descriptor flat-struct-type)
-         (validate-ffi-descriptor-var
-          (struct-foreign-descriptor flat-struct-type))))
-  (is (= (struct-foreign-descriptor nested-struct-type true)
-         (validate-ffi-descriptor-var
-          (struct-foreign-descriptor nested-struct-type true))))
-  ;; Primitive and struct argument types coexist, and the argument count still
-  ;; must match :arguments length.
-  (let [mixed (-> base-foreign-function-descriptor
-                  (assoc :argument-types [:int flat-struct-type]
-                         :arguments [0 1]
-                         :capture-native-error? false))]
-    (is (= mixed (validate-ffi-descriptor-var mixed)))))
-
-(deftest malformed-struct-argument-types-are-rejected
+(deftest aggregate-and-non-keyword-argument-types-are-rejected
   (let [reject
         (fn [argument-type]
-          (let [descriptor (struct-foreign-descriptor argument-type)
+          (let [descriptor (-> base-foreign-function-descriptor
+                               (assoc :argument-types [argument-type]
+                                      :capture-native-error? false))
                 data (ex-data-of #(validate-ffi-descriptor-var descriptor))]
             (is (= :jolt.sim.runtime/invalid-ffi-descriptor (:type data))
                 (pr-str argument-type))
             (is (= :invalid-argument-types (:reason data))
                 (pr-str argument-type))))]
-    ;; empty struct
-    (reject [:by-value [:struct []]])
-    ;; bare top-level struct without the :by-value wrapper
+    ;; recursive by-value aggregate (no longer accepted)
+    (reject [:by-value [:struct [[:x :int] [:y :pointer]]]])
+    ;; bare struct shape
     (reject [:struct [[:x :int]]])
-    ;; nested :by-value wrapper is invalid as a field type
-    (reject [:by-value [:struct [[:x [:by-value [:struct [[:a :int]]]]]]]])
-    ;; qualified field name
-    (reject [:by-value [:struct [[:ns/x :int]]]])
-    ;; qualified structural tags
-    (reject [:ns/by-value [:struct [[:x :int]]]])
-    (reject [:by-value [:ns/struct [[:x :int]]]])
-    (reject [:by-value [:struct [[:x [:ns/struct [[:a :int]]]]]]])
-    ;; non-keyword field name
-    (reject [:by-value [:struct [["x" :int]]]])
-    ;; field type is an unrecognized vector form (neither keyword nor :struct)
-    (reject [:by-value [:struct [[:x [:bogus [:int]]]]]])
-    ;; :by-value not wrapping a [:struct ...] shape
-    (reject [:by-value :int])
-    ;; struct shape of the wrong arity
-    (reject [:by-value [:struct]])))
-
-(deftest struct-argument-types-share-a-canonical-handler-key-by-shape
-  (let [desc-a (struct-foreign-descriptor flat-struct-type)
-        desc-b (struct-foreign-descriptor flat-struct-type)
-        different [:by-value [:struct [[:x :int] [:z :pointer]]]]
-        desc-c (struct-foreign-descriptor different)
-        key-a (descriptor-handler-key-var desc-a)
-        key-c (descriptor-handler-key-var desc-c)]
-    ;; Nested shape identity: structurally-equal shapes share one key, while a
-    ;; single renamed field yields a distinct key.
-    (is (= key-a (descriptor-handler-key-var desc-b)))
-    (is (not= key-a key-c))
-    (is (= :foreign-function (nth key-a 0)))
-    (is (= [flat-struct-type] (nth key-a 2)))
-    ;; A nested struct preserves its full recursive identity in the key.
-    (is (= [nested-struct-type]
-           (nth (descriptor-handler-key-var
-                 (struct-foreign-descriptor nested-struct-type))
-                2)))
-    ;; The struct-bearing key dispatches through the hermetic controller.
-    (let [state (atom {:ffi-errors []})
-          effects (atom [])
-          controller (make-ffi-controller-var
-                      {key-a (fn [_] :matched)}
-                      state effects)]
-      (is (= :matched (controller desc-a)))
-      (is (= [desc-a] (mapv :descriptor @effects)))
-      (is (empty? (:ffi-errors @state))))))
-
-(deftest struct-argument-types-are-accepted-as-foreign-handler-keys
-  (let [key [:foreign-function "make_point" [flat-struct-type]
-             :pointer true false]
-        handler (fn [_] :ok)]
-    (is (= {key handler} (validate-ffi-handlers-var {key handler})))
-    ;; A malformed struct inside a handler key is rejected as bad config.
-    (let [bad-key [:foreign-function "make_point"
-                   [[:by-value [:struct []]]] :pointer true false]
-          data (ex-data-of #(validate-ffi-handlers-var {bad-key (fn [_])}))]
-      (is (= :jolt.sim.runtime/invalid-config (:type data)))
-      (is (= bad-key (:handler-key data))))))
+    ;; non-keyword scalar
+    (reject "int")
+    ;; numeric type tag
+    (reject 7))
+  (let [bad-key [:foreign-function "make_point"
+                 [[:by-value [:struct [[:x :int]]]]] :pointer true false]
+        data (ex-data-of #(validate-ffi-handlers-var {bad-key (fn [_])}))]
+    (is (= :jolt.sim.runtime/invalid-config (:type data)))
+    (is (= bad-key (:handler-key data))))
+  (let [descriptor (-> base-foreign-function-descriptor
+                       (assoc :return-type :jolt.sim.test/int
+                              :capture-native-error? false))
+        data (ex-data-of #(validate-ffi-descriptor-var descriptor))]
+    (is (= :jolt.sim.runtime/invalid-ffi-descriptor (:type data)))
+    (is (= :invalid-return-type (:reason data)))))
 
 (deftest same-signature-scalar-and-captured-handlers-do-not-collide
   (let [scalar-descriptor (assoc base-foreign-function-descriptor
@@ -949,8 +974,8 @@
                      captured-key (fn [_] [42 nil])}
                     state effects)]
     (is (not= scalar-key captured-key))
-    (is (= 42 (controller scalar-descriptor)))
-    (is (= [42 nil] (controller captured-descriptor)))
+    (is (= 42 (controller scalar-descriptor ignored-proceed)))
+    (is (= [42 nil] (controller captured-descriptor ignored-proceed)))
     (is (empty? (:ffi-errors @state)))))
 
 (deftest current-controller-dispatches-pointer-loan-and-captured-foreign
@@ -958,7 +983,8 @@
   ;; native operations and routes them to their handlers, still accepts every
   ;; base operation, and enforces the current capture-result contract on
   ;; captured foreign functions.
-  (let [loan-descriptor {:kind :native-operation :task 0 :arguments [7]
+  (let [loan-descriptor {:kind :native-operation :task 0
+                         :arguments [(byte-array [7]) 0 1]
                          :operation :borrow-byte-array}
         release-descriptor {:kind :native-operation :task 0 :arguments [7]
                             :operation :release-byte-array}
@@ -975,10 +1001,10 @@
                        (descriptor-handler-key-var captured-descriptor)
                        (fn [_] [99 nil])}
                       state effects)]
-      (is (= :borrowed (controller loan-descriptor)))
-      (is (= :released (controller release-descriptor)))
-      (is (= 1042 (controller base-descriptor)))
-      (is (= [99 nil] (controller captured-descriptor)))
+      (is (= :borrowed (controller loan-descriptor ignored-proceed)))
+      (is (= :released (controller release-descriptor ignored-proceed)))
+      (is (= 1042 (controller base-descriptor ignored-proceed)))
+      (is (= [99 nil] (controller captured-descriptor ignored-proceed)))
       (is (= [loan-descriptor release-descriptor base-descriptor
               captured-descriptor]
              (mapv :descriptor @effects)))
@@ -995,7 +1021,7 @@
             effects (atom [])
             controller (make-ffi-controller-var
                         {key (fn [_] bad)} state effects)
-            data (ex-data-of #(controller descriptor))]
+            data (ex-data-of #(controller descriptor ignored-proceed))]
         (is (= :jolt.sim.runtime/invalid-capture-result (:type data))
             (pr-str bad))
         (is (= 1 (count (:ffi-errors @state))) (pr-str bad))
@@ -1007,7 +1033,7 @@
           effects (atom [])
           controller (make-ffi-controller-var
                       {key (fn [_] :not-a-vector)} state effects)
-          swallowed (try (controller descriptor) :not-thrown
+          swallowed (try (controller descriptor ignored-proceed) :not-thrown
                         (catch :default _ :caught))]
       (is (= :caught swallowed))
       (is (= 1 (count (:ffi-errors @state)))))
@@ -1016,7 +1042,7 @@
           effects (atom [])
           controller (make-ffi-controller-var
                       {key (fn [_] [1 2])} state effects)]
-      (is (= [1 2] (controller descriptor)))
+      (is (= [1 2] (controller descriptor ignored-proceed)))
       (is (empty? (:ffi-errors @state))))))
 
 (deftest original-descriptor-is-preserved-in-effects-and-handler-argument
@@ -1029,7 +1055,7 @@
         controller (make-ffi-controller-var
                     {key (fn [d] (reset! seen d) [1 2])}
                     state effects)]
-    (controller descriptor)
+    (controller descriptor ignored-proceed)
     (is (identical? descriptor @seen))
     (is (= [descriptor] (mapv :descriptor @effects)))
     (is (= [:hermetic] (mapv :mode @effects)))
@@ -1038,8 +1064,10 @@
 (deftest current-nested-ffi-descriptor-version-is-exact
   (if (rt/available?)
     (do
-      (is (= 4 (get-in (rt/capabilities)
+      (is (= 5 (get-in (rt/capabilities)
                        [:ffi-interception :descriptor-version])))
+      (is (= 1 (get-in (rt/capabilities)
+                       [:clock-interception :descriptor-version])))
       (is (= supported-descriptor (rt/capabilities))))
     (ordinary-reports-unavailable rt/capabilities)))
 
@@ -1675,52 +1703,65 @@
 (defn- mock-resolved-abi-vars
   "Returns a replacement value for jolt.sim.runtime/resolved-abi-vars whose
   :capabilities yields descriptor and whose other slots are derefable stubs.
-  When omit-routing? is true the :install-ffi-routing-controller! slot is nil,
-  simulating a current image that lacks the routing installer var."
-  [descriptor omit-routing?]
+  When omit-supervisor? is true the :supervisor-mono-nanos slot is nil,
+  simulating a current image that lacks the supervisor clock var."
+  [descriptor omit-supervisor?]
   (let [stub (atom (fn [& _] nil))]
     (cond-> {:capabilities (atom (fn [] descriptor))
              :install-controller! stub
              :restore-controller! stub
              :controller-errors stub
-             :clear-controller-errors! stub
-             :install-ffi-controller! stub
-             :restore-ffi-controller! stub}
-      (not omit-routing?) (assoc :install-ffi-routing-controller! stub))))
+             :clear-controller-errors! stub}
+      (not omit-supervisor?) (assoc :supervisor-mono-nanos stub))))
 
-(defn- mock-controller-ops [descriptor established routing]
-  {:descriptor descriptor
-   :clear-controller-errors! (fn [])
-   :install-controller! (fn [_] :future-token)
-   :install-ffi-controller!
-   (fn [controller]
-     (when established (reset! established controller))
-     :ffi-token)
-   :install-ffi-routing-controller!
-   (fn [controller]
-     (when routing (reset! routing controller))
-     :routing-token)
-   :restore-controller! (fn [_])
-   :restore-ffi-controller! (fn [_])
-   :controller-errors (fn [])})
+(defn- mock-controller-ops
+  "Builds a complete controller-ops map for the composite install. installed,
+  when non-nil, captures the whole composite callback map; ffi-installed and
+  clock-installed, when non-nil, capture the :ffi and :clock slots. The private
+  ::restore-state key tracks restore-controller! invocations; run-controlled
+  ignores it."
+  ([descriptor installed]
+   (mock-controller-ops descriptor installed nil nil))
+  ([descriptor installed ffi-installed clock-installed]
+   (let [state (atom {:restores 0 :tokens []})]
+     {:descriptor descriptor
+      :clear-controller-errors! (fn [])
+      :install-controller!
+      (fn [composite]
+        (when installed (reset! installed composite))
+        (when ffi-installed (reset! ffi-installed (:ffi composite)))
+        (when clock-installed (reset! clock-installed (:clock composite)))
+        :composite-token)
+      :restore-controller!
+      (fn [token]
+        (swap! state update :restores inc)
+        (swap! state update :tokens conj token))
+      :controller-errors (fn [])
+      :supervisor-mono-nanos (fn [] 0)
+      ::restore-state state})))
+
+(defn- restore-count [ops]
+  (:restores @(::restore-state ops)))
+
+(defn- restore-tokens [ops]
+  (:tokens @(::restore-state ops)))
 
 (defn- native-descriptor [operation arguments]
   {:kind :native-operation
-   :task 0
-   :arguments arguments
-   :operation operation})
+    :task 0
+    :arguments arguments
+    :operation operation})
 
-(deftest current-contract-requires-the-ffi-routing-installer-var
+(deftest current-contract-requires-the-supervisor-clock-var
   (let [resolved-var (resolve 'jolt.sim.runtime/resolved-abi-vars)]
-    ;; A current image that advertises the exact descriptor but omits the routing
-    ;; installer var is incompatible, even though run-controlled never invokes
-    ;; that installer. It shares restore-ffi-controller! for restoration.
+    ;; A current image that advertises the exact descriptor but omits the
+    ;; supervisor-mono-nanos var is incompatible.
     (let [data
           (with-redefs-fn
             {resolved-var (fn [] (mock-resolved-abi-vars supported-descriptor true))}
             #(ex-data-of rt/capabilities))]
       (is (= :jolt.sim.runtime/abi-incompatible (:type data)))
-      (is (= [:install-ffi-routing-controller!] (:missing data))))
+      (is (= [:supervisor-mono-nanos] (:missing data))))
     (let [data
           (with-redefs-fn
             {resolved-var (fn [] (mock-resolved-abi-vars supported-descriptor true))}
@@ -1740,16 +1781,14 @@
                 :restore-controller! nil
                 :controller-errors nil
                 :clear-controller-errors! nil
-                :install-ffi-controller! nil
-                :restore-ffi-controller! nil
-                :install-ffi-routing-controller! nil}]
+                :supervisor-mono-nanos nil}]
     (with-redefs-fn
       {resolved-var (fn [] absent)}
       #(do
          (is (false? (rt/available?)))
          (is (= :jolt.sim.runtime/abi-unavailable
                 (:type (ex-data-of rt/capabilities))))))
-    (doseq [version [3 4 6 7]]
+    (doseq [version [3 4 5 7 8]]
       (let [descriptor (assoc supported-descriptor :abi-version version)
             data
             (with-redefs-fn
@@ -1759,51 +1798,162 @@
         (is (= :jolt.sim.runtime/abi-incompatible (:type data))
             (pr-str version))))))
 
-(deftest hermetic-run-retains-the-established-ffi-controller
-  ;; Hermetic mode installs the established
-  ;; one-argument FFI controller (install-ffi-controller!) and never the routing
-  ;; installer (install-ffi-routing-controller!), which is required to exist on
-  ;; the image but unused by the controlled run. A thunk that spawns nothing
-  ;; drains immediately and restores.
-  (let [established-ffi (atom nil)
-        routing (atom nil)
-        future-installed (atom nil)
-        ops {:descriptor supported-descriptor
-             :clear-controller-errors! (fn [])
-             :install-controller!
-             (fn [controller]
-               (reset! future-installed controller)
-               :future-token)
-             :install-ffi-controller!
-             (fn [controller]
-               (reset! established-ffi controller)
-               :ffi-token)
-             :install-ffi-routing-controller!
-             (fn [controller]
-               (reset! routing controller)
-               :routing-token)
-             :restore-controller! (fn [_])
-             :restore-ffi-controller! (fn [_])
-             :controller-errors (fn [])}
+(deftest composite-install-is-atomic-with-one-restore-token
+  ;; The composite map {:future :ffi :clock} is installed by a single
+  ;; install-controller! call capturing one token, and restored by a single
+  ;; restore-controller! call over that exact token. A thunk that spawns
+  ;; nothing drains immediately and restores exactly once.
+  (let [installed (atom nil)
+        ffi-installed (atom nil)
+        clock-installed (atom nil)
+        ops (mock-controller-ops supported-descriptor
+                                 installed ffi-installed clock-installed)
         resolve-var (resolve 'jolt.sim.runtime/resolve-controller-ops!)]
     (with-redefs-fn
       {resolve-var (fn [] ops)}
       #(let [result (rt/run-controlled {} (fn [] :done))]
          (is (= :done (:result result)))
          (is (= supported-descriptor (:capabilities result)))
-         (is (some? @established-ffi)
-             "the established one-argument FFI controller must be installed")
-         (is (nil? @routing)
-             "the routing installer must not be invoked by run-controlled")
-         (is (some? @future-installed)
-             "the future lifecycle controller must be installed")))))
+         (is (map? @installed)
+             "one composite map must be installed")
+         (is (= #{:future :ffi :clock} (set (keys @installed))))
+         (is (ifn? (:future @installed))
+             "the future lifecycle controller is installed")
+         (is (identical? (:ffi @installed) @ffi-installed)
+             "the established FFI controller is the composite :ffi slot")
+         (is (identical? (:clock @installed) @clock-installed)
+             "the default clock controller is the composite :clock slot")
+         (is (ifn? @clock-installed))
+         (is (= 1 (restore-count ops))
+             "restore-controller! must be called exactly once")
+         (is (= [:composite-token] (restore-tokens ops))
+             "the single composite token is restored")))))
+
+(deftest failed-atomic-install-restores-no-nil-token-and-leaves-the-session-reusable
+  (let [good-ops (mock-controller-ops supported-descriptor nil)
+        bad-restores (atom 0)
+        bad-ops (assoc good-ops
+                       :install-controller!
+                       (fn [_]
+                         (throw (ex-info "atomic install rejected" {:phase :install})))
+                       :restore-controller!
+                       (fn [_] (swap! bad-restores inc)))
+        selected (atom bad-ops)
+        local-session (atom :idle)
+        resolve-var (resolve 'jolt.sim.runtime/resolve-controller-ops!)
+        session-var (resolve 'jolt.sim.runtime/session-state)]
+    (with-redefs-fn
+      {resolve-var (fn [] @selected)
+       session-var local-session}
+      #(do
+         (is (= :install
+                (:phase (ex-data-of
+                         (fn [] (rt/run-controlled {} (fn [] :never)))))))
+         (is (zero? @bad-restores)
+             "a failed atomic install has no token to restore")
+         (is (= :idle @local-session))
+         (reset! selected good-ops)
+         (is (= :reused
+                (:result (rt/run-controlled {} (fn [] :reused)))))
+         (is (= 1 (restore-count good-ops)))))))
+
+(deftest default-clock-controller-proceeds-so-real-os-time-is-available
+  ;; With no :clock configured, the installed clock callback is arity 2 and
+  ;; proceeds every intercepted operation, returning whatever the real native
+  ;; clock branch produces.
+  (let [clock-installed (atom nil)
+        ops (mock-controller-ops supported-descriptor nil nil clock-installed)
+        resolve-var (resolve 'jolt.sim.runtime/resolve-controller-ops!)]
+    (with-redefs-fn
+      {resolve-var (fn [] ops)}
+      #(let [result (rt/run-controlled {} (fn [] :done))]
+         (is (= :done (:result result)))
+         (is (ifn? @clock-installed))
+         (let [proceeded (atom 0)]
+           (is (= 7300000000
+                  (@clock-installed
+                   {:kind :clock :operation :mono-nanos}
+                   (fn [] (swap! proceeded inc) 7300000000))))
+           (is (= 1 @proceeded)
+               "the default pass-through clock must invoke proceed"))))))
+
+(deftest a-modeled-frozen-clock-validates-the-live-descriptor-and-does-not-proceed
+  ;; A user :clock controller is wrapped by the adapter's exact live-descriptor
+  ;; validator before it becomes the composite :clock slot. Valid calls reach
+  ;; user code without touching the real native clock branch; malformed calls
+  ;; fail before user code or proceed.
+  (let [clock-installed (atom nil)
+        seen (atom [])
+        frozen (fn [descriptor _proceed]
+                 (swap! seen conj descriptor)
+                 9999999)
+        ops (mock-controller-ops supported-descriptor nil nil clock-installed)
+        resolve-var (resolve 'jolt.sim.runtime/resolve-controller-ops!)]
+    (with-redefs-fn
+      {resolve-var (fn [] ops)}
+      #(let [result (rt/run-controlled {:clock frozen} (fn [] :done))]
+         (is (= :done (:result result)))
+         (is (fn? @clock-installed))
+         (let [proceeded (atom 0)]
+           (is (= 9999999
+                  (@clock-installed
+                   {:kind :clock :operation :mono-nanos}
+                   (fn [] (swap! proceeded inc) :wrong))))
+           (is (zero? @proceeded)
+               "a frozen clock must not invoke the native proceed")
+           (is (= [{:kind :clock :operation :mono-nanos}] @seen)))
+         (doseq [bad [nil
+                      {:kind :clock :operation :unknown}
+                      {:kind :other :operation :mono-nanos}
+                      {:kind :clock :operation :mono-nanos :extra true}]]
+           (let [data (ex-data-of #(@clock-installed bad (fn [] :native)))]
+             (is (= :jolt.sim.runtime/invalid-clock-descriptor (:type data)))))
+         (is (= 1 (count @seen))
+             "invalid live descriptors must not reach the user controller")))))
+
+(deftest an-invalid-clock-config-fails-before-abi-resolution
+  ;; :clock must be a two-argument controller function; a non-function value is
+  ;; rejected as pure config before any controller is resolved or installed.
+  (let [data (ex-data-of #(rt/run-controlled {:clock :not-a-fn}
+                                             (fn [] :uncontrolled)))]
+    (is (= :jolt.sim.runtime/invalid-config (:type data)))
+    (is (= :not-a-fn (:clock data)))))
+
+(deftest drain-deadlines-use-the-supervisor-clock-not-system-nanotime
+  ;; Drain deadlines must read the resolved private supervisor-mono-nanos so a
+  ;; frozen virtual clock still times out. A controlled run whose body drains
+  ;; immediately still consults the supervisor clock to compute its deadline.
+  (let [supervisor-calls (atom 0)
+        ops (assoc (mock-controller-ops supported-descriptor nil)
+                   :supervisor-mono-nanos
+                   (fn [] (swap! supervisor-calls inc) 0))
+        resolve-var (resolve 'jolt.sim.runtime/resolve-controller-ops!)]
+    (with-redefs-fn
+      {resolve-var (fn [] ops)}
+      #(let [result (rt/run-controlled {} (fn [] :done))]
+         (is (= :done (:result result)))
+         (is (pos? @supervisor-calls)
+             "drain must read supervisor-mono-nanos rather than System/nanoTime"))))
+  ;; A frozen user clock must not stall drainage: the supervisor clock still
+  ;; advances the deadline so a quiescent scope restores normally.
+  (let [frozen-calls (atom 0)
+        ops (mock-controller-ops supported-descriptor nil)
+        resolve-var (resolve 'jolt.sim.runtime/resolve-controller-ops!)]
+    (with-redefs-fn
+      {resolve-var (fn [] ops)}
+      #(let [result
+             (rt/run-controlled
+              {:clock (fn [_ _] (swap! frozen-calls inc) 12345)}
+              (fn [] :done))]
+         (is (= :done (:result result)))))))
 
 (deftest observe-installs-routing-proceeds-once-and-records-the-route
-  (let [established (atom nil)
-        routing (atom nil)
+  (let [installed (atom nil)
+        ffi-installed (atom nil)
         proceed-count (atom 0)
         descriptor (native-descriptor :sizeof [:int])
-        ops (mock-controller-ops supported-descriptor established routing)
+        ops (mock-controller-ops supported-descriptor
+                                 installed ffi-installed nil)
         resolve-var (resolve 'jolt.sim.runtime/resolve-controller-ops!)
         run
         (with-redefs-fn
@@ -1811,21 +1961,23 @@
           #(rt/run-controlled
             {:ffi-mode :observe}
             (fn []
-              ((deref routing)
+              ((deref ffi-installed)
                descriptor
                (fn [] (swap! proceed-count inc) 8)))))]
     (is (= 8 (:result run)))
     (is (= 1 @proceed-count))
-    (is (nil? @established))
-    (is (some? @routing))
+    (is (some? @ffi-installed)
+        "observe installs the routing controller as the composite :ffi slot")
+    (is (identical? @ffi-installed (:ffi @installed)))
     (is (= [descriptor] (:effects run)))
     (is (= [{:mode :observe :route :native :descriptor descriptor}]
-           (:effect-trace run)))))
+           (:effect-trace run)))
+    (is (= 1 (restore-count ops)))))
 
 (deftest observe-preserves-a-caught-native-proceed-exception
   (let [routing (atom nil)
         descriptor (native-descriptor :sizeof [:int])
-        ops (mock-controller-ops supported-descriptor nil routing)
+        ops (mock-controller-ops supported-descriptor nil routing nil)
         resolve-var (resolve 'jolt.sim.runtime/resolve-controller-ops!)
         run
         (with-redefs-fn
@@ -1850,7 +2002,7 @@
         alloc (native-descriptor :alloc [8])
         sizeof (native-descriptor :sizeof [:int])
         loaded (native-descriptor :loaded? ["libc"])
-        ops (mock-controller-ops supported-descriptor nil routing)
+        ops (mock-controller-ops supported-descriptor nil routing nil)
         resolve-var (resolve 'jolt.sim.runtime/resolve-controller-ops!)
         run
         (with-redefs-fn
@@ -1880,7 +2032,7 @@
         proceed-count (atom 0)
         alloc (native-descriptor :alloc [8])
         free-derived (native-descriptor :free [1042000007])
-        ops (mock-controller-ops supported-descriptor nil routing)
+        ops (mock-controller-ops supported-descriptor nil routing nil)
         resolve-var (resolve 'jolt.sim.runtime/resolve-controller-ops!)
         data
         (with-redefs-fn
@@ -2045,7 +2197,7 @@
     (doseq [[label handler] invalid-borrow-handler-cases]
       (let [routing (atom nil)
             caught (atom nil)
-            ops (mock-controller-ops supported-descriptor nil routing)
+            ops (mock-controller-ops supported-descriptor nil routing nil)
             data
             (with-redefs-fn
               {resolve-var (fn [] ops)}
@@ -2111,7 +2263,7 @@
         alias (+ fake-base 1/2)
         alloc (native-descriptor :alloc [8])
         free-alias (native-descriptor :free [alias])
-        ops (mock-controller-ops supported-descriptor nil routing)
+        ops (mock-controller-ops supported-descriptor nil routing nil)
         resolve-var (resolve 'jolt.sim.runtime/resolve-controller-ops!)
         caught (atom nil)
         proceeded? (atom false)
@@ -2224,12 +2376,12 @@
 (deftest selected-proceed-is-invalid-in-hermetic-mode
   (let [state (atom {:ffi-errors []})
         effects (atom [])
-        descriptor (native-descriptor :sizeof [])
+        descriptor (native-descriptor :sizeof [:int])
         controller
         (make-ffi-controller-var
          {[:native-operation :sizeof] (fn [_] (rt/proceed))}
          state effects)
-        data (ex-data-of #(controller descriptor))]
+        data (ex-data-of #(controller descriptor ignored-proceed))]
     (is (= :jolt.sim.runtime/invalid-handler-result (:type data)))
     (is (= :proceed-requires-hybrid-mode (:reason data)))
     (is (= :invalid-handler-result (:ffi-error (first (:ffi-errors @state)))))))
@@ -2258,7 +2410,7 @@
         effect-trace (atom [])
         ledger (atom [])
         key [:native-operation :sizeof]
-        descriptor (native-descriptor :sizeof [])
+        descriptor (native-descriptor :sizeof [:int])
         controller
         (make-ffi-routing-controller-var
          :hybrid {key (fn [_] (rt/proceed))} state effect-trace ledger)

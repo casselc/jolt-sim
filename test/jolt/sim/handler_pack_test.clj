@@ -37,53 +37,39 @@
     (doseq [data [bad-symbol bad-args bad-return bad-blocking bad-capture]]
       (is (= :jolt.sim.runtime/invalid-config (:type data))))))
 
-;; ---- recursive struct argument-type keys --------------------------------
+;; ---- scalar-only foreign argument-type keys -----------------------------
+;;
+;; The current contract accepts primitive keyword argument types only;
+;; recursive by-value aggregate argument types and variadic descriptors are no
+;; longer accepted, so the public key constructor rejects them.
 
-(def ^:private flat-struct-type
-  [:by-value [:struct [[:x :int] [:y :pointer]]]])
-
-(def ^:private nested-struct-type
-  [:by-value [:struct [[:tag :int]
-                      [:point [:struct [[:x :int] [:y :int]]]]]]])
-
-(deftest foreign-function-key-builds-recursive-struct-keys
-  ;; A struct argument type flows through the public key constructor and is
-  ;; validated recursively by the runtime; the full recursive shape is
-  ;; preserved verbatim in the canonical key.
-  (is (= [:foreign-function "make_point" [flat-struct-type] :pointer true false]
-         (hp/foreign-function-key "make_point" [flat-struct-type] :pointer true)))
-  (is (= [:foreign-function "make_point" [nested-struct-type] :pointer true true]
-         (hp/foreign-function-key "make_point" [nested-struct-type]
-                                  :pointer true true)))
-  ;; Primitive and struct types coexist within one key.
-  (is (= [:foreign-function "f" [:int flat-struct-type] :int false false]
-         (hp/foreign-function-key "f" [:int flat-struct-type] :int false))))
-
-(deftest foreign-function-key-rejects-malformed-struct-shapes
-  (doseq [bad-type [[:by-value [:struct []]]
+(deftest foreign-function-key-rejects-aggregate-argument-types
+  (doseq [bad-type [[:by-value [:struct [[:x :int] [:y :pointer]]]]
                     [:struct [[:x :int]]]
-                    [:by-value [:struct [[:ns/x :int]]]]
-                    [:ns/by-value [:struct [[:x :int]]]]
-                    [:by-value [:ns/struct [[:x :int]]]]
-                    [:by-value [:struct [[:x [:by-value [:struct [[:a :int]]]]]]]]]]
+                    [:by-value [:struct []]]
+                    [:by-value [:struct [[:ns/x :int]]]]]]
     (let [data (ex-data-of
                 #(hp/foreign-function-key "f" [bad-type] :int false))]
       (is (= :jolt.sim.runtime/invalid-config (:type data)) (pr-str bad-type))
       (is (= [:foreign-function "f" [bad-type] :int false false]
              (:handler-key data))
-          (pr-str bad-type)))))
+          (pr-str bad-type))))
 
-(deftest pack-canonicalizes-struct-handler-keys-and-composes-them
-  (let [struct-key (hp/foreign-function-key
-                    "make_point" [flat-struct-type] :pointer true)
-        p (hp/pack :acme/structs
-                   {struct-key (fn [_] 0)
+  ;; Scalar keyword argument types coexist within one key.
+  (is (= [:foreign-function "f" [:int :pointer] :int false false]
+         (hp/foreign-function-key "f" [:int :pointer] :int false))))
+
+(deftest pack-canonicalizes-scalar-handler-keys-and-composes-them
+  (let [scalar-key (hp/foreign-function-key
+                    "make_point" [:int :pointer] :pointer true)
+        p (hp/pack :acme/scalars
+                   {scalar-key (fn [_] 0)
                     (hp/native-operation-key :alloc) (fn [_] 1)})]
     (is (contains? (:handlers p)
-                   [:foreign-function "make_point" [flat-struct-type]
+                   [:foreign-function "make_point" [:int :pointer]
                     :pointer true false]))
     (let [composed (hp/compose p)]
-      (is (= #{[:foreign-function "make_point" [flat-struct-type]
+      (is (= #{[:foreign-function "make_point" [:int :pointer]
                 :pointer true false]
                [:native-operation :alloc]}
              (set (keys composed)))))))

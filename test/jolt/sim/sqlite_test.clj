@@ -10,7 +10,7 @@
 
 (def ^:private native-ops
   [:load-library :loaded? :alloc :free :read :write :sizeof :read-bytes
-   :write-bytes :read-array :write-array
+   :write-bytes :read-array :read-array! :write-array
    :borrow-byte-array :release-byte-array
    :ptr->string :string->ptr])
 
@@ -63,7 +63,7 @@
 
 ;; ---- handler shape ------------------------------------------------------
 
-(deftest handlers-merge-22-sqlite-keys-and-15-native-ops
+(deftest handlers-merge-22-sqlite-keys-and-16-native-ops
   (let [w (sqlite/world [])
         h (sqlite/handlers w)
         h-keys (set (keys h))
@@ -72,7 +72,7 @@
     (is (= 22 (count ff-keys)))
     (is (= ff-keys (set (filter #(= :foreign-function (nth % 0)) h-keys))))
     (is (= native-keys (set (filter #(= :native-operation (nth % 0)) h-keys))))
-    (is (= 37 (count h-keys)))
+    (is (= 38 (count h-keys)))
     (doseq [k sqlite/handler-keys]
       (is (ifn? (get h k))))))
 

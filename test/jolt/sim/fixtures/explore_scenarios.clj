@@ -16,9 +16,9 @@
   "Sleeps until a monotonic deadline even when a host signal interrupts the
   underlying nanosleep early."
   [delay-ms]
-  (let [deadline (+ (host/monotonic-nanos) (* delay-ms 1000000))]
+  (let [deadline (+ (host/mono-nanos) (* delay-ms 1000000))]
     (loop []
-      (let [remaining (- deadline (host/monotonic-nanos))]
+      (let [remaining (- deadline (host/mono-nanos))]
         (when (pos? remaining)
           (Thread/sleep
            (max 1 (quot (+ remaining 999999) 1000000)))
@@ -127,7 +127,7 @@
         {:value late-delay-raw})))
     (spit started-path
           (pr-str {:pid worker-pid
-                   :monotonic-nanos (host/monotonic-nanos)}))
+                   :monotonic-nanos (host/mono-nanos)}))
     (let [late-writer
           (Thread.
            (fn []
@@ -135,7 +135,7 @@
              (spit late-path
                    (pr-str {:pid worker-pid
                             :monotonic-nanos
-                            (host/monotonic-nanos)}))))]
+                            (host/mono-nanos)}))))]
       (.setDaemon late-writer true)
       (.start late-writer))
     (let [a (future :a)

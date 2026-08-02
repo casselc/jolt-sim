@@ -3,12 +3,13 @@
 
   This namespace deliberately has no dependency on jolt.sim. Its caller
   chooses whether the standard jolt.ffi operations reach real native memory or
-  the installed current controller with FFI descriptor-version 4."
+  the installed current controller with FFI descriptor-version 5."
   (:require [jolt.ffi :as ffi]))
 
 (defn exercise-loan
-  "Loans one live byte-array window, mutates it through modeled/native memory,
-  and proves an ordinary array mutation is visible through the same pointer."
+  "Loans one byte-array window and mutates it only through modeled/native
+  memory. The caller does not access the array while its staged pointer is live;
+  copy-back publishes both native writes when the loan scope exits."
   []
   (let [bytes (byte-array [10 20 30 40])
         observed
@@ -16,7 +17,7 @@
           bytes 1 2
           (fn [pointer length]
             (ffi/write pointer :uint8 0 201)
-            (aset bytes 2 202)
+            (ffi/write pointer :uint8 1 202)
             {:length length
              :native-read (ffi/read (+ pointer 1) :uint8 0)}))]
     (assoc observed :bytes (vec bytes))))

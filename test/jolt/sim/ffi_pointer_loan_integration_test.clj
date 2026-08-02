@@ -7,7 +7,7 @@
 (def ^:private successful-result
   {:length 2
    :native-read 202
-   :bytes [10 201 202 40]})
+   :bytes [10 -55 -54 40]})
 
 (def ^:private throwing-result
   {:caught :fixture/pointer-loan-failure
@@ -47,8 +47,8 @@
 (deftest unchanged-pointer-loan-fixture-runs-against-simulated-memory
   (is (true? (runtime/available?)))
   (when (runtime/available?)
-    (is (= 5 (:abi-version (runtime/capabilities))))
-    (is (= 4
+    (is (= 6 (:abi-version (runtime/capabilities))))
+    (is (= 5
            (get-in (runtime/capabilities)
                    [:ffi-interception :descriptor-version])))
     (let [world (memory/world)
@@ -57,7 +57,7 @@
            {:ffi-handlers (memory/handlers world)}
            fixture/exercise-loan)]
       (is (= successful-result (:result controlled)))
-      (is (= [:borrow-byte-array :write :read :release-byte-array]
+      (is (= [:borrow-byte-array :write :write :read :release-byte-array]
              (operations controlled)))
       (is (true? (memory/clean? world)))
       (is (empty? (memory/leaks world))))
@@ -76,11 +76,11 @@
   ;; Current routing lets the same ordinary body proceed through the exact real
   ;; borrow/callback/release path while jolt-sim records every native route.
   ;; Core Jolt, not a handler pack, remains responsible for unlock ownership.
-  (is (= 5 (:abi-version (runtime/capabilities))))
+  (is (= 6 (:abi-version (runtime/capabilities))))
   (let [controlled
         (runtime/run-controlled {:ffi-mode :observe} fixture/exercise-loan)]
     (is (= successful-result (:result controlled)))
-    (is (= [:borrow-byte-array :write :read :release-byte-array]
+    (is (= [:borrow-byte-array :write :write :read :release-byte-array]
            (operations controlled)))
     (is (every? #(= :native (:route %)) (:effect-trace controlled))))
   (let [controlled
@@ -100,7 +100,7 @@
           :ffi-handlers (hybrid-loan-handlers world true)}
          fixture/exercise-loan)]
     (is (= successful-result (:result controlled)))
-    (is (= [:borrow-byte-array :write :read :release-byte-array]
+    (is (= [:borrow-byte-array :write :write :read :release-byte-array]
            (operations controlled)))
     (is (every? #(= :handler (:route %)) (:effect-trace controlled)))
     (is (true? (memory/clean? world)))

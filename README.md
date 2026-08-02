@@ -127,11 +127,18 @@ are exhaustively model checked. The separate controlled-runtime track remains
 the route for unchanged application and library code.
 
 The runtime adapter accepts one exact current controller contract, presently
-prerelease ABI 5. All current controller vars are required. If every var is
+prerelease ABI 6. All current controller vars are required. If every var is
 absent, `available?` returns false for an ordinary released Jolt image. A
 partial namespace, stale or future ABI number, or any descriptor that differs
 from the literal current shape fails closed as
 `:jolt.sim.runtime/abi-incompatible`.
+
+The contract exposes one composite install/restore: `install-controller!`
+accepts one callback map keyed `:future`, `:ffi`, and `:clock` and returns a
+single restore token; `restore-controller!` accepts that one token, atomically
+and in strict LIFO order. Each callback controller has its documented arity:
+the future lifecycle controller is arity 3, and the FFI and clock controllers
+are arity 2.
 
 The current lifecycle has `:spawn`, `:start`, `:finish`, `:cancel`, `:exit`, and
 `:abort`. A task owns a worker from `:spawn` until exactly one `:exit`/`:abort`;
@@ -139,31 +146,41 @@ The current lifecycle has `:spawn`, `:start`, `:finish`, `:cancel`, `:exit`, and
 a cancelled running worker remains owned until `:exit`. After the body returns,
 cleanup waits a bounded interval (`:drain-timeout-ms`, default 2000) for every
 hooked-future worker to release ownership and every lifecycle callback to
-finish before restoration. Restoration is FFI then future. If the scope cannot
-drain, the controllers remain installed and the session is poisoned rather
+finish before restoration. One composite restore atomically reinstates the
+prior future, FFI, and clock controller state. If the scope cannot drain, the
+controllers remain installed and the session is poisoned rather
 than restored unsafely. Late terminal/drain events are accepted after closure;
 new `:spawn`/`:start` events fail closed. Body exceptions are rethrown unchanged
 only after drainage and restoration succeed.
 
-Every controlled run installs FFI interception. Exact nested descriptor version
-4 requires Boolean `:capture-native-error?` on foreign calls and admits all 15
-current native operations, including scoped
-`:borrow-byte-array`/`:release-byte-array`. A foreign argument type is either a
-primitive keyword or the recursive form
-`[:by-value [:struct [[:field :type] ...]]]`; nested field types may themselves
-be `[:struct ...]`. Handlers are configured via `:ffi-handlers`, keyed by
-`[:native-operation operation]` or `[:foreign-function c-symbol-string
-argument-types return-type blocking? capture-native-error?]`. A five-element
-foreign-function key is an unambiguous configuration shorthand for final
-`false`; supplying both spellings for the same binding is rejected. Map
-membership, including a `nil` value, defines handled. A captured handler must
-return `[native-result error-code]`.
+Every controlled run installs one composite controller covering FFI and clock
+interception. Exact nested descriptor version 5 requires Boolean
+`:capture-native-error?` on foreign calls and admits all 16 current native
+operations, including scoped
+`:borrow-byte-array`/`:release-byte-array` and the mutating `:read-array!`.
+A foreign argument type is now a primitive keyword only: recursive by-value
+aggregate argument types and variadic descriptors are no longer accepted,
+because current Jolt scalar metadata is exact. Handlers are configured via
+`:ffi-handlers`, keyed by `[:native-operation operation]` or `[:foreign-function
+c-symbol-string argument-types return-type blocking? capture-native-error?]`.
+A five-element foreign-function key is an unambiguous configuration shorthand
+for final `false`; supplying both spellings for the same binding is rejected.
+Map membership, including a `nil` value, defines handled. A captured handler
+must return `[native-result error-code]`.
+
+The clock descriptor is version 1 with one operation, `:mono-nanos`, returning
+exact-integer nanoseconds and declared nondecreasing. `run-controlled` accepts
+an optional `:clock` config: an arity-2 `(descriptor proceed)` controller. When
+omitted, a pass-through clock proceeds every intercepted `:mono-nanos` so real
+OS monotonic time remains available. Drain deadlines always use the resolved
+private `supervisor-mono-nanos`, never the installed clock, so a frozen virtual
+clock still times out.
 
 The current contract also exposes a scoped, owner-thread, single-use native
 `proceed` continuation. `run-controlled` selects routing with `:ffi-mode`:
 
-- `:hermetic` is the default and preserves the prior behavior exactly. The
-  established one-argument controller is installed, registered handlers
+- `:hermetic` is the default. The current two-argument `(descriptor proceed)`
+  controller is installed, ignores `proceed`, registered handlers
   substitute results, and an unhandled effect is blocked before OS access.
 - `:observe` accepts no `:ffi-handlers` and proceeds every
   intercepted call through its exact native branch while recording the route.
@@ -180,11 +197,11 @@ application semantics: unchanged code may catch it, and it is not relabeled as
 a controller failure. Handler, descriptor, and routing-policy failures remain
 latched fail closed even when application code catches their immediate throw.
 
-Controller numbering is explicitly prerelease-only. ABI 6, 7, and later
+Controller numbering is explicitly prerelease-only. ABI 7, 8, and later
 development bumps replace the current contract in place; historical contracts
 remain available in Git but do not accumulate as supported runtime branches.
 At the first real public release, the externally visible controller and nested
-FFI ABI/schema numbering will be consolidated and reset to version 1,
+FFI/schema numbering will be consolidated and reset to version 1,
 establishing the first compatibility boundary.
 
 Hybrid handler functions must classify results explicitly with
@@ -265,7 +282,8 @@ regression is isolated from the reusable test session:
 /path/to/current-sim/target/sim/jolt -M:runtime-poison-test
 ```
 
-Descriptor-version 4 retains the scoped byte-array pointer loan. Its dedicated
+Descriptor-version 5 retains the scoped byte-array pointer loan and adds the
+mutating `:read-array!`. Its dedicated
 custom-image gate runs one ordinary `jolt.ffi` fixture first against real native
 memory and then unchanged against the deterministic memory handlers, including
 nested native access and exception cleanup:
@@ -569,10 +587,12 @@ path is independent of history length.
 
 ### Deterministic native memory
 
-`jolt.sim.ffi-memory` supplies handlers for all 15 operations in the current
-descriptor-version 4 FFI contract. Owned allocations use aligned fake addresses
+`jolt.sim.ffi-memory` supplies handlers for all 16 operations in the current
+descriptor-version 5 FFI contract. Owned allocations use aligned fake addresses
 backed by immutable byte vectors, so an intercepted pointer can never reach
-Chez or the operating system. A staged
+Chez or the operating system. `:read-array!` copies modeled bytes directly into
+the caller's live destination byte array, mirroring the same fail-closed
+lifetime/bounds checks as `:read-array`/`:write-array`. A staged
 `:borrow-byte-array`/`:release-byte-array` pair
 instead aliases a validated live Jolt byte-array window for exactly one
 `with-byte-array-pointer` callback; modeled native and ordinary array

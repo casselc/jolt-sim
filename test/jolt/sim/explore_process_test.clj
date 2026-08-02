@@ -80,7 +80,7 @@
       (is (= [[0 1] [1 0]] schedules))
       (is (= schedules (mapv :schedule outcomes)))
       (is (= [:completed :completed] (mapv :status outcomes)))
-      (is (= [5 5] (mapv child-abi-version outcomes)))
+      (is (= [6 6] (mapv child-abi-version outcomes)))
       (is (= [[:a :b] [:b :a]]
              (mapv (fn [outcome]
                      (:start-order (body-result outcome)))
@@ -98,7 +98,7 @@
           timed-out (nth outcomes 1)]
       (is (= schedules (mapv :schedule outcomes)))
       (is (= [:completed :timeout] (mapv :status outcomes)))
-      (is (= 5 (child-abi-version completed)))
+      (is (= 6 (child-abi-version completed)))
       (is (= {:a-result :a :b-result :b} (body-result completed)))
       (is (= :deadline (:reason timed-out)))
       (is (not= :deadlock (:status timed-out))
@@ -215,9 +215,9 @@
                {"JOLT_SIM_STARTED_PATH" started-path
                 "JOLT_SIM_LATE_PATH" late-path
                 "JOLT_SIM_LATE_DELAY_MS" (str late-delay-ms)})
-              supervisor-start (host/monotonic-nanos)
+              supervisor-start (host/mono-nanos)
               outcome (process-explorer/run-schedule config)
-              supervisor-end (host/monotonic-nanos)
+              supervisor-end (host/mono-nanos)
               started
               (when (fs/exists? started-path)
                 (edn/read-string (slurp started-path)))]
@@ -274,7 +274,7 @@
             {:input {:answer 42 :label "ok"}}))]
       (is (= :completed (:status outcome)))
       (is (nil? (:schedule outcome)))
-      (is (= 5 (child-abi-version outcome)))
+      (is (= 6 (child-abi-version outcome)))
       (is (= {:echoed {:answer 42 :label "ok"}} (body-result outcome)))))
 
   (testing "one case carries scenario input and a future schedule together"

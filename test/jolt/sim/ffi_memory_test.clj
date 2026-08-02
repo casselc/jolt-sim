@@ -4,7 +4,7 @@
 
 (def ^:private all-ops
   [:load-library :loaded? :alloc :free :read :write :sizeof
-   :read-bytes :write-bytes :read-array :write-array
+   :read-bytes :write-bytes :read-array :read-array! :write-array
    :borrow-byte-array :release-byte-array
    :ptr->string :string->ptr])
 
@@ -29,7 +29,7 @@
 
 ;; ---- handler shape ------------------------------------------------------
 
-(deftest handlers-cover-all-fifteen-native-operations
+(deftest handlers-cover-all-sixteen-native-operations
   (let [w (fm/world)
         h (fm/handlers w)]
     (is (= expected-handler-keys (set (keys h))))
@@ -191,6 +191,17 @@
     (call h :write p :int 0 -1)
     (is (= 0xFFFFFFFF (call h :read p :uint)))))
 
+(deftest explicit-32-bit-signed-and-unsigned-alias-the-same-storage
+  (let [h (fm/handlers (fm/world))
+        p (call h :alloc 4)]
+    (is (= 4 (call h :sizeof :int32)))
+    (is (= 4 (call h :sizeof :uint32)))
+    (call h :write p :int32 0 -1)
+    (is (= -1 (call h :read p :int32)))
+    (is (= 0xFFFFFFFF (call h :read p :uint32)))
+    (call h :write p :uint32 0 0xFFFFFFFF)
+    (is (= -1 (call h :read p :int32)))))
+
 (deftest full-64-bit-combined-range-round-trips
   (let [h (fm/handlers (fm/world))
         p (call h :alloc 16)
@@ -344,6 +355,50 @@
     (aset src 0 99) ; mutate the caller's array after the call
     (is (= [10 20 30 40] (vec (call h :read-array p 4))))))
 
+(deftest ranged-write-array-copies-the-exact-signed-byte-window
+  (let [h (fm/handlers (fm/world))
+        p (call h :alloc 6)
+        src (byte-array [9 -128 -1 0 127 8])]
+    (call h :write-array p (byte-array [1 1 1 1 1 1]))
+    (is (= 4 (call h :write-array p src 1 4)))
+    (is (= [-128 -1 0 127 1 1]
+           (vec (call h :read-array p 6))))
+    (is (= [9 -128 -1 0 127 8] (vec src))
+        "the source is only snapshotted, never mutated")))
+
+(deftest ranged-write-array-admits-an-exact-empty-tail-without-dereference
+  (let [h (fm/handlers (fm/world))
+        src (byte-array [1 2 3])]
+    (is (= 0 (call h :write-array 0 src 3 0)))
+    (is (= [1 2 3] (vec src)))))
+
+(deftest ranged-write-array-rejects-before-any-modeled-memory-mutation
+  (let [h (fm/handlers (fm/world))
+        p (call h :alloc 4)
+        src (byte-array [10 20 30 40])]
+    (call h :write-array p (byte-array [7 7 7 7]))
+    (doseq [[arguments expected-type]
+            [[[p "not-bytes" 0 1]
+              :jolt.sim.ffi-memory/invalid-argument]
+             [[p src 1.5 1]
+              :jolt.sim.ffi-memory/invalid-argument]
+             [[p src 0 1.5]
+              :jolt.sim.ffi-memory/invalid-argument]
+             [[p src -1 1]
+              :jolt.sim.ffi-memory/out-of-bounds]
+             [[p src 3 2]
+              :jolt.sim.ffi-memory/out-of-bounds]
+             [[(+ p 3) src 0 2]
+              :jolt.sim.ffi-memory/out-of-bounds]]]
+      (is (= expected-type
+             (:type (ex-data-of
+                     #(apply call h :write-array arguments))))
+          (pr-str arguments))
+      (is (= [7 7 7 7] (vec (call h :read-array p 4)))
+          "a rejected call must not partially write modeled memory")
+      (is (= [10 20 30 40] (vec src))
+          "a rejected call must not mutate the source"))))
+
 (deftest read-array-returns-a-fresh-byte-array
   (let [h (fm/handlers (fm/world))
         p (call h :alloc 4)]
@@ -353,6 +408,63 @@
       (is (not (identical? a b)))
       (aset a 0 99)
       (is (= 1 (first (vec b)))))))
+
+(deftest read-array!-copies-modeled-bytes-into-the-live-destination
+  (let [h (fm/handlers (fm/world))
+        p (call h :alloc 8)]
+    (call h :write-array p (byte-array [10 -56 -1 40 50 60 70 80]))
+    (let [dest (byte-array 16)
+          copied (call h :read-array! p 3 dest 4)]
+      (is (= 3 copied))
+      (is (= [0 0 0 0 10 -56 -1 0 0 0 0 0 0 0 0 0] (vec dest))
+          "the requested bytes are written at the destination offset and the
+          rest of the live array is untouched"))
+    ;; A zero-length read-array! is a no-op return that dereferences nothing
+    ;; and leaves the destination unchanged.
+    (let [dest (byte-array [99 99 99 99])]
+      (is (= 0 (call h :read-array! p 0 dest 0)))
+      (is (= [99 99 99 99] (vec dest))))))
+
+(deftest read-array!-uses-the-same-fail-closed-validation-as-read-array
+  (let [h (fm/handlers (fm/world))
+        p (call h :alloc 4)]
+    (call h :write-array p (byte-array [1 2 3 4]))
+    ;; destination must be a byte array
+    (is (= :jolt.sim.ffi-memory/invalid-argument
+           (:type (ex-data-of #(call h :read-array! p 1 "not-bytes" 0)))))
+    ;; destination range exceeds the live array
+    (let [small (byte-array 2)]
+      (is (= :jolt.sim.ffi-memory/out-of-bounds
+             (:type (ex-data-of #(call h :read-array! p 3 small 0)))))
+      (is (= :jolt.sim.ffi-memory/out-of-bounds
+             (:type (ex-data-of #(call h :read-array! p 2 small 1)))))
+      (is (= [0 0] (vec small))
+          "a failed read-array! must not mutate the destination"))
+    ;; source bounds are enforced with the same provenance as read-array.
+    (let [dest (byte-array [9 9 9 9 9 9 9 9])]
+      (is (= :jolt.sim.ffi-memory/out-of-bounds
+             (:type (ex-data-of #(call h :read-array! (+ p 1) 4 dest 0)))))
+      (is (= [9 9 9 9 9 9 9 9] (vec dest))))
+    ;; pointer must address a live allocation
+    (let [dest (byte-array [8 8 8 8])]
+      (is (= :jolt.sim.ffi-memory/unknown-pointer
+             (:type (ex-data-of #(call h :read-array! 0xdeadbeef 1 dest 0)))))
+      (is (= [8 8 8 8] (vec dest))))))
+
+(deftest read-array!-writes-through-a-live-byte-array-loan-window
+  (let [w (fm/world)
+        h (fm/handlers w)
+        arr (byte-array [0 0 0 0 0 0 0 0])
+        p (call h :borrow-byte-array arr 0 4)
+        src (call h :alloc 4)]
+    (call h :write-array src (byte-array [11 22 33 44]))
+    ;; The modeled write goes into the live borrowed window, aliasing arr.
+    (is (= 4 (call h :read-array! src 4 arr 0)))
+    (is (= [11 22 33 44 0 0 0 0] (vec arr)))
+    (is (= [11 22 33 44] (vec (call h :read-array p 4))))
+    (call h :release-byte-array p)
+    (call h :free src)
+    (is (true? (fm/clean? w)))))
 
 ;; ---- scoped live byte-array loans --------------------------------------
 
