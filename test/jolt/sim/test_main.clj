@@ -17,6 +17,7 @@
             [jolt.sim.future-schedule-test]
             [jolt.sim.handler-pack-test]
             [jolt.sim.journal-test]
+            [jolt.sim.journal-writer-test]
             [jolt.sim.kernel-test]
             [jolt.sim.maelstrom-history-test]
             [jolt.sim.monitor-test]
@@ -50,6 +51,7 @@
                         'jolt.sim.future-schedule-test
                         'jolt.sim.handler-pack-test
                         'jolt.sim.journal-test
+                        'jolt.sim.journal-writer-test
                         'jolt.sim.kernel-test
                         'jolt.sim.maelstrom-history-test
                         'jolt.sim.monitor-test
