@@ -2368,6 +2368,156 @@
         (is (= :modeled-resource-native-fallback
                (:ffi-error (first (:ffi-errors @state)))))))))
 
+;; ---- Pointer-bearing operand-position provenance -----------------------
+
+(deftest hybrid-pointer-domain-resource-is-checked-only-at-pointer-bearing-positions
+  ;; read-bytes takes [ptr len]: only position 0 is a pointer. A low fake
+  ;; pointer's exact value colliding with an ordinary length argument must not
+  ;; block a call whose own pointer argument is unrelated; the same value in
+  ;; the pointer position must still block, including an interior alias.
+  (let [state (atom {:ffi-errors []})
+        effect-trace (atom [])
+        ledger (atom [])
+        alloc-key [:native-operation :alloc]
+        base 4
+        controller
+        (make-ffi-routing-controller-var
+         :hybrid
+         {alloc-key (fn [_] (rt/modeled-resource base 8))}
+         state effect-trace ledger)]
+    (is (= base (controller (native-descriptor :alloc [8]) (fn [] :wrong))))
+    ;; base appears only as the ordinary :len argument (position 1); the
+    ;; unrelated :ptr argument (position 0) proceeds to native.
+    (let [proceeded? (atom false)
+          result
+          (controller (native-descriptor :read-bytes [999 base])
+                      (fn [] (reset! proceeded? true) "native-bytes"))]
+      (is (= "native-bytes" result))
+      (is (true? @proceeded?)))
+    ;; base appears as the :ptr argument (position 0): blocked.
+    (let [proceeded? (atom false)
+          data (ex-data-of
+                #(controller (native-descriptor :read-bytes [base 5])
+                             (fn [] (reset! proceeded? true) "wrong")))]
+      (is (= :jolt.sim.runtime/modeled-resource-native-fallback (:type data)))
+      (is (false? @proceeded?)))
+    ;; An interior alias of the pointer position (base+3, within [base,
+    ;; base+8)) is still blocked.
+    (let [proceeded? (atom false)
+          data (ex-data-of
+                #(controller (native-descriptor :read-bytes [(+ base 3) 5])
+                             (fn [] (reset! proceeded? true) "wrong")))]
+      (is (= :jolt.sim.runtime/modeled-resource-native-fallback (:type data)))
+      (is (false? @proceeded?)))))
+
+(deftest hybrid-write-value-slot-is-checked-for-every-pointer-capable-type
+  ;; write takes [ptr type offset value]. value (position 3) is a pointer
+  ;; position when type (position 1) is :pointer/:void*/:iptr/:uptr; an
+  ;; ordinary scalar write of the same numeric value must proceed. Native
+  ;; read/write also accept those types by string spelling.
+  (let [state (atom {:ffi-errors []})
+        effect-trace (atom [])
+        ledger (atom [])
+        alloc-key [:native-operation :alloc]
+        base 4
+        other-ptr 2000
+        controller
+        (make-ffi-routing-controller-var
+         :hybrid
+         {alloc-key (fn [_] (rt/modeled-resource base 8))}
+         state effect-trace ledger)]
+    (is (= base (controller (native-descriptor :alloc [8]) (fn [] :wrong))))
+    (let [proceeded? (atom false)
+          result
+          (controller (native-descriptor :write [other-ptr :int 0 base])
+                      (fn [] (reset! proceeded? true) :native))]
+      (is (= :native result))
+      (is (true? @proceeded?)))
+    (doseq [pointer-type [:pointer :void* :iptr :uptr
+                          "pointer" "void*" "iptr" "uptr"]]
+      (let [proceeded? (atom false)
+            data
+            (ex-data-of
+             #(controller
+               (native-descriptor :write
+                                  [other-ptr pointer-type 0 base])
+               (fn [] (reset! proceeded? true) :wrong)))]
+        (is (= :jolt.sim.runtime/modeled-resource-native-fallback (:type data))
+            (pr-str pointer-type))
+        (is (false? @proceeded?) (pr-str pointer-type))))))
+
+(deftest hybrid-foreign-pointer-capable-positions-derive-from-argument-types
+  ;; A foreign call typed [:int pointer-capable] must check only its position-1
+  ;; argument against pointer-domain resources; base at position 0 (the :int
+  ;; slot) proceeds, the identical value at position 1 blocks. :iptr/:uptr are
+  ;; scalar return domains, but their operand slots can carry pointer bits.
+  (let [state (atom {:ffi-errors []})
+        effect-trace (atom [])
+        ledger (atom [])
+        alloc-key [:native-operation :alloc]
+        base 4
+        foreign-descriptor
+        (fn [pointer-type arguments]
+          {:kind :foreign-function :task 0 :arguments arguments
+           :symbol "takes_int_and_pointer"
+           :argument-types [:int pointer-type]
+           :return-type :int :blocking? false
+           :capture-native-error? false :varargs-after nil})
+        controller
+        (make-ffi-routing-controller-var
+         :hybrid
+         {alloc-key (fn [_] (rt/modeled-resource base 8))}
+         state effect-trace ledger)]
+    (is (= base (controller (native-descriptor :alloc [8]) (fn [] :wrong))))
+    (doseq [pointer-type [:pointer :void* :iptr :uptr]]
+      (let [proceeded? (atom false)
+            result
+            (controller (foreign-descriptor pointer-type [base 42])
+                        (fn [] (reset! proceeded? true) 7))]
+        (is (= 7 result) (pr-str pointer-type))
+        (is (true? @proceeded?) (pr-str pointer-type)))
+      (let [proceeded? (atom false)
+            data
+            (ex-data-of
+             #(controller (foreign-descriptor pointer-type [42 base])
+                          (fn [] (reset! proceeded? true) :wrong)))]
+        (is (= :jolt.sim.runtime/modeled-resource-native-fallback (:type data))
+            (pr-str pointer-type))
+        (is (false? @proceeded?) (pr-str pointer-type))))))
+
+(deftest hybrid-opaque-domain-resource-remains-checked-at-every-position
+  ;; A handler pack may still classify a scalar handle the ABI types cannot
+  ;; identify as a pointer (e.g. a plain :int return type) as a
+  ;; modeled-resource. That resource's domain is :opaque, so it stays
+  ;; conservatively checked against every argument position, matching prior
+  ;; behavior -- including a position :argument-types marks a plain :int.
+  (let [state (atom {:ffi-errors []})
+        effect-trace (atom [])
+        ledger (atom [])
+        handle-descriptor
+        {:kind :foreign-function :task 0 :arguments []
+         :symbol "opaque_handle" :argument-types [] :return-type :int
+         :blocking? false :capture-native-error? false :varargs-after nil}
+        handle-key (descriptor-handler-key-var handle-descriptor)
+        base 9000
+        use-descriptor
+        {:kind :foreign-function :task 0 :arguments [base]
+         :symbol "use_int_handle" :argument-types [:int] :return-type :int
+         :blocking? false :capture-native-error? false :varargs-after nil}
+        controller
+        (make-ffi-routing-controller-var
+         :hybrid
+         {handle-key (fn [_] (rt/modeled-resource base 1))}
+         state effect-trace ledger)]
+    (is (= base (controller handle-descriptor (fn [] :wrong))))
+    (is (= :opaque (:domain (first @ledger))))
+    (let [proceeded? (atom false)
+          data (ex-data-of
+                #(controller use-descriptor
+                             (fn [] (reset! proceeded? true) :wrong)))]
+      (is (= :jolt.sim.runtime/modeled-resource-native-fallback (:type data)))
+      (is (false? @proceeded?)))))
+
 (deftest hybrid-caught-inexact-resource-alias-remains-a-controller-error
   (let [routing (atom nil)
         fake-base 9007199254740993
@@ -2612,8 +2762,10 @@
              [{:base 9000 :span 1} {:base 9100 :span 1}]))}
          state effect-trace ledger)]
     (is (= 0 (controller pipe-descriptor (fn [] :wrong))))
-    (is (= [{:base 9000 :span 1 :handler-key alloc-key :descriptor pipe-descriptor}
-            {:base 9100 :span 1 :handler-key alloc-key :descriptor pipe-descriptor}]
+    (is (= [{:base 9000 :span 1 :handler-key alloc-key :descriptor pipe-descriptor
+             :domain :opaque}
+            {:base 9100 :span 1 :handler-key alloc-key :descriptor pipe-descriptor
+             :domain :opaque}]
            @ledger))
     (doseq [descriptor [read-fd-descriptor write-fd-descriptor]]
       (let [data (ex-data-of #(controller descriptor (fn [] :wrong)))]

@@ -696,3 +696,109 @@
            (:type (ex-data-of #(call h :sizeof :void)))))
     (is (= :jolt.sim.ffi-memory/invalid-argument
            (:type (ex-data-of #(call h :sizeof :nope)))))))
+
+;; ---- hybrid handlers ------------------------------------------------------
+
+;; Both are private in jolt.sim.runtime; resolved the same way
+;; record-uvec-range-var is above, matching this file's own precedent for
+;; reaching one namespace's internals from a test in another.
+(def ^:private decode-handler-result-var
+  (resolve 'jolt.sim.runtime/decode-handler-result!))
+
+(def ^:private validate-hybrid-classification-var
+  (resolve 'jolt.sim.runtime/validate-hybrid-classification!))
+
+(defn- classify
+  "Invokes one hybrid handler and decodes+validates its classified result
+  exactly as jolt.sim.runtime's :hybrid routing would, returning a plain
+  {:kind :value :span?} map."
+  [handlers op & args]
+  (let [descriptor {:kind :native-operation :task 0
+                     :arguments (vec args) :operation op}
+        result ((get handlers [:native-operation op]) descriptor)]
+    (validate-hybrid-classification-var
+     descriptor
+     (decode-handler-result-var :hybrid descriptor (fn [_]) result))))
+
+(deftest hybrid-handlers-cover-all-sixteen-native-operations
+  (let [w (fm/world)
+        h (fm/hybrid-handlers w)]
+    (is (= expected-handler-keys (set (keys h))))
+    (doseq [k (keys h)]
+      (is (ifn? (get h k))))))
+
+(deftest hybrid-handlers-classify-scalar-nil-string-and-byte-array-results-as-substitute
+  (let [w (fm/world)
+        h (fm/hybrid-handlers w)
+        p (:value (classify h :alloc 8))]
+    (is (= {:kind :substitute :value nil} (classify h :load-library "libfoo")))
+    (is (= {:kind :substitute :value true} (classify h :loaded? "libfoo")))
+    (is (= {:kind :substitute :value false} (classify h :loaded? "libbar")))
+    (is (= {:kind :substitute :value 8} (classify h :sizeof :long)))
+    (is (= {:kind :substitute :value nil} (classify h :write p :int 0 42)))
+    (is (= {:kind :substitute :value 42} (classify h :read p :int)))
+    (is (= {:kind :substitute :value 5} (classify h :write-bytes p "café")))
+    (is (= {:kind :substitute :value "café"} (classify h :read-bytes p 5)))
+    (let [ra (classify h :read-array p 5)]
+      (is (= :substitute (:kind ra)))
+      (is (= [99 97 102 -61 -87] (vec (:value ra)))))
+    (let [dest (byte-array 5)]
+      (is (= {:kind :substitute :value 5}
+             (classify h :read-array! p 5 dest 0)))
+      (is (= [99 97 102 -61 -87] (vec dest))))
+    (is (= {:kind :substitute :value 5}
+           (classify h :write-array p (byte-array [1 2 3 4 5]))))
+    (is (= {:kind :substitute :value nil} (classify h :free p)))))
+
+(deftest hybrid-handlers-null-pointer-results-remain-substitute
+  (let [w (fm/world)
+        h (fm/hybrid-handlers w)]
+    (is (= {:kind :substitute :value nil} (classify h :free 0)))
+    (is (= {:kind :substitute :value nil} (classify h :ptr->string 0)))
+    (let [p (:value (classify h :alloc 8))]
+      (classify h :write p :pointer 0 0)
+      (is (= {:kind :substitute :value 0} (classify h :read p :pointer)))
+      (classify h :free p))))
+
+(deftest hybrid-handlers-classify-positive-fake-pointers-as-modeled-resource-with-exact-span
+  (let [w (fm/world)
+        h (fm/hybrid-handlers w)
+        alloc-result (classify h :alloc 12)]
+    (is (= :modeled-resource (:kind alloc-result)))
+    (is (pos? (:value alloc-result)))
+    (is (= 12 (:span alloc-result)))
+    (let [arr (byte-array [1 2 3 4])
+          borrow-result (classify h :borrow-byte-array arr 0 4)]
+      (is (= :modeled-resource (:kind borrow-result)))
+      (is (pos? (:value borrow-result)))
+      (is (= 4 (:span borrow-result)))
+      (classify h :release-byte-array (:value borrow-result)))
+    ;; A zero-length loan still reserves one live fake address.
+    (let [empty-borrow (classify h :borrow-byte-array (byte-array 0) 0 0)]
+      (is (= :modeled-resource (:kind empty-borrow)))
+      (is (pos? (:value empty-borrow)))
+      (is (= 1 (:span empty-borrow)))
+      (classify h :release-byte-array (:value empty-borrow)))
+    (let [str-result (classify h :string->ptr "hello é")]
+      (is (= :modeled-resource (:kind str-result)))
+      (is (pos? (:value str-result)))
+      (is (= 9 (:span str-result)))
+      (classify h :free (:value str-result)))
+    (let [p (:value alloc-result)]
+      (classify h :write p :pointer 0 p)
+      (let [read-back (classify h :read p :pointer)]
+        (is (= :modeled-resource (:kind read-back)))
+        (is (= p (:value read-back))))
+      (classify h :free p))))
+
+(deftest hybrid-handlers-reuse-the-model-exactly-once-per-call
+  (let [w (fm/world)
+        h (fm/hybrid-handlers w)]
+    (classify h :alloc 8)
+    (is (= 1 (count (fm/snapshot w)))
+        "one hybrid :alloc call must record exactly one allocation")
+    (let [arr (byte-array [1 2 3 4])
+          borrowed (classify h :borrow-byte-array arr 0 4)]
+      (is (= 2 (count (fm/snapshot w)))
+          "one hybrid :borrow-byte-array call must record exactly one more allocation")
+      (classify h :release-byte-array (:value borrowed)))))

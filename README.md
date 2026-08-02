@@ -226,11 +226,25 @@ optional positive span covers a half-open interval; `alloc` and
 `borrow-byte-array` infer their span from the intercepted arguments when it is
 omitted. Before a hybrid miss can proceed, the adapter truncates numeric
 arguments with the same toward-zero rule as core and rejects any result inside
-a model-owned interval. The ledger is per run and
+a model-owned interval. A resource's domain determines which argument
+positions are checked: a `:pointer`-domain resource -- one whose descriptor
+identifies it as returning a live pointer
+(`alloc`, `borrow-byte-array`, `string->ptr`, a pointer-typed `read`, or a
+foreign call with a `:pointer`/`:void*` return type) -- is checked only at its
+exact pointer-bearing argument positions for that call (derived from
+`:argument-types` for a foreign call, or a fixed per-operation table for the
+16 native operations, including `write`'s value slot when its type is
+`:pointer`/`:void*`/`:iptr`/`:uptr`), so an ordinary scalar argument -- a
+length, size, or status code -- that numerically coincides with a live fake
+pointer does not block an unrelated call. An `:opaque`-domain resource -- a
+numeric handle the ABI types cannot identify as a pointer, such as an integer
+handle returned under `:int`/`:uptr` -- remains checked against every argument
+position, as before this distinction existed. The ledger is per run and
 conservative for the whole scope (no early retirement yet), so extension packs
 should allocate fake resources from disjoint high ranges. This guard prevents
 a fake pointer/handle returned by one modeled call from reaching a later real
-native call; it is not general taint tracking for arbitrary scalar values.
+native call; it is not general taint tracking for scalar values or pointers
+encoded inside byte arrays.
 
 For example, this models allocation while allowing an unchanged library's
 other FFI calls to reach the real host:
@@ -625,6 +639,12 @@ The application body remains ordinary Jolt code:
 `jolt.sim.fixtures.ffi-roundtrip` is executed unchanged against both real
 native memory and this world.
 
+`jolt.sim.ffi-memory/hybrid-handlers` returns the same 16 keys pre-classified
+for `run-controlled`'s `:hybrid` `:ffi-mode`: `alloc`, `borrow-byte-array`,
+`string->ptr`, and a positive pointer-typed `read` each become a
+`modeled-resource` spanning their exact live allocation; every other result is
+a `substitute`.
+
 This is intentionally a memory substrate, not a model of every C library.
 SQLite and the initial POSIX loopback stream provide library-specific handler
 packs over the same heap; other native libraries and codecs still require
@@ -720,9 +740,18 @@ declared SQLite error.
 ```
 
 `my.app` and its database library import no simulator namespaces. The
-integration fixture runs the same `jdbc.core` body against real SQLite and the
-model, including nonempty and empty BLOB round trips, and checks the exact
-foreign-call sequence and complete handle/borrowed-memory cleanup:
+integration fixture runs the same `jdbc.core` body against real SQLite, the
+hermetic model, and hybrid routing, including nonempty and empty BLOB round
+trips, and checks the exact foreign-call sequence and complete
+handle/borrowed-memory cleanup:
+
+`jolt.sim.sqlite/hybrid-handlers` returns the same 38 keys pre-classified for
+`:hybrid` `:ffi-mode`. Every key substitutes its ordinary scalar/string result
+except `sqlite3_column_blob`, whose positive pointer becomes a
+`modeled-resource` spanning its exact live BLOB allocation (a null pointer
+remains a `substitute`, like every other result); a database fixture run
+unchanged through the public `:hybrid` routing path is this repo's end-to-end
+witness for that classification.
 
 ```sh
 export JOLT_SIM_BIN=/path/to/a/sim-enabled/jolt
@@ -734,7 +763,7 @@ These workspace-local aliases expect the `db` checkout to be a sibling of the
 canonical `jolt-sim` checkout. They deliberately do not fall back to an older
 installed `db`. Public CI does not currently run either alias, so this is
 locally verified parity rather than public platform evidence. The first command
-proves real/sim result parity, but resolving
+proves real/hermetic/hybrid result parity, but resolving
 `db` as a normal dependency lets Jolt process its native-library metadata
 before the controlled scope begins. The second command adds the `db` source
 path without that metadata: it proves the fixture does not need SQLite

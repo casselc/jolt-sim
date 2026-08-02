@@ -22,8 +22,17 @@
 
   handlers returns the 16 native-operation handlers from the memory world
   merged with exactly the 22 SQLite foreign-function keys required by
-  db.sqlite, so a single :ffi-handlers map drives both layers unchanged."
-  (:require [jolt.sim.ffi-memory :as memory]))
+  db.sqlite, so a single :ffi-handlers map drives both layers unchanged.
+
+  hybrid-handlers returns the same 38 keys classified for jolt.sim.runtime
+  :hybrid routing: memory/hybrid-handlers plus hybrid-foreign-handlers, which
+  reuses foreign-handlers exactly once per call for every key except
+  sqlite3_column_blob and substitutes each such result. sqlite3_column_blob
+  instead runs its own model transition exactly once, classifying its
+  positive borrowed pointer as a runtime/modeled-resource spanning its live
+  BLOB allocation and substituting a null pointer."
+  (:require [jolt.sim.ffi-memory :as memory]
+            [jolt.sim.runtime :as runtime]))
 
 ;; ---- codes --------------------------------------------------------------
 
@@ -620,15 +629,31 @@
         cell (require-column (require-stmt! w stmt-addr) col)]
     (if (= :null (:type cell)) 0 (count (cell->bytes cell)))))
 
-(defn- h-column-blob [w {:keys [arguments]}]
-  (let [[stmt-addr col] (vec arguments)
-        stmt (require-stmt! w stmt-addr)
+(defn- blob-borrow-outcome
+  "Runs the exact sqlite3_column_blob model transition exactly once for
+  stmt-addr/col: one read of the current row's cell drives both the pointer
+  and, for a non-null result, its exact live span, so neither hermetic nor
+  hybrid callers ever reread current-row state after the fact or borrow
+  twice for one call. NULL and an opted-in null-pointer empty BLOB return
+  {:pointer 0}. Every other BLOB returns the borrowed (or already-cached)
+  pointer paired with :span, the exact byte count of the allocation it names
+  -- at least one byte even for an empty non-null BLOB, matching
+  borrow-bytes!'s own size."
+  [w stmt-addr col]
+  (let [stmt (require-stmt! w stmt-addr)
         cell (require-column stmt col)]
     (if (or (= :null (:type cell))
             (true? (:null-pointer? cell)))
-      0
-      (or (get-in @(:state w) [:stmts stmt-addr :blob-cache col])
-          (borrow-bytes! w stmt-addr stmt col (cell->bytes cell))))))
+      {:pointer 0}
+      (let [bytes (cell->bytes cell)
+            span (max 1 (count bytes))
+            cached (get-in @(:state w) [:stmts stmt-addr :blob-cache col])
+            pointer (or cached (borrow-bytes! w stmt-addr stmt col bytes))]
+        {:pointer pointer :span span}))))
+
+(defn- h-column-blob [w {:keys [arguments]}]
+  (let [[stmt-addr col] (vec arguments)]
+    (:pointer (blob-borrow-outcome w stmt-addr col))))
 
 (defn- h-bind-text [w {:keys [arguments]}]
   (let [[stmt-addr index value _nbytes _destr] (vec arguments)]
@@ -706,6 +731,63 @@
   share the single memory world."
   [w]
   (merge (:memory-handlers w) (foreign-handlers w)))
+
+;; ---- hybrid classification ------------------------------------------------
+
+(defn- classify-foreign-result
+  "Classifies one raw non-pointer SQLite foreign-function result for
+  jolt.sim.runtime :hybrid routing as an ordinary runtime/substitute.
+  sqlite3_column_blob is the sole pointer-returning key (:return-type
+  :pointer) and is classified separately by classify-column-blob, from the
+  same model transition that produces its pointer, so this generic path never
+  needs to inspect the descriptor to find a fake pointer."
+  [result]
+  (runtime/substitute result))
+
+(defn- classify-column-blob
+  "Classifies sqlite3_column_blob for jolt.sim.runtime :hybrid routing by
+  running blob-borrow-outcome exactly once: a positive pointer becomes a
+  runtime/modeled-resource spanning its live BLOB allocation (both drawn from
+  that one transition), and a null pointer becomes runtime/substitute like
+  every other SQLite result. Never reruns or rereads current-row state after
+  the fact, and never borrows twice for one call."
+  [w descriptor]
+  (let [[stmt-addr col] (:arguments descriptor)
+        {:keys [pointer span]} (blob-borrow-outcome w stmt-addr col)]
+    (if (pos? pointer)
+      (runtime/modeled-resource pointer span)
+      (runtime/substitute pointer))))
+
+(defn hybrid-foreign-handlers
+  "Returns exactly the 22 SQLite foreign-function handlers, compatible with
+  jolt.sim.runtime :hybrid :ffi-handlers. Every key except sqlite3_column_blob
+  reuses the corresponding foreign-handlers result exactly once per call and
+  classifies it with classify-foreign-result. sqlite3_column_blob bypasses
+  foreign-handlers entirely in hybrid mode and instead runs
+  classify-column-blob, so its pointer and span always come from the same
+  single model transition. No handler here returns runtime/proceed, so a
+  caller must override a returned handler explicitly to select native routing
+  for that key."
+  [w]
+  (let [base (foreign-handlers w)]
+    (into {}
+          (map (fn [[key f]]
+                 [key
+                  (if (= "sqlite3_column_blob" (nth key 1))
+                    (fn sqlite-hybrid-column-blob-handler [descriptor]
+                      (classify-column-blob w descriptor))
+                    (fn sqlite-hybrid-handler [descriptor]
+                      (classify-foreign-result (f descriptor))))]))
+          base)))
+
+(defn hybrid-handlers
+  "Returns the memory world's 16 hybrid native-operation handlers merged with
+  the 22 hybrid SQLite foreign-function handlers, as one :ffi-handlers map for
+  jolt.sim.runtime :hybrid routing. The two key sets never collide: every
+  memory key is a 2-element [:native-operation op] vector and every SQLite key
+  is a 5-element [:foreign-function ...] vector, so no key is shared."
+  [w]
+  (merge (memory/hybrid-handlers (:memory w)) (hybrid-foreign-handlers w)))
 
 ;; ---- evidence -----------------------------------------------------------
 

@@ -1,6 +1,7 @@
 (ns jolt.sim.sqlite-test
   (:require [clojure.test :refer [deftest is testing]]
             [jolt.sim.ffi-memory :as memory]
+            [jolt.sim.runtime :as runtime]
             [jolt.sim.sqlite :as sqlite]))
 
 ;; ---- harness ------------------------------------------------------------
@@ -378,3 +379,150 @@
     (native H :free p)
     (is (true? (sqlite/clean? w)))
     (is (empty? (sqlite/leaks w)))))
+
+;; ---- hybrid handlers ------------------------------------------------------
+
+;; sqlite/handler-keys' five-element shorthand canonicalizes (per
+;; jolt.sim.runtime/canonical-handler-key) to the seven-element
+;; [:foreign-function symbol argument-types return-type blocking?
+;; capture-native-error? varargs-after] identity, with capture-native-error?
+;; false and varargs-after nil. That is this repo's exact current ABI6
+;; :foreign-function descriptor identity (descriptor-version 6). Comparisons
+;; below are against jolt.sim.runtime's own public substitute/modeled-resource
+;; constructors -- the exact wire-format values a hybrid handler returns -- so
+;; no private decode or validation var is ever resolved.
+(defn- ff-hybrid-descriptor [sym args]
+  (let [key (key-by-symbol sym)]
+    {:kind :foreign-function :task 0 :arguments (vec args)
+     :symbol sym :argument-types (nth key 2)
+     :return-type (nth key 3) :blocking? (nth key 4)
+     :capture-native-error? false :varargs-after nil}))
+
+(defn- native-hybrid [H op & args]
+  ((get H [:native-operation op])
+   {:kind :native-operation :task 0 :arguments (vec args) :operation op}))
+
+(defn- ff-hybrid [H sym args]
+  ((get H (key-by-symbol sym)) (ff-hybrid-descriptor sym args)))
+
+(defn- open-db-hybrid [H]
+  (let [filename (:jolt.sim.runtime/value (native-hybrid H :string->ptr "file:test.db"))
+        cell (:jolt.sim.runtime/value (native-hybrid H :alloc 8))]
+    (is (= (runtime/substitute 0) (ff-hybrid H "sqlite3_open" [filename cell])))
+    (let [db (:jolt.sim.runtime/value (native-hybrid H :read cell :pointer))]
+      (native-hybrid H :free filename)
+      (native-hybrid H :free cell)
+      db)))
+
+(defn- prepare-hybrid [H db sql]
+  (let [sql-ptr (:jolt.sim.runtime/value (native-hybrid H :string->ptr sql))
+        stmt-cell (:jolt.sim.runtime/value (native-hybrid H :alloc 8))]
+    (is (= (runtime/substitute 0)
+           (ff-hybrid H "sqlite3_prepare_v2" [db sql-ptr -1 stmt-cell 0])))
+    (let [stmt (:jolt.sim.runtime/value (native-hybrid H :read stmt-cell :pointer))]
+      (native-hybrid H :free sql-ptr)
+      (native-hybrid H :free stmt-cell)
+      stmt)))
+
+(defn- close-db-hybrid [H db]
+  (is (= (runtime/substitute 0) (ff-hybrid H "sqlite3_close_v2" [db]))))
+
+(deftest hybrid-handlers-cover-the-same-38-keys-as-the-hermetic-handlers
+  (let [w (sqlite/world [])
+        h (sqlite/handlers w)
+        hybrid (sqlite/hybrid-handlers w)
+        hybrid-foreign (sqlite/hybrid-foreign-handlers w)]
+    (is (= (set (keys h)) (set (keys hybrid))))
+    (is (= 38 (count hybrid)))
+    (is (= (set sqlite/handler-keys) (set (keys hybrid-foreign))))
+    (is (= 22 (count hybrid-foreign)))
+    (doseq [k (keys hybrid)]
+      (is (ifn? (get hybrid k))))))
+
+(deftest hybrid-sqlite-scalar-and-string-results-classify-as-substitute
+  (let [plans [{:sql "SELECT id, name FROM t"
+                :columns ["id" "name"]
+                :rows [[{:type :integer :value 1}
+                        {:type :text :value "ann"}]]
+                :changes 0 :last-row-id 0}]
+        w (sqlite/world plans)
+        H (sqlite/hybrid-handlers w)
+        db (open-db-hybrid H)
+        s (prepare-hybrid H db "SELECT id, name FROM t")]
+    (is (= (runtime/substitute 100) (ff-hybrid H "sqlite3_step" [s])))
+    (is (= (runtime/substitute 2) (ff-hybrid H "sqlite3_column_count" [s])))
+    (is (= (runtime/substitute "id") (ff-hybrid H "sqlite3_column_name" [s 0])))
+    (is (= (runtime/substitute 1) (ff-hybrid H "sqlite3_column_type" [s 0])))
+    (is (= (runtime/substitute 1) (ff-hybrid H "sqlite3_column_int64" [s 0])))
+    (is (= (runtime/substitute "ann") (ff-hybrid H "sqlite3_column_text" [s 1])))
+    (is (= (runtime/substitute 101) (ff-hybrid H "sqlite3_step" [s])))
+    (is (= (runtime/substitute 0) (ff-hybrid H "sqlite3_errcode" [db])))
+    (is (= (runtime/substitute 0) (ff-hybrid H "sqlite3_changes" [db])))
+    (is (= (runtime/substitute 0)
+           (ff-hybrid H "sqlite3_last_insert_rowid" [db])))
+    (is (= (runtime/substitute 0) (ff-hybrid H "sqlite3_finalize" [s])))
+    (close-db-hybrid H db)
+    (is (true? (sqlite/clean? w)))))
+
+(deftest hybrid-column-blob-classifies-a-positive-pointer-with-exact-span-and-null-as-substitute
+  (let [plans [{:sql "SELECT b FROM t"
+                :columns ["b"]
+                :rows [[{:type :blob :value [1 2 3]}]
+                       [{:type :blob :value []}]
+                       [{:type :blob :value [] :null-pointer? true}]
+                       [{:type :null}]]}]
+        w (sqlite/world plans)
+        H (sqlite/hybrid-handlers w)
+        db (open-db-hybrid H)
+        s (prepare-hybrid H db "SELECT b FROM t")]
+    ;; nonempty blob: modeled-resource spanning its exact 3-byte allocation
+    (is (= (runtime/substitute 100) (ff-hybrid H "sqlite3_step" [s])))
+    (let [blob (ff-hybrid H "sqlite3_column_blob" [s 0])
+          addr (:jolt.sim.runtime/value blob)]
+      (is (pos? addr))
+      (is (= (runtime/modeled-resource addr 3) blob)))
+    ;; empty non-null blob: still a modeled-resource, spanning its fallback
+    ;; one-byte allocation
+    (is (= (runtime/substitute 100) (ff-hybrid H "sqlite3_step" [s])))
+    (let [blob (ff-hybrid H "sqlite3_column_blob" [s 0])
+          addr (:jolt.sim.runtime/value blob)]
+      (is (pos? addr))
+      (is (= (runtime/modeled-resource addr 1) blob)))
+    ;; empty BLOB opted into a null pointer, and a NULL cell: both substitute 0
+    (is (= (runtime/substitute 100) (ff-hybrid H "sqlite3_step" [s])))
+    (is (= (runtime/substitute 0) (ff-hybrid H "sqlite3_column_blob" [s 0])))
+    (is (= (runtime/substitute 100) (ff-hybrid H "sqlite3_step" [s])))
+    (is (= (runtime/substitute 0) (ff-hybrid H "sqlite3_column_blob" [s 0])))
+    (is (= (runtime/substitute 101) (ff-hybrid H "sqlite3_step" [s])))
+    (ff-hybrid H "sqlite3_finalize" [s])
+    (close-db-hybrid H db)
+    (is (true? (sqlite/clean? w)))))
+
+(deftest hybrid-column-blob-pointer-and-span-share-one-transition-with-no-duplicate-borrow
+  (let [plans [{:sql "SELECT b FROM t" :columns ["b"]
+                :rows [[{:type :blob :value [9 9]}]]}]
+        w (sqlite/world plans)
+        H (sqlite/hybrid-handlers w)
+        db (open-db-hybrid H)
+        s (prepare-hybrid H db "SELECT b FROM t")]
+    (ff-hybrid H "sqlite3_step" [s])
+    (let [first-result (ff-hybrid H "sqlite3_column_blob" [s 0])
+          second-result (ff-hybrid H "sqlite3_column_blob" [s 0])
+          addr (:jolt.sim.runtime/value first-result)]
+      ;; two hybrid calls for the same current row/col observe the identical
+      ;; modeled-resource pointer+span, so both are drawn from the one
+      ;; borrow-or-cache transition rather than two independent ones
+      (is (= (runtime/modeled-resource addr 2) first-result))
+      (is (= first-result second-result))
+      ;; the exactly-once witness: the statement's own borrowed-address
+      ;; ledger names addr precisely once. A reintroduced duplicate borrow
+      ;; would append addr (or a second address) here; a broad allocation
+      ;; count could stay misleadingly stable if a duplicate borrow happened
+      ;; to coincide with an unrelated free elsewhere, so this checks the
+      ;; exact state transition instead.
+      (is (= [addr] (get-in (sqlite/state w) [:stmts s :borrowed])))
+      (is (= [{:base addr :size 2}]
+             (filter #(= addr (:base %)) (sqlite/leaks w)))))
+    (ff-hybrid H "sqlite3_finalize" [s])
+    (close-db-hybrid H db)
+    (is (true? (sqlite/clean? w)))))

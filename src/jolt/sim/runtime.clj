@@ -797,17 +797,90 @@
 (def ^:private pointer-producing-native-operations
   #{:alloc :borrow-byte-array :string->ptr})
 
-(def ^:private pointer-ffi-types #{:pointer :void*})
+(def ^:private pointer-result-type-names #{"pointer" "void*"})
+
+(def ^:private pointer-capable-argument-type-names
+  #{"pointer" "void*" "iptr" "uptr"})
+
+(defn- ffi-type-name
+  "Returns the host-visible spelling of a scalar FFI type when it can be
+  represented without evaluation. Foreign descriptors always carry keywords;
+  native read/write calls also accept the string and symbol spellings that
+  Jolt's runtime type resolver accepts."
+  [ffi-type]
+  (cond
+    (keyword? ffi-type) (name ffi-type)
+    (symbol? ffi-type) (name ffi-type)
+    (string? ffi-type) ffi-type
+    :else nil))
+
+(defn- pointer-result-type? [ffi-type]
+  (contains? pointer-result-type-names (ffi-type-name ffi-type)))
+
+(defn- pointer-capable-argument-type? [ffi-type]
+  (contains? pointer-capable-argument-type-names (ffi-type-name ffi-type)))
 
 (defn- pointer-producing-descriptor? [descriptor]
   (or (and (= :native-operation (:kind descriptor))
            (or (contains? pointer-producing-native-operations
                           (:operation descriptor))
                (and (= :read (:operation descriptor))
-                    (contains? pointer-ffi-types
-                               (get (:arguments descriptor) 1)))))
+                    (pointer-result-type?
+                     (get (:arguments descriptor) 1)))))
       (and (= :foreign-function (:kind descriptor))
-           (contains? pointer-ffi-types (:return-type descriptor)))))
+           (pointer-result-type? (:return-type descriptor)))))
+
+;; Exact pointer-bearing argument positions for the current 16-operation native
+;; contract. free/read/read-bytes/write-bytes/read-array/read-array!/
+;; write-array/release-byte-array/ptr->string each take their pointer at
+;; position 0; write additionally treats its position-3 value slot as a
+;; pointer position when its position-1 type can carry a pointer
+;; (:pointer/:void*/:iptr/:uptr). alloc,
+;; sizeof, load-library, loaded?, string->ptr, and borrow-byte-array take no
+;; pointer-typed argument (each names a scalar, string, or byte array, not a
+;; live modeled address).
+(def ^:private native-operation-pointer-positions
+  {:load-library #{}
+   :loaded? #{}
+   :alloc #{}
+   :free #{0}
+   :read #{0}
+   :write #{0}
+   :sizeof #{}
+   :read-bytes #{0}
+   :write-bytes #{0}
+   :read-array #{0}
+   :read-array! #{0}
+   :write-array #{0}
+   :borrow-byte-array #{}
+   :release-byte-array #{0}
+   :ptr->string #{0}
+   :string->ptr #{}})
+
+(defn- pointer-argument-positions
+  "Returns the exact set of argument-vector positions this descriptor passes a
+  live pointer at. A :foreign-function descriptor derives its positions from
+  :argument-types (every :pointer/:void*/:iptr/:uptr position); a
+  :native-operation descriptor uses the fixed current-contract table above,
+  adding position 3 for :write only when its position-1 type argument can carry
+  a pointer."
+  [descriptor]
+  (case (:kind descriptor)
+    :foreign-function
+    (into #{}
+          (keep-indexed
+           (fn [i argument-type]
+             (when (pointer-capable-argument-type? argument-type) i)))
+          (:argument-types descriptor))
+
+    :native-operation
+    (let [operation (:operation descriptor)
+          base (get native-operation-pointer-positions operation #{})]
+      (if (and (= :write operation)
+               (pointer-capable-argument-type?
+                (get (:arguments descriptor) 1)))
+        (conj base 3)
+        base))))
 
 (defn- validate-hybrid-classification! [descriptor decoded]
   (let [result (:value decoded)
@@ -854,7 +927,10 @@
 (defn- additional-ledger-entries
   "Validates and shapes zero or more with-additional-resources additions into
   ledger entries. Throws on the first malformed resource, before any entry --
-  primary or additional -- reaches the ledger."
+  primary or additional -- reaches the ledger. Each entry's domain is :opaque:
+  an addition carries no ABI type of its own (e.g. POSIX pipe's output file
+  descriptors), so it stays conservatively checked against every argument
+  position rather than only exact pointer-bearing ones."
   [descriptor handler-key additional-resources]
   (let [additional-resources (or additional-resources [])]
     (validate-additional-resources! additional-resources)
@@ -863,14 +939,25 @@
        {:base (:base resource)
         :span (:span resource)
         :handler-key handler-key
-        :descriptor descriptor})
+        :descriptor descriptor
+        :domain :opaque})
      additional-resources)))
 
 (defn- register-modeled-resource!
   "Validates the primary modeled-resource result (if any) and every
   with-additional-resources addition, then appends every resulting ledger
   entry in one atomic swap!. A malformed primary or additional resource throws
-  before that swap!, leaving the ledger completely unchanged."
+  before that swap!, leaving the ledger completely unchanged.
+
+  The primary entry's :domain is :pointer when pointer-producing-descriptor?
+  identifies this exact call as returning a live pointer (alloc,
+  borrow-byte-array, string->ptr, a pointer-typed read, or a foreign call with
+  a :pointer/:void* return type); otherwise it is :opaque, covering a numeric
+  handle the ABI types cannot identify as a pointer (e.g. a scalar handle
+  returned under :int/:uptr). A :pointer resource is later checked only
+  against exact pointer-bearing argument positions; an :opaque resource
+  remains checked against every position, unchanged from prior conservative
+  behavior."
   [resource-ledger descriptor handler-key decoded]
   (let [primary-entry
         (when (= :modeled-resource (:kind decoded))
@@ -896,7 +983,10 @@
             {:base base
              :span span
              :handler-key handler-key
-             :descriptor descriptor}))
+             :descriptor descriptor
+             :domain (if (pointer-producing-descriptor? descriptor)
+                       :pointer
+                       :opaque)}))
         additional-entries
         (additional-ledger-entries
          descriptor handler-key (:additional-resources decoded))
@@ -919,24 +1009,40 @@
                          (catch :default _ nil))
     :else nil))
 
-(defn- modeled-resource-hit [resource-ledger descriptor]
-  (some
-   identity
-   (map-indexed
-    (fn [argument-index argument]
-      (when-let [native-argument (native-truncated-number argument)]
-        (when-let [resource
-                   (some
-                    (fn [{:keys [base span] :as resource}]
-                      (when (and (<= base native-argument)
-                                 (< native-argument (+ base span)))
-                        resource))
-                    @resource-ledger)]
-          {:argument-index argument-index
-           :argument argument
-           :native-argument native-argument
-           :resource resource})))
-    (:arguments descriptor))))
+(defn- resource-checked-at-position? [resource pointer-positions argument-index]
+  (or (= :opaque (:domain resource))
+      (contains? pointer-positions argument-index)))
+
+(defn- modeled-resource-hit
+  "Returns the first live ledger entry a descriptor's argument aliases, else
+  nil. A :pointer-domain resource is checked only at this exact descriptor's
+  pointer-bearing argument positions (see pointer-argument-positions), so an
+  ordinary scalar argument -- a length, size, or status code -- that
+  numerically coincides with a live fake pointer does not block an unrelated
+  call. An :opaque-domain resource (a numeric handle the ABI types cannot
+  identify as a pointer) remains checked against every argument position,
+  exactly as before this distinction existed."
+  [resource-ledger descriptor]
+  (let [pointer-positions (pointer-argument-positions descriptor)]
+    (some
+     identity
+     (map-indexed
+      (fn [argument-index argument]
+        (when-let [native-argument (native-truncated-number argument)]
+          (when-let [resource
+                     (some
+                      (fn [{:keys [base span] :as resource}]
+                        (when (and (resource-checked-at-position?
+                                    resource pointer-positions argument-index)
+                                   (<= base native-argument)
+                                   (< native-argument (+ base span)))
+                          resource))
+                      @resource-ledger)]
+            {:argument-index argument-index
+             :argument argument
+             :native-argument native-argument
+             :resource resource})))
+      (:arguments descriptor)))))
 
 (defn- record-arrival! [effect-trace-log entry]
   "Atomically appends one route decision in interception-arrival order and
@@ -1045,9 +1151,13 @@
 (defn- make-ffi-routing-controller
   "Returns the two-argument routing controller for :observe or :hybrid.
   Observe always invokes proceed. Hybrid dispatches configured handlers first
-  and otherwise invokes proceed only when no model-owned numeric resource is
-  present in the descriptor's top-level arguments. A dispatched hybrid handler
-  may itself return proceed to explicitly select that same native branch for
+  and otherwise invokes proceed only when no model-owned resource aliases this
+  descriptor's live arguments: a :pointer-domain resource is checked only at
+  this exact call's pointer-bearing argument positions (see
+  pointer-argument-positions), while an :opaque-domain resource -- a numeric
+  handle the ABI types cannot identify as a pointer -- is checked against
+  every argument position. A dispatched hybrid handler may itself return
+  proceed to explicitly select that same native branch for
   its exact call; the modeled-resource provenance guard still runs first, and
   the arrival-order effect-trace entry reserved for the handler dispatch is
   finalized in place as :route :native (or :blocked, if the guard fires)

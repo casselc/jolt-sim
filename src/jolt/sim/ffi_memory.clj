@@ -16,7 +16,18 @@
   No OS access of any kind happens here.
 
   Default config is LP64 little endian: pointer-size 8, long-size 8,
-  base-address 0x10000 (aligned), alignment 8, available-libraries :any.")
+  base-address 0x10000 (aligned), alignment 8, available-libraries :any.
+
+  hybrid-handlers returns the same 16 keys classified for jolt.sim.runtime
+  :hybrid routing: each handler reuses handlers' corresponding hermetic
+  transition exactly once per call and classifies its raw result with
+  runtime/substitute or runtime/modeled-resource. alloc, borrow-byte-array,
+  and string->ptr always return a positive fake pointer, so each becomes a
+  modeled-resource spanning exactly its live allocation; a :read of
+  :pointer/:void* is a modeled-resource only when its decoded value is a
+  positive fake pointer. Every other result -- including a decoded null
+  pointer -- is a substitute."
+  (:require [jolt.sim.runtime :as runtime]))
 
 ;; ---- config -------------------------------------------------------------
 
@@ -901,6 +912,57 @@
                   (locking (:lock w)
                     (f w descriptor)))]))
         native-ops))
+
+(def ^:private pointer-read-types #{:pointer :void*})
+
+(defn- utf8-byte-count [^String s]
+  (alength (.getBytes s "UTF-8")))
+
+(defn- classify-hybrid-result
+  "Classifies one raw native-operation result for jolt.sim.runtime :hybrid
+  routing. alloc, borrow-byte-array, and string->ptr always return a positive
+  fake pointer, so each becomes a runtime/modeled-resource spanning exactly its
+  live allocation. A :read of :pointer/:void* is a modeled-resource only when
+  its decoded value is a positive fake pointer; a decoded null (zero) pointer,
+  and every other operation's scalar/nil/string/byte-array result, becomes a
+  runtime/substitute."
+  [op descriptor result]
+  (case op
+    :alloc
+    (runtime/modeled-resource result (first (:arguments descriptor)))
+
+    :borrow-byte-array
+    (runtime/modeled-resource
+     result (max 1 (get (:arguments descriptor) 2)))
+
+    :string->ptr
+    (runtime/modeled-resource
+     result (inc (utf8-byte-count (first (:arguments descriptor)))))
+
+    :read
+    (if (and (contains? pointer-read-types (get (:arguments descriptor) 1))
+             (pos? result))
+      (runtime/modeled-resource result)
+      (runtime/substitute result))
+
+    (runtime/substitute result)))
+
+(defn hybrid-handlers
+  "Returns a map keyed by [:native-operation op] over all 16 native operations,
+  compatible with jolt.sim.runtime :hybrid :ffi-handlers. Each handler reuses
+  the corresponding handlers result exactly once per call and classifies it
+  with classify-hybrid-result; it never returns runtime/proceed, so a caller
+  must override a returned handler explicitly to select native routing for
+  that key."
+  [w]
+  (let [base (handlers w)]
+    (into {}
+          (map (fn [[key f]]
+                 (let [op (second key)]
+                   [key
+                    (fn native-hybrid-handler [descriptor]
+                      (classify-hybrid-result op descriptor (f descriptor)))])))
+          base)))
 
 (defn snapshot
   "Returns stable plain data for every allocation, ordered by base address.
