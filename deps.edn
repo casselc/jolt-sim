@@ -25,8 +25,14 @@
 
   ;; One request/result protocol worker per exact future schedule. The parent
   ;; process supplies the request and result paths after these main options.
+  ;; Pinned jolt-net lets a resolved scenario (e.g. ffi-schedule-scenarios)
+  ;; load unchanged jolt.net application code in this child.
   :explore-worker-test
   {:extra-paths ["test"]
+   :extra-deps
+   {io.github.casselc/jolt-net
+    {:git/url "https://github.com/casselc/jolt-net.git"
+     :git/sha "f2648525f08a7fbef5b82b4a11268b76f3984155"}}
    :main-opts ["-m" "jolt.sim.explore-worker"]}
 
   ;; Process-isolated integration gate for worker completion, timeout,

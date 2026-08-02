@@ -335,6 +335,70 @@
       (is (= {:workload :collision-control}
              (get-in outcome [:error :data :input]))))))
 
+(def ^:private admission-order-timeout-ms 20000)
+
+(deftest fresh-workers-drive-real-posix-ffi-admission-order
+  (testing "poll-then-write and write-then-poll admit real poll/write calls in
+            the barrier-fixed arrival order but release in distinct plan
+            orders"
+    (let [poll-id :jolt.sim.fixtures.ffi-schedule-scenarios/poll
+          write-id :jolt.sim.fixtures.ffi-schedule-scenarios/write
+          run! (fn [plan-key]
+                 (process-explorer/run-case
+                  (case-config
+                   'jolt.sim.fixtures.ffi-schedule-scenarios/exercise-admission-order
+                   admission-order-timeout-ms
+                   {:input plan-key})))
+          poll-then-write (run! :poll-then-write)
+          write-then-poll (run! :write-then-poll)
+          evidence (fn [outcome] (:result outcome))
+          expected-fixture-result
+          {:parked? true
+           :awaited []
+           :await-completed? true
+           :close-results [true false]}]
+      (doseq [outcome [poll-then-write write-then-poll]]
+        (is (= :completed (:status outcome)))
+        (is (nil? (:schedule outcome))))
+      (is (= expected-fixture-result
+             (:fixture-result (evidence poll-then-write))))
+      (is (= expected-fixture-result
+             (:fixture-result (evidence write-then-poll))))
+      (is (= [poll-id write-id]
+             (get-in (evidence poll-then-write)
+                     [:coordinator-diagnostics :arrival-order])))
+      (is (= [poll-id write-id]
+             (get-in (evidence write-then-poll)
+                     [:coordinator-diagnostics :arrival-order])))
+      (is (= [poll-id write-id]
+             (get-in (evidence poll-then-write)
+                     [:coordinator-diagnostics :release-order]))
+          "poll-then-write releases poll's gate before write's")
+      (is (= [write-id poll-id]
+             (get-in (evidence write-then-poll)
+                     [:coordinator-diagnostics :release-order]))
+          "write-then-poll releases write's gate before poll's")
+      (is (= [[:release poll-id] [:release write-id]]
+             (:release-evidence (evidence poll-then-write))))
+      (is (= [[:release write-id] [:release poll-id]]
+             (:release-evidence (evidence write-then-poll))))
+      (doseq [outcome [poll-then-write write-then-poll]]
+        (let [diag (:coordinator-diagnostics (evidence outcome))]
+          (is (zero? (:in-flight diag)))
+          (is (false? (:aborted? diag)))
+          (is (= #{poll-id write-id} (:completed diag)))))
+      (doseq [outcome [poll-then-write write-then-poll]]
+        (let [routes (:native-routes (evidence outcome))]
+          ;; The coordinator selects occurrence 1 of each key. Later native
+          ;; retries and close-wake writes are intentionally not schedule
+          ;; evidence: poll may retry after EINTR, while jolt-net may omit its
+          ;; terminal write when the acknowledged clear wake already let the
+          ;; waiter retire the transport.
+          (is (<= 2 (count routes)))
+          (is (every? #(= :native (:route %)) routes))
+          (is (pos? (count (filter #(= "poll" (:symbol %)) routes))))
+          (is (pos? (count (filter #(= "write" (:symbol %)) routes)))))))))
+
 (defn -main [& _]
   (let [bin (required-environment "JOLT_SIM_BIN")
         project-dir (required-environment "JOLT_SIM_PROJECT_DIR")
