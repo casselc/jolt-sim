@@ -4,17 +4,23 @@
   loopback plus SQLite handler packs.
 
   Each generated case draws a Hegel-owned, shrinkable scenario input -- stream
-  capacity, pipe capacity, and an optional captured poll EINTR activation
-  ordinal -- and runs the unchanged fixture once in a fresh sim-enabled Jolt
-  worker through jolt.sim.process-explorer/run-case (protocol-v2 :input). The
-  worker loads jolt.sim.fixtures.http-sqlite-scenarios, builds the shared
-  hermetic worlds from the drawn input, and returns one canonical evidence map.
+  capacity, pipe capacity, an optional captured poll EINTR activation ordinal,
+  and one closed FFI admission plan -- and runs the unchanged fixture once in a
+  fresh sim-enabled Jolt worker through jolt.sim.process-explorer/run-case
+  (protocol-v2 :input). The worker loads jolt.sim.fixtures.http-sqlite-scenarios,
+  builds the shared hermetic worlds from the drawn input, wraps the composed
+  canonical handlers with jolt.sim.ffi-schedule over poll occurrence 1 and the
+  captured nonblocking connect occurrence 1, and returns one canonical evidence
+  map.
 
   Each completed case checks the ordinary app response status and exact BLOB
   octets (spanning the signed/unsigned byte boundary) plus route, SQLite,
-  cleanup, capacity, and fault evidence sufficient to catch a model bypass. A
-  regression failure carries the bounded drawn input so Hegel can replay and
-  shrink it: a non-:completed outcome is enriched with :input around
+  cleanup, capacity, fault, and admission-plan evidence sufficient to catch a
+  model bypass. The admission slice requires exact plan-derived release
+  evidence, zero in-flight, non-aborted state, both steps completed, and that
+  the selected poll/connect effects were served by the existing modeled
+  handlers. A regression failure carries the bounded drawn input so Hegel can
+  replay and shrink it: a non-:completed outcome is enriched with :input around
   jolt.sim.hegel/require-completed!, and every assertion site throws a typed
   ex-info carrying :hegel/origin and the same input.
 
@@ -38,26 +44,52 @@
 (def ^:private scenario-sym
   'jolt.sim.fixtures.http-sqlite-scenarios/exercise-with-capacities)
 
+(def ^:private scenario-ns "jolt.sim.fixtures.http-sqlite-scenarios")
+
+;; Reconstructed step ids matching ::poll / ::connect in the fixture namespace.
+;; This parent does not load that namespace (jolt.net/db/jolt-http are absent
+;; here); the worker child resolves it under :http-sqlite-explore-worker.
+(def ^:private poll-id (keyword scenario-ns "poll"))
+(def ^:private connect-id (keyword scenario-ns "connect"))
+
 ;; Ordered, discriminating boundaries rather than every integer in a range.
 ;; Hegel owns selection and shrinks sampled indexes toward the one-byte/no-fault
 ;; case while still exercising larger powers of two and later poll attempts.
 (def ^:private capacity-domain [1 2 4 8])
 (def ^:private poll-eintr-domain [nil 1 2 4 8])
 
+;; Exactly the two valid admission plans over poll occurrence 1 and the captured
+;; nonblocking connect occurrence 1. Generation is engine-owned via
+;; g/sampled-from, which shrinks toward index 0 (:poll-then-connect).
+(def ^:private admission-plan-domain [:poll-then-connect :connect-then-poll])
+
+;; Release evidence is plan-driven (arrival gate release order), so it is an
+;; exact replay witness for each plan; arrival and completion order remain
+;; diagnostic and are deliberately not asserted as deterministic.
+(def ^:private expected-release-evidence
+  {:poll-then-connect [[:release poll-id] [:release connect-id]]
+   :connect-then-poll [[:release connect-id] [:release poll-id]]})
+
+(def ^:private expected-release-order
+  {:poll-then-connect [poll-id connect-id]
+   :connect-then-poll [connect-id poll-id]})
+
 (defn- input-generator
-  "Returns a Hegel generator over the scenario input domain. The three draws
-  are composed with g/tuple and g/fmap so the whole input shrinks as one unit
-  and threads through run-case's :input unchanged. Selection and shrinking stay
+  "Returns a Hegel generator over the scenario input domain. The four draws are
+  composed with g/tuple and g/fmap so the whole input shrinks as one unit and
+  threads through run-case's :input unchanged. Selection and shrinking stay
   engine-owned: this wrapper performs no selection of its own."
   []
   (g/fmap
-   (fn [[stream-capacity pipe-capacity ordinal]]
+   (fn [[stream-capacity pipe-capacity ordinal plan]]
      {:stream-capacity stream-capacity
       :pipe-capacity pipe-capacity
-      :poll-eintr-ordinal ordinal})
+      :poll-eintr-ordinal ordinal
+      :admission-plan plan})
    (g/tuple (g/sampled-from capacity-domain)
             (g/sampled-from capacity-domain)
-            (g/sampled-from poll-eintr-domain))))
+            (g/sampled-from poll-eintr-domain)
+            (g/sampled-from admission-plan-domain))))
 
 (defn- required-environment [name]
   (let [value (System/getenv name)]
@@ -121,7 +153,7 @@
       (violation "jolt.sim.http-sqlite-hegel-test/evidence-shape"
                  input
                  {:evidence-class (str (class evidence))}))
-    (let [{:keys [http routes sqlite capacity fault clean?]} evidence]
+    (let [{:keys [http routes sqlite capacity fault clean? admission]} evidence]
       ;; Ordinary app response: status 200 and the exact BLOB octets spanning
       ;; the signed/unsigned byte boundary, served as application/octet-stream.
       (when-not (= 200 (:status http))
@@ -244,10 +276,68 @@
       (when-not (and (:memory clean?) (:sqlite clean?) (:posix clean?))
         (violation "jolt.sim.http-sqlite-hegel-test/world-cleanup"
                    input
-                   {:clean? clean?})))))
+                   {:clean? clean?}))
+      ;; Admission evidence: the generator always draws a plan, so the worker
+      ;; evidence must carry one. Release evidence is plan-driven and therefore
+      ;; an exact replay witness; the coordinator must finish quiesced (zero
+      ;; in-flight, not aborted, both steps completed) and its release order
+      ;; must match the drawn plan. The selected poll/connect effects must be
+      ;; served by the existing modeled handlers (:route :handler), not
+      ;; blocked or routed native, with both symbols present.
+      (when-not (map? admission)
+        (violation "jolt.sim.http-sqlite-hegel-test/admission-shape"
+                   input
+                   {:admission admission}))
+      (when-not (= (:admission-plan input) (:plan admission))
+        (violation "jolt.sim.http-sqlite-hegel-test/admission-plan"
+                   input
+                   {:admission admission}))
+      (when-not (= (get expected-release-evidence (:admission-plan input))
+                   (:release-evidence admission))
+        (violation "jolt.sim.http-sqlite-hegel-test/release-evidence"
+                   input
+                   {:release (:release-evidence admission)
+                    :expected (get expected-release-evidence
+                                   (:admission-plan input))}))
+      (let [diag (:coordinator-diagnostics admission)]
+        (when-not (zero? (:in-flight diag))
+          (violation "jolt.sim.http-sqlite-hegel-test/admission-in-flight"
+                     input
+                     {:in-flight (:in-flight diag)}))
+        (when-not (false? (:aborted? diag))
+          (violation "jolt.sim.http-sqlite-hegel-test/admission-aborted"
+                     input
+                     {:aborted? (:aborted? diag)}))
+        (when-not (= #{poll-id connect-id} (:completed diag))
+          (violation "jolt.sim.http-sqlite-hegel-test/admission-completed"
+                     input
+                     {:completed (:completed diag)}))
+        (when-not (= (get expected-release-order (:admission-plan input))
+                     (:release-order diag))
+          (violation "jolt.sim.http-sqlite-hegel-test/admission-release-order"
+                     input
+                     {:release-order (:release-order diag)
+                      :expected (get expected-release-order
+                                      (:admission-plan input))})))
+      (let [admission-routes (:routes admission)
+            route-symbols (set (map :symbol admission-routes))]
+        (when-not (and (seq admission-routes)
+                       (every? #(= :handler (:route %)) admission-routes))
+          (violation "jolt.sim.http-sqlite-hegel-test/admission-routes"
+                     input
+                     {:routes admission-routes}))
+        (when-not (contains? route-symbols "poll")
+          (violation "jolt.sim.http-sqlite-hegel-test/admission-poll"
+                     input
+                     {:routes admission-routes}))
+        (when-not (contains? route-symbols "connect")
+          (violation "jolt.sim.http-sqlite-hegel-test/admission-connect"
+                     input
+                     {:routes admission-routes}))))))
 
-(deftest hegel-http-sqlite-holds-across-capacities-and-one-eintr
-  (let [result
+(deftest hegel-http-sqlite-holds-across-capacities-eintr-and-admission-order
+  (let [seen-plans (atom #{})
+        result
         (h/run-test!
          {:test-cases 20
           ;; Each case launches a fresh isolated Jolt worker so generation is
@@ -260,6 +350,7 @@
          (fn [_]
            (let [input (h/draw! (input-generator) "scenario-input")]
              (check-case! input)
+             (swap! seen-plans conj (:admission-plan input))
              nil)))]
     (is (true? (:passed? result))
         (pr-str {:status (:status result)
@@ -269,7 +360,10 @@
                  :final (:final result)}))
     (is (false? (:flaky? result))
         (pr-str {:flaky? (:flaky? result)
-                 :observed-failures (:observed-failures result)}))))
+                 :observed-failures (:observed-failures result)}))
+    (is (= (set admission-plan-domain) @seen-plans)
+        (str "Hegel did not exercise both admission plans: "
+             (pr-str @seen-plans)))))
 
 (def ^:private watchdog-timeout-ms 300000)
 
