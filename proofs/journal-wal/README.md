@@ -57,7 +57,12 @@ internal prerelease machinery, not a compatibility promise.
 
 The writer has one exclusive owner per segment. It serializes a bounded frame,
 takes the writer lock, and uses a full-write loop that handles partial writes
-and `EINTR`. It never appends to a segment after any uncertain or invalid tail.
+and `EINTR`. Its finite `max-eintr-retries` policy counts consecutive `EINTR`
+results: `EINTR` advances no byte offset and increments the count; any positive
+partial or full write advances the offset and resets the count to zero. The
+first `EINTR` that makes the count exceed the configured allowance permanently
+fails the writer attempt without advancing `accepted-end`. The failed state is
+absorbing. It never appends to a segment after any uncertain or invalid tail.
 The initial implementation marks journal health failed and disables further
 appends for that worker; multi-segment continuation is intentionally deferred.
 
@@ -121,12 +126,30 @@ boundary witnesses must be `sat`.
    boundary.
 7. A bounded full-write loop never skips or duplicates bytes, `EINTR` advances
    no position, and `accepted-end` advances exactly once only after the whole
-   frame is written.
+   frame is written. For every finite `max-eintr-retries >= 0`, the general
+   ranking model defines `rank = max-eintr-retries + 1 - retries`. Every active
+   state has positive rank; an `EINTR` preserves position and `accepted-end`
+   while decreasing rank by exactly one; rank one transitions to absorbing
+   failure at rank zero. The well-founded natural rank therefore excludes an
+   infinite all-`EINTR` active trace and bounds failure by
+   `max-eintr-retries + 1` attempts. The five-transition zero-through-three
+   unroll remains a concrete companion. A positive write resets the consecutive
+   retry count; its SAT boundary witnesses two allowed `EINTR` results, partial
+   progress, a fresh `EINTR`, and successful completion.
 
 The structural SMT model treats checksum equality as collision-free. It does
 not prove CRC32C collision resistance, filesystem behavior, encoding
 correctness, or the implementation. Those require executable corpus,
 fault-injection, and crash-cut tests after the model is accepted.
+
+The ranking proof covers arbitrary nonnegative mathematical integers, including
+an implementation setting such as 64; the implementation must still prevent
+machine-counter overflow or reject values outside its representation. The
+concrete transition unroll remains limited to `max-eintr-retries` zero through
+three. The models represent an outcome of zero exclusively as `EINTR`. A
+zero-byte non-`EINTR` return, other write errors, cancellation, retry backoff,
+lock fairness, and operating-system conformance are outside these models and
+remain executable-test obligations.
 
 The crash-cut model uses zero through four records. The chain-corruption model
 uses three records, which is the smallest bound that places the first invalid
@@ -158,6 +181,8 @@ into a test against the real encoder/recovery scanner:
 - journal open/write/flush/sync failures around both successful and throwing
   applications;
 - partial writes and `EINTR` at each full-write-loop position;
+- retry exhaustion at zero, exact-bound, and over-bound values, plus a positive
+  partial write that resets the consecutive-`EINTR` count;
 - repeated recovery of identical bytes and exact raw-tail preservation;
 - process termination after every byte of representative encoded segments;
 - actual CRC32C vectors and single-bit corruptions.
