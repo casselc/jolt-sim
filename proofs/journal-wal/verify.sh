@@ -35,4 +35,8 @@ check_status sat durability-boundary-buggy-write.smt2
 check_status unsat write-loop-reference.smt2
 check_status sat write-loop-buggy-partial.smt2
 check_status sat write-loop-boundary.smt2
+check_status unsat eintr-retry-reference.smt2
+check_status unsat eintr-ranking-reference.smt2
+check_status sat eintr-retry-buggy-accept.smt2
+check_status sat eintr-retry-boundary.smt2
 check_status sat boundary-witnesses.smt2
