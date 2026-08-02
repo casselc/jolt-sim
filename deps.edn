@@ -46,14 +46,47 @@
      :git/sha "ffe523023437862c7e474dc216346426318754c6"}}
    :main-opts ["-m" "jolt.sim.hegel-explore-test"]}
 
-  ;; Workspace integration lanes: the canonical db checkout is ../db.
+  ;; Hegel-owned, shrinkable capacities and poll-fault ordinals drive the
+  ;; unchanged HTTP + SQLite application in a fresh worker for every case.
+  :http-sqlite-hegel-test
+  {:extra-paths ["test"]
+   :extra-deps
+   {io.github.chucklehead-dev/jolt-hegel
+    {:git/url "https://github.com/chucklehead-dev/jolt-hegel.git"
+     :git/sha "ffe523023437862c7e474dc216346426318754c6"}}
+   :main-opts ["-m" "jolt.sim.http-sqlite-hegel-test"]}
+
+  ;; Child side of :http-sqlite-hegel-test. Loading db from source keeps the
+  ;; hermetic worker from initializing the real SQLite library before control.
+  :http-sqlite-explore-worker
+  {:extra-paths ["test"]
+   :extra-deps
+   {io.github.casselc/db
+    {:git/url "https://github.com/casselc/db.git"
+     :git/sha "53db5cfbc36e43ff4eebe86764583476e561c072"
+     :deps/root "clj"}
+    io.github.casselc/jolt-http
+    {:git/url "https://github.com/casselc/jolt-http.git"
+     :git/sha "96bd0fc93f1a2c77128d06f74802dd2a4631c0d4"}}
+   :main-opts ["-m" "jolt.sim.explore-worker"]}
+
+  ;; Real SQLite lane: use the complete public DB coordinate so its native
+  ;; library declaration is available to the launcher.
   :sqlite-test
   {:extra-paths ["test"]
-   :extra-deps {local/db {:local/root "../db"}}
+   :extra-deps
+   {io.github.casselc/db
+    {:git/url "https://github.com/casselc/db.git"
+     :git/sha "53db5cfbc36e43ff4eebe86764583476e561c072"}}
    :main-opts ["-m" "jolt.sim.sqlite-integration-test"]}
 
   :sqlite-sim-test
-  {:extra-paths ["test" "../db/clj"]
+  {:extra-paths ["test"]
+   :extra-deps
+   {io.github.casselc/db
+    {:git/url "https://github.com/casselc/db.git"
+     :git/sha "53db5cfbc36e43ff4eebe86764583476e561c072"
+     :deps/root "clj"}}
    :main-opts ["-m" "jolt.sim.sqlite-integration-test" "--sim-only"]}
 
   ;; Unchanged public jolt.net application code over the deterministic POSIX
@@ -85,7 +118,9 @@
   :http-sqlite-test
   {:extra-paths ["test"]
    :extra-deps
-   {local/db {:local/root "../db"}
+   {io.github.casselc/db
+    {:git/url "https://github.com/casselc/db.git"
+     :git/sha "53db5cfbc36e43ff4eebe86764583476e561c072"}
     io.github.casselc/jolt-http
     {:git/url "https://github.com/casselc/jolt-http.git"
      :git/sha "96bd0fc93f1a2c77128d06f74802dd2a4631c0d4"}}
@@ -94,9 +129,13 @@
   ;; Hermetic SQLite variant: load only db's source path so its native-library
   ;; metadata cannot initialize the real SQLite library before control begins.
   :http-sqlite-sim-test
-  {:extra-paths ["test" "../db/clj"]
+  {:extra-paths ["test"]
    :extra-deps
-   {io.github.casselc/jolt-http
+   {io.github.casselc/db
+    {:git/url "https://github.com/casselc/db.git"
+     :git/sha "53db5cfbc36e43ff4eebe86764583476e561c072"
+     :deps/root "clj"}
+    io.github.casselc/jolt-http
     {:git/url "https://github.com/casselc/jolt-http.git"
      :git/sha "96bd0fc93f1a2c77128d06f74802dd2a4631c0d4"}}
    :main-opts ["-m" "jolt.sim.http-sqlite-test-main" "--sim-only"]}}

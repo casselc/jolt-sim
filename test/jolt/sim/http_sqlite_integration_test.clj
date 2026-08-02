@@ -12,7 +12,7 @@
 
 (def ^:dynamic *sim-only?* false)
 
-(def ^:private expected-blob-octets [0 65 127 128 255])
+(def ^:private expected-blob-values [0 65 127 -128 -1])
 
 (def ^:private interrupt-first-poll-plan
   [{:id :http-sqlite/interrupt-first-poll
@@ -119,13 +119,15 @@
              (get (:headers parsed) "content-type")))
       (is (= (get (:headers real-parsed) "content-length")
              (get (:headers parsed) "content-length")))
-      (is (= (vec (:body real-parsed)) (vec (:body parsed)))))
+      (is (= (vec (:body real-parsed)) (vec (:body parsed))))
+      (is (empty? (:server-errors real-result))))
     (is (= 200 (:status parsed)))
     (is (= "application/octet-stream"
            (get (:headers parsed) "content-type")))
-    (is (= (str (count expected-blob-octets))
+    (is (= (str (count expected-blob-values))
            (get (:headers parsed) "content-length")))
-    (is (= expected-blob-octets (vec (:body parsed))))
+    (is (= expected-blob-values (vec (:body parsed))))
+    (is (empty? (:server-errors result)))
 
     ;; Every intercepted POSIX and SQLite effect was served by a registered
     ;; handler; nothing routed to a real socket or the real SQLite library.

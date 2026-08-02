@@ -101,17 +101,35 @@
           i
           (recur (inc i)))))))
 
+(defn- stable-error-summary
+  "Projects a server error into the simulator's stable trace domain without
+  retaining host exception objects in scenario evidence."
+  [error]
+  {:class (str (class error))
+   :message (or (ex-message error)
+                (try (jolt.host/condition-message error)
+                     (catch :default _ nil)))
+   :data (when-let [data (ex-data error)]
+           (into {}
+                 (map (fn [[k v]] [(str k) (pr-str v)]))
+                 data))})
+
 (defn- parse-response
   "Parses one HTTP/1.1 response into {:status :reason :headers :body}. Only the
   fixed response framing is parsed: the headers are decoded as UTF-8 while the
   body is preserved as the exact raw byte array -- this is a minimal reader for
   the fixed, unchunked reply this fixture itself requested with
   `Connection: close`, not a general HTTP parser."
-  [^bytes raw]
+  [^bytes raw server-errors]
   (let [terminator (find-header-terminator raw)]
     (when-not terminator
       (throw (ex-info "http-sqlite fixture response missing header terminator"
-                      {:raw-length (alength raw)})))
+                      {:raw-length (alength raw)
+                       ;; Preserve a stable, byte-exact failure witness. This is
+                       ;; deliberately a vector rather than the host byte-array
+                       ;; so worker transport and Hegel replay can encode it.
+                       :raw-bytes (vec raw)
+                       :server-errors @server-errors})))
     (let [head-bytes (copy-range raw 0 terminator)
           head (String. head-bytes "UTF-8")
           body (copy-range raw (+ terminator 4) (alength raw))
@@ -137,27 +155,36 @@
   the server's actual bound port is read back from its own public return
   value."
   []
-  (let [server (http/run-server blob-handler
+  (let [server-errors (atom [])
+        server (http/run-server blob-handler
                                  :port 0
-                                 :reuse-address? true)
+                                 :reuse-address? true
+                                 :error-logger
+                                 #(swap! server-errors conj
+                                         (stable-error-summary %)))
         connection* (atom nil)]
-    (try
-      (let [port (:port server)
-            connection (client/connect "127.0.0.1" port
-                                        {:connect-timeout-ms 5000})
-            _ (reset! connection* connection)
-            request (request-bytes "127.0.0.1" port)
-            sent (client/send-all! connection request {:timeout-ms 5000})
-            raw (read-response-until-eof! connection)
-            parsed (parse-response raw)]
-        {:port port
-         :sent-result sent
-         :raw-length (alength raw)
-         :parsed parsed
-         :connection-info (client/connection-info connection)
-         :close-results
-         {:connection [(client/close! connection) (client/close! connection)]}})
-      (finally
-        (when-let [connection @connection*]
-          (client/close! connection))
-        (http/stop-server server)))))
+    (let [result
+          (try
+            (let [port (:port server)
+                  connection (client/connect "127.0.0.1" port
+                                              {:connect-timeout-ms 5000})
+                  _ (reset! connection* connection)
+                  request (request-bytes "127.0.0.1" port)
+                  sent (client/send-all! connection request {:timeout-ms 5000})
+                  raw (read-response-until-eof! connection)
+                  parsed (parse-response raw server-errors)]
+              {:port port
+               :sent-result sent
+               :raw-length (alength raw)
+               :parsed parsed
+               :connection-info (client/connection-info connection)
+               :close-results
+               {:connection [(client/close! connection)
+                             (client/close! connection)]}})
+            (finally
+              (when-let [connection @connection*]
+                (client/close! connection))
+              (http/stop-server server)))]
+      ;; stop-server quiesces the reactor and active handlers, either of which
+      ;; may report a late error. Snapshot only after shutdown has completed.
+      (assoc result :server-errors @server-errors))))
