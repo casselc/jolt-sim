@@ -1,0 +1,72 @@
+(set-logic QF_LIA)
+
+(declare-const max-payload Int)
+(declare-const trailer Int)
+(declare-const zero-length Int)
+(declare-const zero-remaining Int)
+(declare-const max-length Int)
+(declare-const max-remaining Int)
+(declare-const zero-accepted Bool)
+(declare-const max-accepted Bool)
+(declare-const header Int)
+(declare-const overhead Int)
+(declare-const e0 Int)
+(declare-const e1 Int)
+(declare-const cut Int)
+(declare-const recovered Int)
+(declare-const last-good Int)
+(declare-const accepted0 Int)
+(declare-const synced0 Int)
+(declare-const frame-length Int)
+(declare-const accepted1 Int)
+(declare-const synced1 Int)
+(declare-const empty-full-end Int)
+(declare-const empty-cut Int)
+(declare-const empty-recovered Int)
+(declare-const empty-last-good Int)
+
+; Length boundaries: empty and exact maximum payload are both accepted when
+; the complete trailer is present.
+(assert (= max-payload 8))
+(assert (= trailer 4))
+(assert (= zero-length 0))
+(assert (= zero-remaining 4))
+(assert (= max-length max-payload))
+(assert (= max-remaining (+ max-payload trailer)))
+(assert (= zero-accepted
+           (and (<= 0 zero-length)
+                (<= zero-length max-payload)
+                (<= (+ zero-length trailer) zero-remaining))))
+(assert (= max-accepted
+           (and (<= 0 max-length)
+                (<= max-length max-payload)
+                (<= (+ max-length trailer) max-remaining))))
+(assert zero-accepted)
+(assert max-accepted)
+
+; A complete empty segment validates its header and returns zero records.
+(assert (= empty-full-end 36))
+(assert (= empty-cut empty-full-end))
+(assert (= empty-recovered 0))
+(assert (= empty-last-good 36))
+
+; A cut exactly after the second complete record recovers exactly two records.
+(assert (= header 36))
+(assert (= overhead 28))
+(assert (= e0 (+ header overhead zero-length)))
+(assert (= e1 (+ e0 overhead max-length)))
+(assert (= cut e1))
+(assert (= recovered 2))
+(assert (= last-good e1))
+
+; A successful power barrier can advance synced-end to accepted-end.
+(assert (= accepted0 100))
+(assert (= synced0 80))
+(assert (= frame-length 16))
+(assert (= accepted1 (+ accepted0 frame-length)))
+(assert (= synced1 accepted1))
+(assert (= accepted1 116))
+(assert (= synced1 116))
+
+(check-sat)
+(get-model)
