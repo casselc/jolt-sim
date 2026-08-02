@@ -6,7 +6,9 @@
 
 (defn- assert-roundtrip [result]
   (is (= -1234567 (:integer result)))
-  (is (= [0 127 128 255 10] (:bytes result)))
+  ;; Jolt byte-array elements are signed, even when constructed from unsigned
+  ;; octet literals. Real and modeled FFI paths must expose the same values.
+  (is (= [0 127 -128 -1 10] (:bytes result)))
   (is (= "native \u00e9" (:text result)))
   (is (= 5 (:written result)))
   (is (= 4 (:int-size result)))
