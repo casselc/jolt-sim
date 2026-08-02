@@ -756,6 +756,81 @@ the first poll and proves the unchanged stack recovers. It does not yet claim
 concurrent requests, generated schedules or fault plans, database
 locking/durability, other native failures, or bounded liveness.
 
+### HTTP/SQLite evidence-v1 and post-hoc monitors
+
+`jolt.sim.evidence.http-sqlite` assembles the HTTP/SQLite integration lane's
+already-completed `run-controlled` result, SQLite/POSIX worlds, and POSIX
+fault frontend into one canonical, `jolt.sim.trace`-stable EDN document tagged
+`:jolt.sim/http-sqlite-evidence-v1`: explicit hermetic assumptions, normalized
+FFI routes, the existing POSIX fault evidence, modeled POSIX/SQLite transition
+summaries, resource ownership/terminal state, and response bytes. Every id in
+the document is a per-document encounter id: a fixture-owned pair of a named
+domain plus a small ordinal derived from that run's observed effect order (for
+example, the third `sqlite3_step` call or `:sqlite-statement` resource ordinal
+2). It is never a raw task id, native pointer/handle/fd, object identity,
+timestamp, or the mixed FFI effect vector's raw index, and it is not asserted
+to identify the same logical call across separate runs. `validate-document!`
+closes every section's nested shape --
+exact key sets, id/domain/type agreement, and closed booleans -- separately
+from monitor invariants, so a well-shaped but semantically wrong document
+(e.g. a bad route, a mismatched resource id, a re-firing rule) is reported as
+a monitor `:violation` rather than an exception; only an actually malformed
+document throws. Both monitors below and `canonical-edn` call it first.
+
+Two pure post-hoc monitors fold over that document. `check-handler-only-cleanup-safety`
+requires every FFI call be handler-routed; tracks the single active
+`:resource-id` per SQLite lifecycle domain and rejects an overlapping open, a
+reused resource-id ordinal, a terminal call with no active resource in its
+domain (narrowly `:terminal-without-open` -- not a general use-after-terminal
+claim about intermediate SQLite calls this evidence does not correlate to
+resource identity), or a terminal call whose id doesn't match the active one;
+and, once the fold completes, independently recomputes from the recorded
+counts and transitions that every resource terminated, the SQLite plan vector
+was fully consumed with zero open
+connections/statements and `:sqlite-resources`' own `:clean?`, the POSIX
+world reports zero open sockets/pipes/listeners/addrinfo allocations/waiters
+and its own `:clean?`, and the response is exactly HTTP 200 with the fixture's
+content type, content length, and byte-exact body.
+`check-bounded-request-completes-after-retry` checks the exact first attempt
+identity (`[:jolt.sim.net.posix-fault/poll 1]`) and its captured EINTR from
+the named rule at match/firing/rule-firing ordinal 1, the next global poll
+attempt as a non-firing delegation, and that no later history entry fires
+again. The evidence does not correlate those two global poll ordinals to prove
+they are invocations of the same logical call. The monitor also reconciles
+every match/firing record with the singleton rule and its snapshot counters,
+requires contiguous attempt ids and finite positive stream/pipe capacities,
+and checks an HTTP 200 plus exact resource retirement. Structural validation
+has already required the closed assumptions vector, including the external
+harness deadline. This is a completed bounded witness
+assembled after the run finished, not a fairness, deadlock, or temporal-order
+(completion-before-cleanup) proof, and not an unbounded-liveness claim -- a
+hung run never reaches evidence construction for this monitor to examine.
+Both decisions carry the shortest offending route/history-index prefix and a
+stable monitor id.
+
+`jolt.sim.http-sqlite-integration-test` builds the real document from its one
+hermetic run, rebuilds it a second time from the same completed state to
+prove the rebuild is deterministic, and exercises the canonical structural and
+EDN round trips. The focused pure namespace
+`jolt.sim.evidence.http-sqlite-test` (registered in `jolt.sim.test-main`, so
+it runs without `db`/`jolt-http`) exercises both monitors' pass and violation
+branches -- including malformed nested-shape documents, exact resource-id
+mismatch/reuse, wrong-EINTR/counter, and re-firing cases -- against small
+hand-authored literal evidence built from the same fixture data (real fault
+rule id, expected BLOB octets, and statement SQL). These are representative
+negative controls with deterministic shortest-offending-index assertions, not
+a claim that every possible violation branch has been enumerated.
+
+This is a fixed-shape evidence-v1 slice for the one existing HTTP/SQLite
+scenario, not a general trace-to-evidence pipeline: it does not yet track
+individual POSIX socket/pipe resource identity (only an aggregate
+world-reported clean/retired check), and there is no Hegel-driven selector
+between "no fault" and the first-poll-EINTR plan -- the existing
+`jolt.sim.hegel` adapter only selects future-admission schedules for
+`process-explorer/run-schedule`, and this lane drives `run-controlled`
+directly, so no existing API covers that selection without inventing new
+surface.
+
 ### Composing handler packs
 
 `jolt.sim.handler-pack` is a small public helper for assembling one

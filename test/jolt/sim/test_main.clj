@@ -3,6 +3,7 @@
             [jolt.maelstrom.echo-sim-test]
             [jolt.maelstrom.echo-test]
             [jolt.sim.completion-test]
+            [jolt.sim.evidence.http-sqlite-test]
             [jolt.sim.explore-states-test]
             [jolt.sim.explore-test]
             [jolt.sim.explore-worker-test]
@@ -27,6 +28,7 @@
         (test/run-tests 'jolt.maelstrom.echo-sim-test
                         'jolt.maelstrom.echo-test
                         'jolt.sim.completion-test
+                        'jolt.sim.evidence.http-sqlite-test
                         'jolt.sim.explore-states-test
                         'jolt.sim.explore-test
                         'jolt.sim.explore-worker-test

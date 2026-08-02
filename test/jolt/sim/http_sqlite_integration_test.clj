@@ -1,14 +1,17 @@
 (ns jolt.sim.http-sqlite-integration-test
-  (:require [clojure.set :as set]
+  (:require [clojure.edn :as edn]
+            [clojure.set :as set]
             [clojure.test :refer [deftest is]]
             [jolt.net :as net]
+            [jolt.sim.evidence.http-sqlite :as evidence]
             [jolt.sim.ffi-memory :as memory]
             [jolt.sim.fixtures.http-sqlite :as fixture]
             [jolt.sim.handler-pack :as hp]
             [jolt.sim.net.posix-fault :as posix-fault]
             [jolt.sim.net.posix-loopback :as posix]
             [jolt.sim.runtime :as runtime]
-            [jolt.sim.sqlite :as sqlite]))
+            [jolt.sim.sqlite :as sqlite]
+            [jolt.sim.trace :as trace]))
 
 (def ^:dynamic *sim-only?* false)
 
@@ -182,4 +185,30 @@
     ;; The single shared memory world backs SQLite and POSIX, and is clean.
     (is (true? (memory/clean? mem)))
     (is (true? (sqlite/clean? sqlite-world)))
-    (is (true? (posix/clean? posix-world)))))
+    (is (true? (posix/clean? posix-world)))
+
+    ;; The evidence-v1 document assembled from this same completed run
+    ;; validates, is byte-stable/replayable through both a structural
+    ;; restore-value round trip and a canonical-EDN print/read round trip, and
+    ;; both post-hoc monitors pass over it.
+    (let [build-args {:controlled controlled
+                       :sqlite-world sqlite-world
+                       :posix-world posix-world
+                       :fault-frontend fault-frontend
+                       :statement-plans (statement-plans)}
+          doc (evidence/build-evidence build-args)]
+      (is (= evidence/schema
+             (:jolt.sim.evidence.http-sqlite/schema doc)))
+      (is (= doc (evidence/validate-document! doc)))
+      (is (= doc (trace/restore-value (trace/canonical-value doc))))
+      (is (= doc (edn/read-string (evidence/canonical-edn doc))))
+      (is (= :pass (:status (evidence/check-handler-only-cleanup-safety doc))))
+      (is (= :pass
+             (:status (evidence/check-bounded-request-completes-after-retry
+                       doc))))
+
+      ;; Rebuilding the document from the same already-completed run state is
+      ;; deterministic: build-evidence performs no further FFI/scheduling/I-O
+      ;; of its own, only reads live world/frontend snapshots, so a second
+      ;; build from the same inputs is byte-identical to the first.
+      (is (= doc (evidence/build-evidence build-args))))))
