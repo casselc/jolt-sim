@@ -57,7 +57,7 @@
    :main-opts ["-m" "jolt.sim.sqlite-integration-test" "--sim-only"]}
 
   ;; Unchanged public jolt.net application code over the deterministic POSIX
-  ;; loopback FFI pack.  Pin the reviewed v0.5.12 integration checkpoint so
+  ;; loopback FFI pack. Pin the reviewed ecosystem integration checkpoint so
   ;; public CI never depends on a sibling checkout or a moving branch.
   :posix-loopback-test
   {:extra-paths ["test"]
