@@ -1,0 +1,20 @@
+(set-logic QF_BV)
+
+(declare-const declared32 (_ BitVec 32))
+(declare-const trailer32 (_ BitVec 32))
+(declare-const remaining32 (_ BitVec 32))
+(declare-const needed32 (_ BitVec 32))
+(declare-const wrapped Bool)
+(declare-const buggy-accept Bool)
+
+(assert (= declared32 #xffffffff))
+(assert (= trailer32 #x00000004))
+(assert (= remaining32 #x00000003))
+; Bug: add in wire width, then trust the wrapped total.
+(assert (= needed32 (bvadd declared32 trailer32)))
+(assert (= wrapped (bvult needed32 declared32)))
+(assert (= buggy-accept (bvule needed32 remaining32)))
+(assert wrapped)
+(assert buggy-accept)
+(check-sat)
+(get-model)

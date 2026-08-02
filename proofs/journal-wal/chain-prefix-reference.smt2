@@ -1,0 +1,71 @@
+(set-option :produce-unsat-cores true)
+(set-logic QF_LIA)
+
+(declare-const crc0 Bool)
+(declare-const crc1 Bool)
+(declare-const crc2 Bool)
+(declare-const seq0 Bool)
+(declare-const seq1 Bool)
+(declare-const seq2 Bool)
+(declare-const prev0 Bool)
+(declare-const prev1 Bool)
+(declare-const prev2 Bool)
+(declare-const valid0 Bool)
+(declare-const valid1 Bool)
+(declare-const valid2 Bool)
+
+; Unrolled stop-at-first-invalid scanner state.
+(declare-const halted0 Bool)
+(declare-const halted1 Bool)
+(declare-const halted2 Bool)
+(declare-const halted3 Bool)
+(declare-const count0 Int)
+(declare-const count1 Int)
+(declare-const count2 Int)
+(declare-const count3 Int)
+(declare-const take0 Bool)
+(declare-const take1 Bool)
+(declare-const take2 Bool)
+
+; Independent maximal-valid-prefix specification.
+(declare-const expected Int)
+(declare-const accepted-invalid Bool)
+(declare-const prefix-hole Bool)
+(declare-const violation Bool)
+
+(assert (! (= valid0 (and crc0 seq0 prev0)) :named valid0-def))
+(assert (! (= valid1 (and crc1 seq1 prev1)) :named valid1-def))
+(assert (! (= valid2 (and crc2 seq2 prev2)) :named valid2-def))
+(assert (! (not halted0) :named initial-running))
+(assert (! (= count0 0) :named initial-count))
+(assert (! (= take0 (and (not halted0) valid0)) :named step0-take))
+(assert (! (= count1 (ite take0 1 count0)) :named step0-count))
+(assert (! (= halted1 (or halted0 (not valid0))) :named step0-halt))
+(assert (! (= take1 (and (not halted1) valid1)) :named step1-take))
+(assert (! (= count2 (ite take1 2 count1)) :named step1-count))
+(assert (! (= halted2 (or halted1 (not valid1))) :named step1-halt))
+(assert (! (= take2 (and (not halted2) valid2)) :named step2-take))
+(assert (! (= count3 (ite take2 3 count2)) :named step2-count))
+(assert (! (= halted3 (or halted2 (not valid2))) :named step2-halt))
+
+(assert (! (= expected
+              (ite (not valid0) 0
+                (ite (not valid1) 1
+                  (ite (not valid2) 2 3))))
+           :named expected-def))
+(assert (! (= accepted-invalid
+              (or (and (<= 1 count3) (not valid0))
+                  (and (<= 2 count3) (not valid1))
+                  (and (<= 3 count3) (not valid2))))
+           :named accepted-invalid-def))
+(assert (! (= prefix-hole
+              (or (and (<= 2 count3) (not (<= 1 count3)))
+                  (and (<= 3 count3) (not (<= 2 count3)))))
+           :named prefix-hole-def))
+(assert (! (= violation
+              (or (not (= count3 expected))
+                  accepted-invalid prefix-hole))
+           :named violation-def))
+(assert (! violation :named query))
+(check-sat)
+(get-unsat-core)
