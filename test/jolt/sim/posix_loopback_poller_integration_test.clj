@@ -47,7 +47,7 @@
     (is (= [] (:idle-before-write result)))
     (is (= [{:token token :events #{:read}}] (:readable result)))
     (is (= [2 2 1] (:sent-chunks result)))
-    (is (= {:bytes [0 1 2 3 255] :chunks [2 2 1]}
+    (is (= {:bytes [0 1 2 3 -1] :chunks [2 2 1]}
            (:received result)))
     (is (= [{:token successor :events #{:write}}]
            (:writable result)))
