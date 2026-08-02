@@ -681,7 +681,8 @@
 (defn foreign-handlers
   "Returns only the exact 22 SQLite foreign-function handlers keyed by the
   runtime's accepted five-element descriptor shorthands. Handler-pack/runtime
-  validation normalizes them to canonical six-element keys. The memory world's
+  validation normalizes them to canonical seven-element keys with capture false
+  and varargs-after nil. The memory world's
   native-operation handlers are not included; compose them separately (e.g.
   through jolt.sim.handler-pack/compose) when one memory world must back SQLite
   alongside other foreign handler packs without double-registering the shared

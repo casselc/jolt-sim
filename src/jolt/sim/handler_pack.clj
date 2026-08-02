@@ -21,14 +21,19 @@
 
 (defn foreign-function-key
   "Builds and validates one canonical foreign-function handler key. capture?
-  defaults to false. argument-types is a vector whose entries are primitive
-  keywords or recursive [:by-value [:struct [[field field-type] ...]]] struct
-  shapes; the runtime validates the full recursive identity."
+  defaults to false and varargs-after defaults to nil. argument-types is a
+  vector of primitive scalar keywords; the runtime validates each entry and
+  rejects recursive by-value aggregate shapes. varargs-after, when supplied,
+  must be nil (fixed arity) or a positive integer no greater than the
+  argument-type count, naming the first variadic position."
   ([symbol argument-types return-type blocking?]
-   (foreign-function-key symbol argument-types return-type blocking? false))
+   (foreign-function-key symbol argument-types return-type blocking? false nil))
   ([symbol argument-types return-type blocking? capture?]
+   (foreign-function-key symbol argument-types return-type blocking? capture? nil))
+  ([symbol argument-types return-type blocking? capture? varargs-after]
    (canonical-key
-    [:foreign-function symbol argument-types return-type blocking? capture?])))
+    [:foreign-function symbol argument-types return-type blocking?
+     capture? varargs-after])))
 
 (defn pack
   "Creates a named handler pack. id must be a namespaced keyword. handlers is

@@ -23,7 +23,7 @@
     :future-controller-arity 3
     :ffi-controller-arity 2
     :clock-controller-arity 2}
-   :ffi-interception {:descriptor-version 5
+   :ffi-interception {:descriptor-version 6
                       :kinds [:foreign-function :native-operation]
                       :arguments :live
                       :task-identity :future-lifecycle
@@ -788,7 +788,8 @@
 
 (def ^:private base-foreign-function-descriptor
   {:kind :foreign-function :task 0 :arguments [0]
-   :symbol "s" :argument-types [:int] :return-type :int :blocking? false})
+   :symbol "s" :argument-types [:int] :return-type :int :blocking? false
+   :varargs-after nil})
 
 (def ^:private native-operation-valid-arguments
   {:load-library []
@@ -814,6 +815,12 @@
     (is (= descriptor (validate-ffi-descriptor-var descriptor))))
   (let [data (ex-data-of
               #(validate-ffi-descriptor-var base-foreign-function-descriptor))]
+    (is (= :jolt.sim.runtime/invalid-ffi-descriptor (:type data)))
+    (is (= :foreign-function-key-mismatch (:reason data))))
+  (let [bad (-> base-foreign-function-descriptor
+                (assoc :capture-native-error? false)
+                (dissoc :varargs-after))
+        data (ex-data-of #(validate-ffi-descriptor-var bad))]
     (is (= :jolt.sim.runtime/invalid-ffi-descriptor (:type data)))
     (is (= :foreign-function-key-mismatch (:reason data))))
   (let [bad (assoc base-foreign-function-descriptor
@@ -843,14 +850,45 @@
     (is (= :jolt.sim.runtime/invalid-ffi-descriptor (:type data)))
     (is (= :unknown-operation (:reason data)))))
 
-(deftest ffi-handler-keys-accept-five-element-shorthand-and-canonical-six-element-forms
+(deftest ffi-descriptor-varargs-boundary-is-exact
+  (let [descriptor (assoc base-foreign-function-descriptor
+                          :capture-native-error? false
+                          :argument-types [:int :double]
+                          :arguments [1 2.0])]
+    (doseq [boundary [nil 1 2]]
+      (let [candidate (assoc descriptor :varargs-after boundary)]
+        (is (= candidate (validate-ffi-descriptor-var candidate))
+            (pr-str boundary))))
+    (doseq [boundary [0 -1 3 1.0 1/2 "1" true :one
+                      :jolt.sim.test/one [:int]]]
+      (let [candidate (assoc descriptor :varargs-after boundary)
+            data (ex-data-of #(validate-ffi-descriptor-var candidate))]
+        (is (= :jolt.sim.runtime/invalid-ffi-descriptor (:type data))
+            (pr-str boundary))
+        (is (= :invalid-varargs-after (:reason data))
+            (pr-str boundary))))))
+
+(deftest ffi-handler-keys-accept-shorthands-and-canonical-seven-element-forms
   (let [five-key [:foreign-function "s" [:int] :int false]
         handler (fn [_] :ok)
         canonical (validate-ffi-handlers-var {five-key handler})]
-    (is (= {(conj five-key false) handler} canonical)))
+    (is (= {[:foreign-function "s" [:int] :int false false nil] handler}
+           canonical)))
   (let [six-key [:foreign-function "s" [:int] :int false true]
         handler (fn [_] :ok)]
-    (is (= {six-key handler} (validate-ffi-handlers-var {six-key handler})))))
+    (is (= {[:foreign-function "s" [:int] :int false true nil] handler}
+           (validate-ffi-handlers-var {six-key handler}))))
+  ;; The canonical seven-element key with a nil boundary passes through.
+  (let [seven-key [:foreign-function "s" [:int] :int false true nil]
+        handler (fn [_] :ok)]
+    (is (= {seven-key handler}
+           (validate-ffi-handlers-var {seven-key handler}))))
+  ;; A canonical seven-element key with a positive in-range boundary is
+  ;; distinct from its nil-boundary equivalent and is accepted as written.
+  (let [variadic-key [:foreign-function "s" [:int :int] :int false true 1]
+        handler (fn [_] :ok)]
+    (is (= {variadic-key handler}
+           (validate-ffi-handlers-var {variadic-key handler})))))
 
 (deftest ffi-handler-keys-recognize-current-native-operations
   ;; Handler config validation is pure config checking that runs before ABI
@@ -870,13 +908,14 @@
     (is (= :jolt.sim.runtime/invalid-config (:type data)))
     (is (= unknown (:handler-key data)))))
 
-(deftest malformed-six-element-handler-keys-are-rejected
+(deftest malformed-handler-keys-are-rejected
   (let [bad-capture [:foreign-function "s" [:int] :int false "yes"]
         data (ex-data-of
               #(validate-ffi-handlers-var {bad-capture (fn [_])}))]
     (is (= :jolt.sim.runtime/invalid-config (:type data)))
     (is (= bad-capture (:handler-key data))))
-  (let [too-long [:foreign-function "s" [:int] :int false true true]
+  ;; An eight-element key exceeds the canonical form even with descriptor 6.
+  (let [too-long [:foreign-function "s" [:int] :int false true nil :extra]
         data (ex-data-of
               #(validate-ffi-handlers-var {too-long (fn [_])}))]
     (is (= :jolt.sim.runtime/invalid-config (:type data))))
@@ -887,21 +926,59 @@
     (is (= :jolt.sim.runtime/invalid-config (:type data)))
     (is (= namespaced-return (:handler-key data)))))
 
-(deftest ambiguous-shorthand-and-six-element-false-handler-keys-are-rejected
-  (let [five-key [:foreign-function "s" [:int] :int false]
+(deftest malformed-varargs-boundary-in-seven-element-keys-is-rejected
+  ;; The boundary must be nil or a positive integer no greater than the
+  ;; argument-type count. Every other value fails closed.
+  (doseq [bad-boundary [0 -1 3                  ; zero, negative, out-of-range
+                        1.0 1/2                 ; non-integer numerics
+                        "1" true :one           ; non-numeric scalars
+                        :jolt.sim.test/int      ; namespaced keyword
+                        [:int]]]                ; aggregate shape
+    (let [bad-key [:foreign-function "s" [:int :int] :int false true
+                   bad-boundary]
+          data (ex-data-of
+                #(validate-ffi-handlers-var {bad-key (fn [_])}))]
+      (is (= :jolt.sim.runtime/invalid-config (:type data))
+          (pr-str bad-boundary))))
+  ;; A boundary equal to the argument-type count is the last valid position.
+  (let [max-key [:foreign-function "s" [:int :int] :int false true 2]
+        handler (fn [_] :ok)]
+    (is (= {max-key handler}
+           (validate-ffi-handlers-var {max-key handler})))))
+
+(deftest ambiguous-shorthand-spellings-are-rejected
+  ;; The five-element shorthand, its six-element capture?-false equivalent,
+  ;; and the seven-element nil-boundary key all canonicalize to the same
+  ;; identity; supplying any two in one config is rejected rather than
+  ;; silently overwriting one handler with the other.
+  (let [canonical [:foreign-function "s" [:int] :int false false nil]
+        five-key [:foreign-function "s" [:int] :int false]
         six-key (conj five-key false)
-        data (ex-data-of
-              #(validate-ffi-handlers-var {five-key (fn [_] :a)
-                                           six-key (fn [_] :b)}))]
-    (is (= :jolt.sim.runtime/invalid-config (:type data)))
-    (is (= [six-key] (:ambiguous-keys data))))
-  ;; The shorthand together with the six-element-*true* key is a distinct
+        seven-key (conj six-key nil)]
+    (doseq [[label a b] [[:five-and-six five-key six-key]
+                         [:five-and-seven five-key seven-key]
+                         [:six-and-seven six-key seven-key]]]
+      (let [data (ex-data-of
+                  #(validate-ffi-handlers-var {a (fn [_] :first)
+                                               b (fn [_] :second)}))]
+        (is (= :jolt.sim.runtime/invalid-config (:type data)) (pr-str label))
+        (is (= [canonical] (:ambiguous-keys data)) (pr-str label))))
+    ;; All three together also collide.
+    (let [data (ex-data-of
+                #(validate-ffi-handlers-var {five-key (fn [_] :a)
+                                             six-key (fn [_] :b)
+                                             seven-key (fn [_] :c)}))]
+      (is (= :jolt.sim.runtime/invalid-config (:type data)))
+      (is (= [canonical] (:ambiguous-keys data)))))
+  ;; The shorthand together with a six-element *true* capture key is a distinct
   ;; signature (different capture identity), so it is never ambiguous.
   (let [five-key [:foreign-function "s" [:int] :int false]
         six-key-true (conj five-key true)
         canonical (validate-ffi-handlers-var {five-key (fn [_] :a)
                                               six-key-true (fn [_] :b)})]
-    (is (= #{(conj five-key false) six-key-true} (set (keys canonical))))))
+    (is (= #{[:foreign-function "s" [:int] :int false false nil]
+             [:foreign-function "s" [:int] :int false true nil]}
+           (set (keys canonical))))))
 
 (deftest five-element-handler-shorthand-matches-capture-false-descriptor
   (let [five-key [:foreign-function "s" [:int] :int false]
@@ -911,16 +988,50 @@
         state (atom {:ffi-errors []})
         effects (atom [])
         controller (make-ffi-controller-var handlers state effects)]
-    (is (= (conj five-key false)
+    (is (= [:foreign-function "s" [:int] :int false false nil]
            (descriptor-handler-key-var descriptor)))
     (is (= :matched (controller descriptor ignored-proceed)))
     (is (empty? (:ffi-errors @state)))))
 
-;; ---- Scalar-only foreign argument types (descriptor-version 5) ----------
+(deftest fixed-and-variadic-calls-produce-distinct-canonical-keys
+  ;; Two otherwise-identical foreign calls differing only in :varargs-after
+  ;; select distinct handlers; nil canonicalizes exactly so the fixed-arity
+  ;; descriptor matches the nil-boundary key.
+  (let [fixed-key (descriptor-handler-key-var
+                   (assoc base-foreign-function-descriptor
+                          :capture-native-error? false
+                          :argument-types [:int :int]
+                          :arguments [1 2]))
+        variadic-descriptor (assoc base-foreign-function-descriptor
+                                   :capture-native-error? false
+                                   :argument-types [:int :int]
+                                   :arguments [1 2]
+                                   :varargs-after 1)
+        variadic-key (descriptor-handler-key-var variadic-descriptor)
+        state (atom {:ffi-errors []})
+        effects (atom [])
+        controller (make-ffi-controller-var
+                    {fixed-key (fn [_] :fixed)
+                     variadic-key (fn [_] :variadic)}
+                    state effects)]
+    (is (= [:foreign-function "s" [:int :int] :int false false nil] fixed-key))
+    (is (= [:foreign-function "s" [:int :int] :int false false 1]
+           variadic-key))
+    (is (not= fixed-key variadic-key))
+    (is (= :fixed (controller (assoc base-foreign-function-descriptor
+                                     :capture-native-error? false
+                                     :argument-types [:int :int]
+                                     :arguments [1 2])
+                              ignored-proceed)))
+    (is (= :variadic (controller variadic-descriptor ignored-proceed)))
+    (is (empty? (:ffi-errors @state)))))
+
+;; ---- Scalar-only foreign argument types (descriptor-version 6) ----------
 ;;
-;; A public foreign argument type is now a primitive keyword only; recursive
-;; by-value aggregate argument types and variadic descriptors are no longer
-;; accepted. These are pure structural tests, independent of the running image.
+;; A public foreign argument type is a primitive keyword only; recursive
+;; by-value aggregate argument types are rejected. Variadic calls are
+;; identified by an exact :varargs-after boundary, not by aggregate types.
+;; These are pure structural tests, independent of the running image.
 
 (deftest scalar-foreign-argument-types-are-valid-ffi-descriptors
   (let [descriptor (-> base-foreign-function-descriptor
@@ -1064,7 +1175,7 @@
 (deftest current-nested-ffi-descriptor-version-is-exact
   (if (rt/available?)
     (do
-      (is (= 5 (get-in (rt/capabilities)
+      (is (= 6 (get-in (rt/capabilities)
                        [:ffi-interception :descriptor-version])))
       (is (= 1 (get-in (rt/capabilities)
                        [:clock-interception :descriptor-version])))
@@ -2089,7 +2200,7 @@
   (let [foreign-pointer
         {:kind :foreign-function :task 0 :arguments []
          :symbol "modeled_pointer" :argument-types [] :return-type :pointer
-         :blocking? false :capture-native-error? false}
+         :blocking? false :capture-native-error? false :varargs-after nil}
         foreign-void-pointer (assoc foreign-pointer :return-type :void*)
         alloc (native-descriptor :alloc [8])
         borrow (native-descriptor :borrow-byte-array
@@ -2150,7 +2261,7 @@
         descriptor
         {:kind :foreign-function :task 0 :arguments []
          :symbol "sentinel_pointer" :argument-types [] :return-type :pointer
-         :blocking? false :capture-native-error? false}
+         :blocking? false :capture-native-error? false :varargs-after nil}
         key (descriptor-handler-key-var descriptor)
         controller
         (make-ffi-routing-controller-var
@@ -2302,7 +2413,7 @@
         pointer-descriptor
         {:kind :foreign-function :task 0 :arguments []
          :symbol "modeled_pointer" :argument-types [] :return-type :pointer
-         :blocking? false :capture-native-error? true}
+         :blocking? false :capture-native-error? true :varargs-after nil}
         key (descriptor-handler-key-var pointer-descriptor)
         controller
         (make-ffi-routing-controller-var
@@ -2393,7 +2504,7 @@
         descriptor
         {:kind :foreign-function :task 0 :arguments []
          :symbol "pipe_status" :argument-types [] :return-type :int
-         :blocking? false :capture-native-error? true}
+         :blocking? false :capture-native-error? true :varargs-after nil}
         key (descriptor-handler-key-var descriptor)
         controller
         (make-ffi-routing-controller-var

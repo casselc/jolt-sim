@@ -100,7 +100,7 @@
    [:int :int :int :pointer :uint] :int false true]
   [:foreign-function "bind" [:int :pointer :uint] :int false true]
   [:foreign-function "listen" [:int :int] :int false true]
-  [:foreign-function "fcntl" [:int :int :int] :int false true]
+  [:foreign-function "fcntl" [:int :int :int] :int false true 2]
   [:foreign-function "getsockname"
    [:int :pointer :pointer] :int false true]
   [:foreign-function "getpeername"

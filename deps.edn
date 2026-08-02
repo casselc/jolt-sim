@@ -10,7 +10,7 @@
   {:extra-paths ["test"]
    :main-opts ["-m" "jolt.sim.runtime-poison-test"]}
 
-  ;; Custom-image integration gate for the descriptor-v5 scoped byte-array
+  ;; Custom-image integration gate for the descriptor-v6 scoped byte-array
   ;; pointer loan. Kept separate from :test because it requires the sim image.
   :ffi-pointer-loan-test
   {:extra-paths ["test"]

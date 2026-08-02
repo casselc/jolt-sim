@@ -71,6 +71,7 @@
       :return-type (nth key 3)
       :blocking? blocking?
       :capture-native-error? (nth key 5)
+      :varargs-after (get key 6)
       :arguments (vec arguments)})))
 
 (defn- ex-data-of [f]
@@ -142,6 +143,22 @@
            (set (map #(nth % 4)
                      (filter #(= "connect" (nth % 1))
                              (posix/handler-keys linux-descriptor))))))))
+
+(deftest fcntl-handler-key-carries-varargs-after-boundary
+  ;; fcntl is variadic: the third argument onward is a variadic position.
+  ;; The modeled handler key carries the exact boundary (2) so unchanged
+  ;; jolt-net code routes to this handler instead of native fallback.
+  (doseq [descriptor [linux-descriptor darwin-descriptor]]
+    (is (contains? (set (posix/handler-keys descriptor))
+                   [:foreign-function "fcntl" [:int :int :int]
+                    :int false true 2]))
+    ;; No other foreign-function key carries a boundary; every other raw key
+    ;; remains the six-element shorthand.
+    (let [bounded (filter #(and (= :foreign-function (nth % 0 nil))
+                                (< 6 (count %)))
+                          (posix/handler-keys descriptor))]
+      (is (= [[:foreign-function "fcntl" [:int :int :int] :int false true 2]]
+             bounded)))))
 
 (deftest unbound-socket-name-is-wildcard-port-zero
   (doseq [descriptor [linux-descriptor darwin-descriptor]]

@@ -72,6 +72,7 @@
      :return-type (nth key 3)
      :blocking? (nth key 4)
      :capture-native-error? (nth key 5)
+     :varargs-after (get key 6)
      :arguments (vec arguments)}))
 
 (defn- foreign [h symbol & arguments]

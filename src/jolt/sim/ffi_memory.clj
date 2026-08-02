@@ -1,7 +1,7 @@
 (ns jolt.sim.ffi-memory
   "Deterministic simulated native memory exposed as jolt.sim.runtime
   :ffi-handlers for the 16 native operations in the current descriptor-version
-  5 contract.
+  6 contract.
 
   Owned allocations use concurrency-safe immutable byte-vector records.
   Scoped byte-array loans instead alias the caller's live array window between
@@ -888,7 +888,7 @@
 
 (defn handlers
   "Returns a map keyed by [:native-operation op] over all 16 native operations
-  in the current descriptor-version 5 contract, compatible with
+  in the current descriptor-version 6 contract, compatible with
   jolt.sim.runtime :ffi-handlers. Each handler fn
   receives the exact descriptor and dispatches on its :arguments vector. One
   operation holds the world monitor at a time; a byte-array loan does not hold

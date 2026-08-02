@@ -4,7 +4,7 @@
 
   This unreleased adapter supports one exact current controller contract: ABI
   v6, a single composite install/restore over future, FFI, and clock callbacks,
-  descriptor-version 5 FFI interception, descriptor-version 1 clock
+  descriptor-version 6 FFI interception, descriptor-version 1 clock
   interception, and scoped native proceed routing. Until jolt-sim has a public
   release, a future ABI bump replaces this contract in place; intermediate
   development ABIs remain in Git history rather than accumulating compatibility
@@ -85,7 +85,7 @@
     :ffi-controller-arity 2
     :clock-controller-arity 2}
    :ffi-interception
-   {:descriptor-version 5
+   {:descriptor-version 6
     :kinds [:foreign-function :native-operation]
     :arguments :live
     :task-identity :future-lifecycle
@@ -478,16 +478,18 @@
 
 (def ^:private foreign-function-keys
   #{:kind :task :arguments :symbol :argument-types :return-type :blocking?
-    :capture-native-error?})
+    :capture-native-error? :varargs-after})
 
 (def ^:private native-operation-keys
   #{:kind :task :arguments :operation})
 
-;; Exact scalar foreign argument types (descriptor-version 5). Current Jolt
+;; Exact scalar foreign argument types (descriptor-version 6). Current Jolt
 ;; scalar metadata is exact, so a public foreign argument type is a primitive
-;; keyword only. Recursive by-value aggregate argument types and variadic
-;; descriptors are no longer accepted; exact scalar widths and
-;; :capture-native-error? are retained unchanged.
+;; keyword only. Recursive by-value aggregate argument types remain rejected;
+;; variadic calls are instead identified by an exact :varargs-after boundary
+;; (nil for fixed-arity calls, or a positive integer no greater than the
+;; argument-type count naming the first variadic position). Exact scalar widths
+;; and :capture-native-error? are retained unchanged.
 (defn- valid-argument-type? [argument-type]
   (and (keyword? argument-type)
        (nil? (namespace argument-type))))
@@ -496,10 +498,23 @@
   (and (vector? argument-types)
        (every? valid-argument-type? argument-types)))
 
+(defn- valid-varargs-boundary?
+  "True when varargs-after is nil (a fixed-arity call) or a positive integer no
+  greater than the argument-type count (the first variadic position). Booleans,
+  ratios, floats, strings, and namespaced keywords are rejected; only exact
+  integer boundaries or nil are accepted."
+  [argument-types varargs-after]
+  (or (nil? varargs-after)
+      (and (integer? varargs-after)
+           (pos? varargs-after)
+           (<= varargs-after (count argument-types)))))
+
 (defn- validate-ffi-descriptor!
   "Validates one intercepted call against the exact current descriptor-version
-  5 shape. Every foreign descriptor carries Boolean :capture-native-error?;
-  native descriptors admit the current 16-operation set."
+  6 shape. Every foreign descriptor carries Boolean :capture-native-error?
+  and an exact :varargs-after boundary (nil or a positive integer no greater
+  than the argument-type count); native descriptors admit the current
+  16-operation set."
   [descriptor]
   (when-not (map? descriptor)
     (invalid-ffi-descriptor! :not-a-map descriptor))
@@ -527,7 +542,10 @@
         (when-not (boolean? (:blocking? descriptor))
           (invalid-ffi-descriptor! :invalid-blocking descriptor))
         (when-not (boolean? (:capture-native-error? descriptor))
-          (invalid-ffi-descriptor! :invalid-capture-native-error descriptor)))
+          (invalid-ffi-descriptor! :invalid-capture-native-error descriptor))
+        (when-not (valid-varargs-boundary? (:argument-types descriptor)
+                                          (:varargs-after descriptor))
+          (invalid-ffi-descriptor! :invalid-varargs-after descriptor)))
       :native-operation
       (do
         (when-not (= native-operation-keys (set (keys descriptor)))
@@ -541,7 +559,7 @@
     descriptor))
 
 (defn- descriptor-handler-key
-  "Computes the canonical six-element handler identity for a foreign call."
+  "Computes the canonical seven-element handler identity for a foreign call."
   [descriptor]
   (case (:kind descriptor)
     :native-operation
@@ -549,7 +567,7 @@
     :foreign-function
     [:foreign-function (:symbol descriptor) (:argument-types descriptor)
      (:return-type descriptor) (:blocking? descriptor)
-     (:capture-native-error? descriptor)]))
+     (:capture-native-error? descriptor) (:varargs-after descriptor)]))
 
 ;; Hybrid routing must distinguish an intentionally modeled value from a
 ;; legacy hermetic handler result. These wrappers are deliberately ordinary
@@ -1271,7 +1289,7 @@
          (boolean? (nth key 4)))
     nil
 
-    ;; Canonical six-element :foreign-function key.
+    ;; Six-element capture-explicit shorthand. varargs-after defaults to nil.
     (and (vector? key)
          (= 6 (count key))
          (= :foreign-function (nth key 0))
@@ -1282,6 +1300,19 @@
          (boolean? (nth key 5)))
     nil
 
+    ;; Canonical seven-element :foreign-function key. The boundary must be nil
+    ;; or a positive integer no greater than the argument-type count.
+    (and (vector? key)
+         (= 7 (count key))
+         (= :foreign-function (nth key 0))
+         (string? (nth key 1))
+         (valid-argument-types? (nth key 2))
+         (valid-argument-type? (nth key 3))
+         (boolean? (nth key 4))
+         (boolean? (nth key 5))
+         (valid-varargs-boundary? (nth key 2) (nth key 6)))
+    nil
+
     :else
     (throw
      (ex-info
@@ -1290,22 +1321,30 @@
        :handler-key key}))))
 
 (defn- canonical-handler-key
-  "Canonicalizes a validated :ffi-handlers key to the six-element internal
-  [:foreign-function symbol argument-types return-type blocking? capture?]
-  identity. The five-element shorthand has no capture? term
-  and canonicalizes to false; every other validated key (native-operation, or
-  an already six-element foreign-function key) passes through unchanged."
+  "Canonicalizes a validated :ffi-handlers key to the seven-element internal
+  [:foreign-function symbol argument-types return-type blocking? capture?
+  varargs-after] identity. The five-element shorthand has no capture? term
+  and canonicalizes to false/nil; the six-element shorthand has no boundary
+  and canonicalizes to nil; every other validated key (native-operation, or
+  an already seven-element foreign-function key) passes through unchanged."
   [key]
-  (if (and (= 5 (count key)) (= :foreign-function (nth key 0)))
-    (conj key false)
-    key))
+  (let [n (count key)]
+    (cond
+      (and (= n 5) (= :foreign-function (nth key 0)))
+      (conj (conj key false) nil)
+
+      (and (= n 6) (= :foreign-function (nth key 0)))
+      (conj key nil)
+
+      :else key)))
 
 (defn- validate-ffi-handlers!
   "Validates every :ffi-handlers key/value pair, then returns the map
-  canonicalized to six-element :foreign-function keys. Rejects a config that
-  supplies both the five-element shorthand and its equivalent six-element
-  capture?-false key for the same signature, since that config cannot express
-  which handler applies without silently overwriting the other."
+  canonicalized to seven-element :foreign-function keys. Rejects a config that
+  supplies any two of the five-element shorthand, its equivalent six-element
+  capture?-false key, or the equivalent seven-element nil-boundary key for the
+  same signature, since that config cannot express which handler applies
+  without silently overwriting the other."
   [handlers]
   (when-not (map? handlers)
     (throw
@@ -1324,7 +1363,7 @@
     (when (seq ambiguous)
       (throw
        (ex-info
-        "run-controlled :ffi-handlers supplies both the five-element shorthand and its equivalent six-element key for the same signature"
+        "run-controlled :ffi-handlers supplies two spellings that canonicalize to the same seven-element key for one signature"
         {:type :jolt.sim.runtime/invalid-config
          :ambiguous-keys (vec (keys ambiguous))})))
     (into {}
@@ -1333,9 +1372,12 @@
 
 (defn normalize-ffi-handlers
   "Validates and canonicalizes an FFI handler map using run-controlled's exact
-  current contract. Five-element foreign-function shorthands become canonical
-  six-element keys with capture disabled. This pure helper is public so
-  extension and handler-pack tooling cannot drift from runtime validation."
+  current contract. A five-element foreign-function shorthand defaults capture
+  to false; a six-element shorthand preserves its explicit capture Boolean.
+  Both default varargs-after to nil and become canonical seven-element keys; an
+  exact seven-element key carries its validated nil/positive boundary. This pure
+  helper is public so extension and handler-pack tooling cannot drift from
+  runtime validation."
   [handlers]
   (validate-ffi-handlers! handlers))
 

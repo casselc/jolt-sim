@@ -48,7 +48,7 @@
   (is (true? (runtime/available?)))
   (when (runtime/available?)
     (is (= 6 (:abi-version (runtime/capabilities))))
-    (is (= 5
+    (is (= 6
            (get-in (runtime/capabilities)
                    [:ffi-interception :descriptor-version])))
     (let [world (memory/world)

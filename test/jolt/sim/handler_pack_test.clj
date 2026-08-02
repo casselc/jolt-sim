@@ -18,30 +18,40 @@
     (is (= :jolt.sim.runtime/invalid-config (:type data)))
     (is (= [:native-operation :not-an-operation] (:handler-key data)))))
 
-(deftest foreign-function-key-defaults-capture-false
-  (is (= [:foreign-function "f" [:int] :int true false]
+(deftest foreign-function-key-defaults-capture-false-and-varargs-nil
+  (is (= [:foreign-function "f" [:int] :int true false nil]
          (hp/foreign-function-key "f" [:int] :int true))))
 
-(deftest foreign-function-key-has-explicit-capture-arity
-  (is (= [:foreign-function "f" [:int] :int true true]
+(deftest foreign-function-key-has-explicit-capture-and-varargs-arities
+  (is (= [:foreign-function "f" [:int] :int true true nil]
          (hp/foreign-function-key "f" [:int] :int true true)))
-  (is (= [:foreign-function "f" [:int :pointer] :string false false]
-         (hp/foreign-function-key "f" [:int :pointer] :string false false))))
+  (is (= [:foreign-function "f" [:int :pointer] :string false false nil]
+         (hp/foreign-function-key "f" [:int :pointer] :string false false)))
+  ;; The sixth positional argument declares the variadic boundary.
+  (is (= [:foreign-function "fcntl" [:int :int :int] :int false true 2]
+         (hp/foreign-function-key "fcntl" [:int :int :int] :int false true 2)))
+  ;; A nil boundary through the explicit arity is identical to the default.
+  (is (= [:foreign-function "f" [:int] :int true false nil]
+         (hp/foreign-function-key "f" [:int] :int true false nil))))
 
 (deftest foreign-function-key-validates-its-terms
   (let [bad-symbol (ex-data-of #(hp/foreign-function-key 9 [:int] :int false))
         bad-args (ex-data-of #(hp/foreign-function-key "f" :int :int false))
         bad-return (ex-data-of #(hp/foreign-function-key "f" [:int] 9 false))
         bad-blocking (ex-data-of #(hp/foreign-function-key "f" [:int] :int 9))
-        bad-capture (ex-data-of #(hp/foreign-function-key "f" [:int] :int false 9))]
-    (doseq [data [bad-symbol bad-args bad-return bad-blocking bad-capture]]
+        bad-capture (ex-data-of #(hp/foreign-function-key "f" [:int] :int false 9))
+        bad-varargs-zero (ex-data-of #(hp/foreign-function-key "f" [:int] :int false false 0))
+        bad-varargs-range (ex-data-of #(hp/foreign-function-key "f" [:int] :int false false 2))
+        bad-varargs-type (ex-data-of #(hp/foreign-function-key "f" [:int] :int false false :one))]
+    (doseq [data [bad-symbol bad-args bad-return bad-blocking bad-capture
+                  bad-varargs-zero bad-varargs-range bad-varargs-type]]
       (is (= :jolt.sim.runtime/invalid-config (:type data))))))
 
 ;; ---- scalar-only foreign argument-type keys -----------------------------
 ;;
 ;; The current contract accepts primitive keyword argument types only;
-;; recursive by-value aggregate argument types and variadic descriptors are no
-;; longer accepted, so the public key constructor rejects them.
+;; recursive by-value aggregate argument types are rejected. Variadic calls
+;; are identified by an exact varargs-after boundary, not aggregate types.
 
 (deftest foreign-function-key-rejects-aggregate-argument-types
   (doseq [bad-type [[:by-value [:struct [[:x :int] [:y :pointer]]]]
@@ -51,13 +61,27 @@
     (let [data (ex-data-of
                 #(hp/foreign-function-key "f" [bad-type] :int false))]
       (is (= :jolt.sim.runtime/invalid-config (:type data)) (pr-str bad-type))
-      (is (= [:foreign-function "f" [bad-type] :int false false]
+      (is (= [:foreign-function "f" [bad-type] :int false false nil]
              (:handler-key data))
           (pr-str bad-type))))
 
   ;; Scalar keyword argument types coexist within one key.
-  (is (= [:foreign-function "f" [:int :pointer] :int false false]
+  (is (= [:foreign-function "f" [:int :pointer] :int false false nil]
          (hp/foreign-function-key "f" [:int :pointer] :int false))))
+
+(deftest foreign-function-key-varargs-boundary-distinguishes-fixed-from-variadic
+  ;; Two otherwise-identical signatures differing only in the boundary
+  ;; produce distinct canonical keys, so a handler pack can register both a
+  ;; fixed-arity and a variadic handler for the same symbol without collision.
+  (let [fixed (hp/foreign-function-key "open" [:int :int] :int false false nil)
+        variadic (hp/foreign-function-key "open" [:int :int] :int false false 1)]
+    (is (= [:foreign-function "open" [:int :int] :int false false nil] fixed))
+    (is (= [:foreign-function "open" [:int :int] :int false false 1] variadic))
+    (is (not= fixed variadic))
+    (let [p (hp/pack :acme/dual {fixed (fn [_] :fixed)
+                                 variadic (fn [_] :variadic)})
+          composed (hp/compose p)]
+      (is (= #{fixed variadic} (set (keys composed)))))))
 
 (deftest pack-canonicalizes-scalar-handler-keys-and-composes-them
   (let [scalar-key (hp/foreign-function-key
@@ -67,10 +91,10 @@
                     (hp/native-operation-key :alloc) (fn [_] 1)})]
     (is (contains? (:handlers p)
                    [:foreign-function "make_point" [:int :pointer]
-                    :pointer true false]))
+                    :pointer true false nil]))
     (let [composed (hp/compose p)]
       (is (= #{[:foreign-function "make_point" [:int :pointer]
-                :pointer true false]
+                :pointer true false nil]
                [:native-operation :alloc]}
              (set (keys composed)))))))
 
@@ -95,9 +119,11 @@
   (let [legacy [:foreign-function "f" [:int] :int true]
         p (hp/pack :acme/legacy {legacy (fn [_] 1)})]
     (is (= :acme/legacy (:id p)))
-    (is (= {(conj legacy false) (get-in p [:handlers (conj legacy false)])}
+    (is (= {(conj (conj legacy false) nil)
+            (get-in p [:handlers (conj (conj legacy false) nil)])}
            (:handlers p)))
-    (is (contains? (:handlers p) [:foreign-function "f" [:int] :int true false]))))
+    (is (contains? (:handlers p)
+                   [:foreign-function "f" [:int] :int true false nil]))))
 
 (deftest pack-accepts-nil-and-function-values-only
   (let [with-nil (hp/pack :acme/nil
@@ -123,14 +149,15 @@
 
 (deftest pack-rejects-two-keys-that-canonicalize-together
   ;; The legacy five-element key and its six-element capture?-false equivalent
-  ;; are the same identity; supplying both in one pack is rejected rather than
-  ;; silently overwriting one handler with the other.
+  ;; canonicalize to the same seven-element identity; supplying both in one
+  ;; pack is rejected rather than silently overwriting one handler with the
+  ;; other.
   (let [legacy [:foreign-function "f" [:int] :int true]
-        canonical (conj legacy false)
+        canonical [:foreign-function "f" [:int] :int true false nil]
         data (ex-data-of
               #(hp/pack :acme/ambiguous
                         {legacy (fn [_] :a)
-                         canonical (fn [_] :b)}))]
+                         (conj legacy false) (fn [_] :b)}))]
     (is (= :jolt.sim.runtime/invalid-config (:type data)))
     (is (= [canonical] (:ambiguous-keys data)))))
 
@@ -153,7 +180,7 @@
                     (fn [_] 1)})
         composed (hp/compose a b)]
     (is (= #{[:native-operation :alloc]
-             [:foreign-function "f" [:int] :int true false]}
+             [:foreign-function "f" [:int] :int true false nil]}
            (set (keys composed))))))
 
 (deftest compose-rejects-duplicate-pack-ids
@@ -173,7 +200,7 @@
                            (fn [_] :second)})
         data (ex-data-of #(hp/compose a b-legacy))]
     (is (= :jolt.sim.handler-pack/duplicate-handler-key (:type data)))
-    (is (= [:foreign-function "f" [:int] :int true false] (:handler-key data)))
+    (is (= [:foreign-function "f" [:int] :int true false nil] (:handler-key data)))
     (is (= [:acme/one :acme/two] (:pack-ids data)))))
 
 (deftest compose-rejects-a-duplicate-key-even-with-identical-values
@@ -207,7 +234,7 @@
 ;; ---- runtime compatibility ---------------------------------------------
 
 (deftest composed-output-is-accepted-unchanged-by-runtime-config
-  ;; A composed map uses the runtime's own canonical six-element foreign keys
+  ;; A composed map uses the runtime's own canonical seven-element foreign keys
   ;; and two-element native keys, so the runtime's public normalizer
   ;; accepts it without re-canonicalization or re-classification.
   (let [native-key (hp/native-operation-key :alloc)
@@ -221,8 +248,8 @@
         revalidated (runtime/normalize-ffi-handlers composed)]
     (is (= composed revalidated))
     ;; The legacy five-element close key was canonicalized by pack to the
-    ;; six-element capture?-false identity, and that identity survives the
-    ;; runtime's own config check.
+    ;; seven-element capture?-false/varargs-nil identity, and that identity
+    ;; survives the runtime's own config check.
     (is (contains? revalidated
                    [:foreign-function "sqlite3_close_v2" [:pointer] :int
-                    true false]))))
+                    true false nil]))))

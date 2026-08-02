@@ -154,19 +154,23 @@ new `:spawn`/`:start` events fail closed. Body exceptions are rethrown unchanged
 only after drainage and restoration succeed.
 
 Every controlled run installs one composite controller covering FFI and clock
-interception. Exact nested descriptor version 5 requires Boolean
-`:capture-native-error?` on foreign calls and admits all 16 current native
-operations, including scoped
+interception. Exact nested descriptor version 6 requires Boolean
+`:capture-native-error?` and an exact `:varargs-after` boundary on foreign
+calls and admits all 16 current native operations, including scoped
 `:borrow-byte-array`/`:release-byte-array` and the mutating `:read-array!`.
-A foreign argument type is now a primitive keyword only: recursive by-value
-aggregate argument types and variadic descriptors are no longer accepted,
-because current Jolt scalar metadata is exact. Handlers are configured via
-`:ffi-handlers`, keyed by `[:native-operation operation]` or `[:foreign-function
-c-symbol-string argument-types return-type blocking? capture-native-error?]`.
-A five-element foreign-function key is an unambiguous configuration shorthand
-for final `false`; supplying both spellings for the same binding is rejected.
-Map membership, including a `nil` value, defines handled. A captured handler
-must return `[native-result error-code]`.
+A foreign argument type is a primitive keyword only: recursive by-value
+aggregate argument types are not accepted, because current Jolt scalar
+metadata is exact. Variadic calls are instead identified by `:varargs-after`:
+nil for fixed-arity calls, or a positive integer no greater than the
+argument-type count naming the first variadic position. Handlers are
+configured via `:ffi-handlers`, keyed by `[:native-operation operation]` or
+`[:foreign-function c-symbol-string argument-types return-type blocking?
+capture-native-error? varargs-after]`. Five- and six-element foreign-function
+keys are unambiguous configuration shorthands for capture `false`/varargs
+`nil` and explicit-capture/varargs `nil` respectively; supplying any two
+spellings that canonicalize to the same seven-element key for one binding is
+rejected. Map membership, including a `nil` value, defines handled. A captured
+handler must return `[native-result error-code]`.
 
 The clock descriptor is version 1 with one operation, `:mono-nanos`, returning
 exact-integer nanoseconds and declared nondecreasing. `run-controlled` accepts
@@ -282,7 +286,7 @@ regression is isolated from the reusable test session:
 /path/to/current-sim/target/sim/jolt -M:runtime-poison-test
 ```
 
-Descriptor-version 5 retains the scoped byte-array pointer loan and adds the
+Descriptor-version 6 retains the scoped byte-array pointer loan and adds the
 mutating `:read-array!`. Its dedicated
 custom-image gate runs one ordinary `jolt.ffi` fixture first against real native
 memory and then unchanged against the deterministic memory handlers, including
@@ -588,7 +592,7 @@ path is independent of history length.
 ### Deterministic native memory
 
 `jolt.sim.ffi-memory` supplies handlers for all 16 operations in the current
-descriptor-version 5 FFI contract. Owned allocations use aligned fake addresses
+descriptor-version 6 FFI contract. Owned allocations use aligned fake addresses
 backed by immutable byte vectors, so an intercepted pointer can never reach
 Chez or the operating system. `:read-array!` copies modeled bytes directly into
 the caller's live destination byte array, mirroring the same fail-closed
@@ -805,10 +809,12 @@ interceptors alongside a world's handlers without hand-merging their keys.
 ```
 
 `native-operation-key` and `foreign-function-key` build the canonical keys
-directly; `foreign-function-key` defaults `capture?` to `false` and takes an
-explicit fifth positional argument for a capture-enabled handler. `pack`
-requires an explicit **namespaced** keyword id and a handler map; legacy
-five-element foreign-function keys are canonicalized to the six-element form.
+directly; `foreign-function-key` defaults `capture?` to `false` and
+`varargs-after` to `nil`, and takes an optional sixth positional argument for
+a validated variadic boundary (nil or a positive integer no greater than the
+argument-type count). `pack` requires an explicit **namespaced** keyword id
+and a handler map; five- and six-element foreign-function shorthands are
+canonicalized to the seven-element form.
 `compose` merges one or more packs and fails closed with a typed ex-info on a
 duplicate pack id or on any canonical handler key registered by more than one
 pack — even when the two registered values are identical — carrying the
