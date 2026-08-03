@@ -333,6 +333,12 @@ Remaining risks: the `Any` escape hatch requires runtime checks where refined
 meets unrefined; inference for higher-order and polymorphic-recursive code is
 where liquid typing is least comfortable in practice.
 
+**Status: both risks addressed in §16/E13.** `Any` resolves by confinement — a
+capability is minted by an operation, never parsed from data, so it is never
+`Any`. The higher-order risk splits: the sans-io driver types at a fixed
+refinement, transducers over refined elements do not and need abstract
+refinements of arity ≥ 2. See §16.
+
 ### Q3 — `unique` × multi-shot: under-specified, and not currently load-bearing
 
 The stated rule ("a `many` continuation may not capture `unique` resources in
@@ -1457,3 +1463,197 @@ gain a **non-codec target** before the typing decisions harden — one that
 exercises the kernel, faults, and a liveness property, none of which bencode
 touches. P4's capacity-one mailbox is the cheapest candidate since it is already
 fully specified, with a small leader election as the more honest one.
+
+---
+
+## 16. E13 — the driver types; transducers need abstract refinements
+
+**This section qualifies §2.2 and §2.3, and closes the second half of Q2.**
+
+Q2 left two risks. The `Any` escape hatch resolves by confinement — a
+capability is minted by an operation, never parsed from data, so it is never
+`Any`. The other was open: *"inference for higher-order and polymorphic-
+recursive code is where liquid typing is least comfortable in practice."*
+
+Prototypes: `docs/research/prototypes/refinement.py` (refinements over
+`jolt.bytes/Window`, `Cursor`, `read-window` and `jolt.bencode/decode`, with a
+self-contained QF-LIA decision procedure), `higherorder.py` (the sans-io
+driver), `transducer.py` (composition). 7/7, 12/12 and 16/16 cases as
+expected, wired into `verify-capability-rules`.
+
+**Method limit, stated up front.** Types are **hand-annotated and checked**.
+Nothing is inferred, so this establishes that the discipline is *expressible*
+and that the obligations are *dischargeable*; it says nothing about whether an
+inference engine would find them. The solver is Gaussian elimination plus
+Fourier-Motzkin over the rationals with DPLL splitting: sound for validity,
+incomplete over the integers. No result below turns on integrality.
+
+### The driver types, against the step function as a parameter
+
+The driver — feed bytes, retry on `:need-more`, emit on `:ok`, stop on
+`:invalid`, with the step function as an argument and no knowledge that it is
+bencode — **type-checks**, discharging every obligation from the step's
+*declared* refinement. It needs exactly three things, all of them already
+inside the stated mechanism:
+
+1. **Dependent function types over value arguments** — `(c : Cursor) -> {r | φ(c, r)}`.
+   The binder is what lets the result refinement name the input cursor. This
+   is not an extension: liquid types have it, and the refinements themselves
+   stay quantifier-free.
+2. **Equality over an uninterpreted sort** for backing-array identity, i.e.
+   QF-UFLIA rather than bare QF-LIA. Q2 already anticipated this ("normally
+   QF-LIA with uninterpreted functions").
+3. **Refinement subtyping with contravariant arguments**, so `decode` (which
+   guarantees at least two bytes consumed) reaches the driver by subsumption
+   without re-checking the body.
+
+The check is doing real work, not passing vacuously: weakening the step's
+contract to permit a foreign result window, or to drop the upper bound on the
+result position, makes the driver's own `WF_CURSOR` obligation unprovable in
+both cases.
+
+**The driver is higher-order at a *fixed* refinement, and that is not an
+accident.** A driver quantified over the step's refinement was tested
+directly: an *unbounded* quantifier must hold at its weakest instance (`true`),
+where the driver's obligation fails; a quantifier *bounded* by the trichotomy
+contract collapses back to the fixed contract plus subsumption. So the driver
+never needed refinement polymorphism, which is why it types.
+
+### Three things the driver revealed that the design did not have
+
+**Termination needs the byte source refined too.** The obvious metric —
+bytes left in the window — *increases* across `:need-more`, because refilling
+grows the window. Termination requires a lexicographic metric whose first
+component is a source budget, i.e. the driver's type must carry a *second*
+refined capability. With an unrefined source neither component decreases and
+the metric obligation fails. (For a live socket the loop genuinely does not
+terminate, which is correct; the point is that the type cannot say so unless
+the source is in the tier.)
+
+**Retry-soundness is outside the fragment.** Retrying the step after a refill
+is only meaningful if the refilled window agrees with the old one below
+`position`. That is `forall i. 0 <= i < old.length => new[i] = old[i]` — array
+content under a quantifier. It is not derivable from the position-and-length
+arithmetic, and it becomes derivable exactly when one instance is assumed.
+This is an obligation *outside* the type system, which §2.3 already reserves
+for Ansatz; it is recorded so it is not later mistaken for something the
+checker discharges.
+
+**`Step` is not closed under retry-wrapping.** The natural combinator
+`retrying : Step -> Step`, which hides `:need-more` by refilling, **does not
+type**: the contract pins the result window to the *argument's* window, and
+refilling replaces it. The retry loop therefore has to be the driver, which
+threads the new window explicitly — as the real driver does. This is a design
+consequence, not a defect, and it is the shape §2.5 step 5's session type must
+respect.
+
+### The transactional property is expressible — but only up to structure
+
+`read-window` and `decode` return **the identical original Cursor** on a
+non-`:ok` result (`jolt-bytes` gives `Cursor` an explicit `identical?` equality
+contract; `jolt-bencode`'s docstring says "the identical original Cursor").
+
+A refinement over field values can state that the returned cursor carries the
+same window and the same position. It **cannot** state that it is the same
+object: with a ghost identity field added, structural equality provably does
+not imply identity. So the strongest available refinement is satisfied by an
+implementation that returns a *copy*.
+
+This does not break the property; it relocates it. Under §7/E6's affine
+binding a `unique` Cursor is moved into `decode`, so no one is holding the
+original to compare against, and field equality is the whole observable
+content of "nothing was consumed". **Identity is a mode-tier notion and
+structure is a refinement-tier one, and the transactional property needs
+both** — the third independent instance (after §6/E5's typestate and §7/E6
+probe 3's contention) of an obligation that looked like one tier's job and
+required the other.
+
+### Transducers do not type, and the machinery they need has a name
+
+Charter §1.2 H4 (adopted in §15.3) makes transducers the composable primitive.
+Composing refined steps was measured directly:
+
+| shape | verdict |
+| --- | --- |
+| `mapStep` over an **ordinary-tier** element | types |
+| `mapStep` at **one fixed** element refinement | types |
+| the same monomorphic `mapStep` **reused at a second** refinement | **fails** |
+| `mapStep` with an **arity-1 abstract refinement**, instantiated per use | types |
+| **zero-copy** element with an arity-1 refinement variable | **fails** |
+| zero-copy element with an **arity-2** refinement variable | types |
+| zero-copy element consumed **first-order**, no combinator | types |
+| refinement variable left uninstantiated | **fails** |
+
+Reading the table:
+
+**A monomorphic refined transducer loses the refinement.** Declared at one
+element refinement and used at another, the declared codomain is not a subtype
+of what the caller needs. That is the whole point of a combinator defeated.
+
+**The fix is abstract refinements** — LiquidHaskell's
+`forall <p :: a -> Bool>` (Vazou et al., *Abstract Refinement Types*, ESOP
+2013). Predicate variables are not type variables: **HM unification has
+nothing to solve them with**, and inferring them is Horn-clause constraint
+solving over a qualifier set. §2.2's phrase "without giving up inference" is
+therefore too strong at the combinator boundary, though the leaves stay
+QF-UFLIA and decidable.
+
+**Arity is the sharp part.** A zero-copy element — the decoded value *is* a
+sub-`Window` of the input buffer rather than a copy out of it — has a
+refinement that mentions **the step function's own cursor binder**. An arity-1
+predicate `p :: Window -> Bool` cannot see it. The requirement is
+`p :: Cursor -> Window -> Bool`, an abstract refinement *parameterised by a
+binder internal to another type in the signature*. That is the most exotic
+thing this probe found, and it is not in §2.2 or §2.3 in any form.
+
+### Does §2.2's confinement claim survive?
+
+**Yes, conditionally — and the condition is one the performance line is
+actively eroding.**
+
+The claim is that refined things are mostly consumed by *first-order*
+operations. Every first-order case here types, including a refined capability
+threaded through an eager `into` accumulator and a zero-copy `Window` handed
+straight to a first-order consumer. The driver, the one genuinely higher-order
+consumer on the v0 path, types at a fixed refinement. Transducers over
+ordinary-tier elements type, because there is no refinement to compose.
+
+The condition is that **the codec copies out of the capability tier**.
+`jolt-bencode`'s `decode-utf8` builds a `String`, so every element flowing into
+a transducer chain today is ordinary-tier and unrefined — which is exactly why
+the confinement claim holds. §8/E7 and §12/E11 push toward the opposite: a
+zero-copy decoder returning sub-`Window`s is the natural end of that line, and
+it puts refined capabilities into the element stream, where the arity-2
+abstract-refinement requirement bites.
+
+So the tier split is not threatened, but its cheapness is contingent. The
+honest statement for §2.2 is: *confinement holds while the capability tier
+terminates at the driver; a zero-copy element type moves the boundary into the
+transducer chain and costs abstract refinements of arity ≥ 2.* That trade
+should be made deliberately, at the point the zero-copy decoder is decided,
+not discovered afterwards.
+
+### Method note, sixth instance
+
+One expectation here was refuted by the artifact, in the small: a case
+asserting that a fresh-window step and the same-window `Step` are incomparable
+was written with the fresh step guaranteeing `position >= 1`, and the solver
+showed `Step` really *is* a subtype of it. Making the fresh step do what a
+de-framing stage actually does — hand back a cursor at position 0 — produced a
+genuinely incomparable pair. Small, but the same shape as §6, §8 and §12: the
+claim survived inspection and failed the check.
+
+### Nonclaims
+
+1. Checking, not inference. No claim that liquid inference would find these
+   annotations, and the abstract refinements are instantiated by hand.
+2. The solver is incomplete over the integers; "fails" means "not proved",
+   and each negative was inspected by hand for that failure mode.
+3. One driver shape and one transducer shape. `partition-by`, early
+   termination via `reduced`, and stateful transducers whose state is itself a
+   capability are untested.
+4. Nothing here touches linearity or typestate; those stages are §6 and §7.
+   The interaction of abstract refinements with affine binding is untested.
+5. The Python model encodes objects field-wise into integers. Descriptor
+   identity is deliberately not representable, which is the subject of one of
+   the findings rather than an artifact of the encoding.

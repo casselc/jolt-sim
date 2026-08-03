@@ -18,10 +18,23 @@
 #                in this repository, so this is a consistency check, not
 #                differential evidence.
 #   multicap     names, aliasing, moves, and function signatures.
+#   refinement   the OTHER half of the capability tier: refinements over
+#                QF-LIA on jolt.bytes/Window, Cursor, read-window and
+#                jolt.bencode/decode, with a self-contained decision
+#                procedure. Types are HAND-ANNOTATED and CHECKED, not
+#                inferred. Includes the solver's own self-test.
+#   higherorder  the sans-io driver, which takes the step function as an
+#                ARGUMENT -- the first of Q2's two unresolved higher-order
+#                risks.
+#   transducer   composition of refined steps -- the second risk, and the
+#                one that needs machinery the design does not yet name.
 #
 # Nonclaims: bounded to depth 10; one capability domain (the hako codec
-# buffer); straight-line and structured control flow only, no higher-order
-# calls; Python prototypes modelling a rule set, not a checker over Jolt IR.
+# buffer) for the mode stages; straight-line and structured control flow only
+# for the mode stages; Python prototypes modelling a rule set, not a checker
+# over Jolt IR. The refinement stages CHECK hand-written annotations and infer
+# nothing, and their solver is sound-for-validity but incomplete over the
+# integers (Fourier-Motzkin runs over the rationals).
 #
 # Usage:  ./verify-capability-rules
 set -eu
@@ -46,6 +59,9 @@ run "queries (spot checks, not sufficient alone)" "$PY" mode_checker.py
 run "equivalence vs ownership.pl, depth $DEPTH" "$PY" equivalence.py "$DEPTH"
 run "control flow (consistency check)"           "$PY" controlflow.py
 run "multiple capabilities and aliasing"         "$PY" multicap.py
+run "refinements (first-order, E3 surface)"      "$PY" refinement.py
+run "higher-order: the sans-io driver"           "$PY" higherorder.py
+run "higher-order: transducers"                  "$PY" transducer.py
 
 if [ "$fails" -eq 0 ]; then
     echo "capability-rule gate: all stages passed"
