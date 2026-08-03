@@ -52,6 +52,8 @@ The complete current tally of claims this document made and then refuted:
 | 19 | the capability corpus's accept set "would run" — and unpositioned `:consumes`/`:produces` is an expressiveness gap | running it: `open-request-close` and `uses-ping` both throw under the scripted handler. The gap is a **false accept**, not only a false reject | E15 |
 | 20 | INHERITED I11: `defcfn` resolves its foreign symbol at def-evaluation | `backend_scheme.clj:589-617` — it lowers to a deferred, memoised, per-binding cell | E16 |
 | 21 | positioned specs are the one thing §1.2 needs to check the real client | building them: the client checks, and the layer *underneath* it then failed — the missing concept is a module boundary, which §1.2 also does not have | E17 |
+| 22 | E17's `perturb.nrepl` report shows what the checker found | a second protocol run through the same reporter: diagnostics raised **against axioms** were collected and silently dropped, hiding an `annotation-inconsistent` on `perturb.nrepl/open` since it was written | E18 (b) |
+| 23 | `:perturb.cap/representation` measures the abstraction boundary | `perturb.http` drove the list to **zero** while unchecked concrete-map accesses went from 12 to 31 — counting operations counts the wrong thing | E18 (4) |
 
 ‡ Two rows are the exception the sentence above does not cover: they arrived
 from re-examining the argument (and, for 18, from the literature) rather than
@@ -62,7 +64,7 @@ a delegated verification. Rows 6–9 and 16 are cases where the claim had alread
 pattern the commitment exists to name.
 
 **How to read this document.** §1 is the settled design, stated once in final
-corrected form. §2 is the divergence register. §3 is the findings E1–E17, each
+corrected form. §2 is the divergence register. §3 is the findings E1–E18, each
 stated as currently believed rather than as first written. §4 is the open
 questions. §5 is the v0 ladder. §6 is the nonclaims. Appendix A is the
 correction history, Appendix B holds the superseded ladders in full, and
@@ -689,7 +691,7 @@ Each should get its register row when decided, not retrospectively.
 
 ## 3. Findings
 
-E1–E17, each stated as currently believed. What each said first, and what
+E1–E18, each stated as currently believed. What each said first, and what
 corrected it, is in Appendix A. E1–E13 are measurements and prototypes; E14 is
 a source-and-history survey of the v0.5.17 branch lane and is `assumed`
 throughout — it qualifies §1.4 and §2 row 3 without settling either.
@@ -2419,13 +2421,25 @@ at once is outside it. This is not exotic: `accept` (mint a connection from a
 listener) and `finish` (end a body, give the connection back) are the two most
 ordinary operations a server has.
 
-**(b) The same defect was already live in `perturb.nrepl` and had never been
-seen.** `perturb.nrepl/open` declares `:from :created` and annotates `:consumes
-[]`, i.e. `nil -> :active`; that raises `annotation-inconsistent` too. It was
-invisible because `run-client` computed its bad set over the non-axioms only, so
-a diagnostic raised *against an axiom* was collected and never printed. The
-report stage now prints them. Nothing about the checker's verdicts changed —
+**(b) A second inconsistency was already live in `perturb.nrepl` and had never
+been seen.** `perturb.nrepl/open` declares `:from :created` and annotates
+`:consumes []`, i.e. `nil -> :active`; that raises `annotation-inconsistent` too.
+It was invisible because `run-client` computed its bad set over the non-axioms
+only, so a diagnostic raised *against an axiom* was collected and never printed.
+The report stage now prints them. Nothing about the checker's verdicts changed —
 this was a reporting hole, and it hid a real disagreement for two sections.
+
+**Correction — this is not defect (a).** This section as first written called it
+"the same defect". It has a different cause and a different fix. `Connection` is
+the only capability declared in `perturb.nrepl`, so no transition table entry was
+overwritten; the disagreement is that `open` **consumes nothing**, so the
+consistency check derives `from = nil` and compares it against a declared
+`:from :created`. What that exposes is that **`:created` is a fiction** — nothing
+is ever in that state, because `open` is what brings the connection into
+existence. Either a machine should have no pre-creation state, or a
+producing-only operation needs its own consistency rule. (a) and (b) share only
+the *suppression* that hid them both; fixing (a)'s `[cap op]` keying would leave
+(b) exactly where it is.
 
 **(c) `:borrows` plus `:produces` of the same capability duplicates it, and
 nothing says so.** `borrow-and-return-listener` borrows a Listener at `:arg 0`
@@ -2872,9 +2886,16 @@ Recorded here so they are not lost between sections. None of these is decided.
 - **An operation that advances two capability machines at once cannot be
   declared.** The primitive table is keyed by operation. `accept` and
   `body-finish!` in `perturb.http` are both this shape and both draw a spurious
-  `annotation-inconsistent`; `perturb.nrepl/open` has drawn one since E17 and it
-  was never printed. Nothing here is a false accept — it is a declaration
-  language that cannot say what the code does (E18).
+  `annotation-inconsistent`. Nothing here is a false accept — it is a
+  declaration language that cannot say what the code does (E18).
+- **A creating operation has no `:from`, so the initial state is a fiction.**
+  Separate from the item above, though it surfaced with it and was first written
+  down as the same thing. `perturb.nrepl/open` consumes nothing, so the
+  consistency check derives `from = nil` and compares it to a declared
+  `:from :created` — a state nothing is ever in, because `open` is what creates
+  the connection. Either machines should have no pre-creation state, or a
+  producing-only operation needs its own rule. Fixing the two-machine keying
+  above would not touch this (E18 (b)).
 - **A state cannot carry a refinement, so an obligation is unstatable.** A
   Content-Length body writer that declares 6 octets and writes 3 reaches
   `:finished` and is ACCEPTED and RUNS. The property is QF-LIA over a run-time
