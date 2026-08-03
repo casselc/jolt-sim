@@ -146,7 +146,17 @@ obligations, no modes; immutability makes the mode questions trivial.
 
 Capabilities (handles, cursors, buffers, leases, continuations, mutable cells):
 modes plus refinements. Axes kept: **uniqueness** (`unique`/`shared`),
-**linearity** (`once`/`many`). Axis dropped: **locality** — regions are the
+**linearity** (`once`/`many`), **typestate** (role-indexed operation
+legality), and **contention** (does an owner survive a thread fork). Borrows
+are **exclusive** — a live lease blocks reads by the owner, not only moves —
+and capabilities bind **affinely**: there is no non-moving alias.
+
+*(Uniqueness and linearity alone were the original list; §6/E5 measured that
+pair wrongly accepting 1051 of 6470 sequences and added typestate and
+exclusive borrows, and §7/E6 added affine binding and restored contention.
+The axes are listed here in corrected form; the evidence is in §6 and §7.)*
+
+Axis dropped: **locality** — regions are the
 specific feature that makes effects unsound (cf. arXiv 2607.15876, Yarrow:
 non-local control breaks stack discipline; multi-shot handlers break
 exit-at-most-once). Escape safety for loans, handler scope, and task containment
@@ -497,3 +507,98 @@ carrying 1,051 unsound acceptances. Spot checks drawn from a specification are
 not a substitute for differential testing against the specification's own
 semantics, which is the discipline `bin/verify-*` already applies elsewhere in
 these repositories.
+
+---
+
+## 7. E6 — three probes past the straight-line fragment
+
+E5's rule set checks a straight-line operation sequence over one unnamed
+capability. Three probes push past that. Prototypes: `controlflow.py`,
+`multicap.py`.
+
+### Probe 1 — branching and loops: the rule set survives
+
+`controlflow.py` adds `if` and `loop` with the standard judgements: an `if`
+checks both arms from the same environment and requires the join to **agree**;
+a `loop` body must be **environment-preserving**. 12/12 cases as expected — a
+complete lease cycle is environment-neutral so it joins with doing nothing and
+iterates in a loop, while a move in one arm only, divergent moves per arm, a
+dangling borrow in one arm, and a loop that moves or leaves a lease live are
+all rejected.
+
+Weaker evidence than E5: both the rules and the expectations are authored here,
+so this is a consistency check, not a differential test against an independent
+specification.
+
+**Design consequence, not a defect:** the join rule rejects
+`if (c) { b = detach_result(b) }; use(b)` — a shape ordinary code writes freely.
+"May or may not have been moved" is not a mode, and no sound successor typing
+exists, so rejection is correct but is exactly where typestate systems earn
+their reputation for friction. Mitigations (explicit reconciliation, a sum state
+requiring a case-split, per-variable flow-sensitivity) are unexplored here and
+are a real usability risk for §2.2.
+
+### Probe 2 — names and aliasing: E5's structural claim was too strong
+
+`multicap.py` adds named capabilities, moves, and function signatures
+(`consume`/`borrow`/`produce`). Seven cases passed immediately. The eighth
+**failed**, and it matters:
+
+```
+new a; alias b = a; a.detach_result; b.return_pool     -- ACCEPTED (unsound)
+```
+
+Two names for one capability, moved to two different roles. That reconstructs
+`writer_result` — the exact two-owner state hako's `double-owner-bug.pl`
+injects, and the state §6 called *unrepresentable*.
+
+**§6's structural claim holds only for the single-capability fragment.** `Env`
+has one owner field, so one capability cannot have two owners; but two *names*
+can hold one capability and diverge. Uniqueness must therefore be enforced at
+the **binding form**, not only at operations — capabilities bind **affinely**,
+with no non-moving alias. With that rule the probe is 8/8, and E5's equivalence
+(depth 10, zero disagreements), probe 1 (12/12), and the recorded queries (9/9)
+all still hold.
+
+This is the second time a claim survived its spot checks and failed a probe
+designed to attack it.
+
+### Probe 3 — the SMT families: modes cover two of seven
+
+Classifying `jolt-hako/proofs/smt`'s seven families against the rule set:
+
+| family | decided by |
+| --- | --- |
+| borrowed-view generation/lifecycle gating | **modes/typestate** |
+| native-loan release after completion | **modes/typestate** |
+| owner-tagged non-inheriting scratch across a thread fork | **contention** — see below |
+| subtraction-form bounds and transactional read commit | refinement (QF-LIA) |
+| contiguous builder growth and complete prefix copying | refinement |
+| preflight and all-or-nothing publication geometry | refinement + commit typestate |
+| UTF-8 scalar count, capacity, transactional publication | refinement |
+
+Two of seven are mode/typestate obligations; four are arithmetic refinements —
+consistent with §2.3's split, and confirming both halves are load-bearing rather
+than one subsuming the other.
+
+**The seventh contradicts §2.2.** `noninheriting-scratch-corrected.smt2`
+declares `parent_thread`, `child_thread`, `inherited_owner`, `inherited_scratch`
+and asserts an `alias_violation` — whether an owner-tagged scratch buffer is
+inherited across a thread fork. That is a **contention/portability** obligation,
+and §2.2 cut that axis on the grounds that it is "only needed if you want real
+shared-memory parallelism" which explicit message passing would sidestep. It is
+in the *current* proof surface regardless, so the axis is restored in §2.2.
+
+### Net effect on the axis list
+
+| §2.2 as first written | after §6 and §7 |
+| --- | --- |
+| uniqueness, linearity | uniqueness, linearity, typestate, contention |
+| (borrow blocks moves) | borrows **exclusive** — block reads too |
+| (no binding rule) | capabilities bind **affinely** |
+| locality dropped | locality still dropped (Yarrow interaction stands) |
+
+Every addition came from a probe designed to break the previous claim, and none
+from the spot checks the specification supplied. That pattern is now the method
+note in §6, restated: derive the acceptance criterion from the specification's
+own semantics, not from its examples.
