@@ -510,6 +510,17 @@ The affine hand-threading this entry describes is real, and it is still not
 enough: it is invisible at the function boundary, where §1.2's `:consumes` /
 `:produces` have no way to say *which* result position holds the capability.
 
+**AMENDED AGAIN — and that gap cuts the other way too.** The paragraph above
+reads as though the unpositioned annotation only costs *rejections* of correct
+code. Running the checker's own accept set shows otherwise. Because `request`'s
+`:produces` cannot say the connection is at position 0 of `[conn' frames]`, the
+checker models a call's whole result as the successor capability — so
+`perturb.corpus/open-request-close`, which the checker ACCEPTS, hands the pair to
+`close!` and throws under the scripted handler. The hand-threading discipline
+this entry credits is therefore not merely unchecked at the boundary; the
+checker's current model of the boundary *disagrees with the code that actually
+runs*. See PERTURB-DESIGN E15.
+
 ---
 
 ## I18 — `jolt.ir`'s `:local` has no binding identity, and the compile spine has no IR hook

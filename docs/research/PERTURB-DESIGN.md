@@ -49,6 +49,8 @@ The complete current tally of claims this document made and then refuted:
 | 16 | a fresh-window step and the same-window `Step` are incomparable | the solver: `Step` really is a subtype of the version as first written | E13 |
 | 17 ‡ | E3: "no obligation is about application semantics" | re-examination of the sample — true of codecs, not of the domain | E3, §4.6 |
 | 18 ‡ | Q2 is a gradual-typing boundary problem | the liquid-types literature — everything here is statically typed; an unrefined value is refined by `true` | Q2 |
+| 19 | the capability corpus's accept set "would run" — and unpositioned `:consumes`/`:produces` is an expressiveness gap | running it: `open-request-close` and `uses-ping` both throw under the scripted handler. The gap is a **false accept**, not only a false reject | E15 |
+| 20 | INHERITED I11: `defcfn` resolves its foreign symbol at def-evaluation | `backend_scheme.clj:589-617` — it lowers to a deferred, memoised, per-binding cell | E16 |
 
 ‡ Two rows are the exception the sentence above does not cover: they arrived
 from re-examining the argument (and, for 18, from the literature) rather than
@@ -59,7 +61,7 @@ a delegated verification. Rows 6–9 and 16 are cases where the claim had alread
 pattern the commitment exists to name.
 
 **How to read this document.** §1 is the settled design, stated once in final
-corrected form. §2 is the divergence register. §3 is the findings E1–E13, each
+corrected form. §2 is the divergence register. §3 is the findings E1–E16, each
 stated as currently believed rather than as first written. §4 is the open
 questions. §5 is the v0 ladder. §6 is the nonclaims. Appendix A is the
 correction history, Appendix B holds the superseded ladders in full, and
@@ -161,7 +163,16 @@ afterwards.
 Mitigations (explicit reconciliation, a sum state requiring a case-split,
 per-variable flow-sensitivity) are unexplored and are a real usability risk for
 this section. How often the rule actually fires on real programs is argued, not
-measured (§4.6).
+measured (§4.6); the one measurement that exists is zero occurrences outside
+the corpus in `perturb.nrepl` (E15).
+
+**Known defect, now the top of this section's queue.** `:consumes` /
+`:produces` name a capability and a state but not **where in the value** it
+sits. E15 ran the rule set against real IR and found this is not an
+expressiveness gap but a soundness hole: a primitive returning `[conn frames]`
+must be modelled as returning the capability bare, so programs the checker
+accepts crash when run, while the only real client perturb has cannot be
+annotated at all. Positioned specs come before E13's abstract refinements.
 
 ### 1.3 Proof — capability-tier refinements, Ansatz retained
 
@@ -379,6 +390,21 @@ must be reclassified rather than ported.
 Gate architecture follows `jolt-toolchains`: producer records its own claims;
 an independent clean-consumer job revalidates after fresh extraction; the
 verifier's limits are stated rather than implied.
+
+The artifact's gates, as they stand (`perturb/dev/run-demo.sh`, all exiting 0
+at `d883385`):
+
+| gate | what it decides | limits printed by |
+| --- | --- | --- |
+| `-M:selftest` | codec/octet self-tests, no socket | the run |
+| `-M:check` | 17 corpus programs get their recorded capability verdicts; the real client is checked and reported, not gated | `report-limits`, 8 items (E15) |
+| `-M:oracle` | perturb's bencode against `jolt.nrepl`'s over their shared profile | the run |
+| `-M:demo` | one session var under a real socket and two in-memory handlers; sent octets identical | the transcript |
+| `-M:noio` + `verify-noio.sh` | no syscall attributable to perturb in a scripted window, with a positive control | the verdict block (E16) |
+
+The last two follow the rule literally: each states what its instrument *cannot*
+see (`-M:noio` because `dlopen(NULL)` is invisible to strace; `-M:check` because
+its accept set is only as good as the annotation language, E15).
 
 ---
 
@@ -615,7 +641,7 @@ Each should get its register row when decided, not retrospectively.
 
 ## 3. Findings
 
-E1–E14, each stated as currently believed. What each said first, and what
+E1–E16, each stated as currently believed. What each said first, and what
 corrected it, is in Appendix A. E1–E13 are measurements and prototypes; E14 is
 a source-and-history survey of the v0.5.17 branch lane and is `assumed`
 throughout — it qualifies §1.4 and §2 row 3 without settling either.
@@ -1916,6 +1942,243 @@ question D3 now has to answer, and this section does not answer it.
    on. None of them decides the perturb question, and this section deliberately
    decides nothing.
 
+---
+
+### E15 — perturb rejects a program; and the accept set does not run
+
+Until this point every capability claim in §1.2 was carried by a Python
+prototype over a hand-written model. `perturb.check` is the first thing in this
+record that reads **real Jolt IR from real perturb source and refuses**. It is a
+gate: `jolt -M:check`, wired into `dev/run-demo.sh`. Independently re-run at
+`d883385`; the whole `run-demo.sh` sequence — selftest, check, oracle, live
+demo against a `jolt nrepl-server`, and the no-I/O verifier — exits 0.
+
+#### How it gets the IR, and what that cost
+
+`jolt.analyzer/analyze` takes a `chez-actx` record that no Jolt-level code can
+construct, and `compile-eval.ss:12-20` `var-deref`s both `analyze` and
+`run-passes` at host load, so neither var can be rebound from Jolt. The one var
+`run-passes` still calls *through its cell* is `jolt.passes.numeric/annotate`;
+`perturb.ir` `alter-var-root`s that one and captures 97 defs on the way past.
+**Nothing in `/home/user/jolt` was modified** to make this work. The fragility
+is priced as INHERITED I18: perturb is reading its own compiler through the one
+seam Jolt happens to leave open, and Jolt owes it nothing.
+
+#### The first rejection, verbatim
+
+```
+  use-after-move  perturb.nrepl/Connection
+    capability    `c` : perturb.nrepl/Connection@:active, bound at perturb/src/perturb/corpus.clj:90:11
+    consumed by   perturb.nrepl/close!  at perturb/src/perturb/corpus.clj:91:5
+    used again at perturb/src/perturb/corpus.clj:92:5  (argument to perturb.nrepl/request)
+    in            perturb.corpus/use-after-close
+```
+
+That program is INHERITED I16's example verbatim — the one recorded as
+"compiles and runs on Jolt today". It no longer checks.
+
+The corpus is 17 real perturb functions, never called, each with the verdict the
+gate requires: 6 accept, 11 reject (`use-after-move` ×2, `typestate`,
+`dangling` ×2, `join` ×2, `loop-not-preserving`, `untracked-consume`,
+`escape`/`produces-mismatch`, `capture`). Flipping one expectation gives
+`16/17 … CHECK FAILED`, exit 1, so the gate is known to be able to fail.
+
+#### §4.6's `:local` item — closed, and the pessimism was warranted
+
+§1.1 claimed from source reading that `:local` carries a name and not binding
+identity; §4.6 recorded it as UNTESTED and said to assume it might be wrong.
+The checker measured it on `perturb.corpus/shadowed-rebind`, which binds three
+different `Connection` instances to one name:
+
+```
+     :let binding names     ["c" "c" "c"]   <- three separate bindings
+     :local nodes naming c  2, every one of them exactly {:op :local, :name "c"}
+     a :binding-id key?     false
+```
+
+**The claim holds.** The analyzer's lexical env is a *set* of names
+(`analyzer.clj:84-86`), so a shadowing binding reuses the name outright. The
+checker therefore mints its own binding id at each binding occurrence;
+`perturb.corpus/shadowing-hides-a-leak` is the program a name-keyed checker
+accepts and this one rejects, and it is in the corpus so the property is
+regression-tested rather than asserted. `:extern` is still untested.
+
+#### The real client is rejected — and that is the finding
+
+`perturb.nrepl`, the working nREPL client from `0e36f37`, does **not** survive
+its own rules: `clone-session`, `eval-code` and `session` draw 5 diagnostics at
+`nrepl.clj:168, 179, 198, 199, 204`. One root cause. §1.2's `:consumes` /
+`:produces` are **unpositioned**, so a function returning `[conn value]` — which
+is how this client threads the connection through every operation — cannot be
+annotated at all.
+
+#### Correction to that finding, from running the corpus
+
+The delegated report framed this as an expressiveness gap: the annotation
+language is too weak to describe the real client, and `perturb.corpus/ping`
+(returns the connection bare, **accepted**) versus `/ping-tuple` (same function
+with the pair put back, identically annotated, **rejected**) isolates it. The
+isolation is right. The framing is too kind, and I checked it by running the
+accept set rather than reading it.
+
+`perturb.nrepl/request` really returns `[conn' frames]`. Its unpositioned
+`:produces` cannot say so, so the checker models the *whole result* of a call as
+the successor capability. Every corpus ACCEPT is written to fit that model —
+`(let [c1 (n/request c …)] (n/close! c1))` — and at runtime `close!` therefore
+receives the pair. Run under the scripted handler, with no server and no socket:
+
+```
+open-request-close -> THREW: Exception in fx=?: #[keyword-v1 "perturb.cap" "state"] is not a fixnum
+                             at perturb/src/perturb/corpus.clj:21
+uses-ping          -> THREW: (the same)
+```
+
+So:
+
+- **`ping` and `ping-tuple` are the same function.** Both return a pair. The
+  checker accepts one and rejects the other because one builds the pair with a
+  vector node in *this* body and the other inherits it from the callee. The
+  distinction the checker draws is **syntactic**.
+- The unpositioned annotation is not only a **false reject** on the real client.
+  It is a **false accept** on the corpus: the six accepted programs are accepted
+  under a model of `request` that contradicts `request`'s actual return shape,
+  and they crash.
+- `perturb.corpus`'s docstring said every entry "would run". For the accept set
+  that was false. Corrected in the artifact, and printed by the gate as blind
+  spot 8.
+
+This does not make the checker worthless — all eleven rejections are rejections
+of programs that are genuinely wrong, and the machinery under them (binding ids,
+join, loop invariance, typestate, affinity) is doing real work. It relocates the
+priority: **positioned capability specs are the first thing §1.2 needs**, ahead
+of the abstract refinements E13 asked for, because they close a soundness hole
+and not merely an expressiveness one.
+
+#### E6's join rule, one data point
+
+E6 probe 1's rejection of conditional-move code was recorded in §4.6 as a
+usability risk whose frequency was "argued rather than measured". It fires
+exactly where predicted (`perturb.corpus/conditional-close`) and **zero times
+outside the corpus**: `perturb.nrepl` has one `if`, inside a `loop`. On this one
+client the join rule is not the friction; the missing product rule is. That is
+one program, not a measurement of how often.
+
+#### What the checker cannot see — printed by the gate itself
+
+1. A declared transition operation is an **axiom**. `open`, `request` and
+   `close!` have unchecked bodies; nothing verifies that `close!` closes. Same
+   posture as `mode_checker.py`'s `RULES` — the ported hole, still a hole.
+2. `:consumes` / `:produces` unpositioned (above).
+3. Closure bodies are walked for diagnostics but their state does not
+   propagate; capture is rejected, not reasoned about.
+4. No exception-path join for `try`.
+5. Only `let` / `loop` carry capabilities. One in an atom, var, map or vector is
+   rejected, never tracked.
+6. Interprocedural flow is by **annotation only**. No inference.
+7. Post-const-fold IR, and only for namespaces required after the tap installs.
+8. The false-accept above.
+
+#### Two judgements that are not ports
+
+Stated because the standing commitment is that a rule set is only as good as
+what it was differentially tested against, and these two were not:
+
+- The Python prototypes have no non-local exit, so they never said what
+  `recur` / `throw` do at a join. This checker treats those paths as unreachable
+  (bottom), making join-with-bottom the identity. Without it, every ordinary
+  `loop` fails the join rule at its own back edge. Sound and standard — but it
+  is not `controlflow.py`'s, and `ownership.pl` never saw it.
+- For a *derived* annotated operation the checker matches capability specs to
+  parameters **in order**. That convention is the checker's, not §1.2's.
+
+#### E15's own nonclaims
+
+1. **No soundness claim.** Seventeen programs decided as recorded is a
+   regression corpus, not a proof, and blind spots 1–8 are each a way a wrong
+   program can pass.
+2. Nothing here validates the **rules**; it validates that the rules E5/E6
+   settled can be run against real IR. The differential validation against
+   `ownership.pl` remains the only evidence the rules are right, and it did not
+   cover bottom-at-join.
+3. The corpus is written by the same author as the checker, against the same
+   reading of §1.2. Its accept set was wrong for exactly that reason, and it
+   took *running* it to find out.
+
+---
+
+### E16 — the load-time I/O leak: closed, and I11's premise was wrong
+
+INHERITED I11 recorded that `perturb.posix` performs I/O at namespace load — a
+`jolt.ffi/load-library` outside any handler — and that CLAIM 2 ("all I/O goes
+through a declared effect") was therefore false at the edges. It is now closed,
+at `88c8d1a`, and the closing found the premise misstated.
+
+#### `defcfn` does not resolve at def-time
+
+I11 assumed `defcfn` binds its foreign symbol when the `def` is evaluated. It
+does not. `defcfn` expands to `(def name (jolt.ffi/__cfn …))`, and
+`emit-ffi-fn` (`jolt-core/jolt/backend_scheme.clj:589-617`) lowers that to
+
+```scheme
+(let ((p #f))
+  (lambda args ((or p (begin (set! p (foreign-procedure …)) p)) ...)))
+```
+
+— deferred to first call, memoised, one cell per binding. So the FFI
+*declarations* were never the leak; only the explicit `load-library` call was.
+Logged as INHERITED I17. SHAREABLE S6 is amended accordingly: the
+`foreign-procedure` **emission** is semantics-neutral and shareable with Jolt,
+the **binding time** is not — when a foreign symbol is bound decides whether a
+`def` has an effect.
+
+`ensure-native!` is now reached only from `perturb.posix/handler`, itself
+reached only from `perturb.effect/perform`. No `:load-library` op was added to
+`perturb.wire/socket`: a scripted handler has no library, so an op only one
+handler can implement is not part of the interface.
+
+#### The verification had to be built, because strace could not see it
+
+A no-argument `jolt.ffi/load-library` is `dlopen(NULL)` — **no syscall at all**.
+An strace-only verifier would have shown a clean window before the fix and after
+it, and proved nothing. Coverage therefore comes from three instruments, all run
+by `dev/verify-noio.sh` (`-M:noio`):
+
+| instrument | reads |
+| --- | --- |
+| strace over a marked window | 6 syscalls, all `clock_gettime(CLOCK_PROCESS_CPUTIME_ID)` from Chez's collector; **0 attributable to perturb** |
+| instrumented `load-library` counter | `{:library-loads 0, :calls 0, :by-op {}}` after a complete scripted session |
+| absent-symbol canary | `(ffi/defcfn c-absent-canary "perturb_absent_symbol_canary_do_not_define" [] :int)` defines without error — laziness demonstrated, not argued |
+
+Positive control (`-M:noio --touch-native`) shows `socket` / `connect` / `close`
+in the same window, so the clean window is a measurement rather than a silent
+instrument. Also found, and deliberately not relied on: libc symbols resolve on
+this host without `load-library` at all, because Chez's foreign-entry table sees
+process symbols. perturb keeps the call.
+
+#### Leak 2 is left open, and is now exactly measured
+
+The console output of a scripted run is **3 `write(2)` calls** in the marked
+window. Left open on the stated ground that *an effect does not remove I/O, it
+makes I/O substitutable*: nothing consumes perturb's console output, so a
+console handler would have no second implementation to be checked against.
+Recorded as INHERITED I12's exact size rather than as a fixed defect.
+
+#### What did not close
+
+**Namespace loading is still not an effect.** I11 is closed by *arrangement* —
+the one load-time call was moved behind the handler — not by a design that makes
+load-time effects impossible. Anything a future namespace does at load time is
+outside the effect discipline again, and nothing in the artifact prevents it.
+
+#### E16's own nonclaims
+
+1. The window is one scripted session on one host. `assumed` beyond it.
+2. "0 attributable syscalls" is attribution by instrument, not by proof: the
+   counter counts the five syscall bindings perturb declares, and a sixth path
+   would be invisible to it.
+3. This closes a claim about **perturb's own artifact**. It says nothing about
+   whether Jolt's namespace loading should be effect-mediated, which is Jolt's
+   decision and not perturb's.
 
 ---
 
@@ -2126,13 +2389,26 @@ Recorded here so they are not lost between sections. None of these is decided.
   ladder entry (§5, step 5).
 - **The join-rule usability risk.** E6 probe 1's rejection of
   `if (c) { b = detach_result(b) }; use(b)` is a real usability risk for §1.2,
-  and how often it fires on real programs is argued rather than measured.
-- **`:local` and `:extern`.** §1.1's two IR claims are inferences from source
-  reading and are untested. This session's record on inferences from source
-  reading is poor: the `jolt-array` survey was wrong on scale *and* kind (E12),
-  E3's central finding was sample-biased, and three performance hypotheses died
-  to measurement (E1, E7). Assume at least one of the two is wrong until a
-  checker walks real IR.
+  and how often it fires on real programs is argued rather than measured. One
+  data point now exists: on `perturb.nrepl` it fires zero times (E15).
+- **~~`:local`~~ and `:extern`.** §1.1's two IR claims were inferences from
+  source reading. **`:local` is now settled**: a checker walked real IR and the
+  claim holds — names, no binding identity, no `:binding-id` key, no
+  alpha-renaming (E15). `:extern` is still untested, and the standing pessimism
+  applies to it: this session's record on inferences from source reading is
+  poor. The `jolt-array` survey was wrong on scale *and* kind (E12), E3's
+  central finding was sample-biased, three performance hypotheses died to
+  measurement (E1, E7), and I11's `defcfn` premise was wrong (E16).
+- **Positioned capability specs.** §1.2's `:consumes` / `:produces` name a
+  capability and a state but not *where in the value* it is. E15 shows this is a
+  soundness hole, not a convenience gap, and it now blocks annotating the only
+  real client perturb has. It is the top of the §1.2 queue, ahead of E13's
+  abstract refinements.
+- **Machine primitives are axioms.** Nothing checks that a declared transition's
+  body performs its transition (E15 blind spot 1). Unbroken since
+  `mode_checker.py`; still unaddressed.
+- **Namespace loading is not an effect.** I11 is closed by arrangement, not by
+  design (E16). Nothing prevents the next namespace from doing I/O at load time.
 - **The performance items under Q1** — unboxed deftype method bodies, a
   `^bytes` fast path, bytevector backing, and E12's three semantics.
 - **Two dangling internal references, left unrepaired.** E9's noise-floor table

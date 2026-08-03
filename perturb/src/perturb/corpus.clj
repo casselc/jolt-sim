@@ -3,11 +3,22 @@
   Jolt, checked from the IR the back end was handed — not a model, not a list of
   operation names.
 
-  Every function here type-checks as ordinary Clojure and would run. None is
-  called. The point is what the CHECKER says about each one, and `expectations`
-  below records what it must say. A corpus entry that flips verdict is a
-  regression in the checker or a change in the rule set; either way the gate
-  fails.
+  None is called. The point is what the CHECKER says about each one, and
+  `expectations` below records what it must say. A corpus entry that flips
+  verdict is a regression in the checker or a change in the rule set; either way
+  the gate fails.
+
+  CORRECTION — this docstring used to claim every entry \"would run\". That is
+  FALSE for the ACCEPT set, and finding out took running it. `perturb.nrepl/
+  request` returns [conn' frames]; §1.2's :produces is unpositioned, so the
+  checker must model the call's whole result as the successor capability, and
+  every accept here threads that result into `close!`. Under the scripted
+  handler `open-request-close` and `uses-ping` both throw at line 21. So `ping`
+  accepted / `ping-tuple` rejected is a SYNTACTIC distinction, and the
+  unpositioned annotation is a false ACCEPT as well as a false reject. See
+  PERTURB-DESIGN E15 and `perturb.check/report-limits` item 8. The entries are
+  left exactly as they are: they are the regression corpus for the rule set as
+  it currently stands, and rewriting them would erase the evidence.
 
   Intended rejections and intended acceptances are interleaved deliberately: the
   interesting pairs differ by one line."

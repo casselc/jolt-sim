@@ -162,8 +162,11 @@
 ;; --- claim 3 ----------------------------------------------------------------
 
 (defn claim-3 []
-  (rule "CLAIM 3 — capability discipline, hand-annotated, NOT checked")
-  (println "  PERTURB-DESIGN §1.2. Annotations are data; no checker exists or is built.")
+  (rule "CLAIM 3 — capability discipline, hand-annotated, and now CHECKED")
+  (println "  PERTURB-DESIGN §1.2. This banner used to read \"no checker exists or is")
+  (println "  built\". That is no longer true: `jolt -M:check` reads the declarations")
+  (println "  below as a SPECIFICATION and real Jolt IR as the program, and rejects.")
+  (println "  What is printed here is still only the OBSERVED ledger of this run.")
   (println)
   (let [ci (cap/checker-input)]
     (println "  declared capabilities:")
@@ -203,11 +206,17 @@
     (println)
     (println "  READ THIS AS EVIDENCE OF ITS ACTUAL STRENGTH: the ledger is an")
     (println "  observation of one run, and the annotations are hand-written. Nothing")
-    (println "  above rejects anything — perturb.cap/note! would happily record a")
-    (println "  transition the declared machine forbids. The affine threading in")
-    (println "  perturb.nrepl (each op consumes the connection and returns its")
-    (println "  successor) is what makes use-after-close hard to write; it is not")
-    (println "  what makes it impossible.")
+    (println "  ON THIS SCREEN rejects anything — perturb.cap/note! would happily")
+    (println "  record a transition the declared machine forbids.")
+    (println)
+    (println "  The rejecting is done by `jolt -M:check`, statically, from IR:")
+    (println "    - perturb.corpus/use-after-close is REFUSED (INHERITED I16's")
+    (println "      example verbatim); 17 corpus programs decide as recorded.")
+    (println "    - perturb.nrepl ITSELF is rejected — clone-session, eval-code and")
+    (println "      session — because §1.2's :consumes/:produces cannot say WHICH")
+    (println "      position of [conn value] holds the capability.")
+    (println "    - and for the same reason the checker's ACCEPT set does not run.")
+    (println "      PERTURB-DESIGN E15. Run -M:check and read its limits block.")
     (println)
     (println "  checker-input keys emitted for a future checker: "
              (pr-str (vec (keys ci))))))
