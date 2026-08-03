@@ -356,3 +356,68 @@ type schemas.** A use-site mismatch is then caught before expansion and reported
 where the user wrote it, and a type error in the expanded body is attributable
 to the macro, whose declared output schema it violated. This converts an
 unattributable error into one of two attributable ones.
+
+---
+
+## 5. Measurement update — E1 re-measured at the pinned target tuple
+
+**This section supersedes E1's numbers and Nonclaims 1, 2, and 4.**
+
+Target tuple now satisfied on both halves. Chez built from
+`e95a7efbafa2cf3bd5343ea542e6bc909a7ab2c4` with all five submodules matching
+`jolt-toolchains/config/toolchains.json` exactly (lz4 `ebb370ca`, nanopass
+`bb47b569`, stex `afa60756`, zlib `da607da7`, zuo `a288cbfe`); Jolt at
+jolt-bencode's pinned `89fe46e8a826b60b69d264fab76c864881055830`.
+
+**The setup reproduces the recorded baseline.** Full decode measures
+985,225 ns against `jolt-bencode/docs/PERFORMANCE.md`'s recorded 991,008 ns —
+0.6%. E1 is therefore promoted from `monitored` indication to a measurement at
+the target tuple.
+
+A/B of `jolt@31cf9de0` (both perf commits) cherry-picked onto the pinned image:
+
+| measurement | pinned baseline | + patch | change |
+| --- | ---: | ---: | ---: |
+| full bencode decode | 985,225 ns | 595,789 ns | **−40%** |
+| `nth` on Window | 4,326 ns/byte | 2,061 | **−52%** |
+| `decode-utf8`, 22-byte string | 98,389 ns | 56,931 | −42% |
+| bare `octet` scan, 22 bytes | 80,886 ns | 37,863 | −53% |
+| `reduce` over Window | 766 ns/byte | 640 | −16% |
+| `nth` on persistent vector | 86 ns/byte | 86 | — |
+| `aget` on byte-array | 95 ns/byte | 95 | — |
+
+**Correctness validated, not merely neutral.** On the pinned image with the
+patch applied: jolt-bytes `:status :verified`, 132,672 assertions (969 parents,
+20,349 slices, 2,601 cursor reads, 4,845 compositions, 825 overlap cases);
+jolt-bencode 13 tests, 109,209 assertions, 0 failures; Jolt unit gate 1127/1127.
+The earlier jolt-bytes failure was purely version skew, as suspected.
+
+**Jolt has already improved this path independently.** The same `nth` costs
+4,326 ns/byte at `89fe46e8` and 1,336 at `380e59e` — a 3.2x gain from work
+between those commits. The 25% figure recorded against `380e59e` understated
+the patch because much of the win was already captured there; at the pin where
+the recorded baseline lives, it is 40%.
+
+**Superseded nonclaims.**
+
+1. (was: absolutes are not evidence at any pinned tuple) — now measured at the
+   tuple and reproducing the recorded baseline to 0.6%. Still a single
+   non-isolated sample on one machine, and no cross-platform claim is made.
+2. (was: `048582c3` is not claimed to fix E1) — the pair `048582c3`+`31cf9de0`
+   is a 40% end-to-end reduction at the pin. It does **not** close the gap:
+   `nth` on a deftype remains 2,061 ns/byte against 86 for a persistent vector,
+   ~24x. Method resolution is no longer the dominant term; the remainder is the
+   `jolt-nth` cond preamble and generic `jolt-invoke`, which needs call-site
+   devirtualization for collection-interface methods in the backend — a
+   compiler change, not attempted.
+4. (was: jolt-bytes does not validate the patch) — it does, at the pin.
+
+Nonclaim 3 stands unchanged and is reinforced: allocation was never the
+dominant term, so modes remain unjustified by this measurement.
+
+**Q1 status:** resolution (b) implemented — the flat table is cached in the
+descriptor's own `ptable` under a reserved gensym key, no `chez-jrdesc-v3`
+bump, no remint. A weak side table keyed by descriptor measured within noise
+(836 vs 863 ns/byte at `380e59e`); the ptable form was kept for its structural
+properties. Q1's remaining sub-question — whether closing the rest requires
+backend devirtualization — is answered yes, and is now the open item.
