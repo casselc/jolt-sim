@@ -1864,8 +1864,30 @@ runtime it is forking does not provide.
 | effects substitute a validated result or abort | §1.4 | **refuted as exhaustive** at the runtime seam: substitute / abort / **proceed-once** |
 | control stays in the explicit cooperative kernel | §1.4 | **corroborated** by an independent implementation |
 | the `perform` boundary must remain a real call site with durable identity | §1.4 | **corroborated, and priced**: a compile-time profile flag and a second image |
-| D3 (delimited control) deferred, not foreclosed | §1.4 | **survives** — no branch implements delimited control |
+| D3 (delimited control) deferred, not foreclosed | §1.4 | **survives as to the lane** — no branch implements delimited control. §7 has since reopened D3 on other grounds; see the note below |
 | the jolt-sim controller ABI work does not survive the fork | §6 nonclaim 7 | **survives**, now with versions: producer ABI 6 / descriptor v6, consumer pinned to ABI 5 / descriptor v4 |
+
+#### Note — §7 reopened D3 while this section was being written
+
+§7 reopens D3 on the ground that §1.4's resolution leaned on jolt-sim's
+constraints rather than perturb's, and cites this section's reconnaissance in
+passing. The two arrived independently and do not conflict, but they push in
+opposite directions and the difference is worth stating.
+
+§7's argument is that perturb owns its compiler, its scheduler, and Chez's
+multi-shot `call/cc`, so nothing external settles the question. This section's
+evidence is narrower and cuts the other way on one point: the runtime lane, with
+the same host and the same `call/cc` available, chose one-shot resumption and
+then spent code forbidding everything above it — four distinct errors for
+out-of-extent, wrong-thread, non-LIFO and second use, plus a `dynamic-wind`
+retirement whose stated purpose is to reject "continuation re-entry". That is
+not evidence that multi-shot is wrong for perturb. It is evidence that the
+nearest system to perturb, holding the same capability, priced re-entry above
+what it wanted to pay at a *native* boundary — and the reason given is
+resource-safety, not search: "Consuming the token precedes the native call, so
+an exception cannot make the same OS effect eligible to run twice." Whether that
+reason survives at an effect layer that never touches the OS is exactly the
+question D3 now has to answer, and this section does not answer it.
 
 #### E14's own nonclaims
 
@@ -2388,6 +2410,9 @@ rejected alternatives and superseded verdicts rather than deleting them (see
 | 26 | v0 should gain a non-codec target: P4's capacity-one mailbox, or a small leader election | §16 (the E3 sampling-bias section) | §17 — both are models; the runtime has better targets | §5; Appendix B.2 |
 | 27 | v0 targets are nREPL-first, then persistent collections | §17 | §18 — jolt-tcp/jolt-http have implementations *and* independent oracles | §5; Appendix B.2 |
 | 28 | the original v0 ladder: re-measure at the pin, close the dispatch gap, mode checker, `unique` Cursor, session type then nREPL | §2.5 | steps 1–2 executed and then retired/redirected by E7/E8/E11; the ladder as a whole revised by §17 then §18 | §5; Appendix B.1 |
+| 29 | "hash values are not observable through any specified interface"; the only law is hash-consistency | §15.4, now §2 row 3 | E14 — `host/chez/hasheq.ss` is a JVM-exact Murmur3 port; the CHANGELOG specifies vector/map/set hashes as "value-identical to the JVM"; `.hashCode` and `hasheq` are two separately-specified surfaces; the new concurrency gate's oracle is a per-object value equation | E14. **Left open**: the perturb decision may stand, but as a choice not to expose, not as a finding that nothing exposes |
+| 30 | "Effects substitute a validated result or abort" as an exhaustive dispatch algebra | §2.4, now §1.4 | E14 — the delivered v0.5.17 sim controller dispatches substitute / abort / **proceed-once**, handing the handler a one-shot native `proceed` thunk | E14. **Left open** — including whether one-shot resumption counts as a continuation, which §1.4 and the seams request answer differently |
+| 31 | charter non-goal 13's "runtime seams are *requested* … never assumed", relied on by §1.4 | §2.4, now §1.4 | E14 — seven unmerged branches carry a complete lifecycle/FFI/clock controller overlay at ABI 6, plus tests and a bounded proof note. The companion artifact's items 7–9 are all present | E14. The factual half ("none exists at the v0.5.17 baseline") is **unchanged and still true** |
 
 ### A.2 The method notes, in order
 
@@ -2603,7 +2628,7 @@ constraints, not perturb's:
   used to argue continuations would break replay. That is a property of
   `explore_states.clj`'s search design, not a law.
 - **Charter non-goal 13** ("no runtime lifecycle/controller seam exists") was
-  used to argue the seam must be requested rather than assumed — and §6/E14's
+  used to argue the seam must be requested rather than assumed — and §3/E14's
   reconnaissance of the v0517 controller branches may already have overtaken
   it independently.
 
