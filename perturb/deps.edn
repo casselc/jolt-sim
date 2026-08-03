@@ -16,4 +16,10 @@
   :oracle {:main-opts ["-m" "perturb.oracle"]}
 
   ;; Codec/octet self-tests that need no server and no socket.
-  :selftest {:main-opts ["-m" "perturb.selftest"]}}}
+  :selftest {:main-opts ["-m" "perturb.selftest"]}
+
+  ;; The no-I/O verifier for INHERITED I11. Runs a complete scripted session
+  ;; between two marker lines and reports the instrumented native-call log.
+  ;; `dev/verify-noio.sh` straces it and checks the marked window is empty.
+  ;; `-M:noio --touch-native` is the positive control.
+  :noio   {:main-opts ["-m" "perturb.noio"]}}}

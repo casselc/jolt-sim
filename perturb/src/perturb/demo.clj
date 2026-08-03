@@ -83,7 +83,7 @@
                      (pn/session host port forms)))]
       {:handler handler-name :result result :trace @trace})))
 
-(defn claim-2 [runs]
+(defn claim-2 [runs native-marks]
   (rule "CLAIM 2 — I/O goes through a declared effect, same code, two handlers")
   (println "  PERTURB-DESIGN §1.4. Handlers substitute a validated result or abort.")
   (println)
@@ -125,11 +125,39 @@
                      "NOT REJECTED"
                      (catch :default e (str (:perturb.effect/abort (ex-data e)))))))
   (println)
-  (println "  WHERE THE CLAIM LEAKS (INHERITED I11, I12):")
-  (println "    perturb.posix calls (ffi/load-library) at namespace load and")
-  (println "    binds five syscalls with defcfn at load. That is I/O outside any")
-  (println "    handler, and it happens even on the scripted runs. Console output")
-  (println "    (println) is likewise unmediated."))
+  (println "  I11 IS CLOSED — the native binding is lazy and handler-local:")
+  (println "    perturb.posix no longer calls load-library at namespace load. It")
+  (println "    loads no library and resolves no C symbol until a `sys-*` wrapper")
+  (println "    runs, and those are reached only from the handler, which is reached")
+  (println "    only from perturb.effect/perform. Measured on THIS run —")
+  (println "    perturb.posix/native-log sampled at each stage:")
+  (doseq [m native-marks]
+    (println (str "      " (first m) (apply str (repeat (max 1 (- 22 (count (str (first m))))) " "))
+                  (pr-str (second m)))))
+  (println "    a scripted run adds nothing to that log; only the socket run does.")
+  (println)
+  (println "    that `def` resolves no C entry point is not an assumption — the")
+  (println "    absent-symbol canary is bound by `defcfn` at namespace load and")
+  (println "    names a symbol that exists in no object in this process:")
+  (println (str "      requiring perturb.posix succeeded (this program is running)"))
+  (println (str "      (perturb.posix/absent-canary-probe) -> " (pr-str (posix/absent-canary-probe))))
+  (println "    -> resolution happens at CALL. Zero native calls is zero symbols.")
+  (println)
+  (println "    process-level check: `jolt -M:noio` runs a complete scripted session")
+  (println "    between two marker writes; `dev/verify-noio.sh` straces it and shows")
+  (println "    zero syscalls attributable to perturb in that window, with a positive")
+  (println "    control (--touch-native) that does fire. See INHERITED I11.")
+  (println)
+  (println "  I12 IS STILL OPEN, AND NOW MEASURED — console output is unmediated:")
+  (println "    every line of this transcript is a write(2) outside any handler.")
+  (println "    dev/verify-noio.sh RUN 3 counts them exactly. Left unrouted on")
+  (println "    purpose: an effect does not remove I/O, it makes I/O SUBSTITUTABLE.")
+  (println "    The socket effect earns that because RUN B and RUN C are a second")
+  (println "    and third implementation of the same interface running the same var.")
+  (println "    Nothing in perturb consumes perturb's console output, so a console")
+  (println "    handler would have no second implementation to be checked against —")
+  (println "    it would move the write(2) behind a name without adding a fact.")
+  (println "    Recorded, not dropped: INHERITED I12."))
 
 ;; --- claim 3 ----------------------------------------------------------------
 
@@ -205,10 +233,15 @@
 
 (defn -main [& args]
   (cap/reset-ledger!)
+  (posix/reset-native-log!)
   (let [offline (some (fn [a] (= a "--offline")) args)
         port    (read-port (remove (fn [a] (str/starts-with? a "--")) args))
         recorded (atom [])
-        runs (atom [])]
+        runs (atom [])
+        ;; I11's evidence: sample the instrumented native-call log at each stage.
+        ;; The scripted stages must not move it.
+        native-marks (atom [["at startup" (posix/native-log-snapshot)]])
+        mark! (fn [label] (swap! native-marks conj [label (posix/native-log-snapshot)]))]
 
     (println "perturb — nREPL client over a declared socket effect")
     (println (str "forms to evaluate: " (pr-str forms)))
@@ -228,6 +261,7 @@
             (println (str "  => " (pr-str (:value x))
                           (when (:out x) (str "   out=" (pr-str (:out x))))
                           (when (:err x) (str "   err=" (pr-str (:err x))))))))))
+    (mark! "after RUN A")
 
     ;; (b) scripted model server, 1 octet per recv
     (rule "RUN B — scripted in-memory handler (1 octet per recv)")
@@ -235,6 +269,7 @@
       (swap! runs conj r)
       (doseq [x (:results (:result r))]
         (println (str "  => " (pr-str (:value x))))))
+    (mark! "after RUN B")
 
     ;; (c) replay of run A's octets, rechunked
     (when (seq @recorded)
@@ -260,11 +295,12 @@
           (println "  -> the same encoder produced the same wire bytes under a")
           (println "     handler that is not a socket, and the same decoder read")
           (println "     them back one octet at a time."))))
+    (mark! "after RUN C")
 
     (when (seq @recorded) (print-transcript @recorded 12))
 
     (claim-1 @recorded)
-    (claim-2 @runs)
+    (claim-2 @runs @native-marks)
     (claim-3)
 
     (rule "END")

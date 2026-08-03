@@ -46,11 +46,15 @@ about what the language means. §8 already lists "loader, deps resolution, AOT
 cache, image build, bootstrap seed" on the shareable side, and `jolt-toolchains`
 is cited there as the existing precedent for a separately-versioned piece.
 
-**Cost of depending on it.** Very low. `perturb/deps.edn` is four lines and its
-whole content is a path and two aliases. Nothing perturb decides is expressed
-through it. The one caveat is I11 in `INHERITED.md`: load order is observable
-because loading a namespace can perform I/O, which is a *language* question
-sitting on top of a neutral mechanism.
+**Cost of depending on it.** Very low. `perturb/deps.edn` is a path and a short
+list of aliases. Nothing perturb decides is expressed through it. The one caveat
+is the *language* question sitting on top of the neutral mechanism: load order
+is observable if loading a namespace can perform I/O. That used to be live —
+`INHERITED.md` I11 — and is now closed by arrangement rather than by design:
+perturb's namespaces happen to do nothing at load. Nothing in Jolt or in perturb
+prevents a namespace from doing something at load, and nothing lets it declare
+that it does. The caveat therefore survives its example; it is a gap in
+perturb's design, not a defect in the loader, which stays neutral.
 
 ---
 
@@ -130,6 +134,17 @@ The useful observation for §8 is that these separate cleanly: an `:extern` with
 declared effect row can lower to the *same* `foreign-procedure` emission. The
 divergence is in the declaration, not the emission — the same shape as S1.
 
+**Amended after closing I11 — one part of this lowering is NOT neutral.**
+`emit-ffi-fn` does not emit a bare `foreign-procedure`; it emits it *inside a
+memoised closure*, so the symbol is resolved on first call rather than at `def`
+(`jolt-core/jolt/backend_scheme.clj:589-617`). That timing is what let perturb
+close I11 — but *when a foreign symbol is bound* is a language decision, not an
+ABI fact: it decides whether a `def` has an effect. It has therefore been split
+out into `INHERITED.md` I17 rather than being counted here. The split is itself
+the S6 finding sharpened: the **emission** is shareable, the **declaration** is
+not (already said above), and now also the **binding time** is not. Three layers
+in one macro, and only the first of the three lands on §8's shareable side.
+
 ---
 
 ## S7 — `jolt.nrepl`'s bencode encoder, used as a differential oracle
@@ -167,6 +182,7 @@ what was tested rather than only what passed.
 | `throw`/`ex-info` | the error model is §1.4/§2.4 semantics, unexamined (I4) |
 | `atom` | mutable cells are capability-tier by §1.2 (I10) |
 | `=` / `compare` | register row 3 (I9) |
+| `defcfn`'s binding *time* (lazy, memoised, per binding) | when a foreign symbol is bound decides whether a `def` has an effect; the `foreign-procedure` emission it wraps stays neutral (I17, S6 amendment) |
 
 **The most useful finding for §8 is the first row.** §8 says the byte work
 "lands exactly on this line" and that "bytevector *storage* is correct for both".
@@ -176,3 +192,16 @@ signed accessor — it is signed storage. The proposed shared layer therefore do
 not exist yet even as an implementation detail, and the first probe §8 names
 (the byte-backing change) is a prerequisite for the boundary rather than a
 demonstration of it.
+
+---
+
+## Not shareable — one more, added by the checker
+
+| candidate | why it is semantics-bearing |
+| --- | --- |
+| `jolt.passes.numeric/annotate` as an IR tap (`perturb.ir`) | not a boundary at all: a private pass-pipeline var used as an interface, giving post-const-fold IR only, for namespaces required after the tap is installed (I18). A shared lower layer would need a *declared* "IR for this unit" entry point; nothing like it exists |
+
+Note the contrast with S1/S6. Those are places where a Chez or Jolt mechanism is
+genuinely neutral storage or lowering. This one is the opposite shape: perturb
+needed something the host does not offer and reached inside for it. It is
+recorded here so it is not later mistaken for a boundary that was designed.

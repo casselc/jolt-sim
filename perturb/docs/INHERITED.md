@@ -11,6 +11,11 @@ inheritance is how "we can self-host later" turns out to be false.
 This is the more important of the two logs. `SHAREABLE.md` records things it
 would be *fine* to keep sharing; this records things that were **not chosen**.
 
+Entries are not deleted when they are closed. I11 is closed and stays, with its
+original premise and the measurement that corrected it, because "what we
+believed and what turned out to be true" is the part a later reader cannot
+reconstruct.
+
 **Columns.** what was inherited · deliberate or convenience · cost to replace.
 
 Written as the code was written, in the order the dependency was first taken.
@@ -225,36 +230,179 @@ the general answer is the capability tier itself.
 
 ---
 
-## I11 — `require`-time side effects: `jolt.ffi/load-library` at namespace load
+## I11 — ~~`require`-time side effects: `jolt.ffi/load-library` at namespace load~~ CLOSED
 
-**Inherited:** `perturb.posix` calls `(ffi/load-library)` at namespace-load time
-because `defcfn` resolves the C entry point when the `def` is evaluated. So
-*loading a perturb namespace performs I/O*, outside any handler.
+**Status: closed.** Kept in place, with the original entry's premise corrected,
+because the correction is the useful part.
 
-**Deliberate or convenience:** convenience, and it is a direct contradiction of
-CLAIM 2 at the margin: the socket effect is handler-mediated, but the *binding
-of the socket syscalls* is not. Under the scripted handler, `perturb.posix` is
-still loaded (the demo requires it) and still dlopens libc.
+**What the entry used to say.** `perturb.posix` calls `(ffi/load-library)` at
+namespace-load time *because `defcfn` resolves the C entry point when the `def`
+is evaluated*, so loading a perturb namespace performs I/O outside any handler.
 
-**Cost to replace:** low to make lazy (resolve at first call), high to make
-principled (namespace loading is itself an effect, which perturb has not
-designed). Reported in the CLAIM 2 section rather than hidden.
+**The premise was wrong, and this was measured.** `defcfn` does **not** resolve
+at `def`. `jolt.ffi/defcfn` expands to `(def name (jolt.ffi/__cfn ...))` and the
+backend lowers `__cfn` to a closure with the resolution deferred inside it
+(`jolt-core/jolt/backend_scheme.clj:589-617`, comment "Lazy resolution: the
+foreign-procedure form is deferred inside a closure … critical for `:optional
+:jolt/native` libs whose load-object runs in the scheme-start launcher"; pinned
+by Jolt's own `test/chez/ffi-native-error-test.ss:61`). Directly measured:
+
+```
+$ jolt -e-ish probe: a namespace with (ffi/defcfn c-bogus "no_such_symbol" [] :int)
+  and NO load-library at all
+  namespace loads                          -> ok, the var is a fn
+  (c-getpid) with no load-library ever      -> 15203      ; resolves anyway
+  (c-bogus)                                 -> throws
+```
+
+Two facts fell out. First, **`def` resolves nothing**, so the "binds five
+syscalls at load" half of the leak never existed. Second, and unrelated to the
+leak, **libc symbols resolve on this host without `load-library` at all** — the
+no-argument form is `(load-shared-object #f)`, i.e. `dlopen(NULL)`, and Chez's
+foreign-entry table already sees the process's own symbols. perturb keeps the
+call rather than relying on that, because relying on it would be a new,
+undocumented inheritance (see S8).
+
+**What the leak actually was, and what closed it.** One unconditional call to
+`ffi/load-library` at namespace load: a mutation of the process's dynamic-loader
+state performed by *requiring* a namespace, outside any handler, on runs that
+never touch a socket. It is now `perturb.posix/ensure-native!`, called from the
+`sys-*` wrappers, which are reached only from `perturb.posix/handler`, which is
+reached only from `perturb.effect/perform`. Library loading and every symbol
+resolution now happen strictly inside the dynamic extent of a handled effect.
+
+**Why not a `:load-library` op on the effect.** `perturb.wire/socket` is the
+contract the *scripted* handler also satisfies, and a scripted handler has no
+library. Declaring the op would push a posix implementation detail into the
+interface the codec and session code name — the opposite of what §1.4 asks.
+Laziness keeps the interface at four ops and still puts the binding inside a
+handler.
+
+**A finding about instruments, not about perturb.** At the syscall level on this
+host, the old leak was **invisible**:
+
+```
+(jolt.ffi/load-library)              -> 0 syscalls          ; dlopen(NULL)
+(jolt.ffi/load-library "libz.so.1")  -> openat + 4 mmap + mprotect + ...
+```
+
+`dlopen(NULL)` touches no file and `dlsym` does not syscall, so strace could
+never have seen either half of I11. That is why the closure is verified by two
+instruments, not one: `perturb.posix/native-log` (an instrumented
+`load-library` plus per-binding call counts) for the invisible half, and strace
+for everything else. `perturb.posix/c-absent-canary` — a `defcfn` on a symbol
+that exists in no object in the process, left in the shipped namespace — is the
+standing proof that `def` resolves nothing: if Jolt ever changed to eager
+resolution, requiring `perturb.posix` would fail outright.
+
+**Verified by** `jolt -M:noio` and `perturb/dev/verify-noio.sh`. A complete
+scripted session (clone, three evals, close, one octet per recv) runs between
+two marker writes; the strace window holds **zero syscalls attributable to
+perturb** (residual: six `clock_gettime(CLOCK_PROCESS_CPUTIME_ID)` from Chez's
+collector, printed rather than filtered). The positive control
+(`-M:noio --touch-native`) puts one real `:connect` in the same window and the
+window then shows `socket`/`connect`/`close` and `native-log` reads
+`{:library-loads 1 :calls 3}`. Without that control the clean window would not
+be evidence.
+
+**What is still inherited here.** Namespace loading is *still not an effect*.
+perturb has simply arranged that its namespaces do nothing at load. A namespace
+that wanted to do something at load would have no way to declare it, and nothing
+would stop it. That is the principled version of this entry and it is not done —
+see also `SHAREABLE.md` S2's caveat, which now stands on its own rather than
+pointing at a live leak.
 
 ---
 
-## I12 — `.nrepl-port`, `println`, and `*out*` for the transcript
+## I12 — `.nrepl-port`, `println`, and `*out*` for the transcript — STILL OPEN, now measured
 
 **Inherited:** the demo prints with `println` to Jolt's `*out*` and reads the
 port from the file `jolt.nrepl/start` writes.
 
 **Deliberate or convenience:** convenience. Console output is unmediated I/O
 sitting beside a demo whose whole point is that I/O goes through a declared
-effect. It is not routed through `perturb.effect` and it should be, if the
-claim is taken at full strength.
+effect.
+
+**Now measured rather than asserted.** `dev/verify-noio.sh` RUN 3 runs the same
+scripted session as RUN 1 but prints its three values *inside* the marked
+window. The window then contains exactly three syscalls:
+
+```
+write(1, "  => \"scripted<(+ 1 2)>\"\n", 25) = 25
+write(1, "  => \"scripted<(clojure.string/u"..., 57) = 57
+write(1, "  => \"scripted<(str \\\"lambda is "..., 46) = 46
+```
+
+That is the whole of this leak, at its exact size: one `write(2)` per `println`,
+outside any handler. RUN 1 is the same code with the printing moved after the
+closing marker, and its window is clean. So the console leak is now bounded and
+located, not merely admitted.
+
+**Decision: left unrouted, deliberately, and this is the reason.** An effect
+does not remove I/O — it makes I/O **substitutable**. The socket effect earns
+its cost because a second and third implementation of the same interface exist
+and run the same var: RUN B and RUN C in the demo are what turn "the codec does
+not name a socket" from a claim into a measurement, and the octet-identical sent
+bytes between RUN A and RUN C is the artifact's strongest evidence. Console
+output has no second consumer. Nothing in perturb reads perturb's console
+output, so a console handler would have nothing to be checked against; it would
+move the `write(2)` behind a name and produce no new fact. The previous
+session's reasoning ("a second effect adds no new evidence") is confirmed by the
+measurement rather than displaced by it.
+
+**What that costs, stated plainly.** CLAIM 2 is about *socket* I/O and holds for
+socket I/O without qualification now that I11 is closed. It is **not** a claim
+that a perturb program performs no unmediated I/O, and this entry is the reason
+why. A perturb that took §1.4 to its conclusion would have every effect
+declared, console included, and the effect row on the signature (I3) would say
+so — at which point the console effect is not ceremony, because the row makes it
+checkable. Without I3's static half there is nothing to check, which is exactly
+why routing it today buys nothing.
 
 **Cost to replace:** low — one more declared effect with a `println` handler.
-Left undone deliberately so the gap is visible in the log rather than papered
-over by a second effect that adds no evidence.
+Reported in the CLAIM 2 section of every demo run, not quietly dropped.
+
+---
+
+## I17 — `__cfn`'s lazy, memoised, per-binding symbol resolution
+
+**Inherited:** closing I11 leans on a specific property of Jolt's backend that
+`jolt.ffi`'s public docstring does not state. `jolt.ffi/defcfn` expands to
+`(def name (jolt.ffi/__cfn csym argtypes rettype opts))`, and
+`jolt-core/jolt/backend_scheme.clj`'s `emit-ffi-fn` lowers `__cfn` to
+
+```scheme
+(let ((p #f))
+  (lambda (a0 ...) ((or p (begin (set! p (foreign-procedure "csym" (...) ...)) p)) a0 ...)))
+```
+
+perturb now depends on three things in that shape: (a) evaluating the `def`
+resolves nothing, (b) resolution happens on the **first call** of that binding,
+(c) the cell `p` is **per binding**, so "binding X was never called" is exactly
+"symbol X was never resolved". (c) is what makes `perturb.posix/native-log`'s
+per-op counts a sound proxy for symbol resolution, which is otherwise invisible
+(`dlsym` issues no syscall).
+
+**Deliberate or convenience:** convenience, and load-bearing. It is why I11
+could be closed by a five-line `ensure-native!` instead of by designing
+namespace loading as an effect. Note the asymmetry: Jolt introduced this
+laziness for its own reason — `:optional :jolt/native` libraries whose
+`load-object` runs in the scheme-start launcher, after the heap is built (the
+comment at `backend_scheme.clj:609`) — and perturb is free-riding on a
+convenience with a different motivation. It is pinned by one Jolt test
+(`test/chez/ffi-native-error-test.ss:61`), so it is not purely accidental, but
+it is a backend emission detail with no statement in `jolt.ffi`'s API docs.
+
+**Cost to replace:** low in code, and perturb has already paid part of it —
+`perturb.posix/c-absent-canary` is a `defcfn` on a symbol that exists in no
+object in the process, kept in the shipped namespace precisely so that a Jolt
+that switched to eager resolution would break the artifact loudly at `require`
+rather than silently reopening I11. If Jolt did switch, perturb would need its
+own indirection (resolve through a `foreign-fn` built inside the handler), which
+is a handful of lines. The real cost is conceptual: **whether binding a foreign
+symbol is an effect is a language decision, and perturb is currently taking
+Jolt's answer to it.** §1.1's `:extern` with a declared effect row is where that
+decision belongs.
 
 ---
 
@@ -340,3 +488,62 @@ one run did.
 **Cost to replace:** this is §1.2 and §1.3's whole programme — binding identity
 in the IR (`:binding-id`, §1.1), a mode system, and a checker. Nothing here
 approximates it.
+
+**AMENDED — `perturb.check` now rejects that program.** The sentence above ("Jolt
+enforces nothing") is still true of *Jolt*, and stays. What changed is that
+perturb no longer relies on Jolt to enforce it: `perturb.check` reads
+`perturb.cap/checker-input` as a specification and real Jolt IR as the program,
+and refuses `perturb.corpus/use-after-close` — which is I16's example, verbatim —
+before anything runs. `jolt -M:check` is the gate.
+
+The cost line above said the replacement needs "binding identity in the IR
+(`:binding-id`, §1.1), a mode system, and a checker". Two of the three are now
+here. The first is not, and cannot be: the IR has no binding identity (I18), so
+the checker manufactures its own binding id at every binding occurrence. That is
+the alpha-conversion §1.1 named as the alternative, and it is what makes
+`perturb.corpus/shadowing-hides-a-leak` a rejection rather than a false accept.
+
+`perturb.nrepl` itself does NOT pass the checker. Three of its functions are
+rejected — `clone-session`, `eval-code` and `session` — because they pass a
+connection across an unannotated function boundary and return it inside a pair.
+The affine hand-threading this entry describes is real, and it is still not
+enough: it is invisible at the function boundary, where §1.2's `:consumes` /
+`:produces` have no way to say *which* result position holds the capability.
+
+---
+
+## I18 — `jolt.ir`'s `:local` has no binding identity, and the compile spine has no IR hook
+
+**Inherited:** two facts about Jolt's compiler that `perturb.check` depends on,
+both now measured rather than read.
+
+*First:* `{:op :local :name "c"}` is the whole node. `PERTURB-DESIGN` §1.1 says so
+from reading `jolt-core/jolt/ir.clj` and §4 records the claim as untested. It is
+true. `jolt -M:check` prints the evidence from the IR the back end was handed for
+`perturb.corpus/shadowed-rebind`: three `:let` bindings all named `"c"`, holding
+three different Connection instances, and one single `:local` node shape between
+them with no `:binding-id`. The analyzer's lexical environment is a *set* of
+names (`analyzer.clj:84-86`), so a shadowing binding reuses the name outright and
+nothing downstream can tell the instances apart.
+
+*Second:* there is no supported way for Jolt-level code to obtain IR.
+`jolt.analyzer/analyze` needs a `ctx` that is a Chez record (`make-chez-actx`,
+`host-contract.ss:20-21`) with no Jolt-level constructor, and the compile spine
+`var-deref`s both `jolt.analyzer/analyze` and `jolt.passes/run-passes` at host
+load time (`compile-eval.ss:12-20`), so redefining either var does nothing.
+`perturb.ir` therefore taps the one var `run-passes` still calls through its
+cell — `jolt.passes.numeric/annotate` — with `alter-var-root`. Nothing in
+`/home/user/jolt` is modified.
+
+**Deliberate or convenience:** convenience, and the least defensible dependency in
+perturb. It is a private implementation detail of a pass pipeline being used as
+an interface. It also fixes what the checker sees: post-const-fold IR, and only
+for namespaces required after the tap is installed.
+
+**Cost to replace:** low in lines, and it is a *Jolt* change rather than a perturb
+one — the compiler needs a supported "give me the IR for this unit" entry point,
+which is a prerequisite for any checker running as a compiler pass rather than
+beside one. The `:binding-id` half is the higher cost and the more important:
+until the IR carries binding identity, every consumer of Jolt IR that cares about
+linearity has to re-derive scopes, and two consumers that do it slightly
+differently will disagree about the same program.

@@ -42,3 +42,11 @@ echo "--- oracle"
 ( cd "$root" && "$JOLT" -M:oracle )
 echo "--- demo"
 ( cd "$root" && "$JOLT" -M:demo "$PORT" )
+
+echo "--- no-I/O verifier (INHERITED I11)"
+if command -v strace >/dev/null 2>&1; then
+  JOLT="$JOLT" "$here/verify-noio.sh"
+else
+  echo "strace not found — running the in-process half only"
+  ( cd "$root" && "$JOLT" -M:noio )
+fi

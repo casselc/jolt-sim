@@ -8,7 +8,13 @@ chez      10.4.1
 jolt      v0.4.15-209-g22186094 (commit 22186094)
 server    jolt nrepl-server 7899   (jolt-core/jolt/nrepl.clj)
 invoked   JOLT_CHEZ=/usr/local/bin/chez jolt -M:selftest | -M:oracle | -M:demo 7899
+          then dev/verify-noio.sh (strace -f)
 ```
+
+The `-M:demo` block below is from the run that produced the wire transcript; its
+CLAIM 2 section was re-captured after `INHERITED.md` I11 was closed, which is why
+its session id differs from the wire transcript's. The `verify-noio.sh` block at
+the end is verbatim from one invocation.
 
 ## `jolt -M:selftest`
 
@@ -198,11 +204,40 @@ forms to evaluate: ["(+ 1 2)" "(clojure.string/upper-case \"perturb\")" "(str \"
     a handler returning a string from :recv -> :invalid-result
     an unhandled effect -> :unhandled-effect
 
-  WHERE THE CLAIM LEAKS (INHERITED I11, I12):
-    perturb.posix calls (ffi/load-library) at namespace load and
-    binds five syscalls with defcfn at load. That is I/O outside any
-    handler, and it happens even on the scripted runs. Console output
-    (println) is likewise unmediated.
+  I11 IS CLOSED — the native binding is lazy and handler-local:
+    perturb.posix no longer calls load-library at namespace load. It
+    loads no library and resolves no C symbol until a `sys-*` wrapper
+    runs, and those are reached only from the handler, which is reached
+    only from perturb.effect/perform. Measured on THIS run —
+    perturb.posix/native-log sampled at each stage:
+      at startup            {:library-loads 0, :calls 0, :by-op {}}
+      after RUN A           {:library-loads 1, :calls 11, :by-op {:socket 1, :connect 1, :send 4, :recv 4, :close 1}}
+      after RUN B           {:library-loads 1, :calls 11, :by-op {:socket 1, :connect 1, :send 4, :recv 4, :close 1}}
+      after RUN C           {:library-loads 1, :calls 11, :by-op {:socket 1, :connect 1, :send 4, :recv 4, :close 1}}
+    a scripted run adds nothing to that log; only the socket run does.
+
+    that `def` resolves no C entry point is not an assumption — the
+    absent-symbol canary is bound by `defcfn` at namespace load and
+    names a symbol that exists in no object in this process:
+      requiring perturb.posix succeeded (this program is running)
+      (perturb.posix/absent-canary-probe) -> [:threw "#object[:object]"]
+    -> resolution happens at CALL. Zero native calls is zero symbols.
+
+    process-level check: `jolt -M:noio` runs a complete scripted session
+    between two marker writes; `dev/verify-noio.sh` straces it and shows
+    zero syscalls attributable to perturb in that window, with a positive
+    control (--touch-native) that does fire. See INHERITED I11.
+
+  I12 IS STILL OPEN, AND NOW MEASURED — console output is unmediated:
+    every line of this transcript is a write(2) outside any handler.
+    dev/verify-noio.sh RUN 3 counts them exactly. Left unrouted on
+    purpose: an effect does not remove I/O, it makes I/O SUBSTITUTABLE.
+    The socket effect earns that because RUN B and RUN C are a second
+    and third implementation of the same interface running the same var.
+    Nothing in perturb consumes perturb's console output, so a console
+    handler would have no second implementation to be checked against —
+    it would move the write(2) behind a name without adding a fact.
+    Recorded, not dropped: INHERITED I12.
 
 === CLAIM 3 — capability discipline, hand-annotated, NOT checked ========
   PERTURB-DESIGN §1.2. Annotations are data; no checker exists or is built.
@@ -241,4 +276,170 @@ forms to evaluate: ["(+ 1 2)" "(clojure.string/upper-case \"perturb\")" "(str \"
 
 === END =================================================================
   logs: perturb/docs/SHAREABLE.md, perturb/docs/INHERITED.md
+```
+
+## `dev/verify-noio.sh` — INHERITED I11's process-level check
+
+Run under `strace -f`. `jolt -M:noio` writes `PERTURB-NOIO-BEGIN`, runs a complete
+scripted nREPL session printing nothing, then writes `PERTURB-NOIO-END`; the
+script reports every syscall between the two writes. RUN 2 is the positive
+control — without it the clean window in RUN 1 would not be evidence. RUN 4 shows
+why there are two instruments: `dlopen(NULL)` is free of syscalls, so strace
+could never have seen the leak I11 named.
+
+```
+========================================================================
+RUN 1 — scripted only. Nothing in the window may be perturb's.
+========================================================================
+--- jolt -M:noio
+    mode: scripted only
+    
+      namespaces loaded, including perturb.posix and perturb.demo
+      scripted session id   "scripted-session-1"
+      scripted values       ["scripted<(+ 1 2)>" "scripted<(clojure.string/upper-case \"perturb\")>" "scripted<(str \"lambda is \" \\u03bb)>"]
+      effect ops performed  {:connect 1, :send 4, :recv 384, :close 1}
+    
+      perturb.posix/native-log — the instrumented load-library and the
+      five syscall bindings, counted at the only place that reaches them:
+        {:library-loads 0, :calls 0, :by-op {}}
+    
+      absent-symbol canary (perturb.posix/c-absent-canary):
+        this namespace required perturb.posix and loaded -> a defcfn `def`
+        resolved no entry point, or that require would have failed.
+        calling it now -> [:threw "#object[:object]"]
+        -> resolution happens at CALL, so the `:calls` count above is also
+           the count of C symbols this process resolved from perturb.posix.
+    
+      VERDICT (in-process): scripted run loaded no library and resolved no symbol
+
+  syscalls in the window: 6 total
+    6  clock_gettime(CLOCK_PROCESS_CPUTIME_ID)  — Chez collector accounting
+    0  attributable to perturb
+  (full window, unfiltered:)
+    31347 clock_gettime(CLOCK_PROCESS_CPUTIME_ID, {tv_sec=8, tv_nsec=837087102}) = 0
+    31347 clock_gettime(CLOCK_PROCESS_CPUTIME_ID, {tv_sec=8, tv_nsec=838778124}) = 0
+    31347 clock_gettime(CLOCK_PROCESS_CPUTIME_ID, {tv_sec=8, tv_nsec=858119048}) = 0
+    31347 clock_gettime(CLOCK_PROCESS_CPUTIME_ID, {tv_sec=8, tv_nsec=859201773}) = 0
+    31347 clock_gettime(CLOCK_PROCESS_CPUTIME_ID, {tv_sec=8, tv_nsec=878636555}) = 0
+    31347 clock_gettime(CLOCK_PROCESS_CPUTIME_ID, {tv_sec=8, tv_nsec=879103713}) = 0
+
+========================================================================
+RUN 2 — POSITIVE CONTROL. Same shape, one real connect() in the window.
+========================================================================
+--- jolt -M:noio --touch-native
+    mode: POSITIVE CONTROL (--touch-native)
+    
+      namespaces loaded, including perturb.posix and perturb.demo
+      scripted session id   "scripted-session-1"
+      scripted values       ["scripted<(+ 1 2)>" "scripted<(clojure.string/upper-case \"perturb\")>" "scripted<(str \"lambda is \" \\u03bb)>"]
+      effect ops performed  {:connect 1, :send 4, :recv 384, :close 1}
+      positive control      [:aborted ":handler-abort"]
+    
+      perturb.posix/native-log — the instrumented load-library and the
+      five syscall bindings, counted at the only place that reaches them:
+        {:library-loads 1, :calls 3, :by-op {:socket 1, :connect 1, :close 1}}
+    
+      absent-symbol canary (perturb.posix/c-absent-canary):
+        this namespace required perturb.posix and loaded -> a defcfn `def`
+        resolved no entry point, or that require would have failed.
+        calling it now -> [:threw "#object[:object]"]
+        -> resolution happens at CALL, so the `:calls` count above is also
+           the count of C symbols this process resolved from perturb.posix.
+    
+      VERDICT (in-process): control fired — the instrument is live
+
+  syscalls in the window: 9 total
+    6  clock_gettime(CLOCK_PROCESS_CPUTIME_ID)  — Chez collector accounting
+    3  attributable to perturb
+  the 3 attributable syscalls:
+    31384 socket(AF_INET, SOCK_STREAM, IPPROTO_IP) = 5
+    31384 connect(5, {sa_family=AF_INET, sin_port=htons(9), sin_addr=inet_addr("127.0.0.1")}, 16) = -1 ECONNREFUSED (Connection refused)
+    31384 close(5)                          = 0
+  (full window, unfiltered:)
+    31384 clock_gettime(CLOCK_PROCESS_CPUTIME_ID, {tv_sec=8, tv_nsec=766477175}) = 0
+    31384 clock_gettime(CLOCK_PROCESS_CPUTIME_ID, {tv_sec=8, tv_nsec=768145461}) = 0
+    31384 clock_gettime(CLOCK_PROCESS_CPUTIME_ID, {tv_sec=8, tv_nsec=786436107}) = 0
+    31384 clock_gettime(CLOCK_PROCESS_CPUTIME_ID, {tv_sec=8, tv_nsec=787058122}) = 0
+    31384 clock_gettime(CLOCK_PROCESS_CPUTIME_ID, {tv_sec=8, tv_nsec=804054698}) = 0
+    31384 clock_gettime(CLOCK_PROCESS_CPUTIME_ID, {tv_sec=8, tv_nsec=804488328}) = 0
+    31384 socket(AF_INET, SOCK_STREAM, IPPROTO_IP) = 5
+    31384 connect(5, {sa_family=AF_INET, sin_port=htons(9), sin_addr=inet_addr("127.0.0.1")}, 16) = -1 ECONNREFUSED (Connection refused)
+    31384 close(5)                          = 0
+
+========================================================================
+RUN 3 — LEAK 2 (INHERITED I12), measured. Same scripted run, but the three
+  values are printed INSIDE the window with unmediated println.
+========================================================================
+--- jolt -M:noio --print-inside
+    mode: LEAK 2 EXHIBIT (--print-inside)
+    
+      namespaces loaded, including perturb.posix and perturb.demo
+      scripted session id   "scripted-session-1"
+      scripted values       ["scripted<(+ 1 2)>" "scripted<(clojure.string/upper-case \"perturb\")>" "scripted<(str \"lambda is \" \\u03bb)>"]
+      effect ops performed  {:connect 1, :send 4, :recv 384, :close 1}
+    
+      perturb.posix/native-log — the instrumented load-library and the
+      five syscall bindings, counted at the only place that reaches them:
+        {:library-loads 0, :calls 0, :by-op {}}
+    
+      absent-symbol canary (perturb.posix/c-absent-canary):
+        this namespace required perturb.posix and loaded -> a defcfn `def`
+        resolved no entry point, or that require would have failed.
+        calling it now -> [:threw "#object[:object]"]
+        -> resolution happens at CALL, so the `:calls` count above is also
+           the count of C symbols this process resolved from perturb.posix.
+    
+      VERDICT (in-process): scripted run loaded no library and resolved no symbol
+
+  syscalls in the window: 9 total
+    6  clock_gettime(CLOCK_PROCESS_CPUTIME_ID)  — Chez collector accounting
+    3  attributable to perturb
+  the 3 attributable syscalls:
+    32147 write(1, "  => \"scripted<(+ 1 2)>\"\n", 25) = 25
+    32147 write(1, "  => \"scripted<(clojure.string/u"..., 57) = 57
+    32147 write(1, "  => \"scripted<(str \\\"lambda is "..., 46) = 46
+  (full window, unfiltered:)
+    32147 clock_gettime(CLOCK_PROCESS_CPUTIME_ID, {tv_sec=8, tv_nsec=187494408}) = 0
+    32147 clock_gettime(CLOCK_PROCESS_CPUTIME_ID, {tv_sec=8, tv_nsec=188877874}) = 0
+    32147 clock_gettime(CLOCK_PROCESS_CPUTIME_ID, {tv_sec=8, tv_nsec=206376660}) = 0
+    32147 clock_gettime(CLOCK_PROCESS_CPUTIME_ID, {tv_sec=8, tv_nsec=206956726}) = 0
+    32147 clock_gettime(CLOCK_PROCESS_CPUTIME_ID, {tv_sec=8, tv_nsec=223700205}) = 0
+    32147 clock_gettime(CLOCK_PROCESS_CPUTIME_ID, {tv_sec=8, tv_nsec=224086993}) = 0
+    32147 write(1, "  => \"scripted<(+ 1 2)>\"\n", 25) = 25
+    32147 write(1, "  => \"scripted<(clojure.string/u"..., 57) = 57
+    32147 write(1, "  => \"scripted<(str \\\"lambda is "..., 46) = 46
+
+========================================================================
+WHOLE-PROCESS network syscalls (not just the window)
+========================================================================
+  clean: 0
+  ctl: 2
+  loud: 0
+
+========================================================================
+RUN 4 — instrument sensitivity: what a REAL library load looks like.
+  (jolt.ffi/load-library)             -> dlopen(NULL), no syscalls
+  (jolt.ffi/load-library "libz.so.1") -> openat + mmap, plainly visible
+========================================================================
+  load-library noarg -> 0 syscalls in window
+  load-library named -> 14 syscalls in window
+    483   openat(AT_FDCWD, "/etc/ld.so.cache", O_RDONLY|O_CLOEXEC) = 5
+    483   fstat(5, {st_mode=S_IFREG|0644, st_size=34091, ...}) = 0
+    483   mmap(NULL, 34091, PROT_READ, MAP_PRIVATE, 5, 0) = 0x7f469bfae000
+    483   close(5)                          = 0
+    483   openat(AT_FDCWD, "/lib/x86_64-linux-gnu/libz.so.1", O_RDONLY|O_CLOEXEC) = 5
+    483   read(5, "\177ELF\2\1\1\0\0\0\0\0\0\0\0\0\3\0>\0\1\0\0\0\0\0\0\0\0\0\0\0"..., 832) = 832
+    483   fstat(5, {st_mode=S_IFREG|0644, st_size=113000, ...}) = 0
+    483   mmap(NULL, 110744, PROT_READ, MAP_PRIVATE|MAP_DENYWRITE, 5, 0) = 0x7f469be73000
+
+========================================================================
+VERDICT
+========================================================================
+  PASS  scripted run: 0 syscalls attributable to perturb between the markers
+        (residual is Chez collector clock_gettime only, printed above)
+  PASS  positive control: 2 socket/connect calls in the window
+        -> the instrument is live, so the clean window is a measurement
+  NOTE  leak 2 exhibit: 3 write() syscalls in the window when the same
+        scripted run prints its three values. Console output is real,
+        unmediated I/O and this is its exact size (INHERITED I12).
 ```
