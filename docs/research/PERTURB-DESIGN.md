@@ -1736,3 +1736,85 @@ collections are sequential. Multi-node safety, refinement against a spec, and
 liveness under partition remain untested by this ladder, and a leader-election
 target is still eventually required. This revision buys getting off codecs
 without inventing a toy; it does not close the distributed gap.
+
+---
+
+## 18. jolt-tcp and jolt-http — better v0 targets, and two corroborations
+
+**Revises §17's ladder.** `casselc/jolt-tcp` (teensyp-compatible TCP server over
+`jolt.net`'s readiness reactor) and `casselc/jolt-http` (Capra-style HTTP/1.1
+over it) are intended perturb stdlib. Both already have implementations *and*
+independent oracles, which makes them better targets than anything §17 proposed.
+
+### Corroboration 1 — the method commitment, arrived at independently
+
+`jolt-http/test/jolt/http/http_model.clj` is an independent HTTP/1.1 response
+reader used as the oracle for every generative property, and its docstring says:
+
+> "deliberately written from RFC 9112 rather than derived from
+> `jolt.http.protocol` — **a property whose expected value is computed by the
+> code under test proves nothing**."
+
+That is this document's standing method commitment, reached independently. It
+goes further, on exactly the ground E5 covered: the regex helpers it replaces
+"cannot express the questions that matter most: how many responses are in this
+byte stream, in what order, and is there anything left over? A duplicated or
+split response is invisible to a regex … and duplication/splitting is exactly
+what a framing bug produces."
+
+Spot checks versus a specification's semantics, again.
+
+### Corroboration 2 — a third instance of the signed-byte tax
+
+The same docstring: "Bytes are handled as vectors of unsigned octets (0..255)
+throughout, **because jolt's byte-arrays read back signed** and comparing the
+two representations directly reports spurious mismatches above 0x7f."
+
+So the JVM signed-byte accident (§14) now has three independent instances:
+`jolt-bytes` pays it per read through `signed-byte-at` (§9/E8 measured that at
+209 ns/byte); `jolt-http`'s *test model* pays it by converting representations
+to make comparison work at all. Two libraries, two different workarounds, one
+inherited convention. §14's decision is corroborated by code that predates it.
+
+### What they cover
+
+| property | where | class |
+| --- | --- | --- |
+| per-connection serial order — "accept first, close last, reads sequential", writes ordered | jolt-tcp README contract | resource safety + **temporal** |
+| connection lifecycle, `stop-server`/`with-open` | jolt-tcp | typestate on a real resource |
+| **keep-alive and pipelining** — N requests in, N responses out, in order, exactly once, nothing left over | jolt-http + its RFC-9112 oracle | **temporal**, strongest available |
+| chunked and streaming bodies | jolt-http | framing with termination |
+| async handlers | jolt-http | concurrency and ordering |
+| buffer bounds — "position non-negative", "unread bytes moved intact", "src/dest advanced by copied" | jolt-tcp property tests | resource safety, E3 shape |
+
+**Pipelining is the strongest temporal target available.** Duplication,
+splitting, reordering and leftover bytes are all expressible against an oracle
+that already exists, and async handlers are where ordering can actually break.
+Codecs have no analogue.
+
+### SSE fits on top, not beside
+
+jolt-http already supports streaming bodies, so SSE is an extension rather than
+new infrastructure. It adds what nothing else here has: **liveness under fault**
+(every published event eventually delivered, given eventual connectivity) and
+**`Last-Event-ID` resumption**, whose properties — contiguous prefix, order
+preserved across reconnect, at-least-once — are Raft's log matching minus
+multi-node agreement. The honest stepping stone toward the consensus gap.
+
+Scope note: SSE over HTTP/1.1 means chunked framing underneath event framing.
+Scope the verification target to SSE framing plus connection lifecycle over an
+already-parsed response; chunked is jolt-http's problem, not the slice's.
+
+### Revised ladder
+
+1. **jolt-tcp connection lifecycle** — typestate and the serial-per-connection
+   guarantee, already stated in the README so the contract exists to check.
+2. **jolt-http keep-alive/pipelining** — ordering, exactly-once, no-leftover,
+   against the existing RFC-derived oracle.
+3. **SSE** — liveness, resumption, reconnect faults.
+4. **Persistent collections** — structural/inductive; nothing above touches it.
+5. **Leader election** — agreement; still required, still open.
+
+This replaces §17's nREPL-first ordering. nREPL remains a good middleware target
+for E13's abstract-refinement question, but jolt-tcp/jolt-http reach the temporal
+class sooner and with oracles already built.
