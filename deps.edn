@@ -221,7 +221,22 @@
    {io.github.casselc/db
     {:git/url "https://github.com/casselc/db.git"
      :git/sha "df8f434f7ebf5e63b3f52ab6c5c2a2b2c92d3a6d"}}
-   :main-opts ["-m" "jolt.example.outbox-sqlite-test-main"]}}
+   :main-opts ["-m" "jolt.example.outbox-sqlite-test-main"]}
+
+  ;; Real/hermetic/hybrid parity gate for the unchanged jolt.example.outbox
+  ;; SQLite adapter: one ordinary jdbc.core scenario run against real SQLite
+  ;; and under the hermetic and hybrid SQLite handler worlds with an exact
+  ;; 28-statement row-effect plan world. Uses the complete public DB coordinate
+  ;; so its native library declaration is available to the launcher. The row
+  ;; model is integrated by the sibling slice; this alias is not yet part of
+  ;; the aggregate suite.
+  :outbox-sqlite-parity-test
+  {:extra-paths ["test"]
+   :extra-deps
+   {io.github.casselc/db
+    {:git/url "https://github.com/casselc/db.git"
+     :git/sha "df8f434f7ebf5e63b3f52ab6c5c2a2b2c92d3a6d"}}
+   :main-opts ["-m" "jolt.sim.outbox-sqlite-integration-test-main"]}}
 
  :tasks
  {check "jolt -M:test"}}
