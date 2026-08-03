@@ -617,3 +617,117 @@
     (throw (ex-info "unknown http-sqlite recovery mode"
                     {:mode mode
                      :supported [:real :simulated]}))))
+
+;; ---- Historical BEGIN fail-open control (permanent Hegel witness) ---------
+;; Drives the permanent, test-only fixture/exercise-http-sqlite-begin-fail-open
+;; -control under a minimal two-statement SQLite world -- no HTTP server, no
+;; POSIX loopback, only the real memory + SQLite handler packs -- so a Hegel
+;; property can find, shrink, and replay the historical fail-open witness.
+
+(def ^:private begin-fail-open-input-keys #{:begin-when :report-error?})
+
+(def ^:private begin-fail-open-begin-whens #{:on-success :always})
+
+(defn- invalid-begin-fail-open-input [reason data]
+  (ex-info
+   "invalid http-sqlite begin-fail-open control input"
+   (merge {:type :jolt.sim.fixtures.http-sqlite-scenarios/invalid-begin-fail-open-input
+           :reason reason}
+          data)))
+
+(defn- validate-begin-fail-open-input!
+  "Validates the closed {:begin-when :report-error?} input domain fail-closed,
+   before any world is created. :begin-when must be exactly :on-success or
+   :always; :report-error? must be exactly a boolean; no other key is
+   permitted."
+  [input]
+  (when-not (map? input)
+    (throw (invalid-begin-fail-open-input :not-a-map {:input input})))
+  (let [unknown (seq (sort (remove begin-fail-open-input-keys (keys input))))]
+    (when unknown
+      (throw (invalid-begin-fail-open-input
+              :unknown-keys
+              {:unknown-keys (vec unknown) :input input}))))
+  (when-not (contains? begin-fail-open-begin-whens (:begin-when input))
+    (throw (invalid-begin-fail-open-input
+            :invalid-begin-when
+            {:begin-when (:begin-when input)
+             :supported (vec (sort begin-fail-open-begin-whens))})))
+  (when-not (boolean? (:report-error? input))
+    (throw (invalid-begin-fail-open-input
+            :invalid-report-error?
+            {:report-error? (:report-error? input)})))
+  input)
+
+(defn- begin-fail-open-statement-plans
+  "The exact two statement plans the historical BEGIN fail-open control drives
+   over one in-memory connection: PRAGMA foreign_keys=1 (run by db.sqlite
+   connection init) and BEGIN, carrying the plan's closed :tx-effect {:op
+   :begin :when begin-when} directive and, iff report-error?, fixture/
+   injected-begin-error verbatim so this plan construction and the fixture's
+   exact-predicate catch never drift apart."
+  [begin-when report-error?]
+  [pragma-plan
+   (cond-> {:sql "BEGIN" :params {} :columns [] :rows []
+            :changes 0 :last-row-id 0
+            :tx-effect {:op :begin :when begin-when}}
+     report-error? (assoc :error fixture/injected-begin-error))])
+
+(defn- begin-fail-open-closed-evidence
+  "Projects the one closed connection record to its address-free physical
+   transaction evidence, preserving discarded-transaction/discarded-staging
+   evidence when the connection closed while still physically inside a
+   transaction."
+  [sqlite-world]
+  (mapv #(select-keys % [:autocommit? :tx :tx-evidence :autocommit-evidence
+                         :discarded-transaction :discarded-staging])
+        (:closed-db-evidence (sqlite/state sqlite-world))))
+
+(defn- begin-fail-open-evidence-for
+  "Builds the minimal memory + SQLite handler packs from the validated input,
+   runs the unchanged fixture/exercise-http-sqlite-begin-fail-open-control once
+   under run-controlled, and returns one canonical, EDN-safe, address-free
+   evidence map: the fixture's own :logical-depth result, plan-consumption and
+   route evidence, the closed connection's physical transaction evidence, and
+   clean-world evidence."
+  [overrides input]
+  (validate-begin-fail-open-input! input)
+  (let [{:keys [begin-when report-error?]} input
+        mem (memory/world)
+        sqlite-world (sqlite/world mem (begin-fail-open-statement-plans
+                                        begin-when report-error?))
+        handlers (hp/compose
+                  (hp/pack :jolt.sim/memory (memory/handlers mem))
+                  (hp/pack :jolt.sim/sqlite
+                           (sqlite/foreign-handlers sqlite-world)))
+        controlled (rt/run-controlled
+                    (merge {:ffi-handlers handlers :drain-timeout-ms 10000}
+                           overrides)
+                    #(fixture/exercise-http-sqlite-begin-fail-open-control))
+        effect-trace (:effect-trace controlled)]
+    {:logical-depth (:logical-depth (:result controlled))
+     :routes {:count (count effect-trace)
+              :all-handled? (every? #(= :handler (:route %)) effect-trace)
+              :foreign-symbols (foreign-symbols effect-trace)}
+     :sqlite {:summary (sqlite/summary sqlite-world)
+              :closed-db-evidence (begin-fail-open-closed-evidence sqlite-world)}
+     :clean? {:memory (memory/clean? mem)
+              :sqlite (sqlite/clean? sqlite-world)}}))
+
+(defn ^{:jolt.sim/scenario true
+        :jolt.sim/accepts-input true} run-begin-fail-open-control
+  "Runs the permanent test-only historical SQLite BEGIN fail-open control once
+   for the closed {:begin-when :on-success|:always :report-error? boolean}
+   input. Validates the input fail-closed before any world is created, builds
+   the exact two-statement SQLite plan (PRAGMA foreign_keys=1 then BEGIN,
+   carrying the drawn :tx-effect :when and, iff report-error?, the fixture's
+   own injected-begin-error), runs the unchanged
+   fixture/exercise-http-sqlite-begin-fail-open-control once through the real
+   memory + SQLite handler packs under jolt.sim.runtime/run-controlled, and
+   returns one canonical evidence map. Accepts the standard
+   jolt.sim.explore-worker protocol-v2 (runtime-overrides, input) arity used
+   by jolt.sim.process-explorer/run-case."
+  ([input]
+   (run-begin-fail-open-control {} input))
+  ([overrides input]
+   (begin-fail-open-evidence-for overrides input)))

@@ -490,3 +490,34 @@
   (let [observations (atom {})]
     (assoc (run-request-cycle (recovery-handler scenario observations))
            :observations @observations)))
+
+;; ---- Historical BEGIN fail-open control ------------------------------------
+;; A permanent, test-only reproduction of the pre-fix jdbc.core BEGIN
+;; fail-open decision. Unlike every other scenario above, this control calls
+;; the public jdbc/execute! with "BEGIN" directly -- never jdbc/atomic -- and
+;; evaluates its own deliberately buggy historical logical-depth decision
+;; locally, right here. It never calls jdbc.core's own corrected
+;; verified-sqlite-begin! recovery path, so the pinned DB implementation is
+;; neither weakened nor exercised by this control.
+
+(defn exercise-http-sqlite-begin-fail-open-control
+  "Opens an in-memory SQLite connection -- whose initialization already runs
+   \"PRAGMA foreign_keys=1;\" via the db.sqlite connection initialization --
+   then calls the public jdbc/execute! with \"BEGIN\" directly. On success,
+   the historical logical evaluator reports logical depth 1. On only the
+   exact injected-begin-error? shape, the deliberately buggy historical
+   evaluator catches it and reports logical depth 0 -- ready/reusable --
+   without ever probing sqlite3_get_autocommit or issuing a recovery
+   ROLLBACK. Every other exception propagates unchanged. Returns
+   {:logical-depth 0-or-1}."
+  []
+  (with-open [connection (jdbc/connection "sqlite::memory:")]
+    (let [logical-depth
+          (try
+            (jdbc/execute! connection "BEGIN")
+            1
+            (catch Exception error
+              (if (injected-begin-error? error)
+                0
+                (throw error))))]
+      {:logical-depth logical-depth})))

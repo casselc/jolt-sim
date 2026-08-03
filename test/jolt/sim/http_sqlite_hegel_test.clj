@@ -63,6 +63,36 @@
 ;; g/sampled-from, which shrinks toward index 0 (:poll-then-connect).
 (def ^:private admission-plan-domain [:poll-then-connect :connect-then-poll])
 
+;; ---- Historical BEGIN fail-open control ------------------------------------
+;; A permanent, bounded Hegel witness over the test-only historical BEGIN
+;; fail-open control (jolt.sim.fixtures.http-sqlite/exercise-http-sqlite-
+;; begin-fail-open-control via jolt.sim.fixtures.http-sqlite-scenarios/
+;; run-begin-fail-open-control). Every generated case spawns a fresh worker,
+;; exactly like the property above. The two input fields are drawn
+;; independently, each from a shrinkable two-element domain ordered with its
+;; coherent/safe value first: :begin-when shrinks toward :on-success and
+;; :report-error? shrinks toward false. Of the four possible inputs, exactly
+;; one -- {:begin-when :always :report-error? true} -- makes the historical
+;; evaluator's logical readiness (logical depth 0 means "ready/reusable")
+;; disagree with the closed connection's physical sqlite3_get_autocommit
+;; evidence (still inside a transaction): the historical fail-open bug this
+;; control exists to witness.
+
+(def ^:private begin-fail-open-scenario-sym
+  'jolt.sim.fixtures.http-sqlite-scenarios/run-begin-fail-open-control)
+
+(def ^:private begin-fail-open-begin-when-domain [:on-success :always])
+(def ^:private begin-fail-open-report-error-domain [false true])
+
+(def ^:private expected-begin-fail-open-error-foreign-symbols
+  #{"sqlite3_open"
+    "sqlite3_close_v2"
+    "sqlite3_prepare_v2"
+    "sqlite3_step"
+    "sqlite3_finalize"
+    "sqlite3_column_count"
+    "sqlite3_errmsg"})
+
 ;; Release evidence is plan-driven (arrival gate release order), so it is an
 ;; exact replay witness for each plan; arrival and completion order remain
 ;; diagnostic and are deliberately not asserted as deterministic.
@@ -335,6 +365,47 @@
                      input
                      {:routes admission-routes}))))))
 
+(defn- check-begin-fail-open-case!
+  "Runs one fresh-worker case for the drawn begin-fail-open `input` and throws
+  only when the historical evaluator's logical readiness (logical depth 0
+  means \"ready/reusable\") disagrees with the closed connection's physical
+  sqlite3_get_autocommit evidence (autocommit? true means \"not inside a
+  transaction\"). Throws on the first violation with the exact drawn input and
+  a bounded :actual evidence projection so Hegel can replay and shrink it."
+  [input]
+  (let [base-config
+        (merge (process-config)
+               {:scenario begin-fail-open-scenario-sym
+                :timeout-ms 20000
+                :kill-grace-ms 500})
+        outcome (process-explorer/run-case
+                 (assoc base-config :input input))
+        completed (require-completed-carrying-input! outcome input)
+        evidence (:result completed)]
+    (when-not (map? evidence)
+      (violation "jolt.sim.http-sqlite-hegel-test/begin-fail-open-evidence-shape"
+                 input
+                 {:evidence-class (str (class evidence))}))
+    (let [closed-db-evidence (get-in evidence [:sqlite :closed-db-evidence])
+          db-evidence (first closed-db-evidence)
+          logical-depth (:logical-depth evidence)
+          autocommit? (:autocommit? db-evidence)
+          logical-ready? (zero? logical-depth)
+          physical-ready? (true? autocommit?)]
+      (when-not (= logical-ready? physical-ready?)
+        (violation "jolt.sim.http-sqlite-hegel-test/begin-fail-open-coherence"
+                   input
+                   {:logical-depth logical-depth
+                    :autocommit? autocommit?
+                    :routes (:routes evidence)
+                    :closed-db-count (count closed-db-evidence)
+                    :autocommit-evidence (:autocommit-evidence db-evidence)
+                    :tx-evidence (:tx-evidence db-evidence)
+                    :discarded-transaction (:discarded-transaction db-evidence)
+                    :discarded-staging (:discarded-staging db-evidence)
+                    :sqlite-summary (:summary (:sqlite evidence))
+                    :clean? (:clean? evidence)})))))
+
 (deftest hegel-http-sqlite-holds-across-capacities-eintr-and-admission-order
   (let [seen-plans (atom #{})
         result
@@ -364,6 +435,80 @@
     (is (= (set admission-plan-domain) @seen-plans)
         (str "Hegel did not exercise both admission plans: "
              (pr-str @seen-plans)))))
+
+(deftest hegel-http-sqlite-begin-fail-open-finds-the-uncertain-begin-witness
+  ;; Permanent executable control for the historical SQLite BEGIN fail-open
+  ;; decision. Each case spawns a fresh worker, so generation is intentionally
+  ;; slower than Hegel's unit-test health threshold -- exactly like the
+  ;; property above -- and only :too-slow is suppressed; flakiness and
+  ;; generation errors must still fail this test outright.
+  (let [result
+        (h/run-test!
+         {:test-cases 20
+          :suppress-health-checks [:too-slow]
+          :seed 1
+          :database ""
+          :report-multiple-failures? false
+          :verbosity :quiet}
+         (fn [_]
+           (let [begin-when (h/draw!
+                              (g/sampled-from begin-fail-open-begin-when-domain)
+                              "begin-when")
+                 report-error? (h/draw!
+                                (g/sampled-from
+                                 begin-fail-open-report-error-domain)
+                                "report-error?")
+                 input {:begin-when begin-when :report-error? report-error?}]
+             (check-begin-fail-open-case! input)
+             nil)))
+        failure (first (:failures result))
+        final-exception (-> result :final first :exception)
+        final-data (ex-data final-exception)
+        actual (:actual final-data)]
+    (is (false? (:passed? result))
+        (pr-str {:status (:status result)
+                 :n-failures (:n-failures result)
+                 :flaky? (:flaky? result)
+                 :failures (:failures result)
+                 :final (:final result)}))
+    (is (= :failed (:status result)))
+    (is (= 1 (:n-failures result)))
+    (is (= "jolt.sim.http-sqlite-hegel-test/begin-fail-open-coherence"
+           (:origin failure)))
+    (is (true? (:reproduced? failure)))
+    (is (false? (:flaky? result))
+        (pr-str {:flaky? (:flaky? result)
+                 :observed-failures (:observed-failures result)}))
+    (is (= "jolt.sim.http-sqlite-hegel-test/begin-fail-open-coherence"
+           (:hegel/origin final-data)))
+    (is (= {:begin-when :always :report-error? true} (:input final-data)))
+    (is (= 0 (:logical-depth actual)))
+    (is (false? (:autocommit? actual)))
+    (let [routes (:routes actual)]
+      (is (pos? (:count routes)))
+      (is (true? (:all-handled? routes)))
+      (is (= expected-begin-fail-open-error-foreign-symbols
+             (set (:foreign-symbols routes)))))
+    (is (= 1 (:closed-db-count actual)))
+    ;; The historical evaluator must not reconcile against
+    ;; sqlite3_get_autocommit or issue a recovery rollback.
+    (is (= [] (:autocommit-evidence actual)))
+    (is (= {:plan-index 2 :plan-count 2 :open-dbs 0 :active-stmts 0}
+           (:sqlite-summary actual)))
+    (is (= {:memory true :sqlite true} (:clean? actual)))
+    (is (= {:begin-event 0 :begin-plan-index 1}
+           (:discarded-transaction actual)))
+    (is (= {} (:discarded-staging actual)))
+    (is (= [{:sequence 0
+             :plan-index 1
+             :op :begin
+             :when :always
+             :reported :error
+             :applied? true
+             :reason nil
+             :before-autocommit? true
+             :after-autocommit? false}]
+           (:tx-evidence actual)))))
 
 (def ^:private watchdog-timeout-ms 300000)
 
