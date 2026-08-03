@@ -27,6 +27,18 @@
      :send    {:arity 2 :result-pred count?
                :doc "(token octets) -> octets accepted. Argument is an octet view,
                      never a string and never a byte array."}
+     ;; SERVER SIDE, added for perturb.http. Two ops, not one: a listener and an
+     ;; accepted connection are different capabilities with different lifetimes,
+     ;; and giving them one op would put that distinction inside the handler
+     ;; where no annotation can name it.
+     :listen  {:arity 2 :result-pred conn-token?
+               :doc "(host port) -> an opaque handler-owned LISTENER token.
+                     Distinct from a connection token; only `accept` and `close`
+                     take one. Nothing in the session code inspects either."}
+     :accept  {:arity 1 :result-pred conn-token?
+               :doc "(listener-token) -> a connection token for one accepted
+                     peer. Blocking, like `connect`: perturb has no readiness
+                     effect and §1.4 keeps control in the kernel, not here."}
      :recv    {:arity 2 :result-pred o/octets?
                :doc "(token max) -> octet view. An empty view means end of stream;
                      the session code treats that as an abort, not as `wait`."}
@@ -37,6 +49,8 @@
 ;; boundary has durable identity (perturb.effect's docstring; §1.1).
 
 (defn connect [host port site] (fx/perform socket :connect site [host port]))
+(defn listen  [host port site] (fx/perform socket :listen  site [host port]))
+(defn accept  [tok site]       (fx/perform socket :accept  site [tok]))
 (defn send!   [tok ov site]    (fx/perform socket :send    site [tok ov]))
 (defn recv    [tok max-n site] (fx/perform socket :recv    site [tok max-n]))
 (defn close!  [tok site]       (fx/perform socket :close   site [tok]))

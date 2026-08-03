@@ -38,12 +38,17 @@ done
 
 echo "--- selftest"
 ( cd "$root" && "$JOLT" -M:selftest )
-echo "--- capability checker (static; nothing in the corpus is run)"
+echo "--- capability checker (two corpora; every ACCEPT is also executed)"
 ( cd "$root" && "$JOLT" -M:check )
 echo "--- oracle"
 ( cd "$root" && "$JOLT" -M:oracle )
 echo "--- demo"
 ( cd "$root" && "$JOLT" -M:demo "$PORT" )
+
+# perturb's SECOND protocol. Needs no server: it is both ends of a loopback
+# socket in one process, on its own port.
+echo "--- http (second protocol; both handlers, one driver)"
+( cd "$root" && "$JOLT" -M:http "$((PORT+1))" )
 
 echo "--- no-I/O verifier (INHERITED I11)"
 if command -v strace >/dev/null 2>&1; then

@@ -1,7 +1,8 @@
 (ns perturb.selftest
   "Codec and octet self-tests. No socket, no server, no FFI."
   (:require [perturb.octet :as o]
-            [perturb.bencode :as b]))
+            [perturb.bencode :as b]
+            [perturb.http :as h]))
 
 (def ^:private failures (atom []))
 
@@ -101,6 +102,58 @@
          (let [ov (b/encode (o/octets [0xFF 0x80 0x00]))
                r  (b/decode ov 0)]
            (o/ovec (second r))))
+
+  (println "== perturb.http trichotomy, the SECOND protocol to carry it ==")
+  (let [raw (str "POST /a?b=c HTTP/1.1\r\n"
+                 "Host: perturb\r\n"
+                 "Content-Length: 5\r\n"
+                 "\r\n"
+                 "hello")
+        ov  (o/encode-utf8 raw)
+        n   (o/ocount ov)
+        r   (h/parse-request ov 0)]
+    (check "complete request -> :ok at the exact request boundary"
+           [:ok n] [(first r) (nth r 2)])
+    (check "method/target/version" ["POST" "/a?b=c" "HTTP/1.1"]
+           [(:method (second r)) (:target (second r)) (:version (second r))])
+    (check "field names lower-cased at the octet level"
+           {"host" "perturb" "content-length" "5"} (:headers (second r)))
+    (check "body is an OCTET VIEW, not text" [104 101 108 108 111]
+           (o/ovec (:body (second r))))
+    ;; The property the one-octet-per-recv handler exercises 121 times per demo
+    ;; run, tested directly here so a failure names itself.
+    (check (str "all " (dec n) " proper prefixes are [:need-more 0]")
+           []
+           (vec (filter (fn [i] (not= [:need-more 0] (h/parse-request (o/osub ov 0 i) 0)))
+                        (range 1 n))))
+    ;; Pipelining: the SECOND request must come out of the same buffer at the
+    ;; cursor the first one returned, with no I/O in between. This is the
+    ;; property `perturb.nrepl` never needed and the keep-alive cycle rests on.
+    (let [two (o/oconcat ov ov)
+          r1  (h/parse-request two 0)
+          r2  (h/parse-request two (nth r1 2))]
+      (check "two pipelined requests parse from one buffer at successive cursors"
+             [:ok n :ok (* 2 n)]
+             [(first r1) (nth r1 2) (first r2) (nth r2 2)])))
+  (check "HTTP/1.0 is refused, not downgraded" [:invalid :unsupported-version 0 0]
+         (h/parse-request (o/encode-utf8 "GET / HTTP/1.0\r\n\r\n") 0))
+  (check "chunked is refused, not mis-parsed" :chunked-unsupported
+         (second (h/parse-request
+                   (o/encode-utf8 "GET / HTTP/1.1\r\ntransfer-encoding: chunked\r\n\r\n") 0)))
+  (check "a repeated field name is an error, not last-wins" :repeated-field-name
+         (second (h/parse-request
+                   (o/encode-utf8 "GET / HTTP/1.1\r\na: 1\r\na: 2\r\n\r\n") 0)))
+  (check "whitespace before the colon is refused (RFC 9112 5.1)" :space-before-colon
+         (second (h/parse-request (o/encode-utf8 "GET / HTTP/1.1\r\nhost : x\r\n\r\n") 0)))
+  (check "a non-token method is refused" :bad-method
+         (second (h/parse-request (o/encode-utf8 "G(T / HTTP/1.1\r\n\r\n") 0)))
+  (check "an unterminated head over the limit becomes :invalid, not :need-more"
+         :head-too-large
+         (second (h/parse-request
+                   (o/encode-utf8 (apply str (repeat 9000 "x"))) 0)))
+  (check "response-head commits to a length nothing has written yet"
+         "HTTP/1.1 200 OK\r\ncontent-length: 6\r\n\r\n"
+         (o/->str (h/response-head 200 "OK" {} 6)))
 
   (println)
   (if (empty? @failures)

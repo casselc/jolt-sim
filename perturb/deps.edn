@@ -27,4 +27,10 @@
   ;; The static capability checker. Reads perturb.cap's declarations as a
   ;; SPECIFICATION and real Jolt IR as the program, and rejects. No socket and
   ;; no server; nothing in the corpus is ever called.
-  :check  {:main-opts ["-m" "perturb.check"]}}}
+  :check  {:main-opts ["-m" "perturb.check"]}
+
+  ;; perturb's SECOND protocol: an HTTP/1.1 keep-alive server driver run under
+  ;; the scripted network (one octet per recv) and under a real POSIX listening
+  ;; socket, with the response octets compared. Takes a port; needs no server,
+  ;; because it is both ends.
+  :http   {:main-opts ["-m" "perturb.httpdemo"]}}}

@@ -164,8 +164,11 @@ afterwards.
 Mitigations (explicit reconciliation, a sum state requiring a case-split,
 per-variable flow-sensitivity) are unexplored and are a real usability risk for
 this section. How often the rule actually fires on real programs is argued, not
-measured (§4.6); the one measurement that exists is zero occurrences outside
-the corpus in `perturb.nrepl` (E15).
+measured (§4.6). Two data points now exist and they disagree: **zero** occurrences
+in `perturb.nrepl` (E15), and it fires on the **first driver anyone would write**
+for HTTP keep-alive — `if (keep-alive? req) c2 (close-conn! c2)` — where an
+accepted rewrite exists but is a non-obvious idiom that must be known in advance
+(E18). One of two protocols, not a frequency.
 
 **~~Known defect~~ CLOSED — capability specs are positioned.** `:consumes` /
 `:borrows` carry `:arg n`; `:produces` carries `:at [i]`. The abstract domain has
@@ -183,9 +186,35 @@ class §1.2 never named. The artifact names it by listing operations
 Connection's implementation" — and §1.2 has no module concept (E17). Ahead of
 E13's abstract refinements.
 
+**And the list is gameable, measured.** `perturb.http` declares three
+capabilities with an EMPTY `:representation` for each, by writing every
+concrete-map access inside a declared transition instead of in a helper. The
+unchecked surface grew — 31 accesses against `perturb.nrepl`'s 12 — while the
+list went to zero. Counting operations counts the wrong thing; the metric that
+matters is lines below the boundary, and only a module can define that line
+(E18 finding 4).
+
+**Two shapes the declaration language cannot express, both found by a second
+protocol** (E18 findings 1 and 3), both ahead of E13's abstract refinements and
+behind the module boundary:
+
+- **an operation that advances two machines at once.** The primitive table is
+  keyed by operation, so an operation belongs to at most one capability, and
+  `accept` (mint a connection from a listener) and `body-finish!` (end a body,
+  return the connection) cannot be declared. Both draw `annotation-inconsistent`
+  and no way of writing them removes it. The same defect was already live on
+  `perturb.nrepl/open` and had never been printed.
+- **a state that carries a refinement.** A Content-Length body writer owes the
+  wire exactly N octets. `:finished` is a state; `wrote exactly N` is QF-LIA over
+  a run-time integer — §1.3's fragment, not this section's axis — and a program
+  that declares 6 and writes 3 is ACCEPTED and RUNS. Relatedly, nothing in §1.2
+  can relate two machines in time.
+
 **Borrows do not close.** A `:borrows` parameter is the caller's; it is exempt
 from the scope-exit leak rule. Added in E17, and found by the checker refusing
-`perturb.nrepl/state`.
+`perturb.nrepl/state`. E18: `:borrows` and `:produces` of the SAME capability is
+a legal annotation that duplicates it in the abstract domain, and the resulting
+false leak is reported at the caller with nothing pointing at the annotation.
 
 ### 1.3 Proof — capability-tier refinements, Ansatz retained
 
@@ -410,9 +439,10 @@ at `d883385`):
 | gate | what it decides | limits printed by |
 | --- | --- | --- |
 | `-M:selftest` | codec/octet self-tests, no socket | the run |
-| `-M:check` | 22 corpus programs get their recorded capability verdicts, AND every accepted one is executed under the scripted handler; the real client is checked and reported, not gated | `report-limits`, 8 items (E15, E17) |
+| `-M:check` | 47 corpus programs across TWO corpora (nREPL 22, HTTP 25) get their recorded capability verdicts, AND every accepted one is executed under a scripted handler; `perturb.nrepl` and `perturb.http` are checked and reported, not gated | `report-limits`, 11 items (E15, E17, E18) |
 | `-M:oracle` | perturb's bencode against `jolt.nrepl`'s over their shared profile | the run |
 | `-M:demo` | one session var under a real socket and two in-memory handlers; sent octets identical | the transcript |
+| `-M:http` | one keep-alive driver under a scripted network (121 one-octet `recv`s) and a real loopback listener (1 `recv`, two pipelined requests); response octets identical; exhibits the unstatable Content-Length obligation | the run, and E18 nonclaims (E18) |
 | `-M:noio` + `verify-noio.sh` | no syscall attributable to perturb in a scripted window, with a positive control | the verdict block (E16) |
 
 The last two follow the rule literally: each states what its instrument *cannot*
@@ -2313,6 +2343,300 @@ whole sans-io contract, is inside that unchecked set.
 4. Unpositioned entries still fall back to matching specs to parameters in
    order — the checker's convention, not §1.2's, and still unremoved.
 
+### E18 — a second protocol: what two capabilities, a cycle and an obligation do to the rules
+
+E17 left a module boundary at the top of §1.2's queue and a rule set validated
+against exactly one capability shape: `perturb.nrepl`'s Connection, one
+capability per program, a typestate machine that is a straight line. This is the
+same rule set met by a protocol whose shape differs on purpose.
+
+`perturb.http` is HTTP/1.1, server side, sans-io, over the same
+`perturb.wire/socket` effect, with **three** capabilities — `Listener`,
+`ServerConn`, `ResponseBody` — a keep-alive **cycle** in `ServerConn`'s machine,
+and a body writer whose terminal condition is an **obligation**. It runs under
+both handlers exactly as `perturb.nrepl` does: `perturb.script/server-session`
+delivers one octet per `recv`, and `perturb.posix` now answers `:listen` and
+`:accept` on a real loopback socket. `perturb.httpcorpus` is 25 programs,
+8 accept / 17 reject, all decided as recorded, every accept executed.
+
+Gate as of this section: `-M:selftest`, `-M:check` (47 corpus programs across two
+corpora, 11 accepts executed), `-M:oracle`, `-M:demo`, the new `-M:http`, and
+`-M:noio`, all exiting 0.
+
+#### Finding 1 — two capabilities at once: the flow rules hold, the DECLARATION language does not
+
+Everything positional survived contact, on the first attempt and without a line
+of `check.clj` changing:
+
+- `accept` consumes a Listener at `:arg 0` and produces a Listener at `:at [0]`
+  **and a ServerConn at `:at [1]`**. `produced-value` builds the two-capability
+  tuple; `first`/`second` project each back out; `check-scope-exit` requires both
+  to be disposed of. `accept-drops-the-listener` and `accept-drops-the-connection`
+  are the two halves of that, and each is rejected for the one it drops.
+- a derived operation whose **parameters** mention two different capabilities at
+  `:arg 0` and `:arg 1`, and whose `:produces` names both at `[0]` and `[1]`,
+  checks against its body (`serve-with-listener-held`). Returning them the other
+  way round is `produces-mismatch` (`swapped-two-cap-produces`).
+- a `loop` with **two capability bindings** preserves shape at each position
+  independently (`loop-holding-both`); exchanging them at the back edge is
+  rejected at both positions (`loop-holding-both-swapped`).
+- `body-finish!` **consumes two capabilities of two different machines in one
+  call**, at `:arg 0` and `:arg 1`. Swapping the arguments at a call site is
+  caught (`finish-with-swapped-arguments`).
+
+So `multicap.py`'s shape is not a problem for the flow analysis. Three things
+broke, all of them in the *declaration* language, and all of them silently.
+
+**(a) The primitive table is keyed by operation, so an operation belongs to at
+most one capability.** `spec` builds `opsym -> {:cap :from :to}` by reducing over
+every declaration's `:transitions`; a second declaration naming the same
+operation **overwrites the first**. `accept` is a transition of `Listener`
+(`:listening -> :listening`) and of `ServerConn` (`nil -> :reading`), and 10
+declared transition entries collapse to 9 primitives. `check-annotation-
+consistency!` then compares the annotation's *first* `:consumes`/`:produces`
+entry against whichever transition won:
+
+```
+  --- perturb.http/accept
+  annotation-inconsistent  perturb.http/ServerConn
+    declared machine:  -> :reading
+    operation annotation: :listening -> :listening
+    the two data sources cap/checker-input emits disagree
+
+  --- perturb.http/body-finish!
+  annotation-inconsistent  perturb.http/ResponseBody
+    declared machine: :open -> :finished
+    operation annotation: :open -> :reading
+    the two data sources cap/checker-input emits disagree
+```
+
+Both diagnostics are correct about the data and wrong about the program. There
+is no way to write these annotations that removes them, because the declaration
+language cannot say *"this operation is the `:open -> :finished` edge of
+ResponseBody and the `:writing -> :reading` edge of ServerConn"*. §1.2's
+typestate axis is **per capability**, and an operation that advances two machines
+at once is outside it. This is not exotic: `accept` (mint a connection from a
+listener) and `finish` (end a body, give the connection back) are the two most
+ordinary operations a server has.
+
+**(b) The same defect was already live in `perturb.nrepl` and had never been
+seen.** `perturb.nrepl/open` declares `:from :created` and annotates `:consumes
+[]`, i.e. `nil -> :active`; that raises `annotation-inconsistent` too. It was
+invisible because `run-client` computed its bad set over the non-axioms only, so
+a diagnostic raised *against an axiom* was collected and never printed. The
+report stage now prints them. Nothing about the checker's verdicts changed —
+this was a reporting hole, and it hid a real disagreement for two sections.
+
+**(c) `:borrows` plus `:produces` of the same capability duplicates it, and
+nothing says so.** `borrow-and-return-listener` borrows a Listener at `:arg 0`
+and also declares it at `:at [0]` — the natural way to write "I looked after
+your listener, here it is back". Both halves are individually legal: E17's rule
+exempts a borrowed parameter from the leak check, and the body really does yield
+a Listener at position 0. The checker therefore holds **two** abstract
+capabilities for **one** runtime listener, and the cost lands on the caller:
+`uses-borrow-and-return` is `perturb.corpus`'s accepted composition shape with
+one word changed, and it is rejected for leaking a listener the programmer
+disposed of correctly. The diagnostic is sound given the annotation; the
+annotation is the thing that is wrong, and there is no rule that can point at it.
+
+**(d) The unpositioned fallback degrades from unprincipled to actively
+misleading.** With one capability, matching specs to parameters in order is a
+convention (E17 nonclaim 4). With two, `unpositioned-two-cap-helper` — parameters
+`[c l]`, specs `[Listener ServerConn]` — binds `c` to the Listener spec and `l`
+to the ServerConn spec and produces **five** diagnostics, of which the clearest
+is:
+
+```
+  dangling  perturb.http/Listener
+    capability    `c` : perturb.http/Listener@:listening
+```
+
+None of the five names the annotation. The fallback should be removed, not
+documented.
+
+#### Finding 2 — the cycle is fine; the shape the cycle wants to be written in is not
+
+`ServerConn`'s machine is `:reading -> :responding -> :reading`, with
+`respond!` as the back edge — the first operation in perturb to return a
+capability to a state it has left. **The loop rule accepts it unchanged.** The
+reason is structural and worth stating: `PRESERVE` compares the
+`(path, capability, state)` shape at the back edge against the shape at loop
+entry, and a *cycle* in the typestate machine is precisely the condition under
+which a loop body can restore that shape. Nothing had to be added for cycles;
+the rule was already the right one.
+
+The negatives all fire:
+
+| program | what it does | verdict |
+| --- | --- | --- |
+| `keepalive-recurs-mid-cycle` | recurs at `:responding`, a response still owed | `loop-not-preserving` |
+| `keepalive-drops-the-connection` | exit arm returns without closing | `dangling` |
+| `accept-loop-leaks-connections` | listener invariant holds, a ServerConn leaks per pass | `dangling` |
+| `accept-loop-shuts-down-inside` | back edge re-enters at `Listener@:closed` | `loop-not-preserving` |
+| `respond-without-reading` / `read-twice-without-responding` | one-response-per-request | `typestate` |
+
+**But the driver has to be written in a specific shape to be accepted, and it is
+not the obvious one.** An HTTP keep-alive loop decides *after* responding whether
+the peer wants the connection kept. Written the way that reads best —
+
+```clojure
+c3 (if (keep-alive? req) c2 (close-conn! c2))
+```
+
+— it is E6 probe 1's `if (c) { b = detach_result(b) }; use(b)`, and it is
+rejected:
+
+```
+  join  perturb.http/ServerConn
+    capability    `c2` : perturb.http/ServerConn@:reading
+    at the if at  perturb/src/perturb/httpcorpus.clj:419:28
+    consumed in the else arm and not in the other
+    "may or may not have been moved" is not a mode; no sound join exists
+```
+
+with three further diagnostics cascading from it. §4.6 records the frequency of
+this rule as "argued rather than measured", with one data point: **zero**
+occurrences in `perturb.nrepl` (E15). The second data point is that it fires on
+the *first driver anyone would write* for the second protocol. The accepted
+rewrite exists — put the close inside the branch and the `recur` in the other, so
+one arm is bottom and the join is vacuous, which is what
+`perturb.http/serve-connection` and `perturb.httpcorpus/keep-alive-loop` do — but
+it is a non-obvious idiom that must be known in advance. The usability risk is no
+longer hypothetical, and the sample is now 1 of 2 protocols rather than 0 of 1.
+
+#### Finding 3 — the obligation: §1.2 can require termination and cannot require correctness
+
+A Content-Length response body is a capability whose terminal condition is an
+**obligation**: it owes the wire exactly N octets, where N was committed to in a
+header already sent. `ResponseBody`'s machine is `:open -> :finished`.
+
+What the typestate axis **can** say: `:finished` is terminal and `:open` is not,
+so a body that is written to and abandoned leaks at scope exit
+(`body-never-finished`, `dangling`), and a write after `body-finish!` is a use
+after move (`write-after-finish`).
+
+What it **cannot** say, and this is the finding: `perturb.httpcorpus/short-body-
+still-type-checks` is `stream-a-body` with one `body-write` deleted. It declares
+`Content-Length: 6` and writes 3. **`perturb.check` accepts it and the gate runs
+it to completion**, because the capability reached `:finished`, which is all a
+state can be asked for. `body-finish!` deliberately records the discrepancy in
+the ledger instead of aborting — an abort would convert a static gap into a
+dynamic check and hide it — and `-M:http` prints what went on the wire:
+
+```
+    HTTP/1.1 200 OK..content-length: 6..content-type: text/plain....abc
+    ledger: perturb-body-7  declared Content-Length 6, wrote 3 -> VIOLATED
+```
+
+**What is missing, precisely.** Not a new axis. `wrote exactly N` is a
+refinement over a run-time integer — `(= 0 (:remaining b))` at the `:finished`
+transition — in QF-LIA, which is exactly the fragment §1.3 already reserves for
+refinements and Q2 says liquid types can infer. The typestate axis is about
+*which operations are legal from which state*; this is about *a numeric
+invariant that must hold at a particular transition*. Both halves are
+load-bearing, which is E6 probe 3's result arriving again from the other
+direction. Concretely, §1.2 would need a state to be able to carry a refinement
+(`ResponseBody@:finished` where `remaining = 0`), and no capability in perturb
+carries one today.
+
+A second obligation on the same capability is *worse* and is recorded rather
+than solved: `body-finished-before-conn-reused` relates **two** machines in
+time — the ServerConn may not go `:writing -> :reading` unless the ResponseBody
+reached `:finished` first. The typestate axis is per capability and §1.2 has no
+way to relate two of them. It is written on `body-capability` with
+`:class :temporal` and nothing discharges it. Note that `close-conn!` is declared
+legal from `:writing`, so a connection can be closed with a response half
+written and no rule objects.
+
+#### Finding 4 — the abstraction boundary: the list went to zero and the boundary did not move
+
+E17 added `:perturb.cap/representation` — five operations of `perturb.nrepl` —
+and put a module boundary at the top of §1.2's queue. The obvious test for a
+second protocol is how long its list is.
+
+**It is empty, for all three capabilities, and that is not progress.** Every
+concrete-map access was written *inside* a declared transition, whose body is
+already an axiom, instead of in a helper the list would have had to name. The
+measurements:
+
+| | `perturb.nrepl` (E17) | `perturb.http` (this section) |
+| --- | --- | --- |
+| declared transitions | 3 | 9 (10 entries, see finding 1a) |
+| `:representation` operations | 5 | **0** |
+| axioms / functions | 8 of 15 | 9 of 49 |
+| concrete-map accesses, all unchecked | 12 | **31** |
+| unchecked code lines / total | 72 / 143 = **50.3%** | 136 / 456 = **29.8%** |
+
+The unchecked surface **grew** — 31 accesses against 12 — while the list went to
+zero, and the whole of the improvement in the percentage is a large *pure*
+parser (`parse-request` and its helpers, ~150 checked lines that take no
+capability) diluting the denominator. `perturb.nrepl`'s driver `read-frame` is
+18 unchecked lines; `perturb.http`'s `read-request` is 26 of the same, plus the
+compaction that used to be a separate named `compact`.
+
+Two things that cost, both structural:
+
+- **Inlining made the boundary cheaper to declare and harder to move.**
+  `compact` and `read-frame` were at least *named things* a future module system
+  could have been asked to give signatures to. Folding them into a transition
+  removes the names.
+- **There are no `:borrows` observers in `perturb.http` at all.**
+  `perturb.nrepl/state` and `/conn-id` exist because callers want to look at a
+  connection without taking it, and they are two of the five list entries.
+  Offering the same thing here means re-opening the list, so `perturb.httpdemo`
+  reports from the *ledger* instead of from the capability — a weaker thing,
+  and a distortion of the code caused by the annotation language.
+
+**Conclusion, which is a sharper form of E17's:** counting operations counts the
+wrong thing. The list is a proxy for a boundary and it can be driven to zero
+without moving the boundary at all, by writing bigger functions. What §1.2 needs
+is still a **module** — a scope inside which the concrete representation is
+visible and outside which only the capability is — and the number that would
+measure it is *lines below the boundary*, not *names in a list*. It stays at the
+top of §1.2's queue, and this section is the argument that its absence is not
+merely inelegant: it makes the one available metric gameable, and this artifact
+gamed it without trying to.
+
+#### Changes to `check.clj`, in full
+
+Three, none of them a rule. Recorded because §1.7's posture is that a checker
+change must be visible:
+
+1. `run-corpus` takes the namespace, expectations var and banner instead of
+   hard-coding `perturb.corpus`. Two corpora.
+2. `run-accepts` takes the expectations var, and honours a `:handler` key naming
+   a 0-arg var that builds the scripted handler. An HTTP server cannot be
+   executed against a scripted nREPL peer.
+3. `run-client` becomes `run-implementation`, parameterised by namespace, and
+   **prints diagnostics raised against axioms**, which the previous version
+   collected and discarded. This is what surfaced finding 1(b).
+
+No judgement, no diagnostic kind, and no acceptance condition was altered. Every
+`perturb.corpus` verdict is unchanged.
+
+#### E18's own nonclaims
+
+1. **Not a working HTTP server.** No chunked coding (refused explicitly rather
+   than mis-parsed), no HTTP/1.0, no absolute-form targets, no trailers, no
+   timeouts, no concurrency, no out-of-order pipelined responses. Each omission
+   is a feature that would have added protocol code without adding a capability
+   shape.
+2. **The `:need-more` contract is tested, not proved.** `perturb.selftest`
+   checks all 62 proper prefixes of one request and the two-request pipelining
+   case; `-M:http` drives 121 one-octet `recv`s through it. That is E4's method
+   at a fraction of E4's sample size, and `contract` in `perturb.http` is
+   hand-written and undischarged like `perturb.bencode`'s.
+3. **The contention axis is still untouched.** All four capabilities in perturb
+   declare `:thread-confined`, there is no scheduler (INHERITED I20), and no rule
+   here has ever seen a capability cross a task boundary.
+4. **The real-socket half is single-threaded and depends on kernel behaviour**
+   — a loopback `connect` completing into the accept queue, and both requests
+   fitting in a socket buffer. It is an existence proof that the same driver runs
+   on a real socket, not a demonstration that the driver is a server.
+5. **The three new capabilities' annotations are hand-written and unverified**,
+   like every other annotation in perturb. The nine transition bodies are
+   axioms; nothing checks that `respond!` responds.
+
 ---
 
 ## 4. Open questions
@@ -2522,8 +2846,11 @@ Recorded here so they are not lost between sections. None of these is decided.
   ladder entry (§5, step 5).
 - **The join-rule usability risk.** E6 probe 1's rejection of
   `if (c) { b = detach_result(b) }; use(b)` is a real usability risk for §1.2,
-  and how often it fires on real programs is argued rather than measured. One
-  data point now exists: on `perturb.nrepl` it fires zero times (E15).
+  and how often it fires on real programs is argued rather than measured. Two
+  data points now exist and they disagree: zero times on `perturb.nrepl` (E15),
+  and on the first driver anyone would write for HTTP keep-alive (E18). The
+  accepted rewrite — close inside the branch, `recur` in the other, so one arm
+  is bottom — works and is not discoverable from the diagnostic.
 - **~~`:local`~~ and `:extern`.** §1.1's two IR claims were inferences from
   source reading. **`:local` is now settled**: a checker walked real IR and the
   claim holds — names, no binding identity, no `:binding-id` key, no
@@ -2537,7 +2864,36 @@ Recorded here so they are not lost between sections. None of these is decided.
 - **A module boundary.** `:perturb.cap/representation` names the operations
   inside a capability's implementation by listing them. It wants to be a scope.
   §1.2 has no module concept, and every operation added to that list is a body
-  that stops being checked (E17).
+  that stops being checked (E17). **And the list is gameable:** `perturb.http`
+  has an empty one for each of three capabilities and 31 unchecked concrete-map
+  accesses against `perturb.nrepl`'s 5-entry list and 12 accesses, because the
+  accesses were written inside transition bodies instead of helpers. Lines below
+  the boundary is the metric; names in a list is not (E18).
+- **An operation that advances two capability machines at once cannot be
+  declared.** The primitive table is keyed by operation. `accept` and
+  `body-finish!` in `perturb.http` are both this shape and both draw a spurious
+  `annotation-inconsistent`; `perturb.nrepl/open` has drawn one since E17 and it
+  was never printed. Nothing here is a false accept — it is a declaration
+  language that cannot say what the code does (E18).
+- **A state cannot carry a refinement, so an obligation is unstatable.** A
+  Content-Length body writer that declares 6 octets and writes 3 reaches
+  `:finished` and is ACCEPTED and RUNS. The property is QF-LIA over a run-time
+  integer, i.e. §1.3's fragment; what is missing is the ability to attach it to
+  a typestate transition. The cross-capability ordering obligation beside it
+  (`body-finished-before-conn-reused`) is worse: §1.2 has no way to relate two
+  machines in time at all (E18).
+- **`:borrows` + `:produces` of the same capability duplicates it.** A legal,
+  natural annotation ("here is your listener back") mints a second abstract
+  capability for one runtime object; the false leak is reported at the caller
+  and nothing points at the annotation (E18).
+- **The unpositioned fallback should be removed, not documented.** With one
+  capability, matching specs to parameters in order is unprincipled. With two it
+  binds the wrong parameter to the wrong capability and produces five
+  diagnostics, none of which names the annotation (E18; E17 nonclaim 4).
+- **The contention axis has never been exercised.** All four capabilities in
+  perturb declare `:thread-confined`, there is no scheduler perturb can drive
+  (INHERITED I20), and no rule has seen a capability cross a task boundary.
+  Everything above step 1 of §5's ladder needs this (E18).
 - **Axioms — now two classes, and the set grew.** Nothing checks that a declared
   transition's body performs its transition, and nothing checks the five
   representation operations either — including `read-frame`, which is E4's whole

@@ -18,8 +18,8 @@ its reader and runtime, diverging only where semantics differ.
 | | claim | where it lives | verdict |
 | --- | --- | --- | --- |
 | 1 | wire bytes are unsigned octets, `0..255`, no `unchecked-byte` fold | `perturb/octet.clj`, `perturb/posix.clj` | **holds on the wire path**, by not routing wire bytes through a Jolt byte array at all — see below |
-| 2 | socket I/O goes through a declared effect with handlers; the same codec and session code run against a real socket and a scripted handler | `perturb/effect.clj`, `perturb/wire.clj`, `perturb/nrepl.clj` | **holds for the socket, and a scripted run is now measured to perform no I/O** (`INHERITED.md` I11, closed). One leak remains and is deliberate: console output is unmediated `println` (I12), measured at 3 `write(2)` calls in the exhibit run |
-| 3 | the connection is a `unique` capability with typestate, closed exactly once, annotated as data a future checker could consume | `perturb/cap.clj`, `perturb/nrepl.clj`, `perturb/check.clj` | **the checker exists and rejects** — `jolt -M:check` refuses use-after-close, double-close, use-after-move and a dangling connection, statically, over real Jolt IR. It also **rejects three functions of `perturb.nrepl` itself**; see below |
+| 2 | socket I/O goes through a declared effect with handlers; the same codec and session code run against a real socket and a scripted handler | `perturb/effect.clj`, `perturb/wire.clj`, `perturb/nrepl.clj`, `perturb/http.clj` | **holds for the socket, and a scripted run is now measured to perform no I/O** (`INHERITED.md` I11, closed). One leak remains and is deliberate: console output is unmediated `println` (I12), measured at 3 `write(2)` calls in the exhibit run |
+| 3 | the connection is a `unique` capability with typestate, closed exactly once, annotated as data a future checker could consume | `perturb/cap.clj`, `perturb/nrepl.clj`, `perturb/check.clj` | **the checker exists and rejects** — `jolt -M:check` refuses use-after-close, double-close, use-after-move and a dangling connection, statically, over real Jolt IR, across two protocols. `perturb.nrepl` and `perturb.http` both check above their abstraction boundary; what the rules **cannot say** about the second protocol is the more useful result (E18) |
 
 **Claim 1 needs its qualification stated up front.** `PERTURB-DESIGN` §1.5 and §8
 assume byte *storage* is octets and only the accessor folds the sign. On this
@@ -48,8 +48,9 @@ JOLT=/path/to/jolt/bin/jolt
 # codec and octet self-tests — no socket, no server
 $JOLT -M:selftest
 
-# the static capability checker: corpus + the real client. No socket, no server,
-# and nothing in the corpus is ever called — it is checked, not run.
+# the static capability checker: TWO corpora + the two real protocol
+# namespaces. No socket and no server; every program is checked statically,
+# and every ACCEPTED one is then executed under a scripted handler (E15).
 $JOLT -M:check
 
 # differential oracle against jolt.nrepl's bencode
@@ -61,6 +62,11 @@ $JOLT nrepl-server 7899
 # the demo: real socket, then the same session code under two in-memory handlers
 $JOLT -M:demo 7899
 $JOLT -M:demo --offline      # skip the socket
+
+# the second protocol: one HTTP/1.1 keep-alive driver under a scripted network
+# (one octet per recv) and under a real loopback listener. Needs no server —
+# it is both ends. Response octets are compared.
+$JOLT -M:http 7900
 
 # the no-I/O verifier: a full scripted session, and what it did or did not touch
 $JOLT -M:noio
@@ -117,8 +123,13 @@ perturb.cap       capability declarations, operation annotations, and an
 perturb.ir        captures real Jolt IR from the compile spine (INHERITED I18)
 perturb.check     the static capability checker. Ports the validated rule set in
                   docs/research/prototypes/ onto real IR and REJECTS.
-perturb.corpus    the acceptance corpus: real perturb source, never called,
-                  17 programs with the verdict each one must get
+perturb.corpus    the nREPL acceptance corpus: real perturb source, 22 programs
+                  with the verdict each must get; every ACCEPT is also executed
+perturb.http      the SECOND protocol. Sans-io HTTP/1.1, server side: three
+                  capabilities, a typestate CYCLE, and an obligation §1.2
+                  cannot state
+perturb.httpcorpus  the HTTP acceptance corpus, 25 programs
+perturb.httpdemo  one keep-alive driver under both handlers, octets compared
 perturb.nrepl     the session. Threads the connection affinely; drives I/O from
                   nothing but a :need-more.
 perturb.posix     handler (a): real TCP, octets via jolt.ffi :uint8
@@ -175,37 +186,53 @@ Six things, none of which were visible from the design record. Full detail in
 
 ## The checker — what it rejects, and what it rejects that we wanted to keep
 
-`jolt -M:check`. It is static: nothing in the corpus is called, no socket is
-opened, and the verdict is reached before any of it could run. It reads
+`jolt -M:check`. The verdict is static: no socket is opened and no program runs
+before it is decided. Every ACCEPTED program is then EXECUTED under a scripted
+handler, because the first accept set type-checked and every entry threw (E15).
+It reads
 `perturb.cap/checker-input` as the specification and real Jolt IR — captured from
 the compile spine by `perturb.ir` — as the program. The judgements are ports of
 `docs/research/prototypes/`, which were validated against artifacts perturb did
 not author (jolt-hako's `ownership.pl` and `queries.json`).
 
-Corpus: 17 programs, 6 accepted and 11 rejected, all as recorded. The rejections
+Two corpora, 47 programs, all decided as recorded: `perturb.corpus` (22 — one
+capability, a straight-line typestate) and `perturb.httpcorpus` (25 — two
+capabilities live at once, a typestate cycle, an obligation). The rejections
 include use-after-close (`INHERITED.md` I16's example, verbatim), double-close,
 use-after-move through an affine rebinding, a dangling connection at scope exit,
-a conditional close, a loop that closes on its back edge, and a capability
-captured by a closure.
+a conditional close, a loop that closes on its back edge, a capability captured
+by a closure, a listener dropped while its connection is kept, a keep-alive loop
+that recurs with a response still owed, and a response body that is never
+finished.
 
-**It also rejects three functions of `perturb.nrepl`, and that is the most useful
-thing it does.** `clone-session`, `eval-code` and `session` all fail — five
-diagnostics at five source positions, for one reason: a connection crosses a
-function boundary. §1.2's
-`:consumes` / `:produces` are *unpositioned*, so a function that returns
-`[conn value]` — which is exactly how this client threads the connection — cannot
-be annotated at all. `perturb.corpus/ping` is the same helper returning the
-connection bare and is accepted; `perturb.corpus/ping-tuple` is that helper with
-the pair put back, annotated identically, and is rejected. That is E13's
-"composition needs abstract refinements §1.2 does not have" landing on running
-code, and no rule was weakened to soften it.
+Capability specs are POSITIONED — `:arg n` on `:consumes`/`:borrows`, `:at [i]`
+on `:produces` — which is what made the real client annotatable at all (E17),
+and what lets `perturb.http/accept` say it consumes a Listener and produces a
+Listener *and* a ServerConn at two different result positions.
 
-E6 probe 1's join rule also fires on the shape it was predicted to fire on
-(`conditional-close`), which §1.2 records as an unquantified usability risk. On
-this client it fires zero times outside the corpus: `perturb.nrepl` has one
-`if`, in a `loop`, and treating the `recur` arm as unreachable at the join —
-the one judgement this checker adds that the Python prototypes never needed —
-is what keeps it from firing there.
+**The most useful things it does are the four it cannot do.** See E18 in
+`docs/research/PERTURB-DESIGN.md`, and items 9–11 of `-M:check`'s own limits
+list:
+
+- an operation that advances **two capability machines at once** cannot be
+  declared — the primitive table is keyed by operation, so `accept` and
+  `body-finish!` both draw a spurious `annotation-inconsistent`;
+- a state cannot carry a **refinement**, so a Content-Length body that declares
+  6 octets and writes 3 reaches `:finished`, is ACCEPTED, and RUNS — `-M:http`
+  prints the malformed response it emits;
+- `:borrows` **and** `:produces` of the same capability duplicates it, and the
+  false leak is reported at the caller;
+- `:perturb.cap/representation` is **gameable**: `perturb.http` has an empty list
+  for each of three capabilities and 31 unchecked concrete-map accesses, against
+  `perturb.nrepl`'s 5-entry list and 12 accesses. Counting operations counts the
+  wrong thing.
+
+E6 probe 1's join rule fires on the shape it was predicted to fire on
+(`conditional-close`), which §1.2 records as an unquantified usability risk. It
+fires **zero times** in `perturb.nrepl` — and on the **first driver anyone would
+write** for HTTP keep-alive, `(if (keep-alive? req) c2 (close-conn! c2))`. An
+accepted rewrite exists (close inside the branch, `recur` in the other, so one
+arm is bottom) and is not discoverable from the diagnostic.
 
 `-M:check` also prints, from the IR itself, the evidence for §1.1's untested
 `:local` claim, and the list of things the checker cannot see. Read the second

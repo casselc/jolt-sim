@@ -533,6 +533,17 @@ this namespace's 15 functions are believed rather than checked. The convention
 this entry was logged for has not disappeared; it has retreated into the
 Connection's implementation. PERTURB-DESIGN E17.
 
+**AMENDED A THIRD TIME, by a second protocol.** `perturb.http` declares three
+capabilities and its `:perturb.cap/representation` list is **empty for all
+three** — which reads like this entry closing and is not. The concrete map is
+reached in **31** places there against **12** in `perturb.nrepl`; every one of
+them was simply written *inside* a declared transition, whose body is already an
+axiom, rather than in a helper the list would have had to name. Unchecked code
+went from 72 of 143 code lines (50.3%) to 136 of 456 (29.8%), and the whole of
+that improvement is a bigger *pure* parser being checked, not a smaller
+unchecked core. The list is a proxy for a module boundary and it can be driven
+to zero without moving the boundary at all. PERTURB-DESIGN E18 finding 4.
+
 ---
 
 ## I18 — `jolt.ir`'s `:local` has no binding identity, and the compile spine has no IR hook
@@ -570,3 +581,91 @@ beside one. The `:binding-id` half is the higher cost and the more important:
 until the IR carries binding identity, every consumer of Jolt IR that cares about
 linearity has to re-derive scopes, and two consumers that do it slightly
 differently will disagree about the same program.
+
+---
+
+## I19 — `SOL_SOCKET`/`SO_REUSEADDR` and the `accept`/`bind`/`listen` ABI
+
+**Inherited:** `perturb.http`'s server side needs four more C entry points than
+`perturb.nrepl`'s client side did — `bind`, `listen`, `accept`, `setsockopt` —
+and with them three numbers that are not in any header perturb reads:
+
+```clojure
+(def SOL-SOCKET   (if macos? 0xffff 1))
+(def SO-REUSEADDR (if macos? 0x0004 2))
+(def LISTEN-BACKLOG 16)
+```
+
+I7 already logs the `sockaddr_in` layout as inherited from `jolt.nrepl`. These
+are worse: `jolt.nrepl` is a client and never needed them, so they are copied
+from `<sys/socket.h>` by hand, they differ per platform, and **nothing in the
+gate can tell a wrong value from a right one** — a failed `setsockopt` returns
+-1 and the code deliberately ignores it, because treating it as fatal would make
+the gate depend on two magic numbers being right on the host it happens to run
+on. `accept`'s third argument is a `socklen_t*`, written as four `:uint8`s
+little-endian (`alloc-le32`) because `jolt.ffi`'s type table as perturb uses it
+has only `:uint8` for memory writes; that also assumes the host is
+little-endian, which is a fourth unstated fact.
+
+**Deliberate or convenience:** convenience. The alternative is an FFI that can
+report a C constant's value, which is a jolt-level feature nothing here needs
+enough to build.
+
+**Cost to replace:** low per constant, unbounded in aggregate. Every C interface
+perturb reaches for adds numbers of this kind, and the honest reading of "the
+real socket half of `-M:http` passes" is "it passes on x86-64 Linux, and the two
+platform branches above are untested on the other branch".
+
+---
+
+## I20 — there is no scheduler, so a server and its client must be ordered by hand
+
+**Inherited:** an *absence*. `jolt.ffi/defcfn`'s `:blocking` annotation is the
+only concurrency primitive `perturb.posix` uses, and Jolt gives perturb no
+threads, no readiness reactor and no green scheduler it could drive from
+Jolt-level code. `PERTURB-DESIGN` §1.4 says control — "blocking, scheduling,
+virtual time" — belongs in an explicit cooperative kernel; that kernel does not
+exist.
+
+The consequence is concrete and it shapes `perturb.httpdemo`. The real-socket
+half is one process being both ends of a loopback connection, and it only works
+because of two facts about the *kernel*, not about perturb:
+
+1. a `listen`ing socket completes a loopback `connect` into the accept queue
+   without `accept` ever being called, so the client can connect first;
+2. both pipelined requests fit in the socket buffer, so the client can send
+   everything before the server reads anything.
+
+Change either and the demo deadlocks against itself. `jolt-tcp`, the intended
+stdlib target (§5), solves this with a `core.async`-backed readiness reactor —
+which is exactly the layer §1.4 reserves and perturb has not designed.
+
+**Deliberate or convenience:** deliberate as a *deferral*, inherited as a *gap*.
+Nothing here decided that blocking FFI is perturb's concurrency model; it is
+simply what is reachable.
+
+**Cost to replace:** this is the largest single item between the artifact and
+§5's ladder. Everything above step 1 of that ladder — pipelining with async
+handlers, SSE liveness, leader election — needs concurrency, and none of the
+capability rules in `perturb.check` have been tested against a capability that
+crosses a task boundary. §1.2's fourth axis, **contention**, is declared
+`:thread-confined` on all four capabilities in this artifact and has therefore
+never been exercised at all.
+
+---
+
+## I21 — `Integer/parseInt` and other host static calls in demo code
+
+**Inherited:** `perturb.httpdemo` reads its port with `(Integer/parseInt s)`, a
+JVM-shaped host static call that Jolt implements in
+`host/chez/java/host-static-methods.ss`. perturb has no integer parser of its
+own and the one in `perturb.http/digits->int` is private to the HTTP grammar
+(no sign, no whitespace, no radix) and deliberately not general.
+
+**Deliberate or convenience:** convenience, and confined to demo code — no
+protocol or capability path calls it.
+
+**Cost to replace:** trivial, but the entry is here because "confined to demo
+code" is a claim that stops being true the first time someone reaches for it in
+a parser. The general lesson I2 records for `char` applies: a JVM-named host
+static is a JVM semantics decision perturb has not made.

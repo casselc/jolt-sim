@@ -90,6 +90,94 @@
          (= op :close)   (do (swap! st assoc :open false) [:ok :closed])
          :else [:abort {:reason :unsupported-op :op op}])))))
 
+;; --- the scripted network, server side --------------------------------------
+;;
+;; `model-handler` above is a scripted PEER for a client. This is a scripted
+;; NETWORK for a server: it answers `:listen` and `:accept`, and each accepted
+;; connection delivers a fixed octet stream one chunk at a time and records
+;; everything written to it.
+;;
+;; It knows nothing about HTTP. The request octets are supplied by the caller,
+;; which is what keeps `perturb.script` free of `perturb.http` — the same
+;; property `model-handler` has with respect to `perturb.nrepl`'s protocol layer
+;; (it does use the bencode codec, which is the weaker half of that claim).
+
+(defn server-session
+  "A scripted server-side network.
+
+  `opts`:
+    :conns      vector of octet views — one complete inbound stream per
+                connection, delivered in accept order
+    :chunk-size octets per `recv` (DEFAULT 1)
+
+  Returns {:handler f :state atom}. `:sent` in the state is conn-index -> vector
+  of octet views written to that connection, in order, so a caller can compare
+  what the server put on the wire against what a real socket saw.
+
+  ONE OCTET PER RECV IS THE DEFAULT ON PURPOSE. It forces
+  `perturb.http/read-request` through the `:need-more` arm on nearly every octet
+  of every request, which is the only thing that makes the exact-original-cursor
+  half of the trichotomy load-bearing rather than decorative."
+  ([] (server-session {}))
+  ([opts]
+   (let [conns (or (:conns opts) [])
+         csz   (or (:chunk-size opts) 1)
+         st    (atom {:conns conns :next 0 :queues {} :sent {} :listening false})
+         qpop  (fn [i]
+                 (let [q (get (:queues @st) i)]
+                   (if (or (nil? q) (empty? q))
+                     o/empty-octets
+                     (do (swap! st (fn [s] (assoc s :queues (assoc (:queues s) i (subvec q 1)))))
+                         (nth q 0)))))
+         h (fn [op site args]
+             (cond
+               (= op :listen)
+               (do (swap! st assoc :listening true)
+                   [:ok [:scripted-listener (first args) (second args)]])
+
+               (= op :accept)
+               (let [i (:next @st)]
+                 (if (>= i (count conns))
+                   [:abort {:reason :no-more-connections :accepted i}]
+                   (do (swap! st (fn [s]
+                                   (assoc s
+                                          :next   (inc i)
+                                          :queues (assoc (:queues s) i
+                                                         (vec (o/ochunks (nth conns i) csz)))
+                                          :sent   (assoc (:sent s) i []))))
+                       [:ok [:scripted-conn i]])))
+
+               (= op :recv)
+               (let [tok (first args)]
+                 (if (= :scripted-conn (first tok))
+                   [:ok (qpop (second tok))]
+                   [:abort {:reason :recv-on-a-listener}]))
+
+               (= op :send)
+               (let [tok (first args) ov (second args)]
+                 (if (= :scripted-conn (first tok))
+                   (let [i (second tok)]
+                     (swap! st (fn [s]
+                                 (assoc s :sent
+                                        (assoc (:sent s) i
+                                               (conj (or (get (:sent s) i) []) ov)))))
+                     [:ok (o/ocount ov)])
+                   [:abort {:reason :send-on-a-listener}]))
+
+               (= op :close) [:ok :closed]
+               :else [:abort {:reason :unsupported-op :op op}]))]
+     {:handler h :state st})))
+
+(defn server-handler
+  "`server-session`'s handler alone, for callers that do not need the state."
+  ([] (:handler (server-session {})))
+  ([opts] (:handler (server-session opts))))
+
+(defn sent-octets
+  "All octets written to scripted connection `i`, concatenated."
+  [state i]
+  (reduce (fn [a ov] (o/oconcat a ov)) o/empty-octets (or (get (:sent @state) i) [])))
+
 ;; --- the replay handler -----------------------------------------------------
 
 (defn replay-handler

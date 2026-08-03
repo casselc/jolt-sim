@@ -52,6 +52,12 @@
 (ffi/defcfn c-recv    "recv"    [:int :pointer :size_t :int] :ssize_t :blocking)
 (ffi/defcfn c-send    "send"    [:int :pointer :size_t :int] :ssize_t :blocking)
 (ffi/defcfn c-close   "close"   [:int] :int)
+;; Server side, added for perturb.http. Same lazy-resolution property as the
+;; five above (INHERITED I11): building these `def`s resolves nothing.
+(ffi/defcfn c-bind    "bind"    [:int :pointer :int] :int)
+(ffi/defcfn c-listen  "listen"  [:int :int] :int)
+(ffi/defcfn c-accept  "accept"  [:int :pointer :pointer] :int :blocking)
+(ffi/defcfn c-setsockopt "setsockopt" [:int :int :int :pointer :int] :int)
 
 ;; The canary. Never called by the handler; called by `perturb.noio` as a probe.
 (ffi/defcfn c-absent-canary "perturb_absent_symbol_canary_do_not_define" [] :int)
@@ -100,6 +106,11 @@
 (defn- sys-send    [fd p n fl] (ensure-native!) (count! :send)    (c-send fd p n fl))
 (defn- sys-recv    [fd p n fl] (ensure-native!) (count! :recv)    (c-recv fd p n fl))
 (defn- sys-close   [fd]        (ensure-native!) (count! :close)   (c-close fd))
+(defn- sys-bind    [fd sa n]   (ensure-native!) (count! :bind)    (c-bind fd sa n))
+(defn- sys-listen  [fd bl]     (ensure-native!) (count! :listen)  (c-listen fd bl))
+(defn- sys-accept  [fd sa sl]  (ensure-native!) (count! :accept)  (c-accept fd sa sl))
+(defn- sys-setsockopt [fd l o p n]
+  (ensure-native!) (count! :setsockopt) (c-setsockopt fd l o p n))
 
 (defn absent-canary-probe
   "Call the canary symbol. Returns `:resolved` if it somehow came back (it
@@ -111,6 +122,24 @@
 
 (def ^:private AF-INET 2)
 (def ^:private SOCK-STREAM 1)
+
+;; INHERITED I19: these are the C ABI's numbers, not perturb's, and they differ
+;; per platform. Copied from <sys/socket.h>; nothing verifies them but a failing
+;; setsockopt, which this code deliberately does not treat as fatal.
+(def ^:private SOL-SOCKET (if macos? 0xffff 1))
+(def ^:private SO-REUSEADDR (if macos? 0x0004 2))
+(def ^:private LISTEN-BACKLOG 16)
+
+(defn- alloc-le32
+  "A 4-byte little-endian integer in native memory, written one `:uint8` at a
+  time for the same reason everything else here is: no byte array, no fold."
+  [v]
+  (let [p (ffi/alloc 4)]
+    (ffi/write p :uint8 0 (bit-and v 0xff))
+    (ffi/write p :uint8 1 (bit-and (bit-shift-right v 8) 0xff))
+    (ffi/write p :uint8 2 (bit-and (bit-shift-right v 16) 0xff))
+    (ffi/write p :uint8 3 (bit-and (bit-shift-right v 24) 0xff))
+    p))
 
 (defn- make-sockaddr
   "sockaddr_in for 127.0.0.1:port. INHERITED I7 — structurally jolt.nrepl's."
@@ -215,6 +244,45 @@
                    (if (neg? r)
                      (do (sys-close fd) [:abort {:reason :connect-failed :port port}])
                      (do (note {:op :connect :port port}) [:ok fd])))))))
+
+         ;; SERVER SIDE. Loopback only, exactly as `:connect` is: perturb's
+         ;; artifacts never talk to anything but themselves, and the restriction
+         ;; is cheaper to keep than to justify removing.
+         (= op :listen)
+         (let [host (first args) port (second args)]
+           (if (not= host "127.0.0.1")
+             [:abort {:reason :loopback-only :host host}]
+             (let [fd (sys-socket AF-INET SOCK-STREAM 0)]
+               (if (neg? fd)
+                 [:abort {:reason :socket-failed}]
+                 (let [opt (alloc-le32 1)]
+                   ;; SO_REUSEADDR: a listener whose port is still in TIME_WAIT
+                   ;; from the previous run of the gate would otherwise fail to
+                   ;; bind. Failure here is NOT fatal — it is an optimisation,
+                   ;; and treating it as fatal would make the gate depend on the
+                   ;; two constants above being right on this platform.
+                   (sys-setsockopt fd SOL-SOCKET SO-REUSEADDR opt 4)
+                   (ffi/free opt)
+                   (let [sa (make-sockaddr port)
+                         r  (sys-bind fd sa 16)]
+                     (ffi/free sa)
+                     (if (neg? r)
+                       (do (sys-close fd) [:abort {:reason :bind-failed :port port}])
+                       (let [r2 (sys-listen fd LISTEN-BACKLOG)]
+                         (if (neg? r2)
+                           (do (sys-close fd) [:abort {:reason :listen-failed :port port}])
+                           (do (note {:op :listen :port port}) [:ok fd]))))))))))
+
+         (= op :accept)
+         (let [lfd (first args)
+               sa  (ffi/alloc 16)
+               sl  (alloc-le32 16)
+               fd  (sys-accept lfd sa sl)]
+           (ffi/free sa)
+           (ffi/free sl)
+           (if (neg? fd)
+             [:abort {:reason :accept-failed}]
+             (do (note {:op :accept}) [:ok fd])))
 
          (= op :send)
          (let [fd (first args) ov (second args)]

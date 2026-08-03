@@ -953,23 +953,25 @@
 (defn report-limits []
   ["WHAT THIS CHECKER CANNOT SEE"
    ""
-   "  1. AXIOMS — the largest hole, and it GREW. Two classes of function have"
-   "     unchecked bodies: the declared :transitions (open/request/close!), and"
-   "     the operations listed in the capability's :representation, which work on"
-   "     its concrete value below the level the modes describe (conn, compact,"
-   "     read-frame, state, conn-id). Nothing verifies that close! closes, and"
-   "     nothing checks the driver. mode_checker.py's RULES have the same status"
-   "     for the first class; the second is NEW, added when positioned specs made"
-   "     the protocol layer checkable and the implementation layer under it"
-   "     immediately failed. Listing operations by name is a placeholder for a"
-   "     module boundary that §1.2 does not have. PERTURB-DESIGN E17."
+   "  1. AXIOMS — the largest hole, and the number that looks best is the one to"
+   "     distrust. Two classes of function have unchecked bodies: the declared"
+   "     :transitions, and the operations listed in a capability's"
+   "     :representation. perturb.nrepl has 5 of the second and 12 unchecked"
+   "     concrete-map accesses; perturb.http has ZERO of the second and 31,"
+   "     because every access there was written INSIDE a transition instead of in"
+   "     a helper the list would have named. An empty :representation is not a"
+   "     boundary that moved, it is a boundary that was hidden. Both lists are"
+   "     placeholders for a module scope §1.2 does not have."
+   "     PERTURB-DESIGN E17, E18 finding 4."
    ""
-   "  2. :consumes / :produces are now POSITIONED — `:arg n` names a parameter,"
+   "  2. :consumes / :produces are POSITIONED — `:arg n` names a parameter,"
    "     `:at [i]` a tuple position of the result — which is what let the real"
    "     client be annotated at all (E15). Two limits remain: paths are ONE level"
    "     of tuple nesting only, and an annotation whose entries omit `:arg` still"
-   "     falls back to matching specs to parameters IN ORDER, a convention that"
-   "     is the checker's own and not §1.2's."
+   "     falls back to matching specs to parameters IN ORDER. With ONE capability"
+   "     that fallback is unprincipled; with TWO it binds the wrong parameter to"
+   "     the wrong capability and emits five diagnostics, none naming the"
+   "     annotation (perturb.httpcorpus/unpositioned-two-cap-helper, E18)."
    ""
    "  3. Closure bodies are walked for diagnostics but their state does not"
    "     propagate: the checker does not model whether or how often a closure runs."
@@ -992,7 +994,28 @@
    "  8. Only `first`, `second` and `nth`-with-a-constant eliminate a tuple."
    "     Destructuring, `peek`, `last`, or a computed index lose the capability"
    "     to OPAQUE — which is silent, not a diagnostic. This is the most likely"
-   "     place for a FALSE ACCEPT to hide today."])
+   "     place for a FALSE ACCEPT to hide today."
+   ""
+   "  9. AN OPERATION BELONGS TO AT MOST ONE CAPABILITY. `spec`'s primitive table"
+   "     is keyed by operation symbol, so a second declaration naming the same"
+   "     operation OVERWRITES the first. perturb.http declares 10 transitions"
+   "     across three capabilities and this checker sees 9 primitives."
+   "     `perturb.http/accept` mints a ServerConn from a Listener and"
+   "     `body-finish!` ends a ResponseBody and returns a ServerConn: both are"
+   "     ordinary, neither can be declared, and both draw a spurious"
+   "     `annotation-inconsistent` printed above. So does `perturb.nrepl/open`,"
+   "     which has since E17 and was never displayed. E18 finding 1."
+   ""
+   " 10. A STATE CANNOT CARRY A REFINEMENT, so an obligation is unstatable. A"
+   "     Content-Length body writer that declares 6 octets and writes 3 reaches"
+   "     :finished and is ACCEPTED — see the section above, which prints what it"
+   "     put on the wire. Nothing in §1.2 can relate two machines in time"
+   "     either. E18 finding 3."
+   ""
+   " 11. `:borrows` AND `:produces` OF THE SAME CAPABILITY duplicates it. The"
+   "     annotation is legal, both halves check, and the caller is then reported"
+   "     for leaking a capability it disposed of correctly"
+   "     (perturb.httpcorpus/uses-borrow-and-return). E18 finding 1(c)."])
 
 (def ^:private line
   "========================================================================")
@@ -1001,12 +1024,18 @@
 
 (defn- kinds [rs] (set (map :kind (:diagnostics rs))))
 
-(defn- run-corpus [sp]
-  (let [results (check-namespace! sp "perturb.corpus")
+(defn- run-corpus
+  "Check one corpus namespace against its own recorded expectations.
+
+  CHANGED (E18): was hard-wired to `perturb.corpus`. It now takes the namespace,
+  the expectations var and a banner, because perturb has a second protocol and a
+  second corpus. No rule changed; the parameter list did."
+  [sp ns-name exp-sym banner]
+  (let [results (check-namespace! sp ns-name)
         by-var  (reduce (fn [m r] (assoc m (:var r) r)) {} results)
-        exps    (deref (resolve 'perturb.corpus/expectations))]
-    (println "== corpus ==============================================================")
-    (println "   real perturb source, compiled by Jolt, checked from its own IR")
+        exps    (deref (resolve exp-sym))]
+    (println (str "== corpus: " ns-name " ================================================"))
+    (println (str "   " banner))
     (println)
     (let [fails
           (reduce
@@ -1033,7 +1062,7 @@
       (println)
       (println "  the first rejection, in full:")
       (println)
-      (let [r (get by-var 'perturb.corpus/use-after-close)]
+      (let [r (get by-var (:var (first (filter (fn [e] (= :reject (:expect e))) exps))))]
         (print (render (:diagnostics r))))
       fails)))
 
@@ -1044,21 +1073,27 @@
   and never run, and every entry in it threw: the checker's model of `request`
   contradicted `request`. An acceptance that cannot run is not a weak result,
   it is a wrong one, and only running it says which. Returns the vars that
-  failed to complete."
-  []
+  failed to complete.
+
+  CHANGED (E18): takes the expectations var, and honours a `:handler` key naming
+  a 0-arg var that builds the handler. Both are plumbing — an HTTP server cannot
+  be run against a scripted nREPL peer — and neither is a rule."
+  [exp-sym]
   (println)
-  (println "== every ACCEPT is executed ============================================")
+  (println (str "== every ACCEPT of " exp-sym " is executed ================"))
   (println "   the same programs, run under perturb.script's in-memory handler.")
   (println "   E15: the previous accept set type-checked and threw.")
   (println)
-  (let [exps  (deref (resolve 'perturb.corpus/expectations))
+  (let [exps  (deref (resolve exp-sym))
         runs  (filter (fn [e] (and (= :accept (:expect e)) (:run e))) exps)
         no-run (filter (fn [e] (and (= :accept (:expect e)) (nil? (:run e)))) exps)
         fails
         (reduce
           (fn [acc e]
             (let [f  (deref (resolve (:var e)))
-                  hh ((resolve 'perturb.script/model-handler) {:chunk-size 1})
+                  hh (if (:handler e)
+                       ((deref (resolve (:handler e))))
+                       ((resolve 'perturb.script/model-handler) {:chunk-size 1}))
                   r  (try
                        (with-bindings
                          {(resolve 'perturb.effect/*handlers*)
@@ -1079,41 +1114,59 @@
                   (if (empty? fails) "" (str "; FAILED " (vec fails)))))
     fails))
 
-(defn- run-client [sp]
+(defn- run-implementation
+  "Check one real implementation namespace and REPORT. Not a gate.
+
+  CHANGED (E18) in two ways, both flagged:
+    - it takes the namespace, so the same stage can report on `perturb.nrepl`
+      and on `perturb.http`;
+    - it prints the diagnostics of AXIOMS as well as of checked functions. The
+      previous version computed `bad` over the non-axioms only, so a diagnostic
+      raised against an axiom — `check-annotation-consistency!` is the only
+      thing that can raise one — was collected and never shown. That is how the
+      pre-existing inconsistency on `perturb.nrepl/open` stayed invisible; it is
+      printed below now. No rule changed: the same diagnostics, displayed."
+  [sp ns-name banner]
   (println)
-  (println "== the real nREPL client ===============================================")
-  (println "   perturb.nrepl, unmodified, checked by the same rules. This is NOT a")
-  (println "   gate: it is the measurement §1.2 and §4.6 say has never been taken.")
+  (println (str "== " ns-name " ==========================================="))
+  (doseq [l banner] (println (str "   " l)))
   (println)
-  (let [results (check-namespace! sp "perturb.nrepl")
+  (let [results (check-namespace! sp ns-name)
         ax?     (fn [r] (axiom? sp (:var r)))
         checked (remove ax? results)
-        bad     (filter (fn [r] (seq (:diagnostics r))) checked)]
+        bad     (filter (fn [r] (seq (:diagnostics r))) checked)
+        ax-bad  (filter (fn [r] (seq (:diagnostics r))) (filter ax? results))]
     (doseq [r results]
       (println (str "  "
-                    (cond (ax? r) "[axiom] "
+                    (cond (and (ax? r) (seq (:diagnostics r))) "[axiom!]"
+                          (ax? r) "[axiom] "
                           (empty? (:diagnostics r)) "[ok   ] "
                           :else "[NO   ] ")
                     (:var r)
                     (cond (primitive? sp (:var r)) "  transition of the declared machine"
-                          (representation? sp (:var r)) "  inside the Connection's representation"
+                          (representation? sp (:var r)) "  inside the capability's representation"
                           (empty? (:diagnostics r)) ""
                           :else (str "  " (vec (sort (map name (kinds r)))))))))
     (println)
     (doseq [r bad]
       (println (str "  --- " (:var r)))
       (print (render (:diagnostics r))))
+    (when (seq ax-bad)
+      (println "  --- diagnostics raised against AXIOMS (previously collected and never shown):")
+      (doseq [r ax-bad]
+        (println (str "  --- " (:var r)))
+        (print (render (:diagnostics r)))))
     ;; READ THIS COUNT CAREFULLY. It is small on purpose: an axiom is a function
     ;; whose body was NOT checked, and every axiom is a place a wrong program
     ;; could hide. The number that matters is how many were checked, not how
     ;; many passed.
     (println (str "  " (count checked) " of " (count results)
-                  " functions in perturb.nrepl were CHECKED; " (count bad)
+                  " functions in " ns-name " were CHECKED; " (count bad)
                   " rejected."))
     (println (str "  " (count (filter (fn [r] (primitive? sp (:var r))) results))
-                  " are transitions of the declared machine and "
+                  " are transitions of a declared machine and "
                   (count (filter (fn [r] (representation? sp (:var r))) results))
-                  " are inside its representation — those "
+                  " are inside a representation — those "
                   (count (filter ax? results)) " bodies are AXIOMS, believed, not checked."))
     bad))
 
@@ -1158,31 +1211,71 @@
     (println "   perturb.corpus/shadowing-hides-a-leak is the program a name-keyed")
     (println "   checker would wrongly accept, and it is in the reject corpus above.")))
 
+(defn report-obligation-finding
+  "E18 finding 3, printed from the LEDGER rather than asserted.
+
+  `perturb.httpcorpus/short-body-still-type-checks` was ACCEPTED above and RAN
+  above. This prints what it put on the wire while doing so. Nothing here is a
+  gate: the point is that the checker had nothing to say."
+  []
+  (let [vs (filter (fn [e] (= :VIOLATED (:perturb.http/verdict e)))
+                   (deref (deref (resolve 'perturb.cap/ledger))))]
+    (println)
+    (println "== the obligation the typestate axis cannot state =====================")
+    (println "   §1.2's four axes are uniqueness, linearity, typestate and contention.")
+    (println "   A Content-Length response body's terminal condition is not a state:")
+    (println "   it is `wrote exactly N octets`, arithmetic over a run-time integer.")
+    (println)
+    (if (empty? vs)
+      (println "   no violation recorded — the accept set did not run, or was changed")
+      (doseq [e vs]
+        (println (str "   " (:perturb.cap/id e) "  declared Content-Length "
+                      (:perturb.http/declared e) ", wrote " (:perturb.http/written e)
+                      "  -> " (name (:perturb.http/verdict e))))))
+    (println)
+    (println "   perturb.check ACCEPTED the program that did this, and the gate RAN it")
+    (println "   to completion. The capability reached :finished, which is all the")
+    (println "   typestate axis can require. The obligation is written as data on")
+    (println "   perturb.http/body-capability with :class :refinement, and nothing in")
+    (println "   perturb discharges a refinement (§1.3 reserves it for Ansatz).")))
+
 (defn -main [& _]
   (println line)
   (println "perturb.check — static capability checking over real Jolt IR")
   (println line)
   (println)
-  (pir/capture! ['perturb.nrepl 'perturb.corpus])
+  (pir/capture! ['perturb.nrepl 'perturb.corpus 'perturb.http 'perturb.httpcorpus])
   (let [sp (spec)]
     (println (str "  capabilities declared : " (vec (keys (:declarations sp)))))
     (println (str "  operations annotated  : " (vec (sort (map str (keys (:operations sp)))))))
     (println (str "  machine primitives    : " (vec (sort (map str (keys (:primitives sp)))))))
     (println (str "  IR defs captured      : " (count @pir/captured)))
     (println)
-    (let [fails (run-corpus sp)
-          rfails (run-accepts)]
-      (run-client sp)
+    (let [fails  (run-corpus sp "perturb.corpus" 'perturb.corpus/expectations
+                             "nREPL: one capability, a straight-line typestate")
+          rfails (run-accepts 'perturb.corpus/expectations)
+          hfails (run-corpus sp "perturb.httpcorpus" 'perturb.httpcorpus/expectations
+                             "HTTP: two capabilities at once, a typestate CYCLE, an obligation")
+          hrfails (run-accepts 'perturb.httpcorpus/expectations)]
+      (run-implementation sp "perturb.nrepl"
+                          ["perturb.nrepl, unmodified, checked by the same rules. This is NOT a"
+                           "gate: it is the measurement §1.2 and §4.6 say has never been taken."])
+      (run-implementation sp "perturb.http"
+                          ["perturb's SECOND protocol. Three capabilities, ten transitions, and"
+                           "ZERO :perturb.cap/representation entries — see the note in that"
+                           "namespace for why that is repackaging and not progress (E18)."])
+      (report-obligation-finding)
       (report-local-finding)
       (println)
       (doseq [l (report-limits)] (println (str "  " l)))
       (println)
       (println line)
-      (if (and (empty? fails) (empty? rfails))
-        (do (println "CHECK OK — every corpus verdict is the recorded one,")
-            (println "           and every accepted program runs")
-            (System/exit 0))
-        (do (println (str "CHECK FAILED — verdicts " (vec fails)
-                          "  runs " (vec rfails)))
-            (System/exit 1))))))
+      (let [all (concat fails rfails hfails hrfails)]
+        (if (empty? all)
+          (do (println "CHECK OK — every corpus verdict in BOTH corpora is the recorded one,")
+              (println "           and every accepted program runs")
+              (System/exit 0))
+          (do (println (str "CHECK FAILED — verdicts " (vec (concat fails hfails))
+                            "  runs " (vec (concat rfails hrfails))))
+              (System/exit 1)))))))
 
