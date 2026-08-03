@@ -20,15 +20,15 @@
 
 (def ^:private run-keys
   #{:worker-command :scenario :schedule :timeout-ms :kill-grace-ms
-    :dir :extra-env :temp-dir})
+    :dir :extra-env :temp-dir :retain-completed-artifacts?})
 
 (def ^:private case-keys
   #{:worker-command :scenario :schedule :input :timeout-ms :kill-grace-ms
-    :dir :extra-env :temp-dir})
+    :dir :extra-env :temp-dir :retain-completed-artifacts?})
 
 (def ^:private explore-keys
   #{:worker-command :scenario :schedules :timeout-ms :kill-grace-ms
-    :dir :extra-env :temp-dir})
+    :dir :extra-env :temp-dir :retain-completed-artifacts?})
 
 (def ^:private diagnostic-byte-limit 65536)
 (def ^:private wait-poll-ms 10)
@@ -82,6 +82,13 @@
     (let [temp-dir (:temp-dir config)]
       (when-not (and (string? temp-dir) (seq temp-dir))
         (throw (invalid-config :invalid-temp-dir {:value temp-dir})))))
+  ;; Fail closed before any run directory is created or child spawned: the
+  ;; option must be a boolean when present, and defaults to false when absent.
+  (let [retain-completed? (get config :retain-completed-artifacts? false)]
+    (when-not (boolean? retain-completed?)
+      (throw
+       (invalid-config :invalid-retain-completed-artifacts
+                       {:value (:retain-completed-artifacts? config)}))))
   config)
 
 (defn- validate-run-config! [config]
@@ -413,7 +420,8 @@
                     (vreset! keep-temp? true)
                     (throw (retained-exception error run-dir)))
                   (throw error))))]
-        (if (retain-outcome-artifacts? outcome)
+        (if (or (get config :retain-completed-artifacts? false)
+                (retain-outcome-artifacts? outcome))
           (do
             (vreset! keep-temp? true)
             (assoc outcome :artifact-dir run-dir))
@@ -436,15 +444,19 @@
     :timeout-ms      positive child deadline
     :dir             explicit child working directory
 
-  Optional `:extra-env` is a string map, `:kill-grace-ms` defaults to 250, and
-  `:temp-dir` selects an existing parent for per-run artifacts.
+  Optional `:extra-env` is a string map, `:kill-grace-ms` defaults to 250,
+  `:temp-dir` selects an existing parent for per-run artifacts, and
+  `:retain-completed-artifacts?` defaults to false.
 
   Returns one `:completed`, `:failed`, `:timeout`, or `:worker-error` map.
   Timeout means only that the child did not exit by the deadline; it is not a
   proof of deadlock. Every non-completed outcome retains its per-run directory
   as `:artifact-dir`; the directory contains the observed `request.edn`,
   `result.edn`, `stdout.log`, and `stderr.log` files, with absent files left
-  honestly absent. Completed runs remove their directory."
+  honestly absent. Completed runs remove their directory unless
+  `:retain-completed-artifacts?` is true, in which case they retain it and
+  return `:artifact-dir` exactly like non-completed outcomes so a caller can
+  evaluate parent-side semantic invariants before deleting it."
   [config]
   (let [config (validate-run-config! config)]
     (run-worker! config (:schedule config) nil)))
@@ -459,7 +471,8 @@
   generated and replayed cases.
 
   Returns the same `:completed`/`:failed`/`:timeout`/`:worker-error` shape and
-  artifact-retention contract as `run-schedule`, echoing the effective schedule
+  artifact-retention contract as `run-schedule`, including the opt-in
+  `:retain-completed-artifacts?` option, echoing the effective schedule
   (including nil)."
   [config]
   (let [config (validate-case-config! config)]
@@ -474,8 +487,10 @@
   The order may come from `jolt.sim.explore/schedule-plans`, a permanent replay
   witness, or a later Hegel/high-utility sampler; this supervisor does not
   claim its own search strategy. Every non-completed element inherits
-  `run-schedule`'s `:artifact-dir` retention contract; callers that intentionally
-  consume expected failures are responsible for deleting those directories."
+  `run-schedule`'s `:artifact-dir` retention contract; with
+  `:retain-completed-artifacts?` true, completed elements retain their
+  directories too. Callers that intentionally consume expected failures are
+  responsible for deleting those directories."
   [config]
   (validate-common! config explore-keys)
   (let [schedules (validate-schedules! (:schedules config))

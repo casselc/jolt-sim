@@ -139,6 +139,77 @@
     (is (nil? (:artifact-dir outcome)))
     (is (false? (fs/exists? run-dir)))))
 
+(deftest explicit-false-preserves-default-completed-cleanup
+  (let [run-var (resolve 'jolt.sim.process-explorer/run-worker!)
+        create-var (resolve 'jolt.sim.process-explorer/create-run-dir)
+        process-var (resolve 'jolt.process/process)
+        supervise-var (resolve 'jolt.sim.process-explorer/supervise-child)
+        run-dir (str (fs/create-temp-dir
+                      {:prefix "jolt-sim-completed-cleanup-test-"}))
+        outcome
+        (with-redefs-fn
+          {create-var (fn [_] run-dir)
+           process-var (fn [& _] :fake-child)
+           supervise-var
+           (fn [_config schedule _child _result _stdout _stderr]
+             {:status :completed :schedule schedule})}
+          #(@run-var
+            (assoc base-run-config :retain-completed-artifacts? false)
+            [0 1] nil))]
+    (is (= :completed (:status outcome)))
+    (is (nil? (:artifact-dir outcome)))
+    (is (false? (fs/exists? run-dir)))))
+
+(deftest opt-in-completed-retention-returns-existing-artifact-directory
+  (let [run-var (resolve 'jolt.sim.process-explorer/run-worker!)
+        create-var (resolve 'jolt.sim.process-explorer/create-run-dir)
+        process-var (resolve 'jolt.process/process)
+        supervise-var (resolve 'jolt.sim.process-explorer/supervise-child)
+        run-dir (str (fs/create-temp-dir
+                      {:prefix "jolt-sim-completed-retain-test-"}))
+        request-path (str (fs/path run-dir "request.edn"))
+        outcome
+        (with-redefs-fn
+          {create-var (fn [_] run-dir)
+           process-var (fn [& _] :fake-child)
+           supervise-var
+           (fn [_config schedule _child _result _stdout _stderr]
+             {:status :completed :schedule schedule})}
+          #(@run-var
+            (assoc base-run-config :retain-completed-artifacts? true)
+            [0 1] nil))]
+    (is (= :completed (:status outcome)))
+    (is (= run-dir (:artifact-dir outcome)))
+    (is (fs/exists? (:artifact-dir outcome)))
+    (is (fs/exists? request-path))
+    (fs/delete-tree run-dir)))
+
+(deftest malformed-retain-completed-artifacts-is-rejected-fail-closed
+  (let [run-rejected
+        (ex-data-of
+         (fn []
+           (process-explorer/run-schedule
+            (assoc base-run-config :retain-completed-artifacts? :yes))))
+        case-rejected
+        (ex-data-of
+         (fn []
+           (process-explorer/run-case
+            (assoc base-case-config :retain-completed-artifacts? "true"))))
+        explore-rejected
+        (ex-data-of
+         (fn []
+           (process-explorer/explore
+            (-> base-run-config
+                (dissoc :schedule)
+                (assoc :schedules [[0 1] [1 0]]
+                       :retain-completed-artifacts? 1)))))]
+    (doseq [rejected [run-rejected case-rejected explore-rejected]]
+      (is (= :jolt.sim.process-explorer/invalid-config (:type rejected)))
+      (is (= :invalid-retain-completed-artifacts (:reason rejected))))
+    (is (= :yes (:value run-rejected)))
+    (is (= "true" (:value case-rejected)))
+    (is (= 1 (:value explore-rejected)))))
+
 (deftest escaping-unreaped-workers-expose-their-retained-artifact-directory
   (let [run-var (resolve 'jolt.sim.process-explorer/run-worker!)
         create-var (resolve 'jolt.sim.process-explorer/create-run-dir)
