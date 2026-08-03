@@ -72,16 +72,29 @@ networking, TCP, HTTP, clocks, process isolation, Hegel, replay, and monitoring.
 | Jolt 0.5.17 / ABI 6 platform and Windows native-path contract | Landed on the active stack | `9b5cd6b`; draft PR `casselc/jolt-sim#21` |
 | Pure durable-outbox application transition | Landed | `5d2c61e`; draft PR `casselc/jolt-sim#22` |
 | Real SQLite adapter using ordinary `jdbc.core` | Landed | `2deb01d`, aggregate registration `5663ca4`; draft PR `casselc/jolt-sim#23` |
-| SQLite table-row model and unchanged-adapter parity | In progress | Must pass focused model tests and the same real/hermetic/hybrid scenario before acceptance |
+| SQLite table-row model and unchanged-adapter parity | Landed on the active stack | Row model `1639507` / draft PR `casselc/jolt-sim#25`; parity integration `47fc0e5`, review corrections `7772c48` / draft PR `casselc/jolt-sim#26` |
 | Framed TCP/bencode example and hosted lanes | Landed as an input to the canonical app | `6e87657`, `386b9d5`, diagnostic follow-up `51f7018` |
 | Whole HTTP -> SQLite -> TCP outbox application | Not yet landed | Phase 3 below |
 
-The SQLite adapter slice has a green direct aggregate run of 495 tests / 3597
-assertions on Linux x86-64 with released Jolt 0.5.17: `jolt -M:test` at
-`5663ca4`, with the retained local, workspace-root-relative log at
+Phase 1 is green on Linux x86-64 using the pinned simulator image
+`jolt v0.5.17-13-g3af5622d`
+(`sha256:e84f8d764a8f44f8458d05f4a4e98f02676d903c4207782fd5c1e50ba1f3e7ab`):
+
+- table-row model: 60 tests / 1111 assertions;
+- unchanged-adapter real/hermetic/hybrid parity: 1 test / 47 assertions;
+- ordinary durable SQLite outbox: 13 tests / 94 assertions;
+- existing real SQLite integration: 1 test / 19 assertions; and
+- dependency-light aggregate: 507 tests / 4008 assertions.
+
+Every gate ran serially with isolated writable HOME/cache/temp state and a
+retained transcript under the workspace-root-relative directory
+`artifacts/jolt-sim-outbox-sqlite-parity-integration/`. The initial parity run
+is also retained: it exposed a stale five-versus-six mutation assertion before
+the reviewed correction. The older adapter-only aggregate remains preserved at
 `artifacts/jolt-sim-outbox-sqlite-adapter/final-20260803/full-test-direct.log`.
+
 [Hosted run 30831219495](https://github.com/casselc/jolt-sim/actions/runs/30831219495)
-also exposed one finite TCP/bencode timeout for stream capacity 1, pipe
+previously exposed one finite TCP/bencode timeout for stream capacity 1, pipe
 capacity 4, frontend-wide poll-EINTR ordinal 8, and mixed Unicode. It remains
 timeout/flakiness evidence, not a liveness classification.
 
@@ -89,7 +102,12 @@ timeout/flakiness evidence, not a liveness classification.
 
 ### Phase 1 — unchanged SQLite adapter parity
 
-Finish the smallest table-row surface required by the already-landed adapter:
+Status: complete on the active pre-release stack. The requirements below are
+the accepted Phase 1 boundary; later SQL/model breadth must be justified by a
+real application scenario.
+
+The accepted surface is the smallest table-row behavior required by the
+already-landed adapter:
 
 - explicit `:insert-row`, `:update-row`, and ordered `:scan-rows` statement
   effects, with no SQL parser;
@@ -99,10 +117,11 @@ Finish the smallest table-row surface required by the already-landed adapter:
 - address-free mutation and source-provenance evidence; and
 - exact real, hermetic, and hybrid execution of one unchanged adapter scenario.
 
-Acceptance requires focused validation, transaction, typed-value, snapshot,
-and step/finalize/close race tests; exact semantic parity; complete plan
-consumption; clean worlds; and a serial aggregate gate. Secondary unique-index
-modeling and general SQL semantics are explicitly outside this phase.
+Acceptance evidence includes focused validation, transaction, typed-value,
+snapshot, and step/finalize/close race tests; exact semantic parity; complete
+plan consumption; clean worlds; and a serial aggregate gate. Secondary
+unique-index modeling and general SQL semantics are explicitly outside this
+phase.
 
 ### Phase 2 — failure preservation and stable replay coordinates
 
@@ -282,9 +301,13 @@ These commits are useful inputs, not accepted dependencies of the active
 stack. Revalidate them against Jolt 0.5.17, controller ABI 6, and the current
 application before cherry-picking or reminting them.
 
+The former parity candidate `deepseek/outbox-sqlite-parity` at `a09d3de` has
+been integrated after the row-model contract as `47fc0e5`, corrected through
+independent review in `7772c48`, and is therefore no longer awaiting
+disposition.
+
 | Candidate | Branch or commit | Required disposition |
 | --- | --- | --- |
-| Unchanged-adapter SQLite parity fixture | `deepseek/outbox-sqlite-parity` at `a09d3de` | Stack only after the row model contract is corrected; then execute real, hermetic, and hybrid parity and review the combined semantics |
 | Journal recovery proof control | `codex/journal-wal-proof` at `9d04db6` | Preserve as proof/test input for Phase 5; refresh against the final journal record and recovery model |
 | Interrupted-write termination control | `codex/journal-wal-proof` at `90c805c` | Preserve as a bounded control; do not infer OS durability from it |
 | Framed recovery codec | `codex/journal-codec` at `bf8eb4f` | Reuse only after the Phase 5 format and checksum contract is accepted |
