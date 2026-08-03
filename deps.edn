@@ -313,8 +313,48 @@
     io.github.casselc/jolt-bytes
     {:git/url "https://github.com/casselc/jolt-bytes.git"
      :git/sha "9c3280eb49c00d0373e32ee6cae74f961a254712"}}
-   :main-opts ["-m" "jolt.sim.outbox-delivery-integration-test-main"
-               "--sim-only"]}}
+    :main-opts ["-m" "jolt.sim.outbox-delivery-integration-test-main"
+                "--sim-only"]}
+
+  ;; Child side of :outbox-delivery-hegel-test. Only db's source root is loaded
+  ;; so real SQLite cannot initialize before the hermetic controller is
+  ;; installed; the remaining pins match :outbox-delivery-sim-test exactly.
+  :outbox-delivery-explore-worker
+  {:extra-paths ["test"]
+   :extra-deps
+   {io.github.casselc/db
+    {:git/url "https://github.com/casselc/db.git"
+     :git/sha "df8f434f7ebf5e63b3f52ab6c5c2a2b2c92d3a6d"
+     :deps/root "clj"}
+    io.github.casselc/jolt-http
+    {:git/url "https://github.com/casselc/jolt-http.git"
+     :git/sha "96bd0fc93f1a2c77128d06f74802dd2a4631c0d4"}
+    io.github.casselc/jolt-tcp
+    {:git/url "https://github.com/casselc/jolt-tcp.git"
+     :git/sha "c4db4c1431d04efcc035b9457f3bc0bff6a2df22"}
+    io.github.casselc/jolt-net
+    {:git/url "https://github.com/casselc/jolt-net.git"
+     :git/sha "699b908ffb4eb79ad35055cdc20866bb504e6932"}
+    io.github.casselc/jolt-bencode
+    {:git/url "https://github.com/casselc/jolt-bencode.git"
+     :git/sha "6c68bf2a1dbd7e438923ce38252c2abbdcb1643f"}
+    io.github.casselc/jolt-bytes
+    {:git/url "https://github.com/casselc/jolt-bytes.git"
+     :git/sha "9c3280eb49c00d0373e32ee6cae74f961a254712"}}
+   :main-opts ["-m" "jolt.sim.explore-worker"]}
+
+  ;; Hegel-owned, shrinkable command payload, capacities, and poll-fault
+  ;; ordinal drive the unchanged outbox-delivery application in a fresh worker
+  ;; for every case. This parent alias intentionally carries no
+  ;; db/http/tcp/codec dependency; only :outbox-delivery-explore-worker
+  ;; resolves the scenario namespace, in a fresh child process per case.
+  :outbox-delivery-hegel-test
+  {:extra-paths ["test"]
+   :extra-deps
+   {io.github.chucklehead-dev/jolt-hegel
+    {:git/url "https://github.com/chucklehead-dev/jolt-hegel.git"
+     :git/sha "ffe523023437862c7e474dc216346426318754c6"}}
+   :main-opts ["-m" "jolt.sim.outbox-delivery-hegel-test"]}}
 
  :tasks
  {check "jolt -M:test"}}

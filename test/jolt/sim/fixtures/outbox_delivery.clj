@@ -263,8 +263,9 @@
   "Runs one ordinary HTTP -> committed SQLite outbox -> framed TCP/bencode
   delivery/ack flow. Returns canonical immutable evidence with no native
   handles, pointers, byte arrays, mutable values, controller objects, or
-  ephemeral ports. The optional command arity is intended for later real-mode
-  characterization; the hermetic plan for this first slice pins default-command.
+  ephemeral ports. The optional command arity lets generated hermetic plans
+  exercise payload variants; the real/sim parity witness still uses
+  default-command.
   The bencode payload is an octet vector; SQLite stores the same semantics as a
   BLOB, but this witness does not claim bencode binary-string wire parity."
   ([]

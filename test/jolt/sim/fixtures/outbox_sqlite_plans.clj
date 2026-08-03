@@ -44,6 +44,11 @@
        " (outbox_id, request_id, entity_id, version, payload, status)"
        " values (?, ?, ?, ?, ?, ?)"))
 
+;; The historical req-1 command payload pinned by the zero-argument plan
+;; arities below; it must stay byte-identical to
+;; jolt.sim.fixtures.outbox-delivery/default-command's :payload.
+(def ^:private default-command-payload [0 127 128 255])
+
 ;; ---- closed plan builders -------------------------------------------------
 
 (defn- static-plan [sql]
@@ -90,10 +95,19 @@
 
 (defn parity-statement-plans
   "Returns the exact 28-statement FIFO plan used by the existing adapter parity
-  scenario: schema setup, a fresh command, its exact replay, a second fresh
-  command, and a final state load."
-  []
-  [(static-plan "PRAGMA foreign_keys=1;")
+   scenario: schema setup, a fresh command, its exact replay, a second fresh
+   command, and a final state load.
+
+   The zero-argument arity pins the historical req-1 payload
+   [0 127 128 255] and is byte-for-byte the plan the old parity test has
+   always consumed. The one-argument arity rebinds only the first fresh
+   command's three BLOB params (entity insert ?3, request insert ?3, outbox
+   insert ?5) to `command-payload`, a vector of unsigned octets; every other
+   statement, bind, and row effect is unchanged."
+  ([]
+   (parity-statement-plans default-command-payload))
+  ([command-payload]
+   [(static-plan "PRAGMA foreign_keys=1;")
    (static-plan
     (str "create table if not exists " entities-table " ("
          "entity_id text primary key, "
@@ -131,28 +145,28 @@
    (insert-plan entity-insert-sql
                 {1 {:type :text :value "entity-a"}
                  2 {:type :integer :value 1}
-                 3 {:type :blob :value (byte-array [0 127 128 255])}}
+                 3 {:type :blob :value (byte-array command-payload)}}
                 :outbox/entities [1]
                 [["entity_id" 1] ["version" 2] ["payload" 3]]
                 1 1)
-   (insert-plan request-insert-sql
-                {1 {:type :text :value "req-1"}
-                 2 {:type :text :value "entity-a"}
-                 3 {:type :blob :value (byte-array [0 127 128 255])}
-                 4 {:type :integer :value 1}
-                 5 {:type :integer :value 1}}
-                :outbox/requests [1]
-                [["request_id" 1] ["entity_id" 2] ["payload" 3]
-                 ["version" 4] ["outbox_id" 5]]
-                1 2)
-   (insert-plan outbox-insert-sql
-                {1 {:type :integer :value 1}
-                 2 {:type :text :value "req-1"}
-                 3 {:type :text :value "entity-a"}
-                 4 {:type :integer :value 1}
-                 5 {:type :blob :value (byte-array [0 127 128 255])}
-                 6 {:type :text :value "pending"}}
-                :outbox/rows [1]
+    (insert-plan request-insert-sql
+                 {1 {:type :text :value "req-1"}
+                  2 {:type :text :value "entity-a"}
+                  3 {:type :blob :value (byte-array command-payload)}
+                  4 {:type :integer :value 1}
+                  5 {:type :integer :value 1}}
+                 :outbox/requests [1]
+                 [["request_id" 1] ["entity_id" 2] ["payload" 3]
+                  ["version" 4] ["outbox_id" 5]]
+                 1 2)
+    (insert-plan outbox-insert-sql
+                 {1 {:type :integer :value 1}
+                  2 {:type :text :value "req-1"}
+                  3 {:type :text :value "entity-a"}
+                  4 {:type :integer :value 1}
+                  5 {:type :blob :value (byte-array command-payload)}
+                  6 {:type :text :value "pending"}}
+                 :outbox/rows [1]
                 [["outbox_id" 1] ["request_id" 2] ["entity_id" 3]
                  ["version" 4] ["payload" 5] ["status" 6]]
                 1 3)
@@ -228,15 +242,22 @@
               ["outbox_id" "request_id" "entity_id" "version" "payload" "status"]
               :outbox/rows
               ["outbox_id" "request_id" "entity_id" "version" "payload" "status"]
-              ["outbox_id"])])
+              ["outbox_id"])]))
 
 (defn delivery-statement-plans
   "Returns the exact 15-statement whole-app plan: schema setup, the first fresh
-  req-1/entity-a command and successful COMMIT, then one explicit post-COMMIT
-  load-state used by the delivery worker. This is deliberately a projection of
-  parity-statement-plans so the command's SQL, binds, and row effects cannot
-  diverge between the two gates."
-  []
-  (let [plans (parity-statement-plans)]
-    (vec (concat (subvec plans 0 12)
-                 (subvec plans 25 28)))))
+   req-1/entity-a command and successful COMMIT, then one explicit post-COMMIT
+   load-state used by the delivery worker. This is deliberately a projection of
+   parity-statement-plans so the command's SQL, binds, and row effects cannot
+   diverge between the two gates.
+
+   The zero-argument arity is byte-for-byte the plan the existing delivery
+   gates have always consumed. The one-argument arity carries the scenario
+   command's payload (a vector of unsigned octets) into the first command's
+   three BLOB binds; everything else is unchanged."
+  ([]
+   (delivery-statement-plans default-command-payload))
+  ([command-payload]
+   (let [plans (parity-statement-plans command-payload)]
+     (vec (concat (subvec plans 0 12)
+                  (subvec plans 25 28))))))
