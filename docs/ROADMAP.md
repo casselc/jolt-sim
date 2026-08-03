@@ -69,14 +69,15 @@ networking, TCP, HTTP, clocks, process isolation, Hegel, replay, and monitoring.
 
 | Capability | State | Accepted evidence |
 | --- | --- | --- |
-| Jolt 0.5.17 / ABI 6 platform and Windows native-path contract | Landed on the active stack | `9b5cd6b`; draft PR `casselc/jolt-sim#21` |
+| Jolt 0.5.20 / ABI 6 simulation core | Pushed; full Linux Jolt CI and local jolt-sim suite green, hosted jolt-sim matrix pending | `9fc64f93`; jolt-sim `510 tests / 4,026 assertions`; draft PR `casselc/jolt#26` |
+| Jolt 0.5.17 hosted platform and Windows native-path evidence | Historical baseline retained | `9b5cd6b`; draft PR `casselc/jolt-sim#21` |
 | Pure durable-outbox application transition | Landed | `5d2c61e`; draft PR `casselc/jolt-sim#22` |
 | Real SQLite adapter using ordinary `jdbc.core` | Landed | `2deb01d`, aggregate registration `5663ca4`; draft PR `casselc/jolt-sim#23` |
 | SQLite table-row model and unchanged-adapter parity | Landed on the active stack | Row model `1639507` / draft PR `casselc/jolt-sim#25`; parity integration `47fc0e5`, review corrections `7772c48` / draft PR `casselc/jolt-sim#26` |
 | Framed TCP/bencode example and hosted lanes | Landed as an input to the canonical app | `6e87657`, `386b9d5`, diagnostic follow-up `51f7018` |
 | Whole HTTP -> SQLite -> TCP outbox application | Not yet landed | Phase 3 below |
 
-Phase 1 is green on Linux x86-64 using the pinned simulator image
+Phase 1 was last run on Linux x86-64 using the prior simulator image
 `jolt v0.5.17-13-g3af5622d`
 (`sha256:e84f8d764a8f44f8458d05f4a4e98f02676d903c4207782fd5c1e50ba1f3e7ab`):
 
@@ -255,7 +256,7 @@ the critical path.
 
 | Original material | Current disposition |
 | --- | --- |
-| [Research backlog](https://github.com/casselc/jolt-sim-planning/blob/main/RESEARCH_BACKLOG.md) | Evidence discipline and findings retained; baseline facts require v0.5.17 / ABI 6 refresh |
+| [Research backlog](https://github.com/casselc/jolt-sim-planning/blob/main/RESEARCH_BACKLOG.md) | Evidence discipline and findings retained; baseline facts require v0.5.20 / ABI 6 refresh |
 | [P0 evidence and contract clarifications](https://github.com/casselc/jolt-sim-planning/blob/main/P0-evidence-and-contract-clarifications.md) and [review](https://github.com/casselc/jolt-sim-planning/blob/main/P0-adversarial-review.md) | Fold small wording and contract tests into adjacent slices; not a feature blocker |
 | [P1 rank-spread schedules](https://github.com/casselc/jolt-sim-planning/blob/main/P1-rank-spread-schedules.md) and [review](https://github.com/casselc/jolt-sim-planning/blob/main/P1-adversarial-review.md) | Retain as an optional Phase 4 search baseline; reuse existing permutation arithmetic |
 | [P2 fault frontend state and bounds](https://github.com/casselc/jolt-sim-planning/blob/main/P2-fault-frontend-state-and-bounds.md) and [review](https://github.com/casselc/jolt-sim-planning/blob/main/P2-adversarial-review.md) | Defer the large opacity/checkpoint design until real corruption or load evidence requires it; implement only observed blockers |

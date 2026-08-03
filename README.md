@@ -15,7 +15,7 @@ and simulated worlds belong here.
 ## Development baseline and CI
 
 Current development targets `casselc/jolt` commit
-`fa3f7bbf8fac400567a4e3fbde07499537895008`, based on upstream Jolt 0.5.17,
+`9fc64f93eba8b56a319f91bb1a322e2efced9c70`, based on upstream Jolt 0.5.20,
 with Chez Scheme 10.4.1. The full suite requires the special Jolt simulation
 image from that commit; an ordinary Jolt image can run only the controller-free
 portion of the suite.
