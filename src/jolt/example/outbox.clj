@@ -216,6 +216,17 @@
    :next-outbox-id 1
    :outbox []})
 
+(defn validate-state!
+  "Fail-closed canonical-state assertion for storage adapters that rebuild a
+  state from durable rows. Returns `state` unchanged when it is exactly
+  canonical; throws :jolt.example.outbox/invalid-state ex-info otherwise.
+  Input is never repaired. apply-command runs this same validation on its
+  prior state; this public entry point lets an adapter reject a corrupted
+  database at load time, before any transition is attempted."
+  [state]
+  (check-state! state)
+  state)
+
 (defn apply-command
   "Applies one closed command map to a canonical prior state, purely.
 

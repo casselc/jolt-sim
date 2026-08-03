@@ -229,6 +229,15 @@
              (:type (ex-data-of #(outbox/apply-command bad-state cmd))))
           label))))
 
+(deftest validate-state-public-boundary-test
+  (let [initial (outbox/initial-state)
+        invalid (assoc initial :unexpected true)]
+    (testing "a canonical state is returned unchanged"
+      (is (= initial (outbox/validate-state! initial))))
+    (testing "the public adapter boundary rejects invalid state directly"
+      (is (= :jolt.example.outbox/invalid-state
+             (:type (ex-data-of #(outbox/validate-state! invalid))))))))
+
 ;; ---- invariant: one matching pending row per entity change ----------------
 
 (deftest entity-change-has-one-matching-pending-row-test

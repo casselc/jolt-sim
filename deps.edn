@@ -207,7 +207,21 @@
   ;; No external dependencies and no sim image required.
   :application-core-test
   {:extra-paths ["test"]
-   :main-opts ["-m" "jolt.example.outbox-test-main"]}}
+   :main-opts ["-m" "jolt.example.outbox-test-main"]}
+
+  ;; Simulator-free durable outbox adapter gate: the pure jolt.example.outbox
+  ;; core over real system SQLite through public jdbc.core, proving durable
+  ;; atomic enqueue and exact replay. Uses the complete public DB coordinate
+  ;; so its native library declaration is available to the launcher.
+  ;; Sequential, single-owner, fresh in-memory database per test; no delivery
+  ;; or marking API and no sim image required.
+  :outbox-sqlite-test
+  {:extra-paths ["test"]
+   :extra-deps
+   {io.github.casselc/db
+    {:git/url "https://github.com/casselc/db.git"
+     :git/sha "df8f434f7ebf5e63b3f52ab6c5c2a2b2c92d3a6d"}}
+   :main-opts ["-m" "jolt.example.outbox-sqlite-test-main"]}}
 
  :tasks
  {check "jolt -M:test"}}
