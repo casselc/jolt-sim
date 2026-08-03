@@ -977,3 +977,57 @@ property must hold will find what the instructions missed. The instruction that
 did the work here was "an honest inventory of the remaining hard cases is a
 valuable deliverable, do not force-fit those", which licensed reporting over
 compliance.
+
+---
+
+## 14. Decision — perturb's byte type is unsigned octets
+
+Added to §2.2's capability tier. **perturb has no JVM signed-`byte[]`
+compatibility obligation.** A byte is an octet, `0..255`. Codecs do not perform
+sign folding to read a byte.
+
+### This is charter-consistent, not a new departure
+
+Charter §1.3 non-goal 1 already disclaims exactly this class: "The core does
+not preserve any host's implementation accidents — JVM UTF-16 surrogate
+splitting, **JVM primitive overflow behavior**, Chez-specific integer widths".
+Java's signed `byte` is that accident — a language decision from 1995 with no
+representational justification, since the storage is octets either way and
+signedness is only a read-time interpretation.
+
+### The cost was measured, not assumed
+
+`jolt-bytes` documents the friction directly: *"Jolt stores byte-array slots as
+unboxed octets while the JVM exposes `byte[]` slots as signed bytes.
+`unchecked-byte` makes traversal identical."* So every byte read in the codec
+path calls `unchecked-byte` **purely to reproduce a JVM convention**.
+
+§9/E8 measured that call at **209 ns/byte** before nativisation — the single
+dominant term in `Window/nth`'s body, ~8x the `aget` it wrapped. The JVM signed-
+byte accident had a measurable, dominant cost on precisely the path this whole
+performance line has been about, and it bought nothing except compatibility
+with a host perturb does not target.
+
+That is the cleanest instance in this document of a host accident charging rent.
+E2 catalogued five hand-rolled ownership systems as the cost of a *missing*
+language feature; this is the cost of an *inherited* one.
+
+### Consequence for the two-tier design
+
+The tier split (§2.2) already says ordinary values get no modes and
+capabilities get modes plus refinements. Byte views are capability-tier, so
+their representation is perturb's to choose: bytevector-backed, unsigned, no
+conversion at the accessor.
+
+This also settles a question §2.3 left open. Refinements on a byte view can
+state `0 ≤ b ≤ 255` as a *type*, decidable in QF-LIA. Under signed semantics the
+same property needs a case split on the sign fold — the same obligation, harder
+to discharge, for no gain.
+
+### Scope note
+
+None of this applies to Jolt itself, which does have a compatibility target.
+The concurrent Jolt work preserves `byte[]` semantics exactly and aims to make
+that path fast too — a bytevector backing with read-time conversion, since
+signedness is interpretation rather than storage. Two byte types in Jolt would
+be a compatibility accommodation; perturb needs only one, and it is the fast one.
