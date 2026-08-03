@@ -165,8 +165,15 @@ identity spine, not a pass-attached annotation.
 
 ### 2.2 Typing — two tiers
 
-Ordinary values: static types with full inference, `Any` escape hatch. No proof
+Ordinary values: static types with inference, `Any` escape hatch. No proof
 obligations, no modes; immutability makes the mode questions trivial.
+
+*(Originally "full inference". §16/E13 measured that too strong: abstract
+refinements — needed wherever refined capabilities compose, e.g. transducers —
+introduce predicate variables, which HM unification cannot solve. Inferring them
+is Horn-clause constraint solving over a qualifier set. **Leaves stay decidable
+and inferable; the combinator boundary does not.** An `Any` position never holds
+a capability, which is what keeps the tiers from meeting — see §16.)*
 
 Capabilities (handles, cursors, buffers, leases, continuations, mutable cells):
 modes plus refinements. Axes kept: **uniqueness** (`unique`/`shared`),
@@ -1818,3 +1825,59 @@ already-parsed response; chunked is jolt-http's problem, not the slice's.
 This replaces §17's nREPL-first ordering. nREPL remains a good middleware target
 for E13's abstract-refinement question, but jolt-tcp/jolt-http reach the temporal
 class sooner and with oracles already built.
+
+---
+
+## 19. State, and the next step
+
+### Where this stands
+
+**perturb has no code.** What exists is this record, four Python prototypes
+modelling rule sets (`prototypes/`, gated by `verify-capability-rules`), and
+seven commits of Jolt improvements that came out of measuring rather than
+designing.
+
+That is a defensible position — the record has corrected itself repeatedly
+against evidence, which is cheaper than building the wrong thing — but the
+largest untested claim is now **"any of this can be built"**, and this document's
+own standing commitment says untested claims are the ones that turn out wrong.
+
+Settled enough to build on: the substrate (§2.1), the two tiers and their four
+axes (§2.2, as corrected by E5/E6/E13), the capability-tier proof approach
+(§2.3), D4 effects with D3 deferred (§2.4), unsigned bytes (§14), the
+core/`clojure.*` layering with a defeasible no-foreclosure rule (§15), and the
+v0 ladder (§18).
+
+Open and undesigned: the **structural/inductive tier** (§16 — QF-LIA cannot
+reach tree invariants; how Ansatz obligations integrate with the two typed tiers
+is not designed), **liveness** (§16 — P4's bounded response is a seed, not a
+mechanism), **Q3** (`unique` × multi-shot, not load-bearing while D3 is
+deferred), **Q4** (macro blame), and **agreement/consensus** (§18 — still only a
+ladder entry).
+
+### The next step, and why
+
+**Run the capability checker over Jolt's IR.**
+
+Every prototype so far models a rule set in Python; none has touched a real
+program. §2.1 makes two specific claims from reading `jolt-core/jolt/ir.clj`,
+both untested:
+
+1. `:local` carries a name, not binding identity, so linearity checking needs
+   alpha-conversion or a `:binding-id`.
+2. `:host`/`:host-static`/`:host-new`/`:host-call` should collapse into one
+   `:extern` carrying a declared effect row and signature.
+
+Those are inferences from source reading. This session's record on inferences
+from source reading is poor: the `jolt-array` survey was wrong on scale *and*
+kind (§13/E12), E3's central finding was sample-biased (§16), and three
+performance hypotheses died to measurement (§1/E1, §8/E7). Assume at least one
+of the two is wrong until a checker walks real IR.
+
+It is also **step zero of ladder step 1**: jolt-tcp's connection typestate
+cannot be checked without a checker that reads real code. And it answers E6's
+open usability question empirically — how often the join rule actually fires on
+real programs — which is the largest unquantified risk to §2.2 and is currently
+argued rather than measured.
+
+Corpus: Jolt's own stdlib. Real, Clojure-shaped, already exists.
