@@ -189,8 +189,9 @@ a conditional close, a loop that closes on its back edge, and a capability
 captured by a closure.
 
 **It also rejects three functions of `perturb.nrepl`, and that is the most useful
-thing it does.** `clone-session`, `eval-code` and `session` all fail, at four
-sites, for one reason: a connection crosses a function boundary. §1.2's
+thing it does.** `clone-session`, `eval-code` and `session` all fail — five
+diagnostics at five source positions, for one reason: a connection crosses a
+function boundary. §1.2's
 `:consumes` / `:produces` are *unpositioned*, so a function that returns
 `[conn value]` — which is exactly how this client threads the connection — cannot
 be annotated at all. `perturb.corpus/ping` is the same helper returning the
