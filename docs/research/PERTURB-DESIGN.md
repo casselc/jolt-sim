@@ -54,21 +54,31 @@ The complete current tally of claims this document made and then refuted:
 | 21 | positioned specs are the one thing §1.2 needs to check the real client | building them: the client checks, and the layer *underneath* it then failed — the missing concept is a module boundary, which §1.2 also does not have | E17 |
 | 22 | E17's `perturb.nrepl` report shows what the checker found | a second protocol run through the same reporter: diagnostics raised **against axioms** were collected and silently dropped, hiding an `annotation-inconsistent` on `perturb.nrepl/open` since it was written | E18 (b) |
 | 23 | `:perturb.cap/representation` measures the abstraction boundary | `perturb.http` drove the list to **zero** while unchecked concrete-map accesses went from 12 to 31 — counting operations counts the wrong thing | E18 (4) |
+| 24 | E18: "nothing here is a false accept — it is a declaration language that cannot say what the code does" | true of (a), (b), (d); **false of (c)** — `borrow-and-return-listener` was ACCEPTED carrying an annotation no implementation can satisfy | E19 |
+| 25 | E18: `accept` and `body-finish!` are the two operations that advance two machines | there are **three**. `respond-begin` is the third and it drew **no diagnostic at all** — it minted an undeclared capability silently | E19 |
+| 26 | keying the primitive table by `[cap op]` and comparing per capability is the fix for the two-machine defect | insufficient: a terminal-`:to` rule was also needed, and two edges had to be **added** to declarations that had never named them | E19 |
+| 27 ‡ | internal/external choice dissolves the join rule | the linear conditional rule types **both branches in the same context** — perturb's join rule *is* the linear rule; ⊕/& are additive | E20 |
+| 28 ‡ | graded/quantitative types decide the Content-Length obligation without a solver | Granule requires Z3; grades are parameterized *over* a decision procedure; and grades count **uses of a binder**, not octets | E20 |
+| 29 ‡ | sealing gives a principled account of "these bodies are axioms" | it **relocates** trust from a list to a scope; representation independence constrains clients, not implementations | E20 |
 
-‡ Two rows are the exception the sentence above does not cover: they arrived
-from re-examining the argument (and, for 18, from the literature) rather than
-from an artifact built to attack the claim. The commitment is stated of the
-other sixteen, which came from a measurement, a probe, an independent model, or
-a delegated verification. Rows 6–9 and 16 are cases where the claim had already
-**passed its spot checks** and failed a probe designed to attack it — the
-pattern the commitment exists to name.
+‡ Five rows are the exception the sentence above does not cover: 17 and 18
+arrived from re-examining the argument and from the literature, and 27–29 came
+from a **literature survey** (E20) rather than from an artifact built to attack
+the claim. The commitment is stated of the other twenty-four, which came from a
+measurement, a probe, an independent model, a delegated verification, or — for
+24–26 — from building the fix and finding the premise wrong. Rows 6–9 and 16 are
+cases where the claim had already **passed its spot checks** and failed a probe
+designed to attack it, which is the pattern the commitment exists to name. Rows
+27–29 are the first refutations in this document that no artifact produced, and
+they are flagged accordingly: nothing in E20 was executed.
 
 **How to read this document.** §1 is the settled design, stated once in final
-corrected form. §2 is the divergence register. §3 is the findings E1–E18, each
+corrected form. §2 is the divergence register. §3 is the findings E1–E20, each
 stated as currently believed rather than as first written. §4 is the open
 questions. §5 is the v0 ladder. §6 is the nonclaims. Appendix A is the
-correction history, Appendix B holds the superseded ladders in full, and
-Appendix C maps the old chronological section numbers onto this structure —
+correction history, Appendix B holds the superseded ladders in full,
+Appendix D is E20's bibliography, kept complete because no paper in it was
+read in full text, and Appendix C maps the old chronological section numbers onto this structure —
 quoted historical text below retains its original `§` references, and Appendix C
 resolves them.
 
@@ -214,9 +224,26 @@ behind the module boundary:
 
 **Borrows do not close.** A `:borrows` parameter is the caller's; it is exempt
 from the scope-exit leak rule. Added in E17, and found by the checker refusing
-`perturb.nrepl/state`. E18: `:borrows` and `:produces` of the SAME capability is
-a legal annotation that duplicates it in the abstract domain, and the resulting
-false leak is reported at the caller with nothing pointing at the annotation.
+`perturb.nrepl/state`. E18 found that `:borrows` **and** `:produces` of the same
+capability was a legal annotation that duplicated it; E19 **refuses it at the
+annotation**, and the caller's spurious leak is what remains (E19 nonclaim 4).
+
+**The declaration language now says what the code does (E19).** An operation is
+an edge of as many machines as it moves — the primitive table is keyed
+`[capability operation]`. A machine has **no pre-creation state**; a creating
+edge declares `:from nil`. `:arg` is mandatory and the in-order fallback is
+gone. And a **transition may carry a refinement**: `ResponseBody`'s
+`:open -> :finished` edge carries `(= written declared)`, discharged against
+ghost state, with three outcomes — proved, refuted with both numbers, and
+**refused**. This is the first place §1.2's typestate axis and §1.3's arithmetic
+meet, and E6 probe 3 predicted it from the other direction.
+
+**What §1.2 still cannot say**, in the order E20's surveys rank it:
+a module boundary (E17, E18 finding 4, and every survey's top item); a
+refinement across a loop or function boundary, with no invariant syntax to
+supply one (E19); and a cancellation obligation on the `abort!` path, which
+Fowler et al. (POPL 2019) identify as the price of having exceptions at all in a
+linear setting — E15 blind spot 4 is a soundness gap, not a coverage gap.
 
 ### 1.3 Proof — capability-tier refinements, Ansatz retained
 
@@ -436,12 +463,13 @@ an independent clean-consumer job revalidates after fresh extraction; the
 verifier's limits are stated rather than implied.
 
 The artifact's gates, as they stand (`perturb/dev/run-demo.sh`, all exiting 0
-at `d883385`):
+at `1dd068b`):
 
 | gate | what it decides | limits printed by |
 | --- | --- | --- |
 | `-M:selftest` | codec/octet self-tests, no socket | the run |
-| `-M:check` | 47 corpus programs across TWO corpora (nREPL 22, HTTP 25) get their recorded capability verdicts, AND every accepted one is executed under a scripted handler; `perturb.nrepl` and `perturb.http` are checked and reported, not gated | `report-limits`, 11 items (E15, E17, E18) |
+| `-M:refine` | the refinement decision procedure alone, 18 cases, with the ones it must REFUSE recorded as first-class expectations | the run (E19) |
+| `-M:check` | 10 declaration fixtures + 55 corpus programs across TWO corpora (nREPL 25, HTTP 30) get their recorded verdicts, AND every accepted one is executed under a scripted handler; `perturb.nrepl` and `perturb.http` are checked and reported, not gated | `report-limits`, 13 items (E15, E17, E18, E19) |
 | `-M:oracle` | perturb's bencode against `jolt.nrepl`'s over their shared profile | the run |
 | `-M:demo` | one session var under a real socket and two in-memory handlers; sent octets identical | the transcript |
 | `-M:http` | one keep-alive driver under a scripted network (121 one-octet `recv`s) and a real loopback listener (1 `recv`, two pipelined requests); response octets identical; exhibits the unstatable Content-Length obligation | the run, and E18 nonclaims (E18) |
@@ -451,10 +479,21 @@ The last two follow the rule literally: each states what its instrument *cannot*
 see (`-M:noio` because `dlopen(NULL)` is invisible to strace; `-M:check` because
 8 of `perturb.nrepl`'s 15 functions are axioms whose bodies it never reads).
 
-Both `-M:check` stages are demonstrated able to fail, separately: flipping one
-recorded verdict gives `21/22 … CHECK FAILED`, and making an *accepted* program
-throw gives `22/22 decided as recorded` alongside `5/6 accepted programs ran to
-completion` — the E15 regression, caught by the stage built for it.
+Every `-M:check` stage is demonstrated able to fail, separately: flipping one
+recorded verdict fails the verdict stage; making an *accepted* program throw
+fails the run stage while the verdicts still pass — the E15 regression, caught
+by the stage built for it; and flipping one declaration fixture fails the
+declaration stage, which exists because two of E18's four defects had no
+program-corpus artifact at all (E19).
+
+**A gate obligation E20 adds and this table does not yet meet.** Both deployed
+users of solver-backed verification name proof instability as their first-order
+operational cost — F\* ships `--quake` to detect flaky proofs by re-running
+queries, and the AWS Dafny team reported proof brittleness *blocking code
+updates*. A gate that accepts the corpus today can reject it after a solver
+bump with no source change. `-M:refine` decides its fragment by normalisation
+and has no solver today, so nothing is flaky yet; the moment one is added, this
+table needs a pinned version and a repeat-run check.
 
 ---
 
@@ -691,10 +730,16 @@ Each should get its register row when decided, not retrospectively.
 
 ## 3. Findings
 
-E1–E18, each stated as currently believed. What each said first, and what
+E1–E20, each stated as currently believed. What each said first, and what
 corrected it, is in Appendix A. E1–E13 are measurements and prototypes; E14 is
 a source-and-history survey of the v0.5.17 branch lane and is `assumed`
-throughout — it qualifies §1.4 and §2 row 3 without settling either.
+throughout — it qualifies §1.4 and §2 row 3 without settling either. E15–E19 are
+the running artifact: a checker that rejects real programs, and the four rounds
+of failure and repair it went through. **E20 is different in kind from every
+other finding here** — a literature survey, `assumed` throughout, in which
+nothing was executed and no paper was read in full text. It refutes four claims
+this document made and is itself the weakest evidence in it; Appendix D exists
+so each of its citations can be checked against the source later.
 
 ### E1 — the codec byte path, and where its cost actually is
 
@@ -2653,6 +2698,305 @@ No judgement, no diagnostic kind, and no acceptance condition was altered. Every
 
 ---
 
+### E19 — the declaration language fixed, and a refinement on a transition
+
+E18 left two items: four defects in the **declaration language**, and an
+obligation the typestate axis could not state. Both were built concurrently —
+one in the main tree, one in a git worktree — and merged by hand at `1dd068b`.
+Independently re-run: `-M:refine`, `-M:check` (10/10 declaration fixtures, 25/25
++ 30/30 corpus verdicts, 14 accepted programs executed), `-M:selftest`,
+`-M:oracle`, `-M:demo`, `-M:http`, `-M:noio`, all exiting 0.
+
+#### The four declaration defects
+
+**An operation now advances as many machines as it moves.** The primitive table
+is keyed `[capability operation]` and stores the declared transition entry
+itself. `check-annotation-consistency!` iterates an operation's declared edges
+and compares **per capability**. Three diagnostics against axioms disappeared —
+`perturb.nrepl/open`, `perturb.http/accept`, `perturb.http/body-finish!`.
+
+Keying alone was **not sufficient**, contrary to the brief that commissioned it:
+a third rule was needed (a terminal `:to` need not be produced, because the leak
+rule exempts terminal states and *produced-and-dropped* is indistinguishable
+from *not-produced* to every rule the checker has), and two edges had to be
+**added to the declarations** — `ServerConn` declared no `body-finish!` edge and
+`ResponseBody` declared no `respond-begin` edge, so per-capability comparison
+alone would have found nothing to compare against. `perturb.http` goes from 10
+declared entries read as 9, to **12 entries across 9 operations, none lost**.
+
+**Correction to E18: there were three two-machine operations, not two.**
+`perturb.http/respond-begin` is the third, and it is the dangerous one, because
+it drew **no diagnostic at all**: the operation-keyed table held only its
+ServerConn edge, which its annotation agreed with, so it **minted an undeclared
+capability silently**. E18 finding 1(a) hid one spurious diagnostic *and* one
+silent gap, and only the spurious one was visible.
+
+**A machine has no pre-creation state.** `:created` is deleted from
+`perturb.nrepl/Connection`; `open` declares `:from nil`. The argument recorded
+with the fix: a state with no inhabitants and no outgoing edge is not a state,
+it is a name for the machine's absence, and `nil` already denotes that in all
+three of `perturb.http`'s capabilities, which were written later and never
+needed one. Deleting the fiction requires no new rule; keeping it requires one.
+
+**`:borrows` + `:produces` of the same capability is refused at the annotation**,
+reported against the declaring var, and the body is then not checked — a refused
+annotation is not a specification.
+
+**Correction to E18: (c) was a false accept.** E18 recorded "nothing here is a
+false accept — it is a declaration language that cannot say what the code does."
+That is right for (a), (b) and (d) and wrong for (c):
+`borrow-and-return-listener` was **accepted** while carrying an annotation no
+implementation can satisfy. The fix moves it accept → reject, which is the
+definition of removing a false accept.
+
+**The unpositioned fallback is removed.** `:arg` is mandatory.
+`unpositioned-two-cap-helper` goes from 5 diagnostics, none naming the
+annotation, to 2, both naming it. Measured rather than assumed: the pre-fix
+checker was run against the post-fix corpus, and (d) moved **no verdict** — only
+a diagnostic kind.
+
+**A new gate stage.** `declaration-corpus`: 10 hand-built machine/annotation
+fixtures naming no code. It exists because (a) and (b) had **no program-corpus
+artifact at all** — their only evidence was a diagnostic raised against an
+axiom, which is exactly why they survived two sections. Demonstrated able to
+fail independently.
+
+#### A refinement on a transition
+
+One extra key, `:perturb.cap/refine`, on a transition map:
+
+```clojure
+{:op 'perturb.http/body-write :from :open :to :open
+ :perturb.cap/refine '{:update {written (+ written (ocount (arg 1)))}}}
+
+{:op 'perturb.http/body-finish! :from :open :to :finished
+ :perturb.cap/refine '{:name wrote-exactly-content-length
+                       :requires (= written declared)
+                       :logic QF-LIA}}
+```
+
+`short-body-still-type-checks` — declares `Content-Length: 6`, writes 3 — is now
+**rejected**, with both numbers printed and the assignment history that produced
+them. `over-long-body` is the same equality in the other direction (response
+smuggling rather than truncation).
+
+**It is not a solver, and the report says so unprompted.** A linear normaliser
+plus a sign test; one third of the cases it decides are decided by plain
+evaluation. The fragment, named honestly: *ground linear integer arithmetic with
+uninterpreted non-negative constants, conjunctive, decided by normalisation.*
+Complete on the variable-free case, sound but incomplete once an atom survives.
+No case split, no Fourier–Motzkin, no hypotheses. Strictly weaker than QF-LIA
+and strictly weaker than `prototypes/refinement.py`, which is retained as the
+thing to port if the fragment must grow.
+
+**Outside the fragment: refuse.** `refinement-undischarged` is a rejection, not
+an acceptance. Four sources: a refinement crossing a loop boundary in either
+direction, a refinement crossing a function boundary, a non-linear ghost term,
+and a formula outside the fragment.
+
+**The decidable class is wider than "constant lengths".**
+`stream-a-runtime-length-body` declares `(o/ocount bo)` where `bo` is the
+incoming request's body — an integer nobody knows until the request arrives —
+writes `bo`, and **discharges**, because `bo` is one binding, so `ocount bo` is
+one atom and `declared − written` normalises to zero. A run-time integer is not
+the problem; an *unrelated* run-time integer is.
+
+**The naive-implementation claim was verified rather than asserted.** With the
+two `widen-caps` calls deleted, `body-written-in-a-loop` flips to accept; the
+first draft of that program was wrong (the write sat inside the `recur` arm, so
+a naive checker would have false-*rejected* it) and was rewritten so the naive
+answer is genuinely `3 = 3`.
+
+#### What the merge showed
+
+The two fixes met and agreed: the refinement table was keyed
+`[capability operation]` *in anticipation* of the rekeying, so it never
+inherited (a)'s collision. In `http.clj` the union is strictly better than
+either side — `ResponseBody`'s transitions carry **both** `respond-begin` as the
+creating edge (expressible only after the rekeying) **and** the refinement keys.
+
+**Each side's limits list falsified part of the other's.** The refinement work
+recorded "an operation that advances two machines cannot be declared" and
+"`:borrows`+`:produces` duplicates it"; the declaration work fixed both. The
+declaration work recorded "a state cannot carry a refinement"; the refinement
+work fixed that. Neither could have written the merged limits list.
+
+#### E19's own nonclaims
+
+1. **Declaring is not checking.** All nine `perturb.http` transitions remain
+   axioms. Nothing establishes that `body-finish!` takes both edges it now
+   declares, and `body-finished-before-conn-reused` is still data with nothing to
+   discharge it. E18 finding 3 is **half** closed.
+2. **`:update` is an annotation on an axiom.** Nothing checks that `body-write`
+   writes the octets it claims. The discharge is relative to three declared
+   lines exactly as the typestate check is relative to `:from`/`:to`.
+3. **A refused annotation means an unchecked body** — a hole the fix introduced.
+   It cannot hide a false accept (the refusal *is* a rejection), but fixing an
+   annotation can surface diagnostics that were never suppressed, only never
+   reached.
+4. **The caller of a refused annotation is still analysed with it**, so
+   `uses-borrow-and-return` is still rejected for a leak it did not commit.
+   Suppressing that is a flow-rule change, so it was reported rather than done.
+5. **No invariant syntax.** A programmer who knows a loop writes exactly N
+   octets cannot say so; the program stays refused. The IR offers nowhere to
+   attach an annotation to a `loop` form.
+6. **One capability carries a refinement.** Whether any of it generalises is
+   untested; a second would be the probe.
+7. **Atoms are syntactic and per-binding.** Two inline occurrences of one
+   expression are two atoms; only a shared binding is identified.
+
+---
+
+### E20 — the literature, and four claims of mine it refuted
+
+Three parallel surveys were commissioned against the E15–E18 failures, each
+asked for the case *against* the hypothesis it was testing. The framing under
+test was mine: **that the annotation language is a shadow type system, and each
+finding is a rediscovery of something a real type system does structurally.**
+That framing is partly right and was wrong in four specific places.
+
+**Method limitation, and it bounds everything here.** The egress policy blocked
+every scholarly host — `dl.acm.org`, `arxiv.org`, `link.springer.com`,
+`drops.dagstuhl.de`, `plv.mpi-sws.org`, `iris-project.org`, and most university
+sites. Citations were verified for existence, venue, authors and year;
+**no paper was read in full text.** Quantities are second-hand but consistent
+across sources. Two of the three agents did reach primary *implementation*
+artifacts (Granule's `Vec.gr` and `File.gr`, the Idris 2 manual, `h11`'s
+`api.rst`, `rust-lang/rust#2178`, `cargo-geiger` issue #71), which is stronger
+evidence than an abstract. Appendix D lists every reference so the sources can
+be obtained later.
+
+#### The four refutations
+
+| my claim | refuted by |
+| --- | --- |
+| internal/external choice dissolves the join rule | The linear conditional rule types **both branches in the same linear context**; under linearity each must consume it in full. **perturb's join rule *is* the linear-logic rule.** ⊕/& are the *additive* connectives, and "additive" is precisely the statement that alternatives use the same resources |
+| graded/quantitative types decide the Content-Length obligation without a solver | Granule — the reference graded-modal language, by the authors named — **requires Z3**. Ghica & Smith's system is "parameterized by the decision procedure of the semiring equational theory". And Liquid Resource Types (the AARA authors) concluded value-dependent counting needs **refinements** |
+| sealing gives a principled account of "these bodies are axioms" | It **relocates** trust from a list of names to a scope. Representation independence constrains what *clients* observe; it says nothing about whether the implementation maintains the invariant. A sealed `read-frame` that corrupts the buffer is perfectly well-sealed |
+| MPST is the model for a listener plus many connections | MPST fixes the role set statically. The right model is **replicated binary sessions** — `!A` in linear logic — which is what Listener-plus-per-connection-ServerConn already is |
+
+A fifth correction is structural rather than a claim: **grades count uses of a
+binder; the obligation counts octets.** Those coincide only if `body-write`
+writes exactly one octet. Any encoding making grades count octets is a linear
+budget token split as `Permit[n] → Permit[k] ⊗ Permit[n−k]`, which is grade
+arithmetic over variables, which is LIA, which is the solver. The intuition
+"this is a counting problem" was right; "therefore grades" did not follow.
+
+#### What the surveys converged on, independently
+
+- **The module boundary is the top item, and it is not a type-theory problem.**
+  All three said this. Every system surveyed inherits its host's module system.
+- **E18 finding 1 was underpriced.** Two agents arrived separately at: make
+  `body-finish!` *consume* the Body and *produce* the Conn, and the temporal
+  ordering is enforced by the affine discipline already present, at zero solver
+  cost — and the `close-conn!`-legal-from-`:writing` hole closes as a side
+  effect. This is Vault (PLDI 2001), whose function guards are pre/post
+  conditions over the **whole key set**. perturb's missing declaration form,
+  from 2001.
+- **Refinements at the transition, not inside a recursive protocol type.** Rast
+  (CONCUR 2020) put arithmetic refinements inside recursive session types and
+  got **undecidable type equality** despite Presburger being decidable. Putting
+  the refinement on a transition and discharging by VC generation — which is
+  what E19 did — avoids that.
+
+#### The highest-value item nobody had on the queue
+
+**`abort!` past live capabilities.** E15 blind spot 4 is a *soundness* gap, not
+a coverage gap. Fowler et al. (POPL 2019): to have exceptions at all, linearity
+must weaken to **affinity plus explicit cancellation**, so a capability
+abandoned by an exception is cancelled rather than leaked. perturb has the
+affinity (E6); it lacks the cancellation obligation on the abort path.
+
+#### D4 is doing more work than it was credited with
+
+Links combined linearity with effect handlers and **carried a soundness bug for
+years**, because handlers can discard or multi-invoke continuations; the fix
+required a second discipline, control-flow linearity (Tang et al., POPL 2024,
+distinguished paper). §1.4's no-resumption rule places perturb outside that
+tension structurally. **Recorded consequence: reopening D3 would drag
+control-flow linearity in with it**, and that paper is the price list.
+
+#### Three things the surveys establish that change no decision but should be known
+
+**A dynamic join is a real option with a decade of production evidence.**
+§1.2's "may or may not have been moved is not a mode; no sound join exists" is
+true for a fully static, zero-runtime-state discipline and **false in general**:
+Rust accepts the shape and resolves it with a runtime **drop flag** (RFC 320).
+A `:maybe-moved` mode discharged by a compiler-inserted conditional close is the
+only join mitigation in the survey with production evidence behind it. Recorded
+as an option, not a decision.
+
+**Independent corroboration of E18 finding 4, from a shipped tool.**
+`cargo-geiger` has the same defect in mirror image — narrowing an `unsafe fn`
+into a safe fn wrapping a small `unsafe {}` block *increases* its count, though
+encapsulation strictly improved. Known since 2019, still shipped, and its own
+docs disclaim it as "statistical input to auditing". Our list goes down when you
+inline; theirs goes up when you narrow. Same flaw: a count over syntactic
+markers tracks code shape, not boundary position.
+
+**h11 independently invented finding 3b and does it dynamically.** It tracks
+client and server machines simultaneously with state-triggered transitions
+coupling them, because there was no static option. Its `MUST_CLOSE` state is
+exactly the reification that dissolves perturb's keep-alive join — the decision
+becomes a *state* rather than a branch — and it is adoptable today with no new
+theory.
+
+#### The case against the reframe, which is the strongest part
+
+Of eleven recorded failures: **six are data-model or rule bugs fixable inside
+the current architecture** (E19 fixed four of them), one is a module system, one
+has no answer anywhere, one is the cancellation gap, and only two genuinely want
+indices — which §1.3 already reserved.
+
+And the sharp one: **adopting typestate-as-types would cost the runtime ledger.**
+E15's false accept was found by *running* the accept set. If states exist only at
+compile time, the only cross-check on the checker is the checker. No paper in
+the survey addresses that trade, because none of them had a checker that was
+wrong in a way execution could reveal.
+
+Deployment reality: Plaid is dead (the group moved to Wyvern), Vault never
+shipped, Fugue never shipped, Sing# shipped inside one research OS by its own
+designers. Rust **removed** built-in typestate in 2012 — "the longest compiler
+pass… I like the idea of typestate, but it's not pulling its weight." The only
+mass deployment of typestate-as-types is the Rust embedded HAL *pattern*, which
+needs macros to survive combinatorial type growth and ships a documented dynamic
+escape hatch.
+
+#### Two costs to budget for now
+
+**Proof instability.** F\* ships `--quake` to detect flaky proofs by re-running
+queries; the AWS Dafny team named proof brittleness as something that *blocked
+code updates*. Concretely: a gate that accepts the corpus today can reject it
+after a solver bump with no source change. §1.7 needs a pinned solver version
+and a repeat-run check before the corpus grows.
+
+**Trusted cores are small and frequently wrong.** Rudra scanned all 43,000
+crates once and found 264 memory-safety bugs — **51.6% of everything RustSec had
+recorded since 2016** — including in the standard library and the compiler. The
+architecture localises faults correctly; it does not eliminate them. Do **not**
+import that number: it is about memory safety, and perturb's axioms are protocol
+claims, for which no base rate exists.
+
+#### E20's own nonclaims
+
+1. **No paper was read in full.** See the method limitation above.
+2. **No survey validates a perturb decision.** Each says what the literature
+   contains; the mapping onto perturb's failures is the agents' argument and
+   mine, not a cited result.
+3. **Where the research has no answer, it is recorded as such**: nobody has
+   typed the sans-io trichotomy; nobody grades a capability by a wire-format
+   byte budget; there is no empirical base rate for how often hand-written
+   protocol axioms are wrong; there is no metric for trusted surface that
+   survives adversarial refactoring; and "how often the join rule fires on real
+   programs" is unmeasured in the literature — perturb's zero-in-nREPL,
+   fires-on-the-first-HTTP-driver is better data than anything published.
+4. **The four refutations are of my claims, not of the reframe.** Typestate-as-
+   types would still eliminate E17 nonclaims 1–2 and E18 findings 1(a)–(c). The
+   argument against it is cost, deployment evidence, and the ledger — not that
+   it would fail to work.
+
+---
+
 ## 4. Open questions
 
 Q1–Q5 are §4.1–§4.5; §4.6 collects open items that never carried a Q number.
@@ -2865,6 +3209,16 @@ Recorded here so they are not lost between sections. None of these is decided.
   and on the first driver anyone would write for HTTP keep-alive (E18). The
   accepted rewrite — close inside the branch, `recur` in the other, so one arm
   is bottom — works and is not discoverable from the diagnostic.
+  **E20 corrects the framing and confirms the rule.** Session types do NOT
+  dissolve this: the linear conditional rule types both branches in the same
+  context, so perturb's join rule *is* the linear rule. What session types buy
+  is that the accepted rewrite becomes the *only* writable idiom — a pedagogy
+  fix. Three mitigations now have names: reify the decision as a **state**
+  (h11's `MUST_CLOSE`, adoptable today with no new theory), a **sum state
+  requiring a case-split** (§1.2's own unexplored option, which is the
+  session-typed answer), or a **runtime drop flag** (Rust RFC 320). Also: E20
+  found no published measurement of how often this fires, so perturb's two data
+  points are better evidence than anything in the literature.
 - **~~`:local`~~ and `:extern`.** §1.1's two IR claims were inferences from
   source reading. **`:local` is now settled**: a checker walked real IR and the
   claim holds — names, no binding identity, no `:binding-id` key, no
@@ -2883,26 +3237,56 @@ Recorded here so they are not lost between sections. None of these is decided.
   accesses against `perturb.nrepl`'s 5-entry list and 12 accesses, because the
   accesses were written inside transition bodies instead of helpers. Lines below
   the boundary is the metric; names in a list is not (E18).
-- **An operation that advances two capability machines at once cannot be
-  declared.** The primitive table is keyed by operation. `accept` and
-  `body-finish!` in `perturb.http` are both this shape and both draw a spurious
-  `annotation-inconsistent`. Nothing here is a false accept — it is a
-  declaration language that cannot say what the code does (E18).
-- **A creating operation has no `:from`, so the initial state is a fiction.**
-  Separate from the item above, though it surfaced with it and was first written
-  down as the same thing. `perturb.nrepl/open` consumes nothing, so the
-  consistency check derives `from = nil` and compares it to a declared
-  `:from :created` — a state nothing is ever in, because `open` is what creates
-  the connection. Either machines should have no pre-creation state, or a
-  producing-only operation needs its own rule. Fixing the two-machine keying
-  above would not touch this (E18 (b)).
-- **A state cannot carry a refinement, so an obligation is unstatable.** A
-  Content-Length body writer that declares 6 octets and writes 3 reaches
-  `:finished` and is ACCEPTED and RUNS. The property is QF-LIA over a run-time
-  integer, i.e. §1.3's fragment; what is missing is the ability to attach it to
-  a typestate transition. The cross-capability ordering obligation beside it
-  (`body-finished-before-conn-reused`) is worse: §1.2 has no way to relate two
-  machines in time at all (E18).
+
+  **E20: this is the top item in all three literature surveys, and it is not a
+  type-theory problem** — every system surveyed inherits its host's module
+  system, and perturb has no host to inherit one from (Clojure's `:private` is
+  intent, not enforcement: `@#'ns/private-var` works). Four things the surveys
+  add. (i) The answer is sealing — Mitchell & Plotkin 1988, elaborating to
+  System Fω — but sealing **relocates** trust from a list to a scope rather than
+  discharging it; RustBelt is the architecture that discharges it, where each
+  entry names an *obligation* instead of granting an *exemption*. (ii) In a Lisp
+  whose checker reads post-macroexpansion IR, "inside the implementation" can be
+  an **owner namespace read off the IR** rather than declared, because a
+  keyword's namespace is in the keyword; that is one of very few properties
+  surviving macroexpansion without provenance, which argues for doing it before
+  Q4. (iii) Sealing does not merely preserve linearity, it **creates** it — Alms
+  (POPL 2011) lets an interface impose stiffer restrictions than its
+  implementation, so the seal is what turns a map into a capability. (iv) The
+  case against: per-type sealing handles **rights amplification** badly, and the
+  three operations that advance two machines are exactly that shape, so ML-style
+  sealing would push toward one coarser seal; Modula-3's partial revelation and
+  Morris's sealer/unsealer pairs fit better. See Appendix D.5.
+  **Independent corroboration of the gameability finding:** `cargo-geiger` has
+  the same defect in mirror image and has shipped with it since 2019.
+- **~~An operation that advances two machines cannot be declared~~ CLOSED**
+  (E19). Keyed `[capability operation]`; three such operations, not two; and
+  E18's "nothing here is a false accept" was wrong for the borrow+produce case.
+- **~~A creating operation has no `:from`~~ DECIDED** (E19): a machine has no
+  pre-creation state. `:created` is deleted and a creating edge declares
+  `:from nil`, because a state with no inhabitants and no outgoing edge is a
+  name for the machine's absence, which `nil` already denotes.
+- **~~A state cannot carry a refinement~~ HALF CLOSED** (E19). A transition
+  carries one; the short body is rejected. What remains: no refinement crosses a
+  **loop** or **function** boundary and there is **no invariant syntax** to
+  supply one, so a body written in a data-dependent loop is REFUSED, not
+  decided. The cross-capability ordering obligation
+  (`body-finished-before-conn-reused`) is untouched — and E20 says it is not a
+  logic problem: make `body-finish!` *consume* the Body and *produce* the Conn,
+  and the affine discipline enforces the order at zero solver cost (Vault, PLDI
+  2001). E19 made that declarable; nothing has used it yet.
+- **The `abort!` path has no cancellation obligation.** E15 blind spot 4 is a
+  soundness gap, not a coverage gap: a non-local exit past a live capability
+  leaks it. Fowler et al. (POPL 2019) — having exceptions at all requires
+  weakening linearity to affinity **plus explicit cancellation**. perturb has
+  the affinity and not the cancellation. E20 ranks this the highest-value item
+  the queue did not contain (Appendix D.3).
+- **A dynamic join is an unexplored option.** §1.2's "no sound join exists" is
+  true for a fully static, zero-runtime-state discipline and false in general —
+  Rust carries a runtime **drop flag** (RFC 320). A `:maybe-moved` mode
+  discharged by a compiler-inserted conditional close is the only join
+  mitigation in E20's survey with production evidence. Not a decision; an option
+  that was not on the list.
 - **`:borrows` + `:produces` of the same capability duplicates it.** A legal,
   natural annotation ("here is your listener back") mints a second abstract
   capability for one runtime object; the false leak is reported at the caller
@@ -3383,6 +3767,160 @@ Two sections shared the number 16 in the chronological record. Bare `§16`
 references in historical text are resolved by content: references to the
 sampling bias, the three property classes, or the codec-shaped ladder mean the
 first; `§16/E13` means the second.
+
+---
+
+## Appendix D — E20's bibliography
+
+**Why this appendix exists.** The E20 surveys ran under an egress policy that
+blocked every scholarly host: `dl.acm.org`, `arxiv.org`, `link.springer.com`,
+`drops.dagstuhl.de`, `plv.mpi-sws.org`, `iris-project.org`, `cs.cmu.edu`,
+`microsoft.com`, and most university sites all returned 403 at the CONNECT
+layer. Reachable: `github.com`, `raw.githubusercontent.com`, and search-engine
+extractions. **Every reference below was verified for existence, venue, authors
+and year; none was read in full text**, except the items marked ✔, which were
+fetched directly. This list is kept complete so the sources can be obtained when
+access allows, and so any claim resting on one can be re-checked against the
+paper rather than against a summary of it.
+
+### D.1 Typestate
+
+| ref | where |
+| --- | --- |
+| Strom & Yemini, *Typestate: A Programming Language Concept for Enhancing Software Reliability*, IEEE TSE 12(1), 1986 | original; NIL, IBM, no external deployment |
+| DeLine & Fähndrich, *Enforcing High-Level Protocols in Low-Level Software*, PLDI 2001 | [10.1145/378795.378811](https://dl.acm.org/doi/10.1145/378795.378811) — **Vault**; tracked keys; pre/post over the whole key set |
+| DeLine & Fähndrich, *Adoption and Focus: Practical Linear Types for Imperative Programming*, PLDI 2002 | Vault's aliasing story |
+| DeLine & Fähndrich, *Typestates for Objects*, ECOOP 2004 | [10.1007/978-3-540-24851-4_21](https://link.springer.com/chapter/10.1007/978-3-540-24851-4_21) — Fugue |
+| Fähndrich et al., *Language support for fast and reliable message-based communication in Singularity OS*, EuroSys 2006 | Sing#; channel contracts; `C.Imp`/`C.Exp` |
+| Aldrich, Sunshine, Saini, Sparks, *Typestate-Oriented Programming*, Onward! 2009 | Plaid |
+| Garcia, Tanter, Wolff, Aldrich, *Foundations of Typestate-Oriented Programming*, TOPLAS 36(4), 2014 | Plaid's metatheory |
+| Bierhoff & Aldrich, *Modular Typestate Checking of Aliased Objects*, OOPSLA 2007 | [10.1145/1297105.1297050](https://dl.acm.org/doi/10.1145/1297105.1297050) — access permissions; the implementation side is the harder side |
+| ✔ rust-lang/rust#2178 — removal of built-in typestate, July 2012 | [github.com/rust-lang/rust/issues/2178](https://github.com/rust-lang/rust/issues/2178) — "not pulling its weight" |
+| Saffrich, Nishida, Thiemann, *Law and Order for Typestate with Borrowing*, OOPSLA 2024 | [arXiv:2408.14031](https://arxiv.org/abs/2408.14031) |
+| Jia, Liu, He, Deng, Bao, Rompf, *Typestate via Revocable Capabilities*, OOPSLA 2025 | [arXiv:2510.08889](https://arxiv.org/abs/2510.08889) — closest to perturb's vocabulary |
+| Beckman, Kim, Aldrich, *An Empirical Study of Object Protocols in the Wild*, ECOOP 2011 | protocol prevalence (~7.2% of types), not violation frequency |
+| Naeem & Lhoták, *Typestate-like analysis of multiple interacting objects*, OOPSLA 2008 | [10.1145/1449764.1449792](https://dl.acm.org/doi/10.1145/1449764.1449792) |
+| Mota, Giunti, Ravara, *On Using VeriFast, VerCors, Plural, and KeY to Check Object Usage*, ECOOP 2023 | [arXiv:2209.05136](https://arxiv.org/abs/2209.05136) — the one comparative effort study |
+
+### D.2 Session types
+
+| ref | where |
+| --- | --- |
+| Honda, Vasconcelos, Kubo, *Language Primitives and Type Discipline for Structured Communication-Based Programming*, ESOP 1998 | delegation |
+| Vasconcelos, *Fundamentals of Session Types*, Information and Computation 217, 2012 | **the conditional rule: both branches typed in the same context** — the refutation of E20's claim 1 |
+| Caires & Pfenning, *Session Types as Intuitionistic Linear Propositions*, CONCUR 2010 | `!A` as replicated server |
+| Thiemann & Vasconcelos, *Context-Free Session Types*, ICFP 2016 | FreeST; lifts `PRESERVE` beyond regular |
+| Thiemann, *Intrinsically Typed Sessions with Callbacks*, 2023 | [arXiv:2303.01278](https://arxiv.org/abs/2303.01278) — driver/handler split in miniature |
+| Hu & Yoshida, *Hybrid Session Verification through Endpoint API Generation*, FASE 2016 | HTTP/SMTP; **linearity checked dynamically** |
+| Neykova, Yoshida, Hu, *Practical Interruptible Conversations*, RV 2013 / FMSD | the OOI deployment — **runtime monitoring, not static typing** |
+| Jespersen, Munksgaard, Larsen, *Session Types for Rust*, WGP 2015 | the affine/linear gap |
+| Cutner, Yoshida, Vassor, *Deadlock-Free Asynchronous Message Reordering in Rust with MPST*, PPoPP 2022 | Rumpsteak |
+| Chen, Balzer, Toninho, Ferrite | [arXiv:2009.13619](https://arxiv.org/abs/2009.13619), [arXiv:2205.06921](https://arxiv.org/abs/2205.06921) |
+| Scalas & Yoshida, lchannels, ECOOP 2016; Scalas, Yoshida, Benussi, Effpi, PLDI 2019 | Scala |
+| Deniélou & Yoshida, *Parameterised Multiparty Session Types*, FoSSaCS 2011 / LMCS 8(4) 2012 | [arXiv:1208.6483](https://arxiv.org/abs/1208.6483) |
+| Qian, Kavvos, Birkedal, *Client-Server Sessions in Linear Logic*, ICFP 2021 | [arXiv:2010.13926](https://arxiv.org/abs/2010.13926) — right theory for listener+N, **no implementation found** |
+| Balzer & Pfenning, *Manifest Sharing with Session Types*, ICFP 2017; *Manifest Deadlock-Freedom for Shared Session Types*, ESOP 2019 | trouble with a statically undetermined number of shared sessions — i.e. a server |
+| Das & Pfenning, *Session Types with Arithmetic Refinements*, CONCUR 2020 | [arXiv:2005.05970](https://arxiv.org/abs/2005.05970) — **refinements inside recursive session types ⇒ undecidable type equality** |
+| Das & Pfenning, Rast, FSCD 2020 | the implementation of the above |
+| Saffrich & Thiemann, *Polymorphic Typestate for Session Types*, PPDP 2023 | escaping CPS needs higher-order polymorphism + existentials |
+| Kirkeby et al., *Session Types for the Transport Layer: Towards an Implementation of TCP*, 2024 | [arXiv:2404.05478](https://arxiv.org/abs/2404.05478) — "differences in assumptions between session type theory and how transport protocols are implemented" |
+| Yoshida et al., *Programming Language Implementations with Multiparty Session Types*, 2024 | survey |
+
+### D.3 Effects, handlers, and the linearity tension
+
+| ref | where |
+| --- | --- |
+| Orchard & Yoshida, *Effects as Sessions, Sessions as Effects*, POPL 2016 | the two-way embedding — "the protocol **is** the effect signature" |
+| Tang, Hillerström, Lindley, Morris, *Soundly Handling Linearity*, POPL 2024 (distinguished paper) | [arXiv:2307.09383](https://arxiv.org/abs/2307.09383) — **Links' multi-year soundness bug**; control-flow linearity; the price list for reopening D3 |
+| Fowler, Lindley, Morris, Decova, *Exceptional Asynchronous Session Types: Session Types without Tiers*, POPL 2019 | **affinity + explicit cancellation** — the highest-value unadopted item |
+| Brady, *Programming and Reasoning with Algebraic Effects and Dependent Types*, ICFP 2013; *Resource-Dependent Algebraic Effects*, TFP 2014; *State Machines All The Way Down*, ML 2017 | Idris `Control.ST`; closest existing design |
+| Brachthäuser, Schuster, Ostermann, *Effects as Capabilities*, OOPSLA 2020; *Effects, Capabilities, and Boxes*, OOPSLA 2022 | Effekt — **vocabulary warning**: its "capability" is handler evidence, not a linear resource |
+| Schuster et al., *From Capabilities to Regions*, OOPSLA 2023 | |
+| Yarrow, effects × region-based memory management | arXiv 2607.15876 — already cited in §1.2 |
+
+### D.4 Graded, quantitative, and refinement types
+
+| ref | where |
+| --- | --- |
+| Orchard, Liepelt, Eades, *Quantitative Program Reasoning with Graded Modal Types*, ICFP 2019 | [10.1145/3341714](https://dl.acm.org/doi/pdf/10.1145/3341714) — Granule |
+| ✔ Granule repo, install docs, `StdLib/Vec.gr`, `StdLib/File.gr`, `examples/intro.gr.md` | [github.com/granule-project/granule](https://github.com/granule-project/granule) — **requires Z3**; `File.gr`'s write loop has an un-indexed handle; `last`/`init` commented out of `Vec.gr` |
+| Ghica & Smith, *Bounded Linear Types in a Resource Semiring*, ESOP 2014 | [10.1007/978-3-642-54833-8_18](https://link.springer.com/chapter/10.1007/978-3-642-54833-8_18) — "parameterized by the decision procedure of the semiring equational theory" |
+| Girard, Scedrov, Scott, *Bounded Linear Logic*, TCS 97(1), 1992 | index polynomials |
+| Dal Lago & Gaboardi, *Linear Dependent Types and Relative Completeness*, LMCS 8(4), 2012 | [arXiv:1104.0193](https://arxiv.org/abs/1104.0193) — completeness *relative to an oracle* |
+| Atkey, *Syntax and Semantics of Quantitative Type Theory*; Brady, *Idris 2: QTT in Practice*, ECOOP 2021 | LIPIcs 194:9 |
+| ✔ Idris 2 multiplicities manual | [docs/source/tutorial/multiplicities.rst](https://github.com/idris-lang/Idris2/blob/main/docs/source/tutorial/multiplicities.rst) — grades are {0,1,ω}; no counting |
+| Bernardy, Boespflug, Newton, Peyton Jones, Spiwack, *Linear Haskell*, POPL 2018 | [arXiv:1710.09756](https://arxiv.org/pdf/1710.09756) — linearity on the **arrow**; evidence perturb's annotation shape scales |
+| ✔ GHC LinearTypes user's guide | multiplicity polymorphism "incomplete and experimental" |
+| Petricek, Orchard, Mycroft, *Coeffects*, ICFP 2014 | framework, not a mechanism |
+| Marshall, Vollmer, Orchard, *Linearity and Uniqueness: An Entente Cordiale*, ESOP 2022 | the citation to use **if** grading is reconsidered for §1.2's axis list |
+| Marshall & Orchard, *Replicate, Reuse, Repeat*, 2022 | [arXiv:2203.12875](https://arxiv.org/abs/2203.12875) — session types as grades |
+| Knoth, Wang, Reynolds, Polikarpova, Hoffmann, *Liquid Resource Types*, ICFP 2020 | [10.1145/3408988](https://dl.acm.org/doi/10.1145/3408988) — **the AARA authors concluding value-dependent counting needs refinements** |
+| Lehmann, Geller, Vazou, Jhala, *Flux: Liquid Types for Rust*, PLDI 2023 | [flux-pldi23.pdf](https://ranjitjhala.github.io/static/flux-pldi23.pdf) — **nearest system to perturb's shape; read first** |
+| Sammler, Lepigre, Krebbers, Memarian, Dreyer, Garg, *RefinedC*, PLDI 2021 | [10.1145/3453483.3454036](https://dl.acm.org/doi/10.1145/3453483.3454036) — ownership + refinement **without SMT**, via Lithium |
+| Vazou et al., abstract refinements, ESOP 2013; *LiquidHaskell in the real world* | already cited in §1.3/Q2 |
+| Vazou, Tanter, Van Horn, *Gradual Liquid Type Inference*, OOPSLA 2018 | inference is global; failure gives obscure messages |
+| Toman et al., ConSORT, ESOP 2020 | ownership refinement types, CHC-based |
+| Xi, Dependent ML, JFP 2007; ATS | index refinement over a restricted domain; heavy annotation burden |
+
+### D.5 Abstraction boundaries, TCBs, and their measurement
+
+| ref | where |
+| --- | --- |
+| Mitchell & Plotkin, *Abstract Types Have Existential Type*, TOPLAS 10(3), 1988 | [10.1145/44501.45065](https://dl.acm.org/doi/10.1145/44501.45065) |
+| Rossberg, Russo, Dreyer, *F-ing Modules*, JFP 24(5), 2014; Rossberg, *1ML*, JFP 2018 | sealing elaborates to System Fω |
+| Cardelli, Donahue, Jordan et al., *Modula-3 Report*, SRC-RR-52 | **partial revelation** — graded disclosure, the one classical answer to rights amplification |
+| Morris, *Protection in Programming Languages*, CACM 16(1), 1973 | [10.1145/361932.361937](https://dl.acm.org/doi/pdf/10.1145/361932.361937) — sealer/unsealer pairs; **fits two-machine operations better than ML modules** |
+| Matthews & Ahmed, *Parametric Polymorphism through Run-Time Sealing*, ESOP 2008 | [10.1007/978-3-540-78739-6_2](https://link.springer.com/chapter/10.1007/978-3-540-78739-6_2) |
+| Parkinson & Bierman, *Separation logic and abstraction*, POPL 2005 | [10.1145/1040305.1040326](https://dl.acm.org/doi/10.1145/1040305.1040326) — **abstract predicates: the principled account of "these bodies are axioms"** |
+| Jung, Jourdan, Krebbers, Dreyer, *RustBelt*, POPL 2018 | [10.1145/3158154](https://dl.acm.org/doi/10.1145/3158154) — **each entry names an obligation instead of granting an exemption** |
+| *RustHornBelt*, PLDI 2022; *RefinedRust*, PLDI 2024 | [10.1145/3519939.3523704](https://dl.acm.org/doi/10.1145/3519939.3523704) |
+| Jung, Dang, Kang, Dreyer, *Stacked Borrows*, POPL 2020; Tree Borrows, PLDI 2025 | [plv.mpi-sws.org/rustbelt/stacked-borrows](https://plv.mpi-sws.org/rustbelt/stacked-borrows/) |
+| Jung et al., *Miri*, POPL 2026 | [10.1145/3776690](https://dl.acm.org/doi/abs/10.1145/3776690) — **a dynamic checker for the trusted core**; cheap and perturb has no analogue |
+| Swasey, Garg, Dreyer, *Robust and Compositional Verification of Object Capability Patterns*, OOPSLA 2017 | [10.1145/3133913](https://dl.acm.org/doi/10.1145/3133913) |
+| Tov & Pucella, *Practical Affine Types* (Alms), POPL 2011 | [10.1145/1926385.1926436](https://dl.acm.org/doi/10.1145/1926385.1926436) — **sealing CREATES the linearity** |
+| Tov & Pucella, *Stateful Contracts for Affine Types*, ESOP 2010 | [10.1007/978-3-642-11957-6_29](https://dl.acm.org/doi/10.1007/978-3-642-11957-6_29) — the paper for a `clojure.*` boundary (§1.6) |
+| Morris, *The Best of Both Worlds* (Quill), ICFP 2016 | [arXiv:1612.06633](https://arxiv.org/abs/1612.06633) — linearity qualifiers solvable by qualified-type inference; a smaller hammer than E13's |
+| Klein et al., *seL4*, SOSP 2009 | [10.1145/1629575.1629596](https://dl.acm.org/doi/10.1145/1629575.1629596) — 8,700 C lines, 200,000 Isabelle, **20:1** |
+| Protzenko et al., *Verified Low-Level Programming Embedded in F\**, ICFP 2017 | they **publish the TCB list** |
+| Paulson, *the de Bruijn criterion vs the LCF architecture* | [lawrencecpaulson.github.io/2022/01/05/LCF.html](https://lawrencecpaulson.github.io/2022/01/05/LCF.html) |
+
+### D.6 Empirical evidence on trusted cores
+
+| ref | where |
+| --- | --- |
+| Astrauskas, Matheja, Poli, Müller, Summers, *How Do Programmers Use Unsafe Rust?*, OOPSLA 2020 | [10.1145/3428204](https://dl.acm.org/doi/10.1145/3428204) — 31,000+ crates; **92.3% have unsafe-statement ratio ≤10%**; "the Rust hypothesis" only **partially** supported |
+| Bae, Kim, Askar, Lim, Kim, *Rudra*, SOSP 2021 | [10.1145/3477132.3483570](https://dl.acm.org/doi/pdf/10.1145/3477132.3483570) — **264 bugs in one scan = 51.6% of RustSec's memory-safety history** |
+| Qin, Chen, Yu, Song, Zhang, PLDI 2020 | [10.1145/3385412.3386036](https://dl.acm.org/doi/10.1145/3385412.3386036) — all memory-safety bugs involved unsafe; "interior unsafe" |
+| Xu, Chen, Wang, Suo, Cheng, TOSEM 2021 | [arXiv:2003.03296](https://arxiv.org/abs/2003.03296) — all Rust memory-safety CVEs to 2020 |
+| Evans, Campbell, Soffa, *Is Rust Used Safely by Software Developers?*, ICSE 2020 | only 27% of crates are transitively unsafe-free — per-crate ratios understate exposure |
+| *A Mixed-Methods Study on the Implications of Unsafe Rust*, TOSEM 2025 | [arXiv:2404.02230](https://arxiv.org/abs/2404.02230) — "little official guidance" on encapsulating unsafe |
+| Rao, Yang, Xu, *Characterizing Unsafe Code Encapsulation in Real-World Rust Systems*, 2024 | [arXiv:2406.07936](https://arxiv.org/abs/2406.07936) — **unsafety isolation graphs; audit units, not scalars** |
+| *Annotating and Auditing the Safety Properties of Unsafe Rust*, 2025 | [arXiv:2504.21312](https://arxiv.org/abs/2504.21312) — safety tags; **96.1% of public unsafe APIs**; most transplantable idea |
+| ✔ `cargo-geiger` and issue #71 | [github.com/geiger-rs/cargo-geiger](https://github.com/geiger-rs/cargo-geiger) · [issue #71](https://github.com/geiger-rs/cargo-geiger/issues/71) — **gameable in mirror image to E18 finding 4** |
+| ✔ The Rustonomicon, *Working with Unsafe* | "the only bullet-proof way to limit the scope of unsafe code is at the module boundary with privacy" |
+| ✔ Rust RFC 320, non-zeroing dynamic drop | [rust-lang.github.io/rfcs/0320-nonzeroing-dynamic-drop.html](https://rust-lang.github.io/rfcs/0320-nonzeroing-dynamic-drop.html) — **the dynamic join** |
+
+### D.7 Deployments, and the Lisp precedents
+
+| ref | where |
+| --- | --- |
+| Ramananandro et al., *EverParse*, USENIX Security 2019; EverParse3D | [project-everest.github.io/everparse](https://project-everest.github.io/everparse/) — **every packet in Hyper-V**, ~100 formats, non-malleability |
+| *Project Everest: Perspectives from Developing Industrial-Grade High-Assurance Software*, TOPLAS 48(2), 2026 | [10.1145/3805702](https://dl.acm.org/doi/10.1145/3805702) |
+| *Formally Verified Cloud-Scale Authorization*, ICSE 2025 | Dafny + Z3, deployed 2024; **proof brittleness blocked code updates** |
+| Koh, Li, Li, Xia, Beringer, Honoré, Mansky, Pierce, Zdancewic, *From C to Interaction Trees*, CPP 2019 | [arXiv:1811.11911](https://arxiv.org/abs/1811.11911) — **the sans-io split, formally**; found RFC violations in Apache and nginx |
+| Zhang, Honoré, Koh et al., *Verifying an HTTP Key-Value Server with Interaction Trees and VST*, ITP 2021 | [github.com/liyishuai/coq-http](https://github.com/liyishuai/coq-http) |
+| ✔ `h11` `docs/source/api.rst` | **two coupled state machines, state-triggered transitions, `MUST_CLOSE`** — finding 3b, invented independently and done dynamically |
+| Findler & Felleisen, *Contracts for Higher-Order Functions*, ICFP 2002 | [10.1145/581478.581484](https://dl.acm.org/doi/10.1145/581478.581484) |
+| ✔ Racket Guide §7.1, *Contracts and Boundaries* | "**modules as units of blame**" — the two-sided obligation, in a Lisp |
+| Dimoulas, Findler, Flanagan, Felleisen, *Correct Blame for Contracts*, POPL 2011 | [10.1145/1926385.1926410](https://dl.acm.org/doi/10.1145/1926385.1926410) — E18 1(c) is a blame failure in this sense |
+| Dimoulas, Tobin-Hochstadt, Felleisen, *Complete Monitors for Behavioral Contracts*, ESOP 2012 | E18 (b) is an incomplete-monitoring failure |
+| ✔ Racket Reference §17, *Unsafe Operations* | `protect-out` + code inspectors — a Lisp with an access-controlled trusted core |
+| Flatt & Felleisen, *Units: Cool Modules for HOT Languages*, PLDI 1998 | |
+| Tobin-Hochstadt & Felleisen, *The Design and Implementation of Typed Scheme*, POPL 2008 | |
+| Bonnaire-Sergeant, Davies, Tobin-Hochstadt, *Practical Optional Types for Clojure*, ESOP 2016 | [arXiv:1812.03571](https://arxiv.org/abs/1812.03571) — the transplant exists |
+| Takikawa, Feltey, Greenman, New, Vitek, Felleisen, *Is Sound Gradual Typing Dead?*, POPL 2016 | [10.1145/2837614.2837630](https://dl.acm.org/doi/10.1145/2837614.2837630) — **keep the seal static** |
+| Culpepper, Tobin-Hochstadt, Flatt, *Advanced Macrology and the Implementation of Typed Scheme*, Scheme Workshop 2007 | blame across macroexpansion is open (Q4) |
+| ✔ Clojure reference: *Vars and the Global Environment* | `:private` is intent; `@#'ns/private-var` works — **perturb cannot get sealing from the host** |
 
 ---
 
