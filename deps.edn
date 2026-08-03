@@ -73,7 +73,13 @@
      :deps/root "clj"}
     io.github.casselc/jolt-http
     {:git/url "https://github.com/casselc/jolt-http.git"
-     :git/sha "96bd0fc93f1a2c77128d06f74802dd2a4631c0d4"}}
+     :git/sha "96bd0fc93f1a2c77128d06f74802dd2a4631c0d4"}
+    io.github.casselc/jolt-tcp
+    {:git/url "https://github.com/casselc/jolt-tcp.git"
+     :git/sha "c4db4c1431d04efcc035b9457f3bc0bff6a2df22"}
+    io.github.casselc/jolt-net
+    {:git/url "https://github.com/casselc/jolt-net.git"
+     :git/sha "699b908ffb4eb79ad35055cdc20866bb504e6932"}}
    :main-opts ["-m" "jolt.sim.explore-worker"]}
 
   ;; Real SQLite lane: use the complete public DB coordinate so its native
@@ -163,15 +169,21 @@
    :main-opts ["-m" "jolt.sim.posix-loopback-test-main"]}
 
   ;; Unchanged public jolt-http (README Hello World) application code over the
-  ;; deterministic POSIX loopback FFI pack. Pin the reviewed ownership commit;
-  ;; it transitively pins the matching jolt-tcp wake-cursor and jolt-net
-  ;; readiness commits, so CI needs no sibling checkout or moving branch.
+  ;; deterministic POSIX loopback FFI pack. Override jolt-http's historical
+  ;; transport pins with the reviewed Jolt 0.5.20 clock-compatible jolt-tcp and
+  ;; jolt-net commits, so CI needs no sibling checkout or moving branch.
   :http-hello-test
   {:extra-paths ["test"]
    :extra-deps
    {io.github.casselc/jolt-http
     {:git/url "https://github.com/casselc/jolt-http.git"
-     :git/sha "96bd0fc93f1a2c77128d06f74802dd2a4631c0d4"}}
+     :git/sha "96bd0fc93f1a2c77128d06f74802dd2a4631c0d4"}
+    io.github.casselc/jolt-tcp
+    {:git/url "https://github.com/casselc/jolt-tcp.git"
+     :git/sha "c4db4c1431d04efcc035b9457f3bc0bff6a2df22"}
+    io.github.casselc/jolt-net
+    {:git/url "https://github.com/casselc/jolt-net.git"
+     :git/sha "699b908ffb4eb79ad35055cdc20866bb504e6932"}}
    :main-opts ["-m" "jolt.sim.posix-loopback-http-test-main"]}
 
   ;; Ordinary jolt-http and db application code exercised first against real
@@ -185,7 +197,13 @@
      :git/sha "df8f434f7ebf5e63b3f52ab6c5c2a2b2c92d3a6d"}
     io.github.casselc/jolt-http
     {:git/url "https://github.com/casselc/jolt-http.git"
-     :git/sha "96bd0fc93f1a2c77128d06f74802dd2a4631c0d4"}}
+     :git/sha "96bd0fc93f1a2c77128d06f74802dd2a4631c0d4"}
+    io.github.casselc/jolt-tcp
+    {:git/url "https://github.com/casselc/jolt-tcp.git"
+     :git/sha "c4db4c1431d04efcc035b9457f3bc0bff6a2df22"}
+    io.github.casselc/jolt-net
+    {:git/url "https://github.com/casselc/jolt-net.git"
+     :git/sha "699b908ffb4eb79ad35055cdc20866bb504e6932"}}
    :main-opts ["-m" "jolt.sim.http-sqlite-test-main"]}
 
   ;; Hermetic SQLite variant: load only db's source path so its native-library
@@ -199,7 +217,13 @@
      :deps/root "clj"}
     io.github.casselc/jolt-http
     {:git/url "https://github.com/casselc/jolt-http.git"
-     :git/sha "96bd0fc93f1a2c77128d06f74802dd2a4631c0d4"}}
+     :git/sha "96bd0fc93f1a2c77128d06f74802dd2a4631c0d4"}
+    io.github.casselc/jolt-tcp
+    {:git/url "https://github.com/casselc/jolt-tcp.git"
+     :git/sha "c4db4c1431d04efcc035b9457f3bc0bff6a2df22"}
+    io.github.casselc/jolt-net
+    {:git/url "https://github.com/casselc/jolt-net.git"
+     :git/sha "699b908ffb4eb79ad35055cdc20866bb504e6932"}}
    :main-opts ["-m" "jolt.sim.http-sqlite-test-main" "--sim-only"]}
 
   ;; Simulator-free pure application core: the canonical HTTP command ->
