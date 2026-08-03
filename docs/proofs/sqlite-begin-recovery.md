@@ -40,8 +40,10 @@ At jolt-sim base `ac8e0d884b0c57315a9fbcb7d60c5d88ebb6d890`,
 `src/jolt/sim/sqlite.clj` has an ordered statement-plan oracle with connection
 error/change/row-id state. Its 22-handler registry has no
 `sqlite3_get_autocommit`, its connection state has no transaction boundary,
-and successful statement plans return predeclared rows. These are the exact
-gaps this feature slice must close narrowly.
+and successful statement plans return predeclared rows. Both `h-step` branches
+currently replace the entire connection record when publishing result state,
+so they would erase any newly added transaction fields unless converted to
+updates. These are the exact gaps this feature slice must close narrowly.
 
 ## Negated query and results
 
@@ -95,8 +97,16 @@ The simulator extension must stay smaller than a SQL engine:
   `sqlite3_step` result, so the SAT witness is executable;
 - derive committed versus rolled-back row visibility from minimal staged
   state rather than predeclaring both results; and
-- expose enough summary/effect evidence to assert R0-R7 routing, poison/cleanup,
-  and no live handles without leaking host exception objects into replay data.
+- retain closed-connection transaction snapshots and enough summary/effect
+  evidence to assert R0-R4/R6 routing, poison/cleanup, and no live handles
+  without leaking host exception objects into replay data.
+
+R5, R7, and the final verification-probe-error branch remain DB-level controls
+for this slice. A hermetic handler throw is currently latched as a simulator
+controller failure instead of being delivered as an ordinary catchable native
+call exception. Faithful simulated coverage therefore requires a later
+first-class native-exception outcome; these branches must not be disguised as
+SQLite integer return codes.
 
 The ordinary HTTP fixture must continue importing only public `jdbc.core`,
 `jolt.http.server`, and `teensyp.client`. The simulator owns the boundary
