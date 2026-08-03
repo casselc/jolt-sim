@@ -75,7 +75,7 @@ networking, TCP, HTTP, clocks, process isolation, Hegel, replay, and monitoring.
 | Real SQLite adapter using ordinary `jdbc.core` | Landed | `2deb01d`, aggregate registration `5663ca4`; draft PR `casselc/jolt-sim#23` |
 | SQLite table-row model and unchanged-adapter parity | Landed on the active stack | Row model `1639507` / draft PR `casselc/jolt-sim#25`; parity integration `47fc0e5`, review corrections `7772c48` / draft PR `casselc/jolt-sim#26` |
 | Framed TCP/bencode example and hosted lanes | Landed as an input to the canonical app | `6e87657`, `386b9d5`, diagnostic follow-up `51f7018` |
-| Whole HTTP -> SQLite -> TCP outbox application | Real/hermetic base is hosted; generated workload/capacity/poll-fault slice is locally green and awaiting its stacked hosted run | Base draft PR `casselc/jolt-sim#28`; Hegel draft PR `#29`; Hegel `2 tests / 5 assertions` over 2 boundaries plus 15 generated cases; aggregate `513 / 4,042`; Phase 3 below |
+| Whole HTTP -> SQLite -> TCP outbox application | Real/hermetic base and generated workload/capacity/poll-fault slice are hosted and green | Base draft PR `casselc/jolt-sim#28`; Hegel draft PR `#29`; hosted run `30861666592`; Hegel `2 tests / 5 assertions` over 2 boundaries plus 15 generated cases; aggregate `513 / 4,042`; Phase 3 below |
 
 Phase 1 was last run on Linux x86-64 using the prior simulator image
 `jolt v0.5.17-13-g3af5622d`
