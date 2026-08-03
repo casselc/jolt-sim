@@ -27,6 +27,16 @@
                is still live and non-terminal when its binding goes out of scope
                is a leak
 
+  ONE JUDGEMENT IS NOT A MODE JUDGEMENT AT ALL, AND IS THE OTHER TIER:
+
+    REFINE     an EDGE of a typestate machine may carry a §1.3 arithmetic side
+               condition (`perturb.cap/refinements`), discharged against ghost
+               state carried along with the capability. Three outcomes: proved,
+               REFUTED with a counterexample, and REFUSED — the last is a
+               rejection with its own diagnostic kind, never an accept. What is
+               decided and what is refused is stated exactly in `perturb.refine`
+               and in `report-limits` item 10. E18 finding 3.
+
   ONE JUDGEMENT IS NOT A PORT, AND IS FLAGGED AS SUCH. The Python prototypes have
   no non-local exit, so they never had to say what `recur`/`throw` do to a join.
   This checker treats a path ending in `recur` or `throw` as UNREACHABLE at the
@@ -60,6 +70,8 @@
 (require '[perturb.ir :as pir])
 (require '[perturb.script :as script])
 (require '[perturb.effect :as fx])
+(require '[perturb.octet :as o])
+(require '[perturb.refine :as ref])
 (require '[clojure.string :as str])
 
 ;; --- diagnostics ------------------------------------------------------------
@@ -104,7 +116,11 @@
                         (reduce (fn [a s] (assoc a s (first e)))
                                 acc (:perturb.cap/representation (second e))))
                       {} decls)]
-    {:declarations decls :operations ops :primitives prims :representation repr}))
+    {:declarations decls :operations ops :primitives prims :representation repr
+     ;; REFINEMENT (E18 finding 3). [capability operation] -> the refinement on
+     ;; that transition. Keyed by the PAIR, not by the operation, so it does not
+     ;; inherit `prims`'s collision (finding 1a).
+     :refinements (cap/refinements decls)}))
 
 (defn- decl-of [sp c] (get (:declarations sp) c))
 
@@ -169,7 +185,10 @@
   freshly produced), return {:bid :cap :state :name :pos}; else nil."
   [st val]
   (cond
-    (= :fresh (:v val)) {:bid nil :cap (:cap val) :state (:state val) :name nil}
+    ;; REFINEMENT: :refine / :rlog ride along with the capability wherever it
+    ;; goes. They are empty for every capability that declares no refinement.
+    (= :fresh (:v val)) {:bid nil :cap (:cap val) :state (:state val) :name nil
+                         :refine (:refine val) :rlog (:rlog val)}
     (= :cap (:v val))   (let [b (:bid val)]
                           (when (and (contains? (:caps st) b)
                                      (not (contains? (:moved st) b)))
@@ -251,6 +270,292 @@
                             "a call"))
     (= :const (:op n)) (pr-str (:val n))
     :else (str "a " (name (:op n)) " expression")))
+
+;; ===========================================================================
+;; REFINEMENTS ATTACHED TO A TRANSITION — the two tiers, joined (E18 finding 3)
+;; ===========================================================================
+;;
+;; §1.2's typestate axis says which operation is legal from which STATE. §1.3
+;; reserves arithmetic side conditions for refinements. `perturb.cap/refinements`
+;; is where an edge of a machine carries one, and this is the part of the checker
+;; that carries the ghost state along a program and hands the formula to
+;; `perturb.refine`.
+;;
+;; WHAT IS DECIDED, EXACTLY. A capability's ghost variables are abstract
+;; integers: `k + SUM c_i a_i`, or UNKNOWN. An atom is minted per BINDING
+;; OCCURRENCE, so a name used twice is one atom and `declared = (ocount b)`
+;; against `written = 0 + (ocount b)` discharges without either number being
+;; known. Two syntactically different expressions are never identified.
+;;
+;; WHAT IS REFUSED, AND WHY REFUSED RATHER THAN ACCEPTED. Everything else:
+;;
+;;   - a ghost value that is not a linear term over constants and atoms;
+;;   - a refinement crossing a LOOP boundary in either direction — the body is
+;;     walked once, a trip count is data, and the honest fixpoint here is
+;;     UNKNOWN, not "whatever one pass computed";
+;;   - a refinement crossing a FUNCTION boundary — there is no interprocedural
+;;     refinement, so a capability arriving as a parameter has unknown ghosts;
+;;   - a formula the fragment does not decide.
+;;
+;; Each of those is `refinement-undischarged`, which is a REJECTION with its own
+;; diagnostic kind. A checker that accepted on "don't know" would be a machine
+;; for producing false accepts that looks like a checker (E15, E17).
+
+(declare aeval-int)
+
+(defn- invoke-sym [node]
+  (if (and (= :invoke (:op node)) (= :var (:op (:fn node))))
+    (symbol (:ns (:fn node)) (:name (:fn node)))
+    nil))
+
+(defn- arg-node [node i]
+  (let [as (:args node)] (if (and as (< i (count as))) (nth as i) nil)))
+
+(defn- aeval-len
+  "The abstract OCTET LENGTH of the value an IR node produces.
+
+  `(o/encode-utf8 \"abc\")` is evaluated by CALLING the real encoder on the
+  literal, not by counting characters: those two numbers differ and only one of
+  them is what goes on the wire. Anything else is UNKNOWN — including a string
+  that is not a literal, which is the common case and is meant to be."
+  [st node]
+  (let [s (invoke-sym node)]
+    (cond
+      (nil? node) (ref/top "an expression that is not there")
+
+      (= :local (:op node))
+      (let [e (lookup st (:name node))]
+        (if (and e (:olen e))
+          (:olen e)
+          (ref/top (str "the length of `" (:name node) "`, which is not bound here"))))
+
+      (= 'perturb.octet/encode-utf8 s)
+      (let [a (arg-node node 0)]
+        (if (and a (= :const (:op a)) (string? (:val a)))
+          (ref/konst (o/ocount (o/encode-utf8 (:val a))))
+          (ref/top "the length of a string that is not a literal")))
+
+      (= 'perturb.octet/oconcat s)
+      (ref/add (aeval-len st (arg-node node 0)) (aeval-len st (arg-node node 1)))
+
+      (= 'perturb.octet/odrop s)
+      (ref/sub (aeval-len st (arg-node node 0)) (aeval-int st (arg-node node 1)))
+
+      (= 'perturb.octet/osub s)
+      (ref/sub (aeval-int st (arg-node node 2)) (aeval-int st (arg-node node 1)))
+
+      :else
+      (ref/top (str "the length of " (describe-node node)
+                    ", which this checker does not evaluate")))))
+
+(defn- aeval-int
+  "The abstract INTEGER an IR node produces."
+  [st node]
+  (let [s (invoke-sym node)]
+    (cond
+      (nil? node) (ref/top "an expression that is not there")
+
+      (and (= :const (:op node)) (integer? (:val node))) (ref/konst (:val node))
+
+      (= :local (:op node))
+      (let [e (lookup st (:name node))]
+        (if (and e (:int e))
+          (:int e)
+          (ref/top (str "`" (:name node) "`, which is not bound here"))))
+
+      (= 'perturb.octet/ocount s) (aeval-len st (arg-node node 0))
+
+      (= 'clojure.core/+ s)
+      (reduce (fn [acc n] (ref/add acc (aeval-int st n))) (ref/konst 0) (:args node))
+
+      (= 'clojure.core/- s)
+      (if (= 1 (count (:args node)))
+        (ref/neg (aeval-int st (arg-node node 0)))
+        (reduce (fn [acc n] (ref/sub acc (aeval-int st n)))
+                (aeval-int st (arg-node node 0)) (rest (:args node))))
+
+      (= 'clojure.core/inc s) (ref/add (aeval-int st (arg-node node 0)) (ref/konst 1))
+      (= 'clojure.core/dec s) (ref/sub (aeval-int st (arg-node node 0)) (ref/konst 1))
+
+      :else (ref/top (str (describe-node node)
+                          ", which this checker does not evaluate")))))
+
+(defn- bound-ints
+  "What a NAME denotes, as an abstract integer and as an abstract octet length.
+
+  When the initialiser is opaque the name still denotes ONE fixed value, so a
+  FRESH ATOM is minted rather than UNKNOWN: two later uses of the same name then
+  share it, and `(ocount b)` on both sides of an obligation cancels. This is the
+  whole of the symbolic reasoning, and it is sound only because a binding is
+  immutable — for a LOOP binding the atom means `the value in the iteration
+  being analysed`, which is why a refinement is not allowed to leave a loop."
+  [st nm init]
+  (let [i (aeval-int st init)
+        l (aeval-len st init)]
+    {:int  (if (ref/top? i) (ref/atom-term :val (fresh-bid) nm) i)
+     :olen (if (ref/top? l) (ref/atom-term :len (fresh-bid) nm) l)}))
+
+(defn- arg-fn
+  "Resolve `(arg n)` / `(ocount (arg n))` in a DECLARED term against the actual
+  argument expressions at one call site."
+  [st nodes]
+  (fn [kind i]
+    (if (or (nil? i) (>= i (count nodes)))
+      (ref/top (str "argument " i ", which this call does not have"))
+      (if (= :len kind)
+        (aeval-len st (nth nodes i))
+        (aeval-int st (nth nodes i))))))
+
+(defn- ghost-line [nm term where]
+  (str "  " nm " := " (ref/render term) "   at " (pir/site where)))
+
+(defn- refine-init
+  "The ghost environment a `:produces` entry declares with `:init`, or nil."
+  [st entry nodes]
+  (let [r    (get entry cap/refine-key)
+        init (:init r)]
+    (if (nil? init)
+      nil
+      (let [af  (arg-fn st nodes)
+            ks  (sort-by str (keys init))
+            env (reduce (fn [acc k] (assoc acc k (ref/term {} af (get init k)))) {} ks)]
+        {:refine env
+         :rlog   (vec (map (fn [k] (ghost-line k (get env k) (:pos st))) ks))}))))
+
+(defn- refine-update
+  "Apply the `:update` on `[cap opsym]` to a live capability's ghost state. With
+  no `:update` the state is carried across unchanged, which is what makes an
+  operation that does not touch the arithmetic transparent to it."
+  [st sp cap-name opsym lc nodes]
+  (let [u   (:update (get (:refinements sp) [cap-name opsym]))
+        env (or (:refine lc) {})]
+    (if (or (nil? u) (empty? env))
+      {:refine env :rlog (vec (:rlog lc))}
+      (let [af   (arg-fn st nodes)
+            ks   (sort-by str (keys u))
+            env2 (reduce (fn [acc k] (assoc acc k (ref/term env af (get u k)))) env ks)]
+        {:refine env2
+         :rlog   (into (vec (:rlog lc))
+                       ;; the DECLARED term is printed beside the value it took,
+                       ;; because the term is the part that is believed and the
+                       ;; value is the part that is computed
+                       (map (fn [k] (str "  " k " := " (pr-str (get u k))
+                                         "   = " (ref/render (get env2 k))
+                                         "   at " (pir/site (:pos st))))
+                            ks))}))))
+
+(defn- check-requires!
+  "Discharge the `:requires` on `[cap opsym]`, if there is one, against the ghost
+  state of the capability being consumed. Three outcomes and only three: proved,
+  refuted, or REFUSED. Returns nil either way — this reports, it does not
+  change the abstract state."
+  [st sp cap-name opsym lc nodes]
+  (let [r   (get (:refinements sp) [cap-name opsym])
+        req (:requires r)]
+    (when (and req lc)
+      (let [env (or (:refine lc) {})
+            v   (ref/decide env (arg-fn st nodes) req)
+            head [(str "obligation    " (:name r) "   " (pr-str req))
+                  (str "on transition " opsym "  " (:from r) " -> " (:to r))]
+            tail (concat (ref/env-lines env)
+                         (vec (:rlog lc))
+                         [(str "at            " (pir/site (:pos st)))
+                          (str "in            " (:in st))])]
+        (cond
+          (= :valid v) nil
+
+          (= :refuted v)
+          (report! {:kind :refinement :cap cap-name :op opsym
+                    :detail (concat head
+                                    ["the side condition is FALSE — this is a decided"
+                                     "counterexample, not a failure to prove:"]
+                                    tail)})
+
+          :else
+          (report! {:kind :refinement-undischarged :cap cap-name :op opsym
+                    :detail (concat head
+                                    [(str "CANNOT DISCHARGE: "
+                                          (cond
+                                            (empty? env)
+                                            (str "this " cap-name " carries no ghost state at all"
+                                                 " — it arrived as a parameter, or from an"
+                                                 " operation with no :init, and there is no"
+                                                 " interprocedural refinement here")
+                                            (not (nil? (ref/first-unknown-reason env)))
+                                            (ref/first-unknown-reason env)
+                                            :else
+                                            (str "the two sides are both known and do NOT"
+                                                 " normalise to the same linear term."
+                                                 " perturb.refine relates atoms syntactically,"
+                                                 " has no case split and takes no hypotheses,"
+                                                 " so this is refused rather than decided")))
+                                     "the program is REJECTED rather than accepted: this checker"
+                                     "does not treat `I cannot tell` as `yes` (perturb.refine)"]
+                                    tail)}))))))
+
+(defn- widen-caps
+  "Every ghost variable of every capability in `bids` becomes UNKNOWN.
+
+  This is the loop rule for the refinement tier, and it is deliberately blunt: a
+  loop body is walked ONCE and its trip count is data, so the only sound value
+  for a ghost variable a loop can change is UNKNOWN. A capability created AND
+  discharged inside one loop body is untouched by this, which is why a body
+  streamed per request inside a keep-alive loop still decides."
+  [st bids why]
+  (reduce
+    (fn [s bid]
+      (let [c (get (:caps s) bid)]
+        (if (or (nil? c) (empty? (:refine c)))
+          s
+          (assoc s :caps
+                 (assoc (:caps s) bid
+                        (assoc c
+                               :refine (reduce (fn [acc k] (assoc acc k (ref/top why)))
+                                               {} (keys (:refine c)))
+                               :rlog (conj (vec (:rlog c))
+                                           (str "  ghost state of `" (:name c)
+                                                "` becomes " why))))))))
+    st bids))
+
+(defn- map-fresh
+  "Rewrite every :fresh leaf of an abstract value."
+  [v f]
+  (if (= :tuple (:v v))
+    (tuple (map (fn [x] (map-fresh x f)) (:items v)))
+    (if (= :fresh (:v v)) (f v) v)))
+
+(defn- with-refinements
+  "Give every capability an annotated call PRODUCES its ghost state.
+
+  Two sources, in this order. `:init` on the `:produces` entry MINTS the ghost
+  state — that is the creation edge, and it is written there rather than on a
+  transition because a capability minted by another machine's operation cannot
+  name that operation among its own transitions (E18 finding 1a). Otherwise the
+  produced capability is the SAME runtime thing as the one consumed under the
+  same capability name, so it inherits that one's ghost state through the
+  transition's `:update`.
+
+  A capability named by two `:produces` entries of one operation is ambiguous
+  here and gets no ghost state, which means any obligation on it is later
+  refused rather than guessed at."
+  [st sp opsym nodes lcs prod v]
+  (let [tally  (reduce (fn [acc p] (assoc acc (:cap p) (inc (get acc (:cap p) 0)))) {} prod)
+        by-cap (reduce (fn [acc p] (assoc acc (:cap p) p)) {} prod)]
+    (map-fresh
+      v
+      (fn [leaf]
+        (let [c (:cap leaf)
+              p (get by-cap c)]
+          (if (or (nil? p) (> (get tally c 0) 1))
+            leaf
+            (let [i (refine-init st p nodes)]
+              (if i
+                (assoc leaf :refine (:refine i) :rlog (:rlog i))
+                (let [lc (get lcs c)]
+                  (if (and lc (seq (:refine lc)))
+                    (let [u (refine-update st sp c opsym lc nodes)]
+                      (assoc leaf :refine (:refine u) :rlog (:rlog u)))
+                    leaf))))))))))
 
 ;; LIVE (multicap.Store.live) + capture, now at every position of the value.
 ;;
@@ -368,7 +673,7 @@
                                (str "arguments     "
                                     (str/join ", " (map describe-node nodes)))
                                (str "in            " (:in st))]}))
-          {:st st :used nil :ok false})
+          {:st st :used nil :ok false :lc nil})
 
       (not (state-ok? want-state (:state (:lc hit))))
       (do (report! {:kind :typestate :cap want-cap :op opsym
@@ -380,11 +685,13 @@
                              (str "at            " (pir/site (:pos st)))
                              (str "in            " (:in st))]})
           {:st (if move? (mark-moved st (:bid (:lc hit)) {:by opsym :pos (:pos st)}) st)
-           :used (:i hit) :ok false})
+           :used (:i hit) :ok false :lc (:lc hit)})
 
       :else
+      ;; REFINEMENT: `:lc` is returned so the caller can discharge a side
+      ;; condition against the ghost state of the capability just consumed.
       {:st (if move? (mark-moved st (:bid (:lc hit)) {:by opsym :pos (:pos st)}) st)
-       :used (:i hit) :ok true})))
+       :used (:i hit) :ok true :lc (:lc hit)})))
 
 (defn- produced-value
   "Build the abstract result of an annotated call from its :produces entries.
@@ -440,15 +747,25 @@
         nodes (:args node)
         step  (fn [acc entry move?]
                 (let [rr (consume-arg (:st acc) sp opsym entry vals nodes (:used acc) move?)]
+                  ;; REFINEMENT: discharge this edge's side condition, if it has
+                  ;; one, against the ghost state of the capability consumed
+                  ;; here. Only when the typestate half succeeded — a refinement
+                  ;; diagnostic on top of a `typestate` one is noise about a
+                  ;; program that is already rejected for a better reason.
+                  (when (:ok rr)
+                    (check-requires! (:st acc) sp (:cap entry) opsym (:lc rr) nodes))
                   {:st (:st rr) :used (conj (:used acc) (:used rr))
-                   :ok (and (:ok acc) (:ok rr))}))
-        a1    (reduce (fn [acc e] (step acc e false)) {:st st1 :used #{} :ok true} (:borrows ann))
-        a2    (reduce (fn [acc e] (step acc e true))  a1                           (:consumes ann))
+                   :ok (and (:ok acc) (:ok rr))
+                   :lcs (if (:ok rr) (assoc (:lcs acc) (:cap entry) (:lc rr)) (:lcs acc))}))
+        a1    (reduce (fn [acc e] (step acc e false))
+                      {:st st1 :used #{} :ok true :lcs {}} (:borrows ann))
+        a2    (reduce (fn [acc e] (step acc e true))  a1  (:consumes ann))
         st2   (:st a2)]
     ;; the operation did not type-check, so its result has no capability type
     (if (not (:ok a2))
       {:st st2 :val OPAQUE}
-      {:st st2 :val (produced-value st2 opsym (:produces ann))})))
+      {:st st2 :val (with-refinements st2 sp opsym nodes (:lcs a2) (:produces ann)
+                                      (produced-value st2 opsym (:produces ann)))})))
 
 (defn- report-no-signature! [st callee vals nodes]
   (doseq [i (range (count vals))]
@@ -559,7 +876,10 @@
                         b  (fresh-bid)]
                     {:st (bind-cap s1 b {:cap (:cap lc) :state (:state lc)
                                          :name (str nm (path-str path))
-                                         :pos pos :fn-depth (:fn-depth s)})
+                                         :pos pos :fn-depth (:fn-depth s)
+                                         ;; REFINEMENT: an affine move carries the
+                                         ;; ghost state with the capability.
+                                         :refine (:refine lc) :rlog (:rlog lc)})
                      :val {:v :cap :bid b}})))))]
     {:st (:st r) :val (:val r) :bids (vec (map (fn [l] (:bid (:val l)))
                                                (cap-leaves (:val r))))}))
@@ -574,7 +894,12 @@
             rr   (w (:st acc) init)
             st1  (:st rr)
             rb   (rebind st1 nm (:val rr) (:pos st1))
-            st2  (bind-name (:st rb) nm {:bid (first (:bids rb)) :val (:val rb)})]
+            ;; REFINEMENT: what this NAME denotes, as an abstract integer and as
+            ;; an abstract octet length. Costs one atom per binding and is what
+            ;; lets a run-time length appear on both sides of an obligation.
+            ints (bound-ints st1 nm init)
+            st2  (bind-name (:st rb) nm {:bid (first (:bids rb)) :val (:val rb)
+                                         :int (:int ints) :olen (:olen ints)})]
         {:st st2
          :bids (into (:bids acc) (:bids rb))
          :vals (conj (:vals acc) (:val rb))
@@ -651,14 +976,44 @@
 
 (defn- w-loop [st sp node]
   (let [r    (w-bindings (push-scope st) (:bindings node))
-        st1  (:st r)
+        ;; REFINEMENT: a refinement does not cross a loop boundary, in EITHER
+        ;; direction. The body is walked once and the trip count is data, so
+        ;; every ghost variable live at loop entry becomes unknown, and so does
+        ;; every one leaving on the loop's result. A capability created and
+        ;; discharged inside one body is untouched, which is the class that
+        ;; still decides.
+        st1  (widen-caps (:st r) (keys (:caps (:st r)))
+                         (str "unknown here — the capability crossed a loop boundary (loop entry, "
+                              (pir/site (:pos st)) ")"))
         outer (remove (fn [b] (contains? (set (:bids r)) b)) (keys (:caps st1)))
         ctx  {:bids (:bids r) :shapes (:shapes r)
               :entry-moved (:moved st1) :outer (vec outer)}
         rb   (w (assoc st1 :loop-ctx ctx) (:body node))
         stb  (assoc (:st rb) :loop-ctx (:loop-ctx st))
-        st2  (check-scope-exit stb sp (:bids r) (:val rb) "the end of the loop")]
-    {:st (pop-scope st2) :val (:val rb)}))
+        st2  (check-scope-exit stb sp (:bids r) (:val rb) "the end of the loop")
+        st3  (widen-caps st2 (held-bids (:val rb))
+                         (str "unknown here — the capability crossed a loop boundary (loop exit, "
+                              (pir/site (:pos st)) ")"))]
+    {:st (pop-scope st3) :val (:val rb)}))
+
+;; REFINEMENT at a join: a ghost variable with two different values after the
+;; two arms is unknown afterwards. Sound and cheap; no attempt is made to relate
+;; the two, which would need the case split `perturb.refine` does not have.
+(defn- join-refine [st1 merged sa sb]
+  (reduce
+    (fn [acc bid]
+      (let [ca (get (:caps sa) bid)
+            cb (get (:caps sb) bid)]
+        (if (and ca cb (seq (:refine ca)) (not= (:refine ca) (:refine cb)))
+          (assoc acc bid
+                 (assoc (get acc bid)
+                        :refine (reduce (fn [e k] (assoc e k (ref/top "unknown here — the two arms of an if left it with different values")))
+                                        {} (keys (:refine ca)))
+                        :rlog (conj (vec (:rlog (get acc bid)))
+                                    (str "  ghost state widened to unknown at the if at "
+                                         (pir/site (:pos st1))))))
+          acc)))
+    merged (keys merged)))
 
 ;; JOIN (controlflow.py's if rule) with bottom for non-local exits
 (defn- join-vals [st a b]
@@ -710,7 +1065,11 @@
                                (str "then: " (pr-str (map (fn [e] [(:path e) (:state e)]) la)))
                                (str "else: " (pr-str (map (fn [e] [(:path e) (:state e)]) lb)))
                                (str "in            " (:in st1))]}))
-          {:st (assoc st1 :caps (merge (:caps sa) (:caps sb))
+          ;; REFINEMENT: a ghost variable the two arms disagree about becomes
+          ;; unknown. No diagnostic here — the join of the MODES is what the
+          ;; `join` rule is about, and an obligation later discharged against an
+          ;; unknown is refused where it is discharged, with the reason.
+          {:st (assoc st1 :caps (join-refine st1 (merge (:caps sa) (:caps sb)) sa sb)
                           :moved (merge (:moved sa) (:moved sb)))
            :val (join-vals st1 va vb)})))))
 
@@ -865,12 +1224,19 @@
                               ;; the parameter holds the capability at the
                               ;; entry's path — bare if there is none
                               (let [bid (fresh-bid)
+                                    ;; REFINEMENT: a parameter carries NO ghost
+                                    ;; state. There is no interprocedural
+                                    ;; refinement here, so an obligation on a
+                                    ;; capability that arrived as an argument is
+                                    ;; refused rather than guessed at — see
+                                    ;; check-requires!.
                                     s1  (bind-cap s bid
                                                   {:cap (:cap e)
                                                    :state (if (coll? (:state e))
                                                             (first (:state e)) (:state e))
                                                    :name (str p (path-str (entry-path e)))
-                                                   :pos (:pos node) :fn-depth 0})
+                                                   :pos (:pos node) :fn-depth 0
+                                                   :refine {} :rlog []})
                                     path (entry-path e)
                                     v   (if (empty? path)
                                           {:v :cap :bid bid}
@@ -1006,11 +1372,46 @@
    "     `annotation-inconsistent` printed above. So does `perturb.nrepl/open`,"
    "     which has since E17 and was never displayed. E18 finding 1."
    ""
-   " 10. A STATE CANNOT CARRY A REFINEMENT, so an obligation is unstatable. A"
-   "     Content-Length body writer that declares 6 octets and writes 3 reaches"
-   "     :finished and is ACCEPTED — see the section above, which prints what it"
-   "     put on the wire. Nothing in §1.2 can relate two machines in time"
-   "     either. E18 finding 3."
+   " 10. A TRANSITION CAN NOW CARRY A REFINEMENT — and here is the whole of what"
+   "     that decides. `ResponseBody`'s `:open -> :finished` edge carries"
+   "     `(= written declared)` and `perturb.refine` decides it in a GROUND"
+   "     LINEAR FRAGMENT: a ghost variable is `k + SUM c_i a_i` over the integers"
+   "     or it is UNKNOWN, an atom is minted per BINDING OCCURRENCE, and the"
+   "     procedure is normalisation plus a sign test. It is COMPLETE where both"
+   "     sides are constants — that part is evaluation, and calling it a solver"
+   "     would be a false claim — and SOUND BUT INCOMPLETE once an atom"
+   "     survives. There is no case split, no elimination and no way to assume a"
+   "     hypothesis, so `3 = ocount(b)` is refused, not decided."
+   ""
+   "     FOUR THINGS IT REFUSES, each one a REJECTION with the kind"
+   "     `refinement-undischarged` rather than an accept:"
+   "       (a) a refinement crossing a LOOP boundary in either direction. The"
+   "           body is walked once and the trip count is data, so every ghost"
+   "           variable live at the boundary becomes unknown. There is NO"
+   "           invariant syntax: a programmer who knows the loop writes exactly"
+   "           N octets has no way to say so, and the program stays rejected."
+   "           perturb.httpcorpus/body-written-in-a-loop is refused here and a"
+   "           checker that believed one pass would ACCEPT it."
+   "       (b) a refinement crossing a FUNCTION boundary. There is no"
+   "           interprocedural refinement at all: a capability that arrives as a"
+   "           parameter has no ghost state, so an obligation on it is refused."
+   "       (c) a ghost value that is not a linear term over constants and atoms."
+   "       (d) any formula outside the fragment above."
+   ""
+   "     AND FOUR THINGS IT DOES NOT ESTABLISH. The `:update` on `body-write` is"
+   "     an ANNOTATION ON AN AXIOM — nothing checks that `body-write` writes"
+   "     `(ocount ov)` octets, exactly as nothing checks that a transition obeys"
+   "     its own `:from`/`:to`. Atoms are compared SYNTACTICALLY, so two"
+   "     expressions denoting the same integer are two atoms. The `:init` rides"
+   "     on a `:produces` entry rather than on a transition, because a capability"
+   "     minted by another machine's operation cannot name it (item 9). And ONE"
+   "     capability in perturb carries a refinement; a second would test whether"
+   "     any of this generalises."
+   ""
+   "     NOTHING IN §1.2 CAN STILL RELATE TWO MACHINES IN TIME."
+   "     `body-finished-before-conn-reused` is an ordering between ResponseBody"
+   "     and ServerConn, not arithmetic on one edge, and it is untouched."
+   "     E18 finding 3, half closed."
    ""
    " 11. `:borrows` AND `:produces` OF THE SAME CAPABILITY duplicates it. The"
    "     annotation is legal, both halves check, and the caller is then reported"
@@ -1212,32 +1613,61 @@
     (println "   checker would wrongly accept, and it is in the reject corpus above.")))
 
 (defn report-obligation-finding
-  "E18 finding 3, printed from the LEDGER rather than asserted.
+  "E18 finding 3, and what is now done about it. Printed from the DIAGNOSTICS
+  the run above actually raised, not asserted.
 
-  `perturb.httpcorpus/short-body-still-type-checks` was ACCEPTED above and RAN
-  above. This prints what it put on the wire while doing so. Nothing here is a
-  gate: the point is that the checker had nothing to say."
+  This stage is not a gate — `run-corpus` is. It exists so that the shape of the
+  answer is visible: one obligation, two outcomes that are decisions and one
+  that is a REFUSAL, and no fourth outcome in which the checker shrugs and
+  accepts."
   []
-  (let [vs (filter (fn [e] (= :VIOLATED (:perturb.http/verdict e)))
-                   (deref (deref (resolve 'perturb.cap/ledger))))]
+  (let [ds  (deref diagnostics)
+        of  (fn [k] (filter (fn [d] (= k (:kind d))) ds))
+        bad (of :refinement)
+        und (of :refinement-undischarged)
+        one (fn [d]
+              (println)
+              (print (render-one d)))]
     (println)
-    (println "== the obligation the typestate axis cannot state =====================")
-    (println "   §1.2's four axes are uniqueness, linearity, typestate and contention.")
-    (println "   A Content-Length response body's terminal condition is not a state:")
-    (println "   it is `wrote exactly N octets`, arithmetic over a run-time integer.")
+    (println "== a refinement attached to a typestate transition ====================")
+    (println "   §1.2's four axes are uniqueness, linearity, typestate and contention,")
+    (println "   and E18 finding 3 is that a Content-Length body's terminal condition")
+    (println "   is none of them: `:finished` is a state, `wrote exactly N` is")
+    (println "   arithmetic over a run-time integer. §1.3 reserves that class for")
+    (println "   refinements and nothing attached one to a state.")
     (println)
-    (if (empty? vs)
-      (println "   no violation recorded — the accept set did not run, or was changed")
-      (doseq [e vs]
-        (println (str "   " (:perturb.cap/id e) "  declared Content-Length "
-                      (:perturb.http/declared e) ", wrote " (:perturb.http/written e)
-                      "  -> " (name (:perturb.http/verdict e))))))
+    (println "   It is attached now, as ONE EXTRA KEY on a transition map:")
     (println)
-    (println "   perturb.check ACCEPTED the program that did this, and the gate RAN it")
-    (println "   to completion. The capability reached :finished, which is all the")
-    (println "   typestate axis can require. The obligation is written as data on")
-    (println "   perturb.http/body-capability with :class :refinement, and nothing in")
-    (println "   perturb discharges a refinement (§1.3 reserves it for Ansatz).")))
+    (println "     {:op 'perturb.http/body-finish! :from :open :to :finished")
+    (println "      :perturb.cap/refine {:name     wrote-exactly-content-length")
+    (println "                           :requires (= written declared)}}")
+    (println)
+    (println "   `declared` and `written` are ghost variables, minted by the")
+    (println "   operation that mints the capability and moved by `:update` on the")
+    (println "   write edge. perturb.refine decides the formula; -M:refine is that")
+    (println "   procedure alone, with every case it must REFUSE listed beside every")
+    (println "   case it decides.")
+    (println)
+    (println (str "   " (count bad) " program(s) REFUTED it and " (count und)
+                  " could not be discharged at all."))
+    (println)
+    (println "   --- the obligation, DECIDED FALSE:")
+    (if (empty? bad)
+      (println "   none — the corpus changed")
+      (doseq [d bad] (one d)))
+    (println)
+    (println "   --- the obligation, REFUSED. This is the honest answer for the")
+    (println "       undecidable case and it is a REJECTION, with its own kind, not")
+    (println "       a silent accept (E15's false accept, E17's warning):")
+    (if (empty? und)
+      (println "   none — the corpus changed")
+      (doseq [d und] (one d)))
+    (println)
+    (println "   WHAT IS NOT CLOSED. The second obligation on the same capability —")
+    (println "   `body-finished-before-conn-reused` — relates TWO machines in time")
+    (println "   and is still unstatable: it is not arithmetic on one edge, it is an")
+    (println "   ordering between two typestate machines, and §1.2 has no way to")
+    (println "   relate two of them. Nothing here touched it.")))
 
 (defn -main [& _]
   (println line)

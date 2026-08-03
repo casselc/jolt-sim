@@ -400,27 +400,61 @@
        :perturb.cap/uniqueness :unique
        :perturb.cap/linearity  :once
        :perturb.cap/contention :thread-confined
+       ;; THE TWO TIERS, JOINED. §1.2's typestate axis says which operation is
+       ;; legal from which state; that is the `:from`/`:to` on each entry below.
+       ;; §1.3's refinements say what must be TRUE at a particular edge; that is
+       ;; the `:perturb.cap/refine` key, and `:open -> :finished` is the edge
+       ;; that carries the obligation E18 finding 3 says is unstatable.
+       ;;
+       ;; `declared` and `written` are GHOST VARIABLES: they exist for the
+       ;; checker, they are not fields of the value below (which does carry two
+       ;; fields of the same names, so that the ledger can say at run time what
+       ;; the checker says statically — those are two artifacts, not one).
+       ;;
+       ;; `:update` is a declared EFFECT ON THE GHOST STATE and it is believed,
+       ;; not checked, for the same reason `:from`/`:to` are: `body-write`'s body
+       ;; is a transition body and therefore an axiom. Nothing verifies that
+       ;; `body-write` writes `(ocount ov)` octets. Stated so the discharge is
+       ;; not overread — it is relative to these three lines.
        :perturb.cap/typestate
        {:states  [:open :finished]
         :initial :open
         :terminal :finished
-        :transitions [{:op 'perturb.http/body-write   :from :open :to :open}
-                      {:op 'perturb.http/body-finish! :from :open :to :finished}]}
+        :transitions [{:op 'perturb.http/body-write :from :open :to :open
+                       :perturb.cap/refine
+                       '{:update {written (+ written (ocount (arg 1)))}}}
+                      {:op 'perturb.http/body-finish! :from :open :to :finished
+                       :perturb.cap/refine
+                       '{:name     wrote-exactly-content-length
+                         :requires (= written declared)
+                         :logic    QF-LIA
+                         :note     "the obligation below, moved from prose onto
+                                    the edge where it has to hold"}}]}
        :perturb.cap/representation []
        ;; THE POINT OF THIS CAPABILITY. Neither of these is a typestate
        ;; property. `:finished` says the writer stopped; it does not say it wrote
        ;; the right number of octets, and no assignment of states can, because
        ;; the number is not known until run time. §1.2's four axes cannot state
-       ;; it; §1.3 reserves exactly this class for refinements, and nothing in
-       ;; perturb discharges a refinement. So these are written and unproven,
-       ;; and `perturb.httpcorpus/short-body-still-type-checks` is the program
-       ;; that shows the difference is not academic.
+       ;; it; §1.3 reserves exactly this class for refinements.
+       ;;
+       ;; THE FIRST OF THE TWO IS NOW ATTACHED AND DISCHARGED, in a fragment
+       ;; that is named rather than gestured at — see the `:perturb.cap/refine`
+       ;; key on the `:open -> :finished` transition above, and `perturb.refine`
+       ;; for exactly what it decides and exactly what it refuses. The prose
+       ;; formula is kept because it is the property; the transition carries the
+       ;; form the checker reads. THE SECOND IS STILL UNSTATABLE.
        :perturb.cap/obligations
        '[{:name wrote-exactly-content-length
           :formula (= 0 (:remaining (final-state body)))
           :class   :refinement
-          :note    "QF-LIA over a run-time integer. NOT expressible on the
-                    typestate axis; see PERTURB-DESIGN E18 finding 3."}
+          :attached-to {:capability perturb.http/ResponseBody
+                        :transition perturb.http/body-finish!
+                        :edge (:open -> :finished)}
+          :note    "QF-LIA over a run-time integer, and NOT expressible on the
+                    typestate axis (PERTURB-DESIGN E18 finding 3). It is now
+                    attached to the transition and discharged statically where
+                    the checker can decide it, and REFUSED — a distinct
+                    diagnostic, not an accept — where it cannot."}
          {:name body-finished-before-conn-reused
           :formula (forall [e ledger]
                      (implies (and (= 'perturb.http/ServerConn (:capability e))
@@ -614,10 +648,19 @@
   ResponseBody's `:transitions` cannot name `respond-begin` as its creator,
   because `perturb.check`'s primitive table is keyed by OPERATION and an
   operation can be a transition of at most one capability — PERTURB-DESIGN E18
-  finding 1."
+  finding 1.
+
+  THE GHOST STATE STARTS HERE. `len` is the number the head commits to before a
+  single body octet exists, so it is where `declared` gets its value and where
+  `written` gets 0. That initialisation rides on the `:produces` entry rather
+  than on a transition of ResponseBody's own machine BECAUSE of the defect in
+  the paragraph above: this operation cannot be one of that machine's
+  transitions. See `perturb.cap/refinements`."
   {:perturb.cap/op {:consumes [{:cap 'perturb.http/ServerConn :state :responding :arg 0}]
                     :produces [{:cap 'perturb.http/ServerConn   :state :writing :at [0]}
-                               {:cap 'perturb.http/ResponseBody :state :open    :at [1]}]}}
+                               {:cap 'perturb.http/ResponseBody :state :open    :at [1]
+                                :perturb.cap/refine
+                                '{:init {declared (arg 4) written 0}}}]}}
   [c status reason headers len]
   (let [head (response-head status reason headers len)
         bid  (fresh-id "perturb-body-")]

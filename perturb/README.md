@@ -48,6 +48,10 @@ JOLT=/path/to/jolt/bin/jolt
 # codec and octet self-tests — no socket, no server
 $JOLT -M:selftest
 
+# the refinement decision procedure alone: every case it decides beside every
+# case it must REFUSE. The boundary of the arithmetic -M:check discharges.
+$JOLT -M:refine
+
 # the static capability checker: TWO corpora + the two real protocol
 # namespaces. No socket and no server; every program is checked statically,
 # and every ACCEPTED one is then executed under a scripted handler (E15).
@@ -128,7 +132,9 @@ perturb.corpus    the nREPL acceptance corpus: real perturb source, 22 programs
 perturb.http      the SECOND protocol. Sans-io HTTP/1.1, server side: three
                   capabilities, a typestate CYCLE, and an obligation §1.2
                   cannot state
-perturb.httpcorpus  the HTTP acceptance corpus, 25 programs
+perturb.httpcorpus  the HTTP acceptance corpus, 30 programs
+perturb.refine    the refinement decision procedure: a ground linear fragment
+                  over the integers, with everything outside it REFUSED
 perturb.httpdemo  one keep-alive driver under both handlers, octets compared
 perturb.nrepl     the session. Threads the connection affinely; drives I/O from
                   nothing but a :need-more.
@@ -195,20 +201,32 @@ the compile spine by `perturb.ir` — as the program. The judgements are ports o
 `docs/research/prototypes/`, which were validated against artifacts perturb did
 not author (jolt-hako's `ownership.pl` and `queries.json`).
 
-Two corpora, 47 programs, all decided as recorded: `perturb.corpus` (22 — one
-capability, a straight-line typestate) and `perturb.httpcorpus` (25 — two
+Two corpora, 52 programs, all decided as recorded: `perturb.corpus` (22 — one
+capability, a straight-line typestate) and `perturb.httpcorpus` (30 — two
 capabilities live at once, a typestate cycle, an obligation). The rejections
 include use-after-close (`INHERITED.md` I16's example, verbatim), double-close,
 use-after-move through an affine rebinding, a dangling connection at scope exit,
 a conditional close, a loop that closes on its back edge, a capability captured
 by a closure, a listener dropped while its connection is kept, a keep-alive loop
 that recurs with a response still owed, and a response body that is never
-finished.
+finished, a body that declares six octets and writes three, and a body written
+in a loop whose obligation cannot be discharged at all.
 
 Capability specs are POSITIONED — `:arg n` on `:consumes`/`:borrows`, `:at [i]`
 on `:produces` — which is what made the real client annotatable at all (E17),
 and what lets `perturb.http/accept` say it consumes a Listener and produces a
 Listener *and* a ServerConn at two different result positions.
+
+A **transition may carry a refinement**, which is the one place §1.2's typestate
+axis and §1.3's arithmetic meet. `ResponseBody`'s `:open -> :finished` edge
+carries `(= written declared)` as one extra key on its transition map, and
+`perturb.check` discharges it against ghost state carried along with the
+capability. Three outcomes and only three: proved, REFUTED with the two numbers
+printed, and **REFUSED** — a rejection with its own diagnostic kind, for every
+case outside the fragment `perturb.refine` decides (`jolt -M:refine` is that
+procedure alone, with the cases it must refuse listed beside the cases it
+decides). A body written in a **loop** is refused, and a checker that walked the
+loop body once and believed the answer would accept it.
 
 **The most useful things it does are the four it cannot do.** See E18 in
 `docs/research/PERTURB-DESIGN.md`, and items 9–11 of `-M:check`'s own limits
@@ -217,9 +235,9 @@ list:
 - an operation that advances **two capability machines at once** cannot be
   declared — the primitive table is keyed by operation, so `accept` and
   `body-finish!` both draw a spurious `annotation-inconsistent`;
-- a state cannot carry a **refinement**, so a Content-Length body that declares
-  6 octets and writes 3 reaches `:finished`, is ACCEPTED, and RUNS — `-M:http`
-  prints the malformed response it emits;
+- a refinement crosses neither a **loop** nor a **function** boundary, and there
+  is no invariant syntax with which to supply one, so every such program is
+  refused rather than decided;
 - `:borrows` **and** `:produces` of the same capability duplicates it, and the
   false leak is reported at the caller;
 - `:perturb.cap/representation` is **gameable**: `perturb.http` has an empty list

@@ -109,15 +109,21 @@
 ;; --- the obligation demo ----------------------------------------------------
 
 (defn- show-obligation []
-  (banner "the obligation the typestate axis cannot state")
+  (banner "the obligation, and what the wire looks like when it is broken")
   (cap/reset-ledger!)
   (let [sess (script/server-session {:conns [req-1] :chunk-size 1})]
+    ;; RUN DIRECTLY, NOT THROUGH THE GATE. `perturb.check` now REJECTS this
+    ;; program, so it is no longer in any accept set and the gate never executes
+    ;; it. It is called here on purpose: a rejection is a claim about a program,
+    ;; and the evidence that the claim is about something real is the octets.
     (fx/with-handlers {'perturb.wire/socket (:handler sess)}
       (hc/short-body-still-type-checks "in-memory" 0))
     (let [ov (script/sent-octets (:state sess) 0)
           vs (filter (fn [e] (= :VIOLATED (:perturb.http/verdict e))) @cap/ledger)]
-      (println "  perturb.httpcorpus/short-body-still-type-checks is ACCEPTED by")
-      (println "  perturb.check and RUNS. Here is what it put on the wire:")
+      (println "  perturb.httpcorpus/short-body-still-type-checks is now REJECTED by")
+      (println "  perturb.check, which is the change: it used to be accepted and run.")
+      (println "  It is executed here directly, so that what the rejected program would")
+      (println "  have put on the wire stays visible:")
       (println)
       (println (str "    " (o/printable ov)))
       (println)
@@ -128,8 +134,12 @@
       (println)
       (println "  The response header says 6 and the body is 3 octets long. `:finished`")
       (println "  is a state and `wrote exactly N` is arithmetic; §1.2's typestate axis")
-      (println "  expresses the first and cannot express the second. Nothing in perturb")
-      (println "  discharges the refinement that would (§1.3 reserves it for Ansatz).")
+      (println "  expresses the first and CANNOT express the second. The second is now")
+      (println "  a §1.3 refinement carried on the `:open -> :finished` transition and")
+      (println "  discharged statically — `perturb.check` prints the counterexample and")
+      (println "  `-M:refine` is the decision procedure with its boundary as a table.")
+      (println "  The ledger entry below and the static rejection are two artifacts")
+      (println "  about one program; only the static one arrives before it runs.")
       (empty? vs))))
 
 ;; --- main -------------------------------------------------------------------

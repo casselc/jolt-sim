@@ -38,6 +38,8 @@ done
 
 echo "--- selftest"
 ( cd "$root" && "$JOLT" -M:selftest )
+echo "--- refinement decision procedure (its boundary, as a table)"
+( cd "$root" && "$JOLT" -M:refine )
 echo "--- capability checker (two corpora; every ACCEPT is also executed)"
 ( cd "$root" && "$JOLT" -M:check )
 echo "--- oracle"
