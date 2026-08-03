@@ -1106,3 +1106,38 @@ rather than being reimplemented. The existing oracle corpora remain valid as
 *value* tests (they pin decoded results, not byte representation), but any
 corpus row asserting a signed byte is testing `clojure.*`, not perturb, and
 must be reclassified rather than ported.
+
+### 15.1 Sequencing — `clojure.*` is deferred, the rule is not
+
+Exact Clojure compatibility is **not an initial priority**. The `clojure.*`
+layer is a later stage; nothing in the v0 ladder (§2.5) implements or tests it.
+
+This frees the core's design — no divergence has to prove itself against a
+working compatibility layer before being taken. But it sharpens one thing and
+weakens nothing:
+
+**Deferring the layer removes the artifact that tests the no-foreclosure rule.**
+§15 states that the core must not make Clojure semantics inexpressible, only
+non-default. With `clojure.*` unimplemented, that rule has no executable check —
+and this document's standing commitment is precisely that an untested rule is
+the kind that gets refuted later. Every divergence taken between now and the
+layer's existence is an unverified claim that compat remains implementable.
+
+Mitigation, and it is cheap only at decision time: **when a divergence is
+decided, record alongside it the one-line sketch of how `clojure.*` would
+recover the Clojure behaviour.** For §14 that sketch is "sign-fold on read, since
+storage is octets". Writing that when the decision is fresh costs a sentence;
+reconstructing it years later, against a core built on unexamined assumptions,
+is how compatibility layers turn out to be impossible.
+
+So the divergence register (§15) is not documentation of a shipped layer — it is
+the **only artifact carrying the compat design** until the layer exists, and it
+should be maintained from the first divergence rather than started when
+`clojure.*` does.
+
+**Open question (Q5):** is `clojure.*` deferred or optional? "Not an initial
+priority" implies later, and the no-foreclosure rule is kept on that reading. If
+exact compatibility is ultimately *not wanted*, the rule can be dropped and the
+core gains real freedom — laziness, equality, numeric tower, and error model all
+have cheaper designs without it. Worth settling before the core's semantics are
+far enough along that the answer stops being free.
