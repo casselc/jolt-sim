@@ -531,9 +531,10 @@ specific real-process reduction from `[1 2 0]` to `[1 0 2]`.
 These remain structural shrinking seams, not high-utility distributions.
 For an explicit domain, `g/sampled-from` shrinks toward earlier entries, so
 callers control the simplification order; a bounded lexicographic prefix is
-deterministic but utility-neutral. The pinned Hegel API does not document a
-distribution for its integer draws, so the direct generator makes no uniform
-sampling claim. Hegel runs cases sequentially; stateful swarm rules,
+deterministic but structurally biased toward earlier lexicographic schedules
+under a small budget. The pinned Hegel API does not document a distribution
+for its integer draws, so the direct generator makes no uniform sampling claim.
+Hegel runs cases sequentially; stateful swarm rules,
 coverage/resource-order scores, targeted sampling, workload and fault
 generation, and partial-order reduction remain separate later work.
 
@@ -962,54 +963,32 @@ the real operating system.
 
 ## Canonical example and extension boundary
 
-The co-located `jolt.maelstrom` namespaces are the first canonical application
-example and an extraction candidate for a future `jolt-maelstrom` package.
-They are not part of the simulator kernel and must not depend on `jolt.sim`.
-The node and handlers run over injected transports; `jolt-sim` owns only the
-optional deterministic transport, fault, replay, and checker adapters used by
-scenarios. JSON-lines framing remains a real process boundary.
+The co-located `jolt.maelstrom` namespaces are an early application example
+and an extraction candidate for a future `jolt-maelstrom` package. They are
+not part of the simulator kernel and must not depend on `jolt.sim`. The node
+and handlers run over injected transports; `jolt-sim` owns only the optional
+deterministic transport, fault, replay, and checker adapters used by scenarios.
+JSON-lines framing remains a real process boundary.
 
 Echo alone is application-core evidence, not distributed-safety, liveness, or
-Maelstrom interoperability evidence. No additional workload should land until
-the same Echo handler has passed both the real JSON-lines and in-process
-transport seams and its minimum run/message/causal evidence can replay and be
-checked offline.
+Maelstrom interoperability evidence. The durable HTTP/SQLite/TCP outbox flow
+is now the canonical whole-ecosystem application; Maelstrom workloads remain
+focused examples that must use the same Case/Outcome, evidence, replay, and
+extension boundaries rather than growing a parallel simulator architecture.
 
 ## Roadmap
 
-1. Drive the existing future controller adapter from scheduler choices --
-   the first coarse slice (`:future-schedule`, a scripted top-level spawn
-   order, single-concurrency admission) has landed; still open is running
-   one unchanged Jolt namespace in normal and controlled modes through
-   nested spawns, promises, clocks, and entropy.
-2. The transport-neutral fault-plan validation, matching, activation, ordinal,
-   and evidence core is landed, along with the first POSIX poll frontend for a
-   captured EINTR retry. The cooperative explicit-state track now has a
-   deterministic timer-tie/reply/cancel/cleanup control. Still open is carrying
-   those semantics through the ordinary-runtime clock coordinator and the
-   unchanged HTTP/SQLite boundary; then extend memory, SQLite, and POSIX fault
-   outcomes and add codec handler packs on the same fail-closed interception
-   seam. Finite socket and self-pipe capacity are landed and exercised by
-   unchanged public-library lanes.
-3. Drive unchanged public nonblocking connect/accept through readiness, then
-   add operation effects for cancel and deadlines followed by deterministic
-   network and storage fault models.
-4. Extend the landed optional explicit-domain and direct-count Hegel schedule
-   shrinkers into generation and shrinking for workloads,
-   synchronization-boundary choices, native faults, and effect plans,
-   accepting a shrink only when its trace replays exactly.
-5. Build canonical example systems that run through the same application logic
-   in real and simulated modes: a TCP protocol, an HTTP/API service, and a
-   SQLite-backed application using the bytes, codec, FFI, net, HTTP, and DB
-   libraries. Maintain an executed scenario-to-library coverage manifest.
-6. Expand test-only runtime hooks across atoms, executors, locks, conditions,
-   timers, core.async, and completion operations.
-7. Expand offline monitors from trace grammar into resource safety,
-   application models, bounded liveness, and explicit proof-assumption checks.
+The live implementation order and release boundary are maintained in
+[`docs/ROADMAP.md`](docs/ROADMAP.md). The immediate path is unchanged SQLite
+adapter parity, failure preservation and stable replay coordinates, then one
+ordinary HTTP -> SQLite -> TCP/bencode outbox application in real, hermetic,
+and hybrid modes. Hegel search, causal monitors, the crash-safe journal, broader
+runtime hooks, and release hardening build on that executable application.
 
-Completion is not just a scheduler API. It requires end-to-end examples,
-real/sim behavioral parity, reproducible Hegel counterexamples, concurrency and
-fault stress, and offline monitors that exercise the ecosystem organically.
+The original P0-P5 research packet and adversarial reviews remain preserved in
+[`casselc/jolt-sim-planning`](https://github.com/casselc/jolt-sim-planning);
+the live roadmap records their current disposition instead of duplicating or
+silently superseding them.
 
 ## Production OpenTelemetry follow-on
 
