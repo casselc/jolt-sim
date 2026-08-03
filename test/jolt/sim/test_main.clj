@@ -1,5 +1,6 @@
 (ns jolt.sim.test-main
   (:require [clojure.test :as test]
+            [jolt.example.outbox-test]
             [jolt.maelstrom.echo-sim-test]
             [jolt.maelstrom.echo-test]
             [jolt.sim.completion-test]
@@ -25,7 +26,8 @@
 
 (defn -main [& _]
   (let [result
-        (test/run-tests 'jolt.maelstrom.echo-sim-test
+        (test/run-tests 'jolt.example.outbox-test
+                        'jolt.maelstrom.echo-sim-test
                         'jolt.maelstrom.echo-test
                         'jolt.sim.completion-test
                         'jolt.sim.explore-states-test
