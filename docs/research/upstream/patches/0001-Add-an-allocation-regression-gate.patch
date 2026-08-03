@@ -1,0 +1,211 @@
+From 8a51d20833c9517cbe920ec1b83958aac31abbe7 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 3 Aug 2026 18:51:56 +0000
+Subject: [PATCH 1/2] Add an allocation regression gate
+
+---
+ Makefile                         | 12 ++++-
+ host/chez/jolt-host-manifest.txt |  1 +
+ host/chez/rt.ss                  |  9 ++++
+ test/chez/alloc-baseline.edn     |  1 +
+ test/chez/alloc-gate.clj         | 91 ++++++++++++++++++++++++++++++++
+ test/chez/unit.edn               |  7 +++
+ 6 files changed, 119 insertions(+), 2 deletions(-)
+ create mode 100644 test/chez/alloc-baseline.edn
+ create mode 100644 test/chez/alloc-gate.clj
+
+diff --git a/Makefile b/Makefile
+index f59c681c..0d19a7eb 100644
+--- a/Makefile
++++ b/Makefile
+@@ -54,7 +54,7 @@ export LIBRARY_PATH := $(subst $(space),:,$(strip $(CHEZSCHEME-LIB-DIRS)))$(if $
+ endif
+ 
+ JOLT-TARGETS-NEEDING-DEPS := \
+-  aotcacheperf aotcachesmoke aotfingerprint buildlibsmoke buildsmoke \
++  allocgate aotcacheperf aotcachesmoke aotfingerprint buildlibsmoke buildsmoke \
+   compilepathsmoke contagion corpus cts dcerefs depssmoke depsunit devboot \
+   devbootsmoke devirt directlink ffi fieldjoin fieldnum fieldread flarr grenadine \
+   gateboot gatebootsmoke httpsfetch infer inline inline-body irvalidate \
+@@ -102,7 +102,7 @@ test: submodules selfhost ci
+ # lockfile) — it RUNS correctly on any Chez, but `selfhost` rebuilds it and a
+ # different Chez version may emit byte-different (gensym/order) output, so the
+ # byte-fixpoint is a dev-machine check, not a CI one (jolt-8479).
+-ci: submodules values corpus unit grenadine mvnhttp depssmoke depsunit smoke tracesmoke buildsmoke buildlibsmoke staticnativesmoke sci cts ffi transient infer wp devirt fieldread numwp fieldnum fieldjoin contagion protoret pic narrow directlink unitcontext numeric oparity mathfl flarr inline inline-body dcerefs shakelocal manifestcheck irvalidate devbootsmoke gatebootsmoke aotcachesmoke aotfingerprint compilepathsmoke makefilesmoke certify
++ci: submodules values corpus unit allocgate grenadine mvnhttp depssmoke depsunit smoke tracesmoke buildsmoke buildlibsmoke staticnativesmoke sci cts ffi transient infer wp devirt fieldread numwp fieldnum fieldjoin contagion protoret pic narrow directlink unitcontext numeric oparity mathfl flarr inline inline-body dcerefs shakelocal manifestcheck irvalidate devbootsmoke gatebootsmoke aotcachesmoke aotfingerprint compilepathsmoke makefilesmoke certify
+ 	@echo "OK: CI gates passed"
+ 
+ # Self-host fixpoint: bootstrap.ss rebuild == checked-in seed.
+@@ -398,6 +398,14 @@ shakelocal: testbin
+ # Runtime load-manifest drift guard: cli.ss (the live entry) and bootstrap.ss
+ # (the seed rebuilder's reduced set) hand-mirror build.ss's bld-runtime-manifest;
+ # this diffs them so a load added to one but not the other fails the gate.
++# Allocation regression gate: bytes allocated by eight representative forms,
++# against test/chez/alloc-baseline.edn. Unlike printperf/aotcacheperf this IS in
++# `ci` — the counter is Chez's cumulative allocation total, which does not move
++# with machine load, so it carries none of the flakiness a timing floor would.
++# ALLOC_GATE_RECORD=1 rewrites the baseline.
++allocgate:
++	@bin/joltc test/chez/alloc-gate.clj
++
+ manifestcheck:
+ 	@sh host/chez/manifest-check.sh
+ 
+diff --git a/host/chez/jolt-host-manifest.txt b/host/chez/jolt-host-manifest.txt
+index 31affa57..9fe20372 100644
+--- a/host/chez/jolt-host-manifest.txt
++++ b/host/chez/jolt-host-manifest.txt
+@@ -16,6 +16,7 @@ block-sigint
+ build-binary
+ build-library
+ bytes-allocated
++bytes-allocated-total
+ call-on-main-thread
+ call-on-main-thread-async
+ callable-host?
+diff --git a/host/chez/rt.ss b/host/chez/rt.ss
+index d5322077..473031ed 100644
+--- a/host/chez/rt.ss
++++ b/host/chez/rt.ss
+@@ -629,6 +629,15 @@
+ ;; has been allocated since); current/maximum-memory-bytes are what Chez holds from
+ ;; the OS now and at its peak — the RSS-shaped numbers a runtime memory gauge wants.
+ (def-var! "jolt.host" "bytes-allocated"      (lambda () (bytes-allocated)))
++;; bytes-allocated-total is the CUMULATIVE count: every byte this process has
++;; ever allocated, never decreasing. bytes-allocated cannot answer "how much did
++;; this work allocate" — it is the live heap, so a collection inside the measured
++;; window makes the difference negative. sstats-bytes is monotone, so the
++;; difference across a workload is the workload's allocation whether or not the
++;; collector ran (measured: 14,442,224 / 14,441,664 / 14,442,320 bytes for the
++;; same 300k-iteration loop with a full collection between runs — a 0.005%
++;; spread, against a live-heap difference of -2,381,376 for the same work).
++(def-var! "jolt.host" "bytes-allocated-total" (lambda () (sstats-bytes (statistics))))
+ (def-var! "jolt.host" "current-memory-bytes" (lambda () (current-memory-bytes)))
+ (def-var! "jolt.host" "maximum-memory-bytes" (lambda () (maximum-memory-bytes)))
+ ;; The calling thread's id, so telemetry can be read per-thread. Wrapped in a lambda
+diff --git a/test/chez/alloc-baseline.edn b/test/chez/alloc-baseline.edn
+new file mode 100644
+index 00000000..5882f5a9
+--- /dev/null
++++ b/test/chez/alloc-baseline.edn
+@@ -0,0 +1 @@
++{"assoc-small-map" 576160, "bit-and-mask" 160, "generic-add" 160, "map-filter-reduce" 1772992, "str-concat" 224288, "unchecked-byte" 1760336, "unchecked-short" 1760992, "vec-range-10" 2674192}
+\ No newline at end of file
+diff --git a/test/chez/alloc-gate.clj b/test/chez/alloc-gate.clj
+new file mode 100644
+index 00000000..b6243be6
+--- /dev/null
++++ b/test/chez/alloc-gate.clj
+@@ -0,0 +1,91 @@
++(ns alloc-gate
++  "Allocation regression gate.
++
++  The repo has no wall-clock assertions in its default gates, and for good
++  reason: a timing floor is flaky on loaded CI. Allocation is not. Chez's
++  cumulative allocation counter answers a different, sharper question — did this
++  change make a hot path allocate more? — and answers it with a number that does
++  not move run to run, so the gate needs no repeats, no medians and no spread
++  analysis.
++
++  The counter is jolt.host/bytes-allocated-total (Chez sstats-bytes), which is
++  monotone. jolt.host/bytes-allocated is the LIVE HEAP and is the wrong
++  primitive here: a collection inside the measured window makes its difference
++  negative.
++
++  What this catches: boxing that was previously avoided, a primitive that
++  stopped being a primitive, an intermediate sequence that used to be fused.
++  Each of those is inside the noise of any timing gate.
++
++  What it does NOT catch: work that got slower without allocating more — a
++  generic dispatch replacing a primitive of the same allocation profile, worse
++  cache behaviour, more instructions. Allocation is a proxy, not a cost model.
++
++  Usage:
++    make allocgate                                       compare to baseline
++    ALLOC_GATE_RECORD=1 bin/joltc test/chez/alloc-gate.clj  rewrite the baseline"
++  (:require [jolt.host :as host]
++            [clojure.string :as str]))
++
++(def ^:private baseline-path "test/chez/alloc-baseline.edn")
++
++;; Allowed growth before a case fails. The counter is near-exact (the collector's
++;; accounting granularity moves it by a few hundred bytes in ~14 MB), so this is
++;; not a noise allowance — it is slack for unrelated compiler drift between
++;; commits.
++(def ^:private tolerance 0.02)
++
++(defn- measure
++  "Bytes allocated by running (f) `n` times, net of the harness loop."
++  [n f]
++  (let [before (host/bytes-allocated-total)]
++    (dotimes [_ n] (f))
++    (- (host/bytes-allocated-total) before)))
++
++(def ^:private cases
++  [["vec-range-10"        1000 #(vec (range 10))]
++   ["unchecked-byte"     10000 #(unchecked-byte 200)]
++   ["unchecked-short"    10000 #(unchecked-short 40000)]
++   ["bit-and-mask"       10000 #(bit-and 200 0xff)]
++   ["generic-add"        10000 #(+ 1000000 2000000)]
++   ["str-concat"          1000 #(str "a" "b" "c")]
++   ["map-filter-reduce"    200 #(reduce + (filter even? (map inc (range 50))))]
++   ["assoc-small-map"     1000 #(assoc {:a 1 :b 2} :c 3)]])
++
++(defn- run-all []
++  (reduce (fn [acc [name n f]] (assoc acc name (measure n f))) {} cases))
++
++(defn -main [& _]
++  (let [record? (= "1" (System/getenv "ALLOC_GATE_RECORD"))
++        actual (run-all)]
++    (if record?
++      (do (spit baseline-path (pr-str (into (sorted-map) actual)))
++          (println "recorded" (count actual) "cases to" baseline-path))
++      (let [baseline (read-string (slurp baseline-path))
++            rows (for [[name got] (sort actual)
++                       :let [want (get baseline name)]]
++                   (cond
++                     (nil? want) [:new name got nil]
++                     (> got (* want (+ 1.0 tolerance))) [:fail name got want]
++                     (< got (* want (- 1.0 tolerance))) [:improved name got want]
++                     :else [:ok name got want]))
++            failures (filter #(= :fail (first %)) rows)]
++        (doseq [[status name got want] rows]
++          (println (format "  [%s] %-20s %10d bytes%s"
++                           (str/upper-case (clojure.core/name status))
++                           name got
++                           (if want
++                             (let [pct (if (zero? want)
++                                         0.0
++                                         (* 100.0 (/ (- got want) (double want))))]
++                               (str "  (baseline " want ", "
++                                    (if (neg? pct) "" "+")
++                                    (format "%.1f" pct) "%)"))
++                             "  (no baseline)"))))
++        (println)
++        (if (seq failures)
++          (do (println "alloc gate:" (count failures) "case(s) allocate more than baseline")
++              (System/exit 1))
++          (println "alloc gate:" (count rows) "case(s) within tolerance"))))))
++
++(-main)
+diff --git a/test/chez/unit.edn b/test/chez/unit.edn
+index a71b7af0..fc91228a 100644
+--- a/test/chez/unit.edn
++++ b/test/chez/unit.edn
+@@ -709,6 +709,13 @@
+   {:suite "telemetry" :expr "(>= (jolt.host/cpu-nanos) 0)" :expected "true"}
+   {:suite "telemetry" :expr "(>= (jolt.host/real-nanos) 0)" :expected "true"}
+   {:suite "telemetry" :expr "(>= (jolt.host/gc-count) 0)" :expected "true"}
++  ;; bytes-allocated-total is CUMULATIVE and monotone: a collection inside the
++  ;; measured window cannot make a difference across it negative, which is what
++  ;; makes it usable as a regression counter. bytes-allocated is the live heap
++  ;; and does not have that property.
++  {:suite "telemetry" :expr "(>= (jolt.host/bytes-allocated-total) 0)" :expected "true"}
++  {:suite "telemetry" :expr "(let [a (jolt.host/bytes-allocated-total) _ (doall (map inc (range 2000))) b (jolt.host/bytes-allocated-total)] (> b a))" :expected "true"}
++  {:suite "telemetry" :expr "(let [a (jolt.host/bytes-allocated-total) _ (doall (map inc (range 20000))) b (jolt.host/bytes-allocated-total)] (>= b a))" :expected "true"}
+   {:suite "telemetry" :expr "(>= (jolt.host/gc-cpu-nanos) 0)" :expected "true"}
+   {:suite "telemetry" :expr "(>= (jolt.host/gc-real-nanos) 0)" :expected "true"}
+   {:suite "telemetry" :expr "(>= (jolt.host/gc-bytes) 0)" :expected "true"}
+-- 
+2.43.0
+

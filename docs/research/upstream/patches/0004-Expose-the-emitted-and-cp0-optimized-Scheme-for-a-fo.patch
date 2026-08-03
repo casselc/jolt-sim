@@ -1,0 +1,104 @@
+From 0ff8ee3533a9a2627b4317d0feb415da8cf12db9 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 3 Aug 2026 19:19:16 +0000
+Subject: [PATCH] Expose the emitted and cp0-optimized Scheme for a form
+
+---
+ host/chez/compile-eval.ss        | 36 ++++++++++++++++++++++++++++++++
+ host/chez/jolt-host-manifest.txt |  2 ++
+ test/chez/unit.edn               | 12 +++++++++++
+ 3 files changed, 50 insertions(+)
+
+diff --git a/host/chez/compile-eval.ss b/host/chez/compile-eval.ss
+index 96d62ee4..cdbd610a 100644
+--- a/host/chez/compile-eval.ss
++++ b/host/chez/compile-eval.ss
+@@ -319,6 +319,42 @@
+     (jolt-lint-node! node)
+     (jolt-ce-emit (jolt-ce-run-passes node ctx))))
+ 
++;; --- compiler introspection (jolt.host) --------------------------------------
++;;
++;; Whether an expression became a machine primitive or stayed a generic dispatch
++;; is a static fact, readable off the compiler output — it does not need
++;; benchmarking, and reading it is how a claim like "this path is generic" gets
++;; settled before anyone writes one. Chez's cp0 output distinguishes the two
++;; plainly:
++;;
++;;   (bitwise-and x 255) -> (if (fixnum? x) (fxand 255 x) (bitwise-and 255 x))
++;;   (fxand x 255)       -> (fxand 255 x)
++;;
++;; The first carries a type test on every call; the second is one instruction.
++;;
++;; emitted-scheme returns what this back end produced for a form. optimized-
++;; scheme returns it after Chez's cp0, which is where inlining and primitive
++;; selection have happened; print-gensym is off so bindings read as `x` rather
++;; than `#{x a6asprai2hcqbmswpvb4wleny-0}`.
++;;
++;; Both take the form ALREADY READ (jolt.host/read-string-form, or a quoted form
++;; from a macro) and an optional namespace string; nil means the current one.
++;;
++;; NOTE: both ANALYZE the form, so the ordinary analysis side effects apply — a
++;; def interns its var, an ns form switches namespace. Pass an expression, not a
++;; program, unless those effects are wanted.
++(define (ce-introspect-ns ns) (if (string? ns) ns (chez-current-ns)))
++(define (jolt-emitted-scheme form ns)
++  (jolt-analyze-emit-form form (ce-introspect-ns ns)))
++(define (jolt-optimized-scheme form ns)
++  (let ((datum (read (open-input-string (jolt-analyze-emit-form form (ce-introspect-ns ns))))))
++    (parameterize ((print-gensym #f))
++      (let ((op (open-output-string)))
++        (write (expand/optimize datum) op)
++        (get-output-string op)))))
++(def-var! "jolt.host" "emitted-scheme" jolt-emitted-scheme)
++(def-var! "jolt.host" "optimized-scheme" jolt-optimized-scheme)
++
+ ;; --- runtime defmacro -------------------------------------------------------
+ ;; Shared with emit-image.ss (loaded after this). A defmacro lowers to a def of
+ ;; its expander fn + a macro flag, exactly as the prelude emits build-time macros.
+diff --git a/host/chez/jolt-host-manifest.txt b/host/chez/jolt-host-manifest.txt
+index 31affa57..41a507eb 100644
+--- a/host/chez/jolt-host-manifest.txt
++++ b/host/chez/jolt-host-manifest.txt
+@@ -33,6 +33,7 @@ current-memory-bytes
+ deftype-ctor-class
+ delete-file
+ directory?
++emitted-scheme
+ enable-trace!
+ exact?
+ extension-epoch
+@@ -110,6 +111,7 @@ maximum-memory-bytes
+ monitor-enter
+ monitor-exit
+ mono-nanos
++optimized-scheme
+ park-until-interrupt
+ protocol-methods
+ rational-type?
+diff --git a/test/chez/unit.edn b/test/chez/unit.edn
+index a71b7af0..f787e875 100644
+--- a/test/chez/unit.edn
++++ b/test/chez/unit.edn
+@@ -695,6 +695,18 @@
+   {:suite "hostshim" :expr "(do (__register-class-ctor! \"Box4\" (fn [] (jolt.host/tagged-table :my/box4))) (__register-instance-check! (fn [cn val] (if (= cn \"Box4\") (= :my/box4 (jolt.host/ref-get val :jolt/type)) nil))) (instance? Box4 \"not-a-box\"))" :expected "false"}
+   {:suite "hostshim" :expr "(jolt.host/table? (jolt.host/tagged-table :t))" :expected "true"}
+   {:suite "hostshim" :expr "(jolt.host/table? \"x\")" :expected "false"}
++  ;; compiler introspection — what the back end emitted for a form, and what
++  ;; Chez's cp0 made of it. A static fact about a code path (primitive vs generic
++  ;; dispatch), readable without a benchmark.
++  {:suite "introspect" :expr "(clojure.string/includes? (jolt.host/emitted-scheme (quote (fn [x] (bit-and x 255))) nil) \"jolt-bit-and\")" :expected "true"}
++  {:suite "introspect" :expr "(clojure.string/includes? (jolt.host/emitted-scheme (quote (fn [c] (nth c 0))) nil) \"jolt-nth\")" :expected "true"}
++  ;; cp0 selects the fixnum primitive for a proven-long argument; the generic
++  ;; bitwise-and does not survive into the optimized form.
++  {:suite "introspect" :expr "(clojure.string/includes? (jolt.host/optimized-scheme (quote (fn [x] (jolt.host/exact? x))) nil) \"lambda\")" :expected "true"}
++  ;; print-gensym is off, so a binding reads as its source name.
++  {:suite "introspect" :expr "(clojure.string/includes? (jolt.host/optimized-scheme (quote (fn [zzq] zzq)) nil) \"zzq\")" :expected "true"}
++  ;; an explicit namespace string is honoured over the current one.
++  {:suite "introspect" :expr "(clojure.string/includes? (jolt.host/emitted-scheme (quote (fn [x] (bit-and x 255))) \"user\") \"jolt-bit-and\")" :expected "true"}
+   ;; telemetry — the observability primitives off Chez's clocks and collector.
+   ;; The two clocks are deliberately distinct: wall-nanos is the epoch timestamp a
+   ;; span reports, mono-nanos is what its DURATION must be measured with.
+-- 
+2.43.0
+
