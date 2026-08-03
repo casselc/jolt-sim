@@ -52,11 +52,25 @@ Decomposition of `decode-utf8` over a 22-byte string (45.5 µs):
 `window-octets` 33 µs (72%), of which the bare `octet` scan is 29 µs (64%);
 `String.`/`.getBytes` round-trip 1 µs (2%); remainder ~11.5 µs.
 
-Root cause: `host/chez/collections.ss` `jolt-nth` is a `cond` chain whose
-persistent-vector fast path is position 2 and whose `deftype` path is position
-5, reached via `rec-coll-method` → `find-method-any-protocol`, which allocated a
-fresh `hashtable-keys` vector and performed up to 2N string-keyed lookups per
-call for an N-protocol type.
+**Root cause — superseded by §8/E7 and §9/E8; the original text is retained
+below the correction, since it was the basis for the landed fix.**
+
+The *dominant* cost is not on this path at all. §8 measures deftype dispatch at
+~19% of `nth` on a Window and devirtualization at ~3%; §9 measures
+`unchecked-byte` — one arithmetic primitive, defined in the `clojure.core`
+overlay rather than as a host native — at ~209 ns/byte net, ~8x the `aget` it
+wraps. Read E1's table as *where the time appeared to be*, and §8/§9 as where
+it is.
+
+What the original analysis got right, and what the landed fix addressed:
+`host/chez/collections.ss` `jolt-nth` is a `cond` chain whose persistent-vector
+fast path is position 2 and whose `deftype` path is position 5, reached via
+`rec-coll-method` → `find-method-any-protocol`, which allocated a fresh
+`hashtable-keys` vector and performed up to 2N string-keyed lookups per call for
+an N-protocol type. That was real and worth removing — it is 40% of decode at
+the pinned tuple (§5) — but it was the minority term, and the analysis below
+claiming the residual is "two string-keyed lookups plus generic invoke" is
+**wrong**; see §8.
 
 **Two prior hypotheses are refuted by this measurement.** Host-interop `String`
 emulation was hypothesized (in session) to dominate: it is 0.2% of decode.
@@ -745,3 +759,53 @@ Jolt implements natively versus in its own core overlay**. The conclusion (Chez
 is not the problem) survives, and is in fact strengthened: `aget` at 54 ns/byte
 and a function call at 18 ns/byte are both fine. The stated *reason* was wrong
 and is corrected here.
+
+---
+
+## 10. E9 — the fix landed; and this host's noise floor is ~10%
+
+`jolt@584aecd4` nativises `unchecked-byte` and `unchecked-short` in
+`converters.ss` in the same shape as the existing `unchecked-int`.
+`unchecked-char` stays in the overlay (it returns a char, and is not on the
+byte path). Seed re-minted, converged in 2 passes.
+
+| measurement | before | after |
+| --- | ---: | ---: |
+| `unchecked-byte` alone | 236 ns/byte | **63** |
+| `signed-byte-at` | 290 | **109** |
+| `Window/nth` body, standalone | 418 | **200** |
+
+Gates: unit 1054/1054, devirt 12/12, pic 22/22, protoret 4/4, infer 36/36,
+narrow 10/10, contagion 20/20. Semantics spot-checked against JVM values:
+`(unchecked-byte 200)` → -56, `(unchecked-byte -1)` → -1,
+`(unchecked-short 40000)` → -25536, `(unchecked-char 65)` → `\A`.
+
+### The measurement finding, which matters more
+
+End-to-end decode after the fix measured 437, then 395, 421, 432 µs on
+repeated runs of the **same build** — a ~10% spread. So:
+
+**No end-to-end improvement is claimed for E9.** The primitive-level gains
+(3.7x on `unchecked-byte`, 2.1x on the standalone body) are far outside that
+band; the aggregate is not resolvable from single samples on this host.
+
+This retroactively qualifies earlier single-sample comparisons in this
+document:
+
+| comparison | delta | verdict at a ~10% floor |
+| --- | ---: | --- |
+| §5 pinned A/B, 985 → 596 µs | −40% | **survives** |
+| §1/E1, 493 → 368 µs | −25% | probably survives; single samples |
+| §5, descriptor-keyed commit 1009 → 863 ns/byte | −14% | **marginal** |
+| §5, "full decode unchanged at ~370 µs" | ~0% | **within noise; not evidence** |
+
+The `jolt@31cf9de0` commit message states 863 vs 836 as "within noise" for the
+weak-table variant — correctly — but treats 1009 → 863 as real. At this floor
+that too is marginal. The commit stands on its structural properties (no leak,
+invalidation already wired), which were the stated reason for keeping it.
+
+**Standing correction:** every ns/byte figure in this document is a single
+non-isolated sample unless stated otherwise, on a host with a ~10% run-to-run
+spread. Ratios of 2x and above are safe; anything under ~20% needs repeated
+sampling on a quiet machine before it is evidence. The §5 pinned-tuple A/B
+remains the only comparison here taken against a reproduced published baseline.
