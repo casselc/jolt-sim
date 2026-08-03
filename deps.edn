@@ -25,14 +25,14 @@
 
   ;; One request/result protocol worker per exact future schedule. The parent
   ;; process supplies the request and result paths after these main options.
-  ;; Pinned jolt-net lets a resolved scenario (e.g. ffi-schedule-scenarios)
-  ;; load unchanged jolt.net application code in this child.
+  ;; The reviewed terminal-wake pin lets a resolved scenario (for example,
+  ;; ffi-schedule-scenarios) load unchanged jolt.net code in this child.
   :explore-worker-test
   {:extra-paths ["test"]
    :extra-deps
    {io.github.casselc/jolt-net
     {:git/url "https://github.com/casselc/jolt-net.git"
-     :git/sha "f2648525f08a7fbef5b82b4a11268b76f3984155"}}
+     :git/sha "b12f691c06c2ae64509586f6359a946bd1cb284c"}}
    :main-opts ["-m" "jolt.sim.explore-worker"]}
 
   ;; Process-isolated integration gate for worker completion, timeout,
@@ -152,14 +152,14 @@
    :main-opts ["-m" "jolt.sim.tcp-bencode-hegel-test"]}
 
   ;; Unchanged public jolt.net application code over the deterministic POSIX
-  ;; loopback FFI pack. Pin the reviewed ecosystem integration checkpoint so
-  ;; public CI never depends on a sibling checkout or a moving branch.
+  ;; loopback FFI pack. Pin the reviewed terminal-wake correction so public CI
+  ;; never depends on a sibling checkout or a moving branch.
   :posix-loopback-test
   {:extra-paths ["test"]
    :extra-deps
    {io.github.casselc/jolt-net
     {:git/url "https://github.com/casselc/jolt-net.git"
-     :git/sha "f2648525f08a7fbef5b82b4a11268b76f3984155"}}
+     :git/sha "b12f691c06c2ae64509586f6359a946bd1cb284c"}}
    :main-opts ["-m" "jolt.sim.posix-loopback-test-main"]}
 
   ;; Unchanged public jolt-http (README Hello World) application code over the

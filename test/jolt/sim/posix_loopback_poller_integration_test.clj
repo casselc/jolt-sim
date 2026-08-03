@@ -20,13 +20,195 @@
              (:symbol effect)))
          effects)))
 
-(defn- wait-for-waiter-count [world expected timeout-ms]
+(defn- throwable-diagnostic [error]
+  (let [cause (ex-cause error)]
+    (cond->
+     {:class (str (class error))
+      :message (or (ex-message error) (str error))
+      :data (ex-data error)}
+      cause
+      (assoc :cause
+             {:class (str (class cause))
+              :message (or (ex-message cause) (str cause))
+              :data (ex-data cause)}))))
+
+(defn- future-diagnostic [waiting]
+  (if-not (future-done? waiting)
+    {:status :pending}
+    (try
+      {:status :completed :value @waiting}
+      (catch :default error
+        (assoc (throwable-diagnostic error) :status :failed)))))
+
+(defn- poller-diagnostic [poller]
+  (let [wake (:wake poller)
+        handle-state
+        (fn [handle]
+          (select-keys @(:jolt.net/state handle)
+                       [:phase :leases :notified?]))]
+    {:lifecycle @(:lifecycle poller)
+     :wake-admission @(:wake-admission poller)
+     :wake-pending @(:wake-pending poller)
+     :wake-sequence @(:wake-sequence poller)
+     :wake-read (handle-state (:read wake))
+     :wake-write (handle-state (:write wake))}))
+
+(defn- barrier-diagnostic [world expected timeout-ms waiting poller]
+  {:timeout-ms timeout-ms
+   :expected-waiter-count expected
+   :readiness (posix/readiness-snapshot world)
+   :pipes (posix/pipe-snapshot world)
+   :sockets (posix/snapshot world)
+   :poller (poller-diagnostic poller)
+   :future (future-diagnostic waiting)})
+
+(defn- wait-for-waiter-count
+  "Bounded-waits until the modeled readiness waiter-count equals expected.
+
+  Returns true once the exact modeled condition holds. Fails early with
+  structured diagnostics if the waiting future realizes before waiter
+  registration, and reports bounded readiness/pipe/lifecycle evidence on
+  timeout instead of returning false."
+  [world expected timeout-ms waiting poller]
   (let [deadline (+ (System/nanoTime) (* timeout-ms 1000000))]
     (loop []
-      (cond
-        (= expected (:waiter-count (posix/readiness-snapshot world))) true
-        (>= (System/nanoTime) deadline) false
-        :else (do (Thread/yield) (recur))))))
+      (let [readiness (posix/readiness-snapshot world)]
+        (cond
+          (= expected (:waiter-count readiness))
+          true
+
+          (future-done? waiting)
+          (throw
+           (ex-info
+            "poller await realized before waiter registration"
+            (barrier-diagnostic world expected timeout-ms waiting poller)))
+
+          (>= (System/nanoTime) deadline)
+          (throw
+           (ex-info
+            "poller await did not park within the barrier deadline"
+            (barrier-diagnostic world expected timeout-ms waiting poller)))
+
+          :else
+          (do (Thread/sleep 2) (recur)))))))
+
+(defn- diagnostic-poller []
+  (let [handle (fn []
+                 {:jolt.net/state
+                  (atom {:phase :open :leases 0 :notified? false})})]
+    {:lifecycle (atom {:phase :open :awaiting? false})
+     :wake-admission (atom {:phase :open :writers 0})
+     :wake-pending (atom false)
+     :wake-sequence (atom 0)
+     :wake {:read (handle) :write (handle)}}))
+
+(deftest waiter-barrier-failures-retain-bounded-diagnostics
+  (let [mem (memory/world)
+        world (posix/world mem (net/target-descriptor))
+        poller (diagnostic-poller)
+        completed (future :completed-before-park)
+        _ @completed
+        completed-data
+        (try
+          (wait-for-waiter-count world 1 100 completed poller)
+          nil
+          (catch :default error (ex-data error)))
+        failed (future (throw (ex-info "await failed" {:marker :await})))
+        _ (try @failed (catch :default _ nil))
+        failed-data
+        (try
+          (wait-for-waiter-count world 1 100 failed poller)
+          nil
+          (catch :default error (ex-data error)))
+        release (promise)
+        pending (future @release)
+        timeout-data
+        (try
+          (wait-for-waiter-count world 1 0 pending poller)
+          nil
+          (catch :default error (ex-data error))
+          (finally (deliver release :released) @pending))]
+    (is (= {:status :completed :value :completed-before-park}
+           (:future completed-data)))
+    (is (= :failed (get-in failed-data [:future :status])))
+    (is (= {:marker :await}
+           (get-in failed-data [:future :cause :data])))
+    (is (= 0 (:timeout-ms timeout-data)))
+    (is (= {:epoch 0 :waiter-count 0}
+           (:readiness timeout-data)))
+    (is (= {:phase :open :awaiting? false}
+           (get-in timeout-data [:poller :lifecycle])))
+    (is (= {:phase :open :writers 0}
+           (get-in timeout-data [:poller :wake-admission])))
+    (is (= [] (:pipes timeout-data)))
+    (is (= [] (:sockets timeout-data)))))
+
+(deftest exceptional-barrier-remains-primary-after-worker-drain
+  (let [mem (memory/world)
+        world (posix/world mem (net/target-descriptor))
+        primary (ex-info "forced poller barrier failure"
+                         {:marker :barrier-primary})
+        failure
+        (try
+          (runtime/run-controlled
+           {:ffi-handlers (posix/handlers world)}
+           #(fixture/exercise-active-poller-close
+             (fn [waiting poller]
+               (wait-for-waiter-count world 1 10000 waiting poller)
+               (throw primary))))
+          nil
+          (catch :default error error))]
+    (is (some? failure))
+    (is (identical? primary failure))
+    (is (= "forced poller barrier failure" (ex-message failure)))
+    (is (= :barrier-primary (:marker (ex-data failure))))
+    (is (not (contains?
+              (ex-data failure)
+              :jolt.sim.fixtures.net-poller/cleanup-errors)))
+    (is (zero? (:waiter-count (posix/readiness-snapshot world))))
+    (is (empty? (posix/pipe-snapshot world)))
+    (is (true? (memory/clean? mem)))
+    (is (true? (posix/clean? world)))))
+
+(deftest poller-fixture-cleanup-policy-retains-secondary-errors
+  (let [primary (ex-info "primary" {:marker :primary})
+        close-error (ex-info "close failed" {:marker :close})
+        join-error (ex-info "join failed" {:marker :join})
+        cleanup-errors [{:operation :poller-close :error close-error}
+                        {:operation :await-join :error join-error}]
+        primary-only
+        (try
+          (fixture/throw-with-cleanup! primary [])
+          nil
+          (catch :default error error))
+        combined
+        (try
+          (fixture/throw-with-cleanup! primary cleanup-errors)
+          nil
+          (catch :default error error))
+        cleanup-only
+        (try
+          (fixture/throw-with-cleanup! nil cleanup-errors)
+          nil
+          (catch :default error error))]
+    (is (identical? primary primary-only))
+    (is (identical? primary (ex-cause combined)))
+    (is (= :primary (:marker (ex-data combined))))
+    (is (= [:poller-close :await-join]
+           (mapv :operation
+                 (:jolt.sim.fixtures.net-poller/cleanup-errors
+                  (ex-data combined)))))
+    (is (= [:close :join]
+           (mapv #(get-in % [:data :marker])
+                 (:jolt.sim.fixtures.net-poller/cleanup-errors
+                  (ex-data combined)))))
+    (is (= :jolt.sim.fixtures.net-poller/cleanup-failure
+           (:type (ex-data cleanup-only))))
+    (is (identical? close-error (ex-cause cleanup-only)))
+    (is (= [:poller-close :await-join]
+           (mapv :operation
+                 (:jolt.sim.fixtures.net-poller/cleanup-errors
+                  (ex-data cleanup-only)))))))
 
 (deftest unchanged-jolt-net-poller-code-runs-in-the-hermetic-loopback-world
   (let [mem (memory/world)
@@ -119,7 +301,8 @@
         (runtime/run-controlled
          {:ffi-handlers (posix/handlers world)}
          #(fixture/exercise-active-poller-close
-           (fn [] (wait-for-waiter-count world 1 3000))))
+           (fn [waiting poller]
+             (wait-for-waiter-count world 1 10000 waiting poller))))
         result (:result controlled)
         symbols (foreign-symbols (:effects controlled))]
     (is (true? (:parked? result)))

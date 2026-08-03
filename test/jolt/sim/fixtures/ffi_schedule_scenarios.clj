@@ -47,14 +47,14 @@
    :write-then-poll [write-step-id poll-step-id]})
 
 (defn- bounded-wait
-  "Busy-polls pred until it is true or timeout-ms elapses. Returns whether pred
-  was observed true; never blocks past the deadline."
+  "Sleeps in small bounded intervals until pred is true or timeout-ms elapses.
+  Returns whether pred was observed true; never blocks past the deadline."
   [pred timeout-ms]
   (let [deadline (+ (System/nanoTime) (* timeout-ms 1000000))]
     (loop []
       (cond
         (pred) true
-        (< (System/nanoTime) deadline) (do (Thread/yield) (recur))
+        (< (System/nanoTime) deadline) (do (Thread/sleep 2) (recur))
         :else false))))
 
 (defn- native-handler-keys
@@ -99,7 +99,7 @@
         coord (ffi-schedule/coordinator handlers (plan-for plan-key poll write))
         diagnostics (:diagnostics coord)
         await-parked!
-        (fn []
+        (fn [_waiting _poller]
           (bounded-wait
            #(contains? (:arrived (diagnostics)) poll-step-id)
            poll-arrival-timeout-ms))
