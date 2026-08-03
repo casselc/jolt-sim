@@ -1031,3 +1031,78 @@ The concurrent Jolt work preserves `byte[]` semantics exactly and aims to make
 that path fast too — a bytevector backing with read-time conversion, since
 signedness is interpretation rather than storage. Two byte types in Jolt would
 be a compatibility accommodation; perturb needs only one, and it is the fast one.
+
+---
+
+## 15. Decision — two layers: perturb's core, and `clojure.*` compatibility on top
+
+**perturb's core/prelude** offers a surface comparable to `clojure.core` —
+familiar and ergonomic to a Clojure developer, same names, same shapes — but
+hews to **perturb semantics** wherever they differ.
+
+**`clojure.*` namespaces** are a separate compatibility layer that maintains
+Clojure semantics *on top of* perturb. They are opt-in, not the default.
+
+### What this resolves
+
+The charter is written as a "Clojure.next Application Core", which left it
+ambiguous whether perturb inherits a semantics or defines one. This settles it:
+**perturb defines, and compatibility is a library.** §14's unsigned-byte
+decision is the first worked instance rather than a one-off exception — the
+charter's own §1.3 non-goal 1 (no host-accident canonization) becomes the
+default posture of the core, with `clojure.*` as the place accidents are
+reproduced for those who need them.
+
+### Where the rent lands, and why that is the right place
+
+§14 measured the JVM signed-byte convention costing 209 ns/byte on the codec
+path. Under this layering that cost moves into `clojure.*` and is paid only by
+code that asks for Clojure semantics. Code on perturb's core pays nothing. The
+cost becomes **opt-in and visible** rather than ambient and invisible, which is
+the property E8 showed was missing — nobody chose to pay 209 ns/byte, it was
+simply inherited.
+
+### The rule this imposes on the core
+
+**perturb's core must not foreclose Clojure semantics — only decline to adopt
+them by default.** A compatibility layer is only implementable if the underlying
+core is expressive enough to host the behaviour it does not itself choose.
+
+Bytes satisfy this: storage is octets, signedness is a read-time interpretation,
+so `clojure.core/aget` over a byte array can sign-fold and return -1 while
+perturb's own byte view returns 255. Any core decision that made the Clojure
+behaviour *inexpressible* rather than merely non-default would break the
+layering, and is therefore out of bounds.
+
+That is a checkable constraint on every future divergence, and it should be
+applied at the point the divergence is decided.
+
+### The hazard: same names, different semantics
+
+Identical spelling with divergent behaviour is a real footgun — a Clojure
+developer's muscle memory will be correct about shape and can be silently wrong
+about behaviour. Two divergences are already known:
+
+| name | Clojure | perturb |
+| --- | --- | --- |
+| byte access | signed, -128..127 | unsigned octet, 0..255 (§14) |
+| `map`/`filter`/sequence ops | lazy, chunked | **eager**; laziness opt-in (charter §1.2 H4) |
+
+Neither is discoverable from a call site. So this layering requires an
+**enumerated divergence register** — every name whose semantics differ from
+`clojure.core`, with the difference stated. The charter already specifies the
+mechanism in §1.4: feature → classification → semantics location → support
+level, with a Notes column naming exact unsupported variants. The register is
+that matrix with a divergence column, and it is a release obligation, not
+documentation hygiene: an unenumerated divergence is indistinguishable from a
+bug.
+
+### Consequence for the v0 ladder
+
+§2.5's slice imports `jolt.bytes`/`jolt.bencode` semantics. Under this layering
+the port targets **perturb's core**, not `clojure.*` — so the bencode decoder
+reads octets directly and the `unchecked-byte` fold disappears from the path
+rather than being reimplemented. The existing oracle corpora remain valid as
+*value* tests (they pin decoded results, not byte representation), but any
+corpus row asserting a signed byte is testing `clojure.*`, not perturb, and
+must be reclassified rather than ported.
