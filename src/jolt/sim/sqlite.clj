@@ -41,7 +41,8 @@
   A plan may instead carry one closed :row-effect directive describing a
   physical table-row transition over the same committed/staged overlay (:op
   :insert-row with :table/:key-params/:row, :op :update-row with
-  :table/:key-params/:set, or :op :scan-rows with :table/:project/:order-key;
+  :table/:key-params/:key-columns/:set, or :op :scan-rows with
+  :table/:project/:order-key;
   never more than one of :tx-effect, :store-effect, and :row-effect on one
   plan). Complete rows live under tagged [:jolt.sim.sqlite/row table
   key-cells] identities that cannot collide with legacy :store-effect cell

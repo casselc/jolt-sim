@@ -227,9 +227,8 @@
   ;; SQLite adapter: one ordinary jdbc.core scenario run against real SQLite
   ;; and under the hermetic and hybrid SQLite handler worlds with an exact
   ;; 28-statement row-effect plan world. Uses the complete public DB coordinate
-  ;; so its native library declaration is available to the launcher. The row
-  ;; model is integrated by the sibling slice; this alias is not yet part of
-  ;; the aggregate suite.
+  ;; so its native library declaration is available to the launcher. Keep this
+  ;; focused alias separate from the dependency-light aggregate suite.
   :outbox-sqlite-parity-test
   {:extra-paths ["test"]
    :extra-deps

@@ -37,10 +37,9 @@
   connection's visible storage at execution time. Canonical table ids are
   :outbox/entities, :outbox/requests, and :outbox/rows.
 
-  The row model (:row-effect) is integrated by the sibling slice and is not
-  present in this worktree, so this gate cannot run here. It is deliberately
-  not weakened or faked to make it run; Codex integrates the sibling model and
-  runs the executable gates."
+  The row model (:row-effect) is integrated in this branch. This focused gate
+  remains separate from the dependency-light aggregate suite because its real
+  lane requires the public db coordinate and native SQLite declaration."
   (:require [clojure.test :refer [deftest is testing]]
             [jdbc.core :as jdbc]
             [jolt.example.outbox.sqlite :as store]
@@ -129,8 +128,8 @@
 
 (defn- update-plan
   "A row-mutation plan updating the row selected by :key-params from the
-  declared :set column/parameter pairs."
-  [sql params table key-params set-pairs changes]
+  aligned :key-columns and declared :set column/parameter pairs."
+  [sql params table key-params key-columns set-pairs changes]
   {:sql sql
    :params params
    :columns []
@@ -139,6 +138,7 @@
    :row-effect {:op :update-row
                 :table table
                 :key-params key-params
+                :key-columns key-columns
                 :set set-pairs}})
 
 (defn- statement-plans
@@ -245,6 +245,7 @@
                  2 {:type :blob :value (byte-array 0)}
                  3 {:type :text :value "entity-a"}}
                 :outbox/entities [3]
+                ["entity_id"]
                 [["version" 1] ["payload" 2]]
                 1)
    (insert-plan request-insert-sql
@@ -395,7 +396,7 @@
    {:sequence 5 :plan-index 24 :op :commit :when :on-success :reported :done
     :applied? true :reason nil :before-autocommit? false :after-autocommit? true}])
 
-;; Row evidence projected to the documented surface keys [:op :table
+;; Row evidence projected to compact route/location keys [:op :table
 ;; :plan-index :location]. The first load's scans see no rows (location nil);
 ;; every later scan reads committed storage; every mutation inside a
 ;; transaction stages (:staging); the replay transaction (plans 12-16) carries
@@ -460,7 +461,7 @@
   (filter #(= symbol (:symbol (:descriptor %))) effect-trace))
 
 (defn- row-evidence-projection
-  "Projects one row-evidence entry onto the documented surface keys
+  "Projects one row-evidence entry onto compact route/location keys
   [:op :table :plan-index :location]."
   [evidence]
   (mapv (fn [entry]
@@ -540,13 +541,25 @@
     (testing "row evidence: three scans per load, one entity insert, one entity update, two request inserts, two outbox inserts, staging locations, no replay mutation"
       (doseq [world [hermetic-world hybrid-world]]
         (let [db (first (get-in (sqlite/state world) [:closed-db-evidence]))
-              projected (row-evidence-projection (:row-evidence db))]
+              evidence (:row-evidence db)
+              projected (row-evidence-projection evidence)
+              entity-update (first (filter #(= 21 (:plan-index %)) evidence))]
           (is (= expected-row-evidence projected))
           (is (= [] (replay-mutations projected)))
           (is (= 12 (count (filter #(= :scan-rows (first %)) projected))))
-          (is (= 5 (count (filter #(contains? #{:insert-row :update-row}
+          (is (= 6 (count (filter #(contains? #{:insert-row :update-row}
                                               (first %))
-                                  projected)))))))
+                                  projected))))
+          (is (= {:op :update-row
+                  :reported :done
+                  :location :staging
+                  :source-location :committed
+                  :present? true
+                  :applied? true
+                  :changes 1}
+                 (select-keys entity-update
+                              [:op :reported :location :source-location :present?
+                               :applied? :changes]))))))
     (testing "hermetic/hybrid effect traces route every SQLite call to a handler, including BLOB bindings and reads"
       (doseq [controlled [hermetic-controlled hybrid-controlled]]
         (is (every? #(= :handler (:route %)) (:effect-trace controlled)))
