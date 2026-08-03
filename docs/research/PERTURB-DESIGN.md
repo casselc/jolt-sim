@@ -809,3 +809,53 @@ non-isolated sample unless stated otherwise, on a host with a ~10% run-to-run
 spread. Ratios of 2x and above are safe; anything under ~20% needs repeated
 sampling on a quiet machine before it is evidence. The §5 pinned-tuple A/B
 remains the only comparison here taken against a reproduced published baseline.
+
+---
+
+## 11. E10 — the pinned A/B with repeated sampling
+
+Arms: `jolt@89fe46e8` clean, versus the same commit plus all three perf changes
+(`048582c3` memoize, `31cf9de0` descriptor-keyed, and the `unchecked-byte`/
+`unchecked-short` nativisation applied as a **minimal** source edit rather than
+a cherry-pick, because `22-coll.clj` and `converters.ss` had drifted between the
+commits and taking whole files would have contaminated the comparison). Seed
+re-minted in the pinned worktree, converged in 2 passes; semantics re-checked
+there (`(unchecked-byte 200)` → -56, `(unchecked-short 40000)` → -25536).
+
+5 runs per arm via `measurements/repeat-sample.py`, medians in ns:
+
+| label | baseline | patched | change | spreads |
+| --- | ---: | ---: | ---: | --- |
+| full bencode decode | 1,211,841 | **692,135** | **−42.9%** | 4.9% / 10.5% |
+| `decode-utf8`, 22 bytes | 126,284 | 64,915 | −48.6% | 17.9% / 8.0% |
+| `window-octets`, 22 bytes | 106,109 | 51,425 | −51.5% | 6.7% / 7.3% |
+| bare `octet` scan | 101,975 | 46,783 | −54.1% | 7.3% / 10.2% |
+| direct UTF-8 validate | 102,555 | 46,106 | −55.0% | 38.7% / 6.2% |
+| **`String`/`getBytes` round-trip** | **1,722** | **1,749** | **+1.6%** | 8.4% / 16.4% |
+
+**The last row is the control.** The host-interop round-trip touches none of the
+three changes, and it did not move — +1.6%, inside both spreads. Everything on
+the byte path moved by roughly 2x, far outside them. That the one term expected
+to be invariant *was* invariant is the strongest internal evidence here that the
+comparison measures what it claims.
+
+**Result: −43% end-to-end bencode decode at the pinned target tuple**, from the
+session's three changes combined, with repeated sampling and a control.
+
+### Correction to §5's reproduction claim
+
+§5 stated the setup "reproduces the recorded baseline to within 0.6%" —
+985,225 ns measured against `PERFORMANCE.md`'s 991,008. With 5 runs the baseline
+median is **1,211,841 ns**, 22% above the recorded figure. The 0.6% agreement
+was a single sample landing near the recorded value; it was luck, not
+reproduction.
+
+What survives: the setup is at the pinned tuple, the arms are identical apart
+from the change under test, and the control row holds. What does not: any claim
+that this host reproduces the published absolute. Cross-host absolutes should
+not be compared at all from these measurements — only within-arm deltas taken
+in the same session.
+
+That makes E10 the second correction to arrive from repeated sampling alone
+(E9's ~10% floor was the first), and both invalidated numbers that had been
+stated with more confidence than a single sample can carry.
