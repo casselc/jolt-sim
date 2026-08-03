@@ -464,8 +464,15 @@ through the canonical trace value domain; resolution, protocol, contract, and
 encoding failures are reported as `:worker-error`. A child that misses its
 deadline is sent TERM, then KILL after a bounded grace period, and must be
 observed reaped before the supervisor returns `:timeout`. Failure to observe
-death is an infrastructure exception and retains the run directory for
-diagnosis.
+death is an infrastructure exception rather than an ordinary outcome.
+
+Completed cases remove their private run directory. Every `:failed`,
+`:worker-error`, or `:timeout` outcome instead includes an `:artifact-dir` and
+retains everything observed there: `request.edn`, `result.edn`, `stdout.log`,
+and `stderr.log`. A file the worker never created remains absent, so a spawn
+failure, crash, and malformed result remain distinguishable. The exceptional
+"worker death not observed" paths also expose `:artifact-dir` in their
+exception data and retain the same directory for diagnosis.
 
 `:timeout` deliberately means only “the worker did not exit by its deadline.”
 It is not a deadlock proof. General case transport does not itself generate or

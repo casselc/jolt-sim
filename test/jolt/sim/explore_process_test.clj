@@ -9,6 +9,7 @@
             [jolt.fs :as fs]
             [jolt.host :as host]
             [jolt.sim.explore :as explore]
+            [jolt.sim.explore-worker :as worker]
             [jolt.sim.process-explorer :as process-explorer]))
 
 (def ^:dynamic *process-config* nil)
@@ -66,6 +67,42 @@
 (defn- child-abi-version [outcome]
   (get-in outcome [:result :capabilities :abi-version]))
 
+(defn- artifact-path [outcome filename]
+  (when-let [dir (:artifact-dir outcome)]
+    (str (fs/path dir filename))))
+
+(defn- retained-artifacts-match?
+  [outcome {:keys [present absent]}]
+  (let [dir (:artifact-dir outcome)
+        safe-dir?
+        (and (string? dir)
+             (.startsWith (.getName (java.io.File. dir))
+                          "jolt-sim-explore-"))
+        present? (fn [filename]
+                   (boolean
+                    (and dir (fs/exists? (artifact-path outcome filename)))))
+        valid?
+        (and safe-dir?
+             (fs/exists? dir)
+             (every? present? present)
+             (not-any? present? absent))]
+    (is safe-dir? (str "unsafe or missing artifact directory " (pr-str dir)))
+    (is (and dir (fs/exists? dir))
+        (str "retained artifact directory must exist " (pr-str dir)))
+    (doseq [filename present]
+      (is (present? filename)
+          (str "expected retained artifact " filename " under " dir)))
+    (doseq [filename absent]
+      (is (not (present? filename))
+          (str "artifact must remain honestly absent: " filename)))
+    valid?))
+
+(defn- cleanup-expected-artifacts! [outcome expected?]
+  (when-let [dir (:artifact-dir outcome)]
+    (if expected?
+      (fs/delete-tree dir)
+      (println "Retained unexpected process-explorer artifacts at" dir))))
+
 (deftest fresh-workers-explore-canonical-worker-lifecycle-scenarios
   (testing "independent futures complete in plan order and discriminate starts"
     (let [schedules
@@ -80,6 +117,7 @@
       (is (= [[0 1] [1 0]] schedules))
       (is (= schedules (mapv :schedule outcomes)))
       (is (= [:completed :completed] (mapv :status outcomes)))
+      (is (= [nil nil] (mapv :artifact-dir outcomes)))
       (is (= [6 6] (mapv child-abi-version outcomes)))
       (is (= [[:a :b] [:b :a]]
              (mapv (fn [outcome]
@@ -95,16 +133,25 @@
             schedules
             scenario-timeout-ms))
           completed (nth outcomes 0)
-          timed-out (nth outcomes 1)]
+          timed-out (nth outcomes 1)
+          artifacts-ok?
+          (retained-artifacts-match?
+           timed-out
+           {:present ["request.edn" "stdout.log" "stderr.log"]
+            :absent ["result.edn"]})]
       (is (= schedules (mapv :schedule outcomes)))
       (is (= [:completed :timeout] (mapv :status outcomes)))
+      (is (nil? (:artifact-dir completed)))
       (is (= 6 (child-abi-version completed)))
       (is (= {:a-result :a :b-result :b} (body-result completed)))
       (is (= :deadline (:reason timed-out)))
       (is (not= :deadlock (:status timed-out))
           "a deadline is not a deadlock classification")
       (is (not= :deadlock (:reason timed-out))
-          "the timeout reason must remain the neutral deadline label")))
+          "the timeout reason must remain the neutral deadline label")
+      (cleanup-expected-artifacts!
+       timed-out
+       (and artifacts-ok? (= :timeout (:status timed-out))))))
 
   (testing "a scenario exception is a failed exploration outcome"
     (let [outcome
@@ -112,11 +159,38 @@
            (run-config
             'jolt.sim.fixtures.explore-scenarios/fails
             [0]
-            scenario-timeout-ms))]
+            scenario-timeout-ms))
+          artifacts-ok?
+          (retained-artifacts-match?
+           outcome
+           {:present ["request.edn" "result.edn" "stdout.log" "stderr.log"]})
+          retained-request
+          (edn/read-string (slurp (artifact-path outcome "request.edn")))
+          retained-result
+          (worker/decode-result-edn
+           [0]
+           (slurp (artifact-path outcome "result.edn")))
+          content-ok?
+          (and (= (worker/request-document
+                   'jolt.sim.fixtures.explore-scenarios/fails [0])
+                  retained-request)
+               (= :failed (:status retained-result))
+               (= :jolt.sim.fixtures.explore-scenarios/deliberate-failure
+                  (get-in retained-result [:error :data :type])))]
       (is (= :failed (:status outcome)))
+      (is (= 0 (:exit outcome)))
       (is (= [0] (:schedule outcome)))
       (is (= :jolt.sim.fixtures.explore-scenarios/deliberate-failure
-             (get-in outcome [:error :data :type])))))
+             (get-in outcome [:error :data :type])))
+      (is (= (worker/request-document
+              'jolt.sim.fixtures.explore-scenarios/fails [0])
+             retained-request))
+      (is (= :failed (:status retained-result)))
+      (is (= :jolt.sim.fixtures.explore-scenarios/deliberate-failure
+             (get-in retained-result [:error :data :type])))
+      (cleanup-expected-artifacts!
+       outcome
+       (and artifacts-ok? content-ok? (= :failed (:status outcome))))))
 
   (testing "an unencodable scenario result is a worker encoding error"
     (let [outcome
@@ -124,10 +198,18 @@
            (run-config
             'jolt.sim.fixtures.explore-scenarios/noncanonical
             [0]
-            scenario-timeout-ms))]
+            scenario-timeout-ms))
+          artifacts-ok?
+          (retained-artifacts-match?
+           outcome
+           {:present ["request.edn" "result.edn" "stdout.log" "stderr.log"]})]
       (is (= :worker-error (:status outcome)))
       (is (= [0] (:schedule outcome)))
-      (is (= :result-encoding (get-in outcome [:error :phase])))))
+      (is (= 0 (:exit outcome)))
+      (is (= :result-encoding (get-in outcome [:error :phase])))
+      (cleanup-expected-artifacts!
+       outcome
+       (and artifacts-ok? (= :worker-error (:status outcome))))))
 
   (testing "a missing executable returns a bounded spawn error"
     (let [temp-dir
@@ -142,14 +224,24 @@
                 'jolt.sim.fixtures.explore-scenarios/independent
                 [0]
                 750)
-               :worker-command [missing-bin "-M:explore-worker-test"])
+               :worker-command [missing-bin "-M:explore-worker-test"]
+               :temp-dir temp-dir)
               outcome
               (deref
                (future (process-explorer/run-schedule config))
                3000
                ::bounded-wait-expired)]
-          (when-not (= ::bounded-wait-expired outcome)
-            (vreset! safe-to-clean? true))
+          (let [artifacts-ok?
+                (and
+                 (not= ::bounded-wait-expired outcome)
+                 (retained-artifacts-match?
+                  outcome
+                  {:present ["request.edn"]
+                   :absent ["result.edn"]}))]
+            (when (and artifacts-ok?
+                       (= :worker-error (:status outcome))
+                       (= :process-spawn (get-in outcome [:error :phase])))
+              (vreset! safe-to-clean? true)))
           (is (not= ::bounded-wait-expired outcome)
               "spawning a missing executable must return within the watchdog")
           (is (= :worker-error (:status outcome)))
@@ -170,10 +262,20 @@
             ;; them at $1 and $2 after this explicit argument zero.
             :worker-command
             ["sh" "-c" "printf 'not-edn' > \"$2\""
-             "jolt-sim-malformed-worker"]))]
+             "jolt-sim-malformed-worker"]))
+          artifacts-ok?
+          (retained-artifacts-match?
+           outcome
+           {:present ["request.edn" "result.edn" "stdout.log" "stderr.log"]})]
       (is (= :worker-error (:status outcome)))
       (is (= :result-protocol (get-in outcome [:error :phase])))
-      (is (= 0 (:exit outcome)))))
+      (is (= 0 (:exit outcome)))
+      (is (= "not-edn" (slurp (artifact-path outcome "result.edn"))))
+      (cleanup-expected-artifacts!
+       outcome
+       (and artifacts-ok?
+            (= "not-edn" (slurp (artifact-path outcome "result.edn")))
+            (= :worker-error (:status outcome))))))
 
   (testing "a TERM-resistant worker is forcibly killed and reaped"
     (let [outcome
@@ -189,10 +291,18 @@
             :worker-command
             ["sh" "-c" "trap '' TERM; exec sleep 10"
              "jolt-sim-term-resistant-worker"]
-            :kill-grace-ms 100))]
+            :kill-grace-ms 100))
+          artifacts-ok?
+          (retained-artifacts-match?
+           outcome
+           {:present ["request.edn" "stdout.log" "stderr.log"]
+            :absent ["result.edn"]})]
       (is (= :timeout (:status outcome)))
       (is (= :deadline (:reason outcome)))
-      (is (= 137 (:exit outcome)))))
+      (is (= 137 (:exit outcome)))
+      (cleanup-expected-artifacts!
+       outcome
+       (and artifacts-ok? (= :timeout (:status outcome))))))
 
   (testing "the timeout path really kills and reaps the child"
     (let [temp-dir
@@ -315,10 +425,18 @@
            (case-config
             'jolt.sim.fixtures.explore-scenarios/independent
             scenario-timeout-ms
-            {:input :unexpected}))]
+            {:input :unexpected}))
+          artifacts-ok?
+          (retained-artifacts-match?
+           outcome
+           {:present ["request.edn" "result.edn" "stdout.log" "stderr.log"]})]
       (is (= :worker-error (:status outcome)))
       (is (nil? (:schedule outcome)))
-      (is (= :scenario-input (get-in outcome [:error :phase])))))
+      (is (= :scenario-input (get-in outcome [:error :phase])))
+      (cleanup-expected-artifacts!
+       outcome
+       (and artifacts-ok?
+            (= :scenario-input (get-in outcome [:error :phase]))))))
 
   (testing "a real input-capable defsim body cannot spoof contract rejection"
     (let [outcome
@@ -326,14 +444,21 @@
            (case-config
             'jolt.sim.fixtures.explore-scenarios/rejection-keyword-collision
             scenario-timeout-ms
-            {:input {:workload :collision-control}}))]
+            {:input {:workload :collision-control}}))
+          artifacts-ok?
+          (retained-artifacts-match?
+           outcome
+           {:present ["request.edn" "result.edn" "stdout.log" "stderr.log"]})]
       (is (= :failed (:status outcome)))
       (is (= "application deliberately collides with the input-rejection keyword"
              (get-in outcome [:error :message])))
       (is (= :jolt.sim.runtime/scenario-rejects-input
              (get-in outcome [:error :data :type])))
       (is (= {:workload :collision-control}
-             (get-in outcome [:error :data :input]))))))
+             (get-in outcome [:error :data :input])))
+      (cleanup-expected-artifacts!
+       outcome
+       (and artifacts-ok? (= :failed (:status outcome)))))))
 
 (def ^:private admission-order-timeout-ms 20000)
 

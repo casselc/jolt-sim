@@ -2,6 +2,7 @@
   "Pure configuration tests for the process supervisor. Real child-process
   behavior lives in the isolated jolt.sim.explore-process-test gate."
   (:require [clojure.test :refer [deftest is]]
+            [jolt.fs :as fs]
             [jolt.sim.process-explorer :as process-explorer]))
 
 (def base-run-config
@@ -110,6 +111,67 @@
     (is (false? finished?))
     (is (empty? @sleeps)
         "probe overhead counts against the deadline instead of adding polls")))
+
+(deftest only-completed-outcomes-discard-process-artifacts
+  (let [retain-var
+        (resolve 'jolt.sim.process-explorer/retain-outcome-artifacts?)]
+    (is (false? (@retain-var {:status :completed})))
+    (doseq [status [:failed :timeout :worker-error nil]]
+      (is (true? (@retain-var {:status status}))
+          (str "fail closed for outcome status " (pr-str status))))))
+
+(deftest completed-run-removes-its-private-artifact-directory
+  (let [run-var (resolve 'jolt.sim.process-explorer/run-worker!)
+        create-var (resolve 'jolt.sim.process-explorer/create-run-dir)
+        process-var (resolve 'jolt.process/process)
+        supervise-var (resolve 'jolt.sim.process-explorer/supervise-child)
+        run-dir (str (fs/create-temp-dir
+                      {:prefix "jolt-sim-completed-cleanup-test-"}))
+        outcome
+        (with-redefs-fn
+          {create-var (fn [_] run-dir)
+           process-var (fn [& _] :fake-child)
+           supervise-var
+           (fn [_config schedule _child _result _stdout _stderr]
+             {:status :completed :schedule schedule})}
+          #(@run-var base-run-config [0 1] nil))]
+    (is (= :completed (:status outcome)))
+    (is (nil? (:artifact-dir outcome)))
+    (is (false? (fs/exists? run-dir)))))
+
+(deftest escaping-unreaped-workers-expose-their-retained-artifact-directory
+  (let [run-var (resolve 'jolt.sim.process-explorer/run-worker!)
+        create-var (resolve 'jolt.sim.process-explorer/create-run-dir)
+        process-var (resolve 'jolt.process/process)
+        supervise-var (resolve 'jolt.sim.process-explorer/supervise-child)]
+    (doseq [error-type
+            [:jolt.sim.process-explorer/worker-exit-unobserved
+             :jolt.sim.process-explorer/worker-survived-kill]]
+      (let [run-dir
+            (str (fs/create-temp-dir
+                  {:prefix "jolt-sim-unreaped-worker-test-"}))
+            request-path (str (fs/path run-dir "request.edn"))
+            unreaped (ex-info "worker not reaped" {:type error-type})
+            thrown
+            (with-redefs-fn
+              {create-var (fn [_] run-dir)
+               process-var (fn [& _] :fake-child)
+               supervise-var (fn [& _] (throw unreaped))}
+              #(ex-of (fn [] (@run-var base-run-config [0 1] nil))))
+            retained?
+            (and (= error-type (:type (ex-data thrown)))
+                 (= run-dir (:artifact-dir (ex-data thrown)))
+                 (fs/exists? run-dir)
+                 (fs/exists? request-path))]
+        (is (some? thrown))
+        (is (= error-type (:type (ex-data thrown))))
+        (is (= run-dir (:artifact-dir (ex-data thrown))))
+        (is (fs/exists? run-dir))
+        (is (fs/exists? request-path))
+        (if retained?
+          (fs/delete-tree run-dir)
+          (println "Retained unexpected process-explorer test artifacts at"
+                   run-dir))))))
 
 (deftest an-unobserved-exit-is-never-downgraded-to-a-returned-outcome
   (let [supervise-var

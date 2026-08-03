@@ -349,6 +349,15 @@
      :jolt.sim.process-explorer/worker-exit-unobserved}
    (:type (ex-data error))))
 
+(defn- retain-outcome-artifacts? [outcome]
+  (not= :completed (:status outcome)))
+
+(defn- retained-exception [error run-dir]
+  (ex-info
+   (or (ex-message error) (str error))
+   (assoc (or (ex-data error) {}) :artifact-dir run-dir)
+   error))
+
 (defn- run-worker!
   "Shared spawn/supervise/cleanup machinery for one fresh worker process,
   driven by an already-validated config plus the exact schedule (nil for a
@@ -361,43 +370,54 @@
         stderr-path (path-in run-dir "stderr.log")
         keep-temp? (volatile! false)]
     (try
-      (try
-        (let [request-write
-              (captured
-               #(spit
-                 request-path
-                 (trace/canonical-edn
-                  (worker/request-document (:scenario config) schedule input))))]
-          (if-let [error (:error request-write)]
-            (worker-error-outcome
-             schedule :request-writing error
-             (diagnostics stdout-path stderr-path))
-            (let [command
-                  (into (:worker-command config)
-                        [request-path result-path])
-                  spawn
-                  (captured
-                   #(process/process
-                     command
-                     (process-options config stdout-path stderr-path)))]
-              (if-let [error (:error spawn)]
-                (worker-error-outcome
-                 schedule :process-spawn error
-                 (diagnostics stdout-path stderr-path))
-                (supervise-child
-                 config schedule (:value spawn)
-                 result-path stdout-path stderr-path)))))
-        (catch :default error
-          ;; `supervise-child` converts every ordinary post-spawn failure into
-          ;; an outcome. Only the two explicit "exit not observed" conditions
-          ;; may escape. Any future escaping path must first prove the child
-          ;; reaped or be added to retain-run-directory?.
-          (when (retain-run-directory? error)
-            ;; A child whose death was not observed may still retain or mutate
-            ;; its artifacts; keep them for diagnosis and do not claim an
-            ;; ordinary exploration outcome.
-            (vreset! keep-temp? true))
-          (throw error)))
+      (let [outcome
+            (try
+              (let [request-write
+                    (captured
+                     #(spit
+                       request-path
+                       (trace/canonical-edn
+                        (worker/request-document
+                         (:scenario config) schedule input))))]
+                (if-let [error (:error request-write)]
+                  (worker-error-outcome
+                   schedule :request-writing error
+                   (diagnostics stdout-path stderr-path))
+                  (let [command
+                        (into (:worker-command config)
+                              [request-path result-path])
+                        spawn
+                        (captured
+                         #(process/process
+                           command
+                           (process-options config stdout-path stderr-path)))]
+                    (if-let [error (:error spawn)]
+                      (worker-error-outcome
+                       schedule :process-spawn error
+                       (diagnostics stdout-path stderr-path))
+                      (supervise-child
+                       config schedule (:value spawn)
+                       result-path stdout-path stderr-path)))))
+              (catch :default error
+                ;; `supervise-child` converts every ordinary post-spawn
+                ;; failure into an outcome. Only the two explicit "exit not
+                ;; observed" conditions may escape. Any future escaping path
+                ;; must first prove the child reaped or be added to
+                ;; retain-run-directory?.
+                (if (retain-run-directory? error)
+                  (do
+                    ;; A child whose death was not observed may still retain
+                    ;; or mutate its artifacts. Keep them, expose the exact
+                    ;; directory on the escaping error, and do not claim an
+                    ;; ordinary exploration outcome.
+                    (vreset! keep-temp? true)
+                    (throw (retained-exception error run-dir)))
+                  (throw error))))]
+        (if (retain-outcome-artifacts? outcome)
+          (do
+            (vreset! keep-temp? true)
+            (assoc outcome :artifact-dir run-dir))
+          outcome))
       (finally
         (when-not @keep-temp?
           (fs/delete-tree run-dir))))))
@@ -421,7 +441,10 @@
 
   Returns one `:completed`, `:failed`, `:timeout`, or `:worker-error` map.
   Timeout means only that the child did not exit by the deadline; it is not a
-  proof of deadlock."
+  proof of deadlock. Every non-completed outcome retains its per-run directory
+  as `:artifact-dir`; the directory contains the observed `request.edn`,
+  `result.edn`, `stdout.log`, and `stderr.log` files, with absent files left
+  honestly absent. Completed runs remove their directory."
   [config]
   (let [config (validate-run-config! config)]
     (run-worker! config (:schedule config) nil)))
@@ -435,8 +458,9 @@
   defaults to nil. Supplying both is the common workload/fault/schedule path for
   generated and replayed cases.
 
-  Returns the same `:completed`/`:failed`/`:timeout`/`:worker-error` shape as
-  `run-schedule`, echoing the effective schedule (including nil)."
+  Returns the same `:completed`/`:failed`/`:timeout`/`:worker-error` shape and
+  artifact-retention contract as `run-schedule`, echoing the effective schedule
+  (including nil)."
   [config]
   (let [config (validate-case-config! config)]
     (run-worker! config (:schedule config) (:input config))))
@@ -449,7 +473,9 @@
 
   The order may come from `jolt.sim.explore/schedule-plans`, a permanent replay
   witness, or a later Hegel/high-utility sampler; this supervisor does not
-  claim its own search strategy."
+  claim its own search strategy. Every non-completed element inherits
+  `run-schedule`'s `:artifact-dir` retention contract; callers that intentionally
+  consume expected failures are responsible for deleting those directories."
   [config]
   (validate-common! config explore-keys)
   (let [schedules (validate-schedules! (:schedules config))
