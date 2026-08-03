@@ -1141,3 +1141,52 @@ exact compatibility is ultimately *not wanted*, the rule can be dropped and the
 core gains real freedom — laziness, equality, numeric tower, and error model all
 have cheaper designs without it. Worth settling before the core's semantics are
 far enough along that the answer stops being free.
+
+### 15.2 Q5 resolved — the rule is a defeasible default
+
+Neither "deferred" nor "optional". No-foreclosure is a **goal and a rule, held
+by default, breakable later for a sufficiently interesting gain.**
+
+That is a third posture and it changes the mitigation, because the risk is no
+longer "compat silently becomes impossible" — it is **"compat gets broken by
+drift rather than by decision."** A rule you would knowingly trade away is only
+useful if you can see the price at the moment you would pay it.
+
+So the divergence register (§15) needs a third column. Per divergence:
+
+1. **What differs** from `clojure.core`.
+2. **How `clojure.*` would recover it** — the compat sketch (§15.1).
+3. **What breaking compat here would unlock** — the gain that might justify it.
+
+Column 3 is what makes the rule defeasible on purpose. Without it a break is
+indistinguishable from an oversight, and a series of individually small,
+individually unexamined decisions is exactly how a compatibility layer turns out
+to be impossible without anyone having chosen that.
+
+Worked example, §14's bytes — the rule is *not* broken:
+
+| | |
+| --- | --- |
+| differs | byte is an unsigned octet `0..255`, not signed `-128..127` |
+| compat sketch | sign-fold on read; storage is octets either way |
+| would unlock | nothing further — compat costs one fold on the `clojure.*` path only |
+
+Since column 2 is cheap and column 3 is empty, there is no trade to make and the
+rule holds for free. **That is the common case, and it is worth recording
+precisely so the uncommon case stands out.**
+
+Two asymmetries to carry:
+
+- **Breaking is cheap at decision time and expensive to reverse.** A divergence
+  that forecloses compat is a sentence of design today and a rewrite later, so
+  the register should flag divergences that put compat *at risk*, not only those
+  that break it.
+- **Column 3 being empty is the signal to hold the rule.** If a divergence
+  unlocks nothing beyond itself, keeping compat expressible is free and should
+  not be traded away casually — the reason to break the rule has to be a named
+  gain, not a general preference for freedom.
+
+Candidates where column 3 is plausibly non-empty, and where this will matter
+first: laziness (charter H4 already diverges), equality and hashing, the numeric
+tower, and the error model. Each should get its register row when decided, not
+retrospectively.
