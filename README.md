@@ -22,15 +22,19 @@ portion of the suite.
 
 Public CI builds that exact simulation image. Linux x86_64/aarch64 and macOS
 x86_64/arm64 run the main suite plus the controller-poison, pointer-loan,
-scheduler-deadline, POSIX/HTTP integration, and fresh-process case gates.
-Windows x86_64 runs the main, controller-poison, pointer-loan, and scheduler
-deadline gates, but not the fresh-process supervisor: the current Jolt process
-host uses a POSIX shell plus `waitpid`/`kill`. Hegel schedule generation and
-shrinking run on Linux x86_64. The Windows ARM64 lane currently runs the
-controller-free source suite because its Chez toolchain intentionally provides
-a source runtime but no GNU-compatible kernel development pack for linking the
-simulation image. That narrower lane is nonblocking until its first hosted runs
-establish a stable baseline.
+scheduler-deadline, POSIX/HTTP integration, TCP/bencode framing, and
+fresh-process case gates. Hegel schedule generation/shrinking and the
+TCP/bencode real/sim property lane run on Linux x86_64. Windows x86_64 runs the
+main, controller-poison, pointer-loan, and scheduler-deadline gates, but not the
+fresh-process supervisor: the current Jolt process host uses a POSIX shell plus
+`waitpid`/`kill`. The TCP framing alias also remains POSIX-only because it
+statically loads the POSIX scenario adapter; adding it to Windows requires a
+separate portability witness rather than assuming that load chain is portable.
+The Windows ARM64 lane currently runs the controller-free source suite because
+its Chez toolchain intentionally provides a source runtime but no
+GNU-compatible kernel development pack for linking the simulation image. That
+narrower lane is nonblocking until its first hosted runs establish a stable
+baseline.
 
 No CI lane carries historical prerelease controller implementations. When the
 current Jolt fork changes, this repository advances its one pinned development
@@ -93,6 +97,7 @@ only the application surfaces and modes exercised by a durable gate.
 | POSIX loopback stream/poller | `jolt.net`, `jolt.ffi` | Not in the durable gate | Modeled sockets, pipe, and `poll(2)` | Finite stream/self-pipe capacity; one exact captured `EINTR` retry; no virtual time |
 | HTTP Hello World | `jolt-http`, `jolt-tcp`, `jolt.net`, `jolt.ffi` | Not in the durable gate | Modeled POSIX loopback | One request; public CI, no faults |
 | HTTP SQLite BLOB | `jolt-http`, `jolt-tcp`, `jolt.net`, `jdbc.core`, `db.sqlite`, `jolt.ffi`, byte arrays | Host sockets plus system SQLite | Shared FFI-memory, POSIX, and SQLite worlds | One request at one-byte capacities plus one captured first-poll `EINTR`; local gate, no generated schedule/fault search |
+| Length-framed TCP bencode echo | `teensyp.server`, `teensyp.client`, `teensyp.buffer`, `jolt.bytes`, `jolt.bencode`, `jolt.net`, `jolt.ffi` | Host loopback parity witness | Modeled POSIX loopback and native memory | Pipelined requests, finite stream/self-pipe capacities, captured `EINTR`, and Hegel-generated UTF-8; no half-close or concurrent clients |
 | Maelstrom Echo | `jolt.maelstrom` node/handler code | JSON-lines lane reviewed but not integrated | Deterministic memory transport | FIFO/history integrity only; no nemesis or liveness claim |
 
 These capabilities belong to two deliberately different execution tracks:

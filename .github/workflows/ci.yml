@@ -123,6 +123,7 @@ jobs:
           # unchanged jolt.net integration lane is intentionally POSIX-only.
           "$sim" -M:posix-loopback-test
           "$sim" -M:http-hello-test
+          "$sim" -M:tcp-bencode-framing-test
           "$sim" -M:future-schedule-poison-test
           JOLT_SIM_BIN="$sim" JOLT_SIM_PROJECT_DIR="$PWD" \
             "$sim" -M:explore-process-test
@@ -143,6 +144,10 @@ jobs:
           "$sim" -A:hegel-explore-test -m hegel.install
           JOLT_SIM_BIN="$sim" JOLT_SIM_PROJECT_DIR="$PWD" \
             "$sim" -M:hegel-explore-test
+          # Both Hegel aliases pin the same exact jolt-hegel commit, so the
+          # verified native library installed above is reused here.
+          JOLT_SIM_BIN="$sim" JOLT_SIM_PROJECT_DIR="$PWD" \
+            "$sim" -M:tcp-bencode-hegel-test
 
   sim-windows-x86-64:
     name: sim image (Windows x86_64)
