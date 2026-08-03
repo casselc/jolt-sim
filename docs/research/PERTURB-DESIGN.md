@@ -1190,3 +1190,56 @@ Candidates where column 3 is plausibly non-empty, and where this will matter
 first: laziness (charter H4 already diverges), equality and hashing, the numeric
 tower, and the error model. Each should get its register row when decided, not
 retrospectively.
+
+### 15.3 Divergence register — row 2: eager sequences
+
+Charter §1.2 H4 already decides this and perturb adopts it unchanged: the core
+is **eager/transducer-first**. Default sequence operations are eager and strict,
+transducers are the composable primitive, `into`/`transduce`-style eager drivers
+are the canonical consumers, and **laziness is opt-in** via explicit lazy
+stream/generator constructors with defined realization, exception, cancellation,
+and resource semantics.
+
+| | |
+| --- | --- |
+| **differs** | `map`/`filter`/`take` etc. are eager and strict; Clojure's are lazy and chunked |
+| **compat sketch** | `clojure.*` sequence ops are perturb's opt-in lazy-stream constructors — recoverable *modulo chunk-size observability*, which charter §1.2 already classifies as a realization detail rather than core semantics |
+| **would unlock** | nothing beyond itself — laziness stays expressible, so no trade |
+
+Column 3 empty again, so the rule holds for free — the same shape as §14's
+bytes, and the second consecutive case where §15's constraint costs nothing.
+
+### The charter satisfied the rule before the rule existed
+
+H4 says laziness is **opt-in**, not **absent**. That distinction is exactly
+§15's no-foreclosure rule: the core declines laziness as a default without
+making it inexpressible. The charter arrived at the required shape independently,
+which is mild evidence the rule is naturally satisfiable rather than a
+constraint that will keep binding.
+
+### Why eager-first is stronger for perturb than for Jolt
+
+The charter argues H4 on ergonomics and predictability. perturb has a sharper
+reason the charter did not need: **lazy realization is nondeterminism that does
+not go through the oracle.**
+
+§2.4 makes the whole simulation architecture rest on a single nondeterminism
+source — every choice comes from one `choose`, the trace is the sequence of
+answers, replay is feeding them back. A pervasively lazy sequence breaks that:
+the point at which an element realizes is determined by *consumption*, not by
+program order, so any effect inside a lazy computation fires at a time no
+component chose and the oracle never saw. Realization timing becomes an
+unmodelled scheduling decision.
+
+That is not a performance argument, it is a correctness one for the determinism
+claim. Pervasive laziness and §2.4's single-oracle model are incompatible;
+eager-by-default with laziness as a declared, bounded construct is what makes
+them coexist. An opt-in lazy stream is fine precisely because opting in is
+visible — the realization points are where the program says they are.
+
+This also constrains the opt-in form: a perturb lazy stream must have
+realization semantics defined well enough that its realization points are
+either deterministic or routed through the oracle. The charter already requires
+"defined realization, exception, cancellation, and resource semantics" for the
+lazy constructors; §2.4 is why that requirement is load-bearing rather than
+tidy.
