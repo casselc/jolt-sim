@@ -247,13 +247,112 @@ verifier's limits are stated rather than implied.
 
 ## 4. Open questions
 
-- **Q1.** Does closing the residual dispatch gap require the `jrdesc` layout
-  change, and does that break seed/AOT compatibility? Blocks 2.5 step 2.
-- **Q2.** Can HM inference and capability-tier refinements coexist without
-  gradual-typing soundness boundaries? Blocks 2.2.
-- **Q3.** Does the `unique` × multi-shot-continuation rule (a `many`
-  continuation may not capture `unique` resources) hold under formalization?
-  Blocks 2.4's D3 option.
-- **Q4.** Macro expansion precedes analysis, so type errors point at expanded
-  code. `:pos` exists; does provenance survive expansion well enough for
-  usable diagnostics? Blocks 2.2 in practice, not in principle.
+### Q1 — residual dispatch gap: likely no layout change (was: may require remint)
+
+`jrdesc` is `(fields tag fkeys index (mutable ptable))`,
+`(nongenerative chez-jrdesc-v3)`. A descriptor-local eq-keyed method cache
+therefore **already exists**, with invalidation already wired: `ptable` is `#f`
+until the first `register-protocol-method`, and a stale pre-redef descriptor has
+it reset to `#f` so lookups fall back to the string registry. It is keyed by
+`intern-pm-key proto method`.
+
+The collection fallback cannot use it only because `rec-coll-method` knows the
+method name but not the supplying protocol. Two resolutions:
+
+- (a) add a method-name-keyed table → `chez-jrdesc-v4`, a remint;
+- (b) store the any-protocol resolution in the **existing** ptable under a
+  reserved pseudo-protocol key (`intern-pm-key` with a sentinel proto name that
+  cannot collide) → no field added, no version bump.
+
+Under (b) the path is `jrec-desc` (immutable field read) → `jrdesc-ptable`
+(field read) → one eq-hashtable lookup on a **module-level precomputed interned
+key**. No string hashing remains.
+
+Open sub-questions: `intern-pm-key` must not hash per call, which is why keys
+for the collection methods (`nth`, `count`, `assoc`, `cons`, `seq`) are minted
+once at module scope; and host tags (`"String"`, `"Object"`) have no desc, so
+the string-registry fallback must remain for them.
+
+**Status:** downgraded from blocking. Attempted in 2.5 step 2.
+
+### Q2 — refinements over HM: not a gradual-typing boundary (framing corrected)
+
+The original framing was wrong. Gradual typing's difficulties arise from mixing
+typed and untyped code; here everything is statically typed and an unrefined
+value is refined by `true` — a lattice with a top element, not a boundary.
+
+The established mechanism is **liquid types**: HM inference plus refinements
+inferred by predicate abstraction over a fixed qualifier set. Two properties
+make the fit unusually close: liquid typing requires a decidable logic, normally
+QF-LIA with uninterpreted functions, and every refinement in E3 is already
+written in exactly that fragment in the existing `.smt2` models; and Z3 is
+already a toolchain dependency via `bin/verify-models`.
+
+The real difficulty is different: **content refinements over mutable state are
+unsound under aliasing**, and `Window` is precisely an immutable descriptor over
+mutable aliased storage. Uniqueness resolves this rather than complicating it —
+permit content refinements only on `unique` capabilities, so no alias can
+invalidate them. This is a synergy between the two axes, and independent
+corroboration of the §2.2 tier split.
+
+Remaining risks: the `Any` escape hatch requires runtime checks where refined
+meets unrefined; inference for higher-order and polymorphic-recursive code is
+where liquid typing is least comfortable in practice.
+
+### Q3 — `unique` × multi-shot: under-specified, and not currently load-bearing
+
+The stated rule ("a `many` continuation may not capture `unique` resources in
+its frames") is wrong at two levels.
+
+**Granularity.** A continuation captures the stack to its prompt, and a `unique`
+value *reachable from* a captured frame — via a collection, closure environment,
+or record field — is duplicated on second resume exactly as one held directly.
+The property is reachability over the captured region, not frame membership, and
+must stay sound through closures and calls into unknown code.
+
+**Formulation.** This is the linearity-versus-control tension. Known-good shapes
+are linear continuations (Filinski), which reduce to one-shot, or a
+region/effect discipline preventing linear values crossing the prompt (Yarrow,
+for regions). The formulation to try instead: **place the obligation on the
+prompt, not the capture** — a `many` prompt requires its delimited body to be
+`unique`-free. Checkable where the prompt is written, expressible as an
+effect-row obligation, and composable with the rest of the checker.
+
+**Satisfiability in the intended use:** search continuations range over the
+kernel world, which P4 requires to be value-semantic and therefore free of
+unique capabilities, so backtracking search sits inside the rule. Rejected is
+application code holding a unique handle across a `choose` point — arguably
+correct, since resuming twice would duplicate the handle, but it needs checking
+against real scenarios: if it rejects too much, direct-style D3 code is unusable
+exactly where it is wanted.
+
+**Status:** not blocking. §2.4 defers D3; Q3 becomes load-bearing only if D3 is
+taken up.
+
+### Q4 — macro provenance: mechanism specified, reconstruction deferred
+
+Charter Appendix A.6 defines **expansion parent (single-step)**: each NF node
+records the immediate expansion step that introduced it — the role path of the
+macro call site in the pre-expansion form, or `nil` for a source-written node
+(realization: `V17/jolt-core/jolt/analyzer.clj:961-973`,
+`V17/host/chez/host-contract.ss:236-253`). But the full expansion-parent chain
+is "reconstructible by following links and is **not** part of v1 (F1)."
+
+Diagnostics need the chain, not the step: reporting against user-written code
+means walking parents outward to a `nil` parent, which one link does not reach
+through nested expansion. So this is a deferred scope decision, not a research
+problem.
+
+What remains hard after the chain exists is **blame**, which provenance alone
+does not settle — Racket carries source location and lexical context through
+expansion and Typed Racket still has this problem. Three cases the chain cannot
+separate: the caller passed something ill-typed (report at the use site); the
+macro generates ill-typed code from its own literals (the use site is a
+misleading target); nested expansion where the useful frame is neither outermost
+nor innermost.
+
+Proposed resolution: **macros used in typed positions declare input and output
+type schemas.** A use-site mismatch is then caught before expansion and reported
+where the user wrote it, and a type error in the expanded body is attributable
+to the macro, whose declared output schema it violated. This converts an
+unattributable error into one of two attributable ones.
