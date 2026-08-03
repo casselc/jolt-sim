@@ -443,3 +443,157 @@ VERDICT
         scripted run prints its three values. Console output is real,
         unmediated I/O and this is its exact size (INHERITED I12).
 ```
+
+## `jolt -M:check` — the static capability checker
+
+Static. Nothing in `perturb.corpus` is called; no socket is opened. Reproduce
+with `jolt -M:check` (also run by `dev/run-demo.sh`).
+
+```
+========================================================================
+perturb.check — static capability checking over real Jolt IR
+========================================================================
+
+  capabilities declared : [perturb.nrepl/Connection]
+  operations annotated  : ["perturb.corpus/ping" "perturb.corpus/ping-tuple" "perturb.nrepl/close!" "perturb.nrepl/open" "perturb.nrepl/request"]
+  machine primitives    : ["perturb.nrepl/close!" "perturb.nrepl/open" "perturb.nrepl/request"]
+  IR defs captured      : 97
+
+== corpus ==============================================================
+   real perturb source, compiled by Jolt, checked from its own IR
+
+  [ok  ] perturb.corpus/open-request-close  expected accept, got accept
+  [ok  ] perturb.corpus/shadowed-rebind  expected accept, got accept
+  [ok  ] perturb.corpus/both-arms-close  expected accept, got accept
+  [ok  ] perturb.corpus/loop-of-requests  expected accept, got accept
+  [ok  ] perturb.corpus/ping  expected accept, got accept
+  [ok  ] perturb.corpus/uses-ping  expected accept, got accept
+  [ok  ] perturb.corpus/use-after-close  expected reject, got reject  ["use-after-move"]
+  [ok  ] perturb.corpus/double-close  expected reject, got reject  ["typestate"]
+  [ok  ] perturb.corpus/use-after-move  expected reject, got reject  ["use-after-move"]
+  [ok  ] perturb.corpus/dangling-connection  expected reject, got reject  ["dangling"]
+  [ok  ] perturb.corpus/shadowing-hides-a-leak  expected reject, got reject  ["dangling"]
+  [ok  ] perturb.corpus/conditional-close  expected reject, got reject  ["join"]
+  [ok  ] perturb.corpus/conditional-close-then-use  expected reject, got reject  ["join" "use-after-move"]
+  [ok  ] perturb.corpus/loop-that-closes  expected reject, got reject  ["dangling" "loop-not-preserving"]
+  [ok  ] perturb.corpus/helper-without-a-signature  expected reject, got reject  ["untracked-consume"]
+  [ok  ] perturb.corpus/ping-tuple  expected reject, got reject  ["dangling" "escape" "produces-mismatch"]
+  [ok  ] perturb.corpus/capture-in-closure  expected reject, got reject  ["capture" "dangling"]
+
+  17/17 decided as recorded
+
+  the first rejection, in full:
+
+  use-after-move  perturb.nrepl/Connection
+    capability    `c` : perturb.nrepl/Connection@:active, bound at perturb/src/perturb/corpus.clj:90:11
+    consumed by   perturb.nrepl/close!  at perturb/src/perturb/corpus.clj:91:5
+    used again at perturb/src/perturb/corpus.clj:92:5  (argument to perturb.nrepl/request)
+    in            perturb.corpus/use-after-close
+
+== the real nREPL client ===============================================
+   perturb.nrepl, unmodified, checked by the same rules. This is NOT a
+   gate: it is the measurement §1.2 and §4.6 say has never been taken.
+
+  [ok  ] perturb.nrepl/connection-capability
+  [ok  ] perturb.nrepl/id-counter
+  [ok  ] perturb.nrepl/fresh-id
+  [ok  ] perturb.nrepl/conn
+  [ok  ] perturb.nrepl/state
+  [ok  ] perturb.nrepl/conn-id
+  [ok  ] perturb.nrepl/compact
+  [ok  ] perturb.nrepl/read-frame
+  [ok  ] perturb.nrepl/done?
+  [NO  ] perturb.nrepl/clone-session  ["untracked-consume"]
+  [NO  ] perturb.nrepl/eval-code  ["untracked-consume"]
+  [NO  ] perturb.nrepl/session  ["dangling" "no-signature" "untracked-consume"]
+
+  --- perturb.nrepl/clone-session
+  untracked-consume  perturb.nrepl/Connection
+    operation     perturb.nrepl/request consumes perturb.nrepl/Connection@:active
+    at            perturb/src/perturb/nrepl.clj:168:16
+    but no argument is a tracked capability of that type
+    arguments     `c`, a map expression
+    in            perturb.nrepl/clone-session
+  --- perturb.nrepl/eval-code
+  untracked-consume  perturb.nrepl/Connection
+    operation     perturb.nrepl/request consumes perturb.nrepl/Connection@:active
+    at            perturb/src/perturb/nrepl.clj:179:16
+    but no argument is a tracked capability of that type
+    arguments     `c`, a map expression
+    in            perturb.nrepl/eval-code
+  --- perturb.nrepl/session
+  no-signature  perturb.nrepl/Connection
+    callee        perturb.nrepl/clone-session  declares no capability signature
+    argument      `c0` : perturb.nrepl/Connection@:active
+    at            perturb/src/perturb/nrepl.clj:199:12
+    a capability may not be passed to a function that does not
+    declare :consumes / :borrows / :produces for it
+    in            perturb.nrepl/session
+  untracked-consume  perturb.nrepl/Connection
+    operation     perturb.nrepl/close! consumes perturb.nrepl/Connection@:active
+    at            perturb/src/perturb/nrepl.clj:204:18
+    but no argument is a tracked capability of that type
+    arguments     `c`
+    in            perturb.nrepl/session
+  dangling  perturb.nrepl/Connection
+    capability    `c0` : perturb.nrepl/Connection@:active
+    bound at      perturb/src/perturb/nrepl.clj:198:12
+    goes out of scope at the end of the let without reaching a terminal state
+    in            perturb.nrepl/session
+  3 of 12 checkable functions in perturb.nrepl are REJECTED.
+  3 are primitives of the declared machine and were not checked.
+
+== §2.1, now measured ==================================================
+   "`:local` carries a name, not binding identity — linearity checking
+    needs alpha-conversion or a `:binding-id`." PERTURB-DESIGN §1.1 states
+   this from reading jolt-core/jolt/ir.clj; §4 records it as UNTESTED and
+   says to assume it may be wrong until a checker walks real IR.
+
+   perturb.corpus/shadowed-rebind binds three DIFFERENT Connection
+   instances to one name. Its real IR, as the back end received it:
+
+     :let binding names     ["c" "c" "c"]   <- three separate bindings
+     :local nodes naming c  2, every one of them exactly {:op :local, :name "c"}
+     a :binding-id key?     false
+
+   Three capability instances, one node shape, no :binding-id and no
+   alpha-renaming: the analyzer's lexical env is a SET of names
+   (jolt-core/jolt/analyzer.clj:84-86), so a shadowing binding reuses the
+   name outright. THE CLAIM HOLDS. The checker therefore allocates its
+   own binding id at every binding occurrence and keys linearity on that;
+   perturb.corpus/shadowing-hides-a-leak is the program a name-keyed
+   checker would wrongly accept, and it is in the reject corpus above.
+
+  WHAT THIS CHECKER CANNOT SEE
+  
+    1. An operation in a capability's declared :transitions is an AXIOM. The
+       bodies of perturb.nrepl/open, /request and /close! are not checked;
+       their annotations are believed. mode_checker.py's RULES have the same
+       status, so this is the ported posture, not a new hole — but it is a hole:
+       nothing checks that close! actually closes.
+  
+    2. :consumes / :produces are UNPOSITIONED. A function returning [conn value]
+       cannot say where the capability is, so the checker can only reject it.
+       For a DERIVED annotated operation the checker matches capability specs to
+       parameters in order; that convention is the checker's own and is not in
+       §1.2.
+  
+    3. Closure bodies are walked for diagnostics but their state does not
+       propagate: the checker does not model whether or how often a closure runs.
+       Capturing a live capability is rejected outright rather than reasoned about.
+  
+    4. try/catch has no exception-path join. Any capability discipline across a
+       handler is unchecked and the checker says so where it finds one.
+  
+    5. Only `let`/`loop` binding forms carry capabilities. A capability stored in
+       an atom, a var, a map or a vector is rejected, never tracked.
+  
+    6. Interprocedural flow is by ANNOTATION only. There is no inference: an
+       unannotated function that takes a connection is rejected, not analysed.
+  
+    7. The IR it reads is post-const-fold (perturb.ir), and only for namespaces
+       required AFTER the tap is installed.
+
+========================================================================
+CHECK OK — every corpus verdict is the recorded one
+```

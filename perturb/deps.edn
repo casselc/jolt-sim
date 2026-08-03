@@ -22,4 +22,9 @@
   ;; between two marker lines and reports the instrumented native-call log.
   ;; `dev/verify-noio.sh` straces it and checks the marked window is empty.
   ;; `-M:noio --touch-native` is the positive control.
-  :noio   {:main-opts ["-m" "perturb.noio"]}}}
+  :noio   {:main-opts ["-m" "perturb.noio"]}
+
+  ;; The static capability checker. Reads perturb.cap's declarations as a
+  ;; SPECIFICATION and real Jolt IR as the program, and rejects. No socket and
+  ;; no server; nothing in the corpus is ever called.
+  :check  {:main-opts ["-m" "perturb.check"]}}}

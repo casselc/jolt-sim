@@ -38,6 +38,8 @@ done
 
 echo "--- selftest"
 ( cd "$root" && "$JOLT" -M:selftest )
+echo "--- capability checker (static; nothing in the corpus is run)"
+( cd "$root" && "$JOLT" -M:check )
 echo "--- oracle"
 ( cd "$root" && "$JOLT" -M:oracle )
 echo "--- demo"
