@@ -1243,3 +1243,132 @@ either deterministic or routed through the oracle. The charter already requires
 "defined realization, exception, cancellation, and resource semantics" for the
 lazy constructors; §2.4 is why that requirement is load-bearing rather than
 tidy.
+
+### 15.4 Divergence register — row 3: equality, and what hashing turned out not to be
+
+Four decisions, one deferral, two rejected alternatives.
+
+#### Decision — `=` is total, `==` is IEEE
+
+Charter §2.3 currently contradicts itself: `=` follows IEEE so `NaN ≠ NaN`, but
+`compare` "NaN sorts topmost among doubles and compares equal to itself (so
+total order is preserved)". Two notions of equality that disagree, in one
+section.
+
+perturb resolves it by splitting, using surface Clojure already has:
+
+- **`=` is total** — an equivalence relation. `NaN = NaN`. `-0.0 = 0.0`
+  (hashing canonicalizes, as the charter already requires).
+- **`==` is IEEE/numeric** — `NaN ≠ NaN`, retaining float semantics for
+  numeric code.
+
+| | |
+| --- | --- |
+| **differs** | Clojure's `=` is IEEE on NaN, so `(= ##NaN ##NaN)` is `false` and a NaN key can never be looked up in a map containing it |
+| **compat sketch** | `clojure.core/=` is perturb's `==` on doubles, `=` elsewhere |
+| **would unlock** | reflexivity, hence working collections and agreement with `compare` |
+
+Column 3 is non-empty for the first time, but the gain is *correctness*, not
+performance: `=` becomes an equivalence relation, which is what both hash-based
+collections and `compare` already assume. The charter's own `compare` rule is
+evidence the total reading is the one actually wanted.
+
+#### Decision — capability equality is identity, derived from the mode
+
+A `unique` capability is equal only to itself. This is not declared per type; it
+follows from the mode.
+
+That removes a class of hand-written contract E2 catalogued. `jolt-bytes`
+currently writes it by hand — `(equals [this other] (identical? this other))`
+with the comment *"Jolt currently gives an otherwise-unadorned deftype
+structural `=`. State the selected identity contract explicitly."* E12 found the
+same question again as `ja-equal?` for cross-kind arrays. Both become
+consequences of the mode rather than per-type declarations.
+
+#### Decision — iteration order is deterministic within a build
+
+The charter says hash-map/set iteration order is **unspecified**. perturb
+strengthens this to **deterministic within a build, unstable across versions**.
+
+`unspecified ≠ nondeterministic`. Clojure means "do not rely on it across
+versions or implementations"; §2.4 needs "identical within a build given the
+same operation sequence", which a deterministic hash over a deterministic HAMT
+already provides. This is the §15.3 argument again — varying iteration order is
+nondeterminism that does not go through the oracle, and would make replay
+inexact. Free to state, load-bearing for the determinism claim.
+
+#### Deferred — cross-category numeric equality
+
+`(= 1 1.0)`, `(= 1 1N)`. The charter deliberately punts (D7/C3: "no formal
+numeric-`=` claim in v1") and perturb keeps that deferral. It is entangled with
+the numeric tower, which is its own register row; deciding equality first means
+deciding it twice.
+
+#### Finding — the hash *algorithm* is not a divergence at all
+
+I expected this to be the first real trade: perturb takes a 64-bit modern hash,
+`clojure.*` needs Clojure's 32-bit Murmur3-compatible `hasheq`, and the two must
+somehow coexist. Working backwards from what compat actually requires, that is
+wrong.
+
+**Hash values are not observable through any specified interface.** The only law
+is hash-consistency, `(= a b) ⇒ (= (hash a) (hash b))`. What is observable is
+`=` semantics (a real obligation, and *separate from the algorithm*) and
+iteration order (already unspecified, now strengthened above). Hash values
+themselves surface only through `clojure.core/hash` — and the charter already
+rules that JVM-compatible hashing is "a `target-dependent` interop concern",
+**"never canonical."**
+
+So `clojure.*` can preserve Clojure's `=` exactly while using perturb's hash
+underneath, provided it is consistent with that `=`. **The divergence to carry
+is `=`, not `hash`** — and `=` is naturally type-carried, because a Clojure map
+is a Clojure map. perturb picks the better hash once, for everything, and no
+register row is needed.
+
+This is the third consecutive axis where an expected trade evaporated on
+inspection. Column 3 is empty more often than the framing suggested.
+
+#### Rejected — equality/hash as a dynamically-scoped effect
+
+Considered: make `=`/`hash` effect operations, so `clojure.*` installs a handler
+rather than reimplementing. Rejected on three grounds, the first fatal:
+
+1. **Hash-based structures become handler-relative.** A map's layout invariant
+   is tied to the hash used to build it. Build under one handler, read under
+   another, and lookup probes the wrong bucket — a silent wrong answer, not an
+   error. The hash must be fixed at construction and travel with the structure;
+   "varies by dynamic extent" is exactly what it cannot do.
+2. **It destroys the purity tier.** `(get m k)` calls `=` and `hash` internally,
+   so every map lookup would carry a non-empty effect row and §2.2's
+   no-obligations value tier collapses.
+3. **It is the hottest path in the language**, and §9/E8 measured what one
+   var-deref-plus-invoke costs when paid per element.
+
+The useful residue is the constraint the failure reveals: equality and hash must
+be carried by the value or its type, fixed at construction. Which is what §15's
+layering already implies — `clojure.*` collections are their own types carrying
+Clojure equality.
+
+#### Rejected — infective build-time hash selection
+
+Considered: if anything in the dependency graph imports `clojure.*`, the whole
+image builds with the Clojure-compatible hash. It has two genuine advantages
+over type-carried — complete cross-boundary interop with no dispatch question,
+and zero runtime cost since the hash stays monomorphic per build.
+
+Rejected because:
+
+1. **It is Cargo's feature-unification failure mode.** A transitive dependency
+   four levels down silently slows the whole application, invisibly from any
+   call site.
+2. **The trigger is a poor proxy.** "Imports `clojure.*`" does not mean "needs
+   Clojure hash" — `clojure.string`/`set`/`walk` are reflexive imports whose
+   behaviour does not depend on hashing. Nearly every real application would
+   flip, making the fast path the unusual one.
+3. **The finding above makes it moot.** There is no compat obligation on hash
+   values, so there is nothing for the infection to protect.
+
+**If it is ever revisited, declare rather than infer**: a build states its
+equality profile explicitly and an incompatible import is a build error naming
+the offending dependency. That converts a silent slowdown into a diagnosable
+failure at no cost over the inferred form.
