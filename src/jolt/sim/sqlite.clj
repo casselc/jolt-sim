@@ -20,11 +20,17 @@
   borrowed pointer; an empty :blob cell with :null-pointer? true returns 0 so
   callers can exercise SQLite's ambiguous empty-BLOB pointer contract.
 
+  A plan may carry one closed :tx-effect directive describing a physical
+  transaction-boundary transition (:op :begin/:commit/:rollback, gated by
+  :when :on-success/:always/:never). The model applies it at most once at the
+  statement's first terminal step and never infers transaction behavior from
+  SQL text. sqlite3_get_autocommit observes the physical autocommit state.
+
   handlers returns the 16 native-operation handlers from the memory world
-  merged with exactly the 22 SQLite foreign-function keys required by
+  merged with exactly the 23 SQLite foreign-function keys required by
   db.sqlite, so a single :ffi-handlers map drives both layers unchanged.
 
-  hybrid-handlers returns the same 38 keys classified for jolt.sim.runtime
+  hybrid-handlers returns the same 39 keys classified for jolt.sim.runtime
   :hybrid routing: memory/hybrid-handlers plus hybrid-foreign-handlers, which
   reuses foreign-handlers exactly once per call for every key except
   sqlite3_column_blob and substitutes each such result. sqlite3_column_blob
@@ -87,10 +93,10 @@
 (defn- utf8-length [s]
   (alength (utf8-bytes s)))
 
-;; ---- the exact 22 db.sqlite foreign-function keys ----------------------
+;; ---- the exact 23 db.sqlite foreign-function keys ----------------------
 
 (def
- ^{:doc "The exact 22 SQLite foreign-function handler keys required by
+ ^{:doc "The exact 23 SQLite foreign-function handler keys required by
  db.sqlite. Each is [symbol argument-types return-type blocking?] matching the
  runtime descriptor-handler-key. Exposed so tests and callers never diverge
  from the registered handlers."}
@@ -118,6 +124,7 @@
   [:foreign-function "sqlite3_column_blob" [:pointer :int] :pointer false]
   [:foreign-function "sqlite3_column_bytes" [:pointer :int] :int false]
   [:foreign-function "sqlite3_errcode" [:pointer] :int false]
+  [:foreign-function "sqlite3_get_autocommit" [:pointer] :int false]
   [:foreign-function "sqlite3_changes" [:pointer] :int false]
   [:foreign-function "sqlite3_last_insert_rowid" [:pointer] :int64 false]])
 
@@ -235,6 +242,39 @@
      (range (count rowv))
      rowv)))
 
+(def ^:private tx-effect-ops #{:begin :commit :rollback})
+
+(def ^:private tx-effect-whens #{:on-success :always :never})
+
+(defn- normalize-tx-effect [plan-index tx-effect]
+  (when-not (or (nil? tx-effect) (map? tx-effect))
+    (fail! :jolt.sim.sqlite/invalid-plan
+           "plan :tx-effect must be a map with :op and an optional :when"
+           {:plan-index plan-index :tx-effect tx-effect}))
+  (when (some? tx-effect)
+    (when-not (contains? tx-effect-ops (:op tx-effect))
+      (fail! :jolt.sim.sqlite/invalid-plan
+             "plan :tx-effect :op must be :begin, :commit, or :rollback"
+             {:plan-index plan-index
+              :tx-effect tx-effect
+              :supported-ops tx-effect-ops}))
+    (when-not (or (nil? (:when tx-effect))
+                  (contains? tx-effect-whens (:when tx-effect)))
+      (fail! :jolt.sim.sqlite/invalid-plan
+             "plan :tx-effect :when must be :on-success, :always, or :never"
+             {:plan-index plan-index
+              :tx-effect tx-effect
+              :supported-whens tx-effect-whens}))
+    (let [unknown (seq (sort (remove #{:op :when} (keys tx-effect))))]
+      (when unknown
+        (fail! :jolt.sim.sqlite/invalid-plan
+               "plan :tx-effect is closed: only :op and :when are allowed"
+               {:plan-index plan-index
+                :tx-effect tx-effect
+                :unknown-keys (vec unknown)})))
+    {:op (:op tx-effect)
+     :when (or (:when tx-effect) :on-success)}))
+
 (defn- validate-plans [plans]
   (let [planv (vec plans)]
     (mapv
@@ -272,14 +312,17 @@
             (nil? error)
             (and (map? error)
                  (integer? (:code error))
+                 (pos? (:code error))
+                 (not (contains? #{100 101} (:code error)))
                  (or (nil? (:msg error)) (string? (:msg error)))))
            (fail! :jolt.sim.sqlite/invalid-plan
-                  "plan :error must contain an integer :code and optional string :msg"
+                  "plan :error must contain a positive non-ROW/non-DONE :code and optional string :msg"
                   {:index i :error error}))
          (assoc plan
                 :params (normalize-params i (:params plan))
                 :columns columns
-                :rows (normalize-rows i columns (:rows plan)))))
+                :rows (normalize-rows i columns (:rows plan))
+                :tx-effect (normalize-tx-effect i (:tx-effect plan)))))
      (range (count planv))
      planv)))
 
@@ -297,17 +340,38 @@
   the memory world so SQLite effects and native-memory effects share one heap.
   Each plan is a map:
 
-    {:sql \"SELECT ...\"              ;; required, matched at prepare
-     :params {1 {:type :integer :value 5} ...}  ;; 1-based; matched at bind
-     :columns [\"id\" \"name\"]        ;; derived from rows when omitted
-     :rows [[{:type :text :value \"a\"} ...] ...] ;; each cell typed
-     :changes 0                       ;; served by sqlite3_changes after done
-     :last-row-id 0                   ;; served by sqlite3_last_insert_rowid
-     :error {:code 1 :msg \"...\"}}   ;; optional soft step error
+     {:sql \"SELECT ...\"              ;; required, matched at prepare
+      :params {1 {:type :integer :value 5} ...}  ;; 1-based; matched at bind
+      :columns [\"id\" \"name\"]        ;; derived from rows when omitted
+      :rows [[{:type :text :value \"a\"} ...] ...] ;; each cell typed
+      :changes 0                       ;; served by sqlite3_changes after done
+      :last-row-id 0                   ;; served by sqlite3_last_insert_rowid
+      :error {:code 1 :msg \"...\"}    ;; optional soft step error
+      :tx-effect {:op :begin :when :on-success}} ;; optional physical
+      ;; transaction-boundary directive
 
   Cell types are :integer :float :text :blob :null. A :blob cell's :value is a
   byte array or unsigned byte vector and an empty BLOB may opt into
-  :null-pointer? true; :null cells carry no :value."
+  :null-pointer? true; :null cells carry no :value.
+
+  A plan's :tx-effect is the only source of physical transaction transitions;
+  the model never infers transaction behavior from SQL text. :op is :begin,
+  :commit, or :rollback; :when is :on-success (the default), :always, or
+  :never. The effect applies at most once, at the statement's first terminal
+  step: :on-success applies only when the step completes done, :always
+  applies the physical transition even when the plan then reports its :error
+  (an uncertain BEGIN), and :never reports the step outcome with no physical
+  transition (an adversarial success-withheld control). A transition that is
+  impossible for the connection's physical autocommit state -- :begin while a
+  transaction is active, :commit or :rollback while in autocommit -- throws
+  :jolt.sim.sqlite/impossible-tx-transition (a hard failure). Each declared
+  directive is evaluated exactly once and recorded in the connection's
+  address-free :tx-evidence vector, whether its transition applies, is gated,
+  is deliberately withheld, or is physically impossible.
+  sqlite3_get_autocommit returns 1 in autocommit and 0 inside a transaction;
+  every observation is retained in :autocommit-evidence. Closing a connection
+  with an active transaction discards it and appends the complete immutable
+  connection record to :closed-db-evidence after the live record is removed."
   ([plans]
    (world (memory/world) plans))
   ([memory-world plans]
@@ -320,8 +384,10 @@
     :state (atom {:plans (validate-plans plans)
                   :plan-index 0
                   :dbs {}
+                  :next-connection-id 0
                   :stmts {}
                   :closed-dbs #{}
+                  :closed-db-evidence []
                   :finalized-stmts #{}})
     :type ::sqlite-world}))
 
@@ -344,8 +410,24 @@
                "prepare consumed more statements than the plan supplied"
                {:plan-index idx :plan-count (count plans)})
         (compare-and-set! (:state w) s (assoc s :plan-index (inc idx)))
-        (nth plans idx)
+        [idx (nth plans idx)]
         :else (recur)))))
+
+(defn- register-db! [w handle]
+  (loop []
+    (let [st (:state w)
+          s @st
+          connection-id (:next-connection-id s)
+          db {:connection-id connection-id
+              :errcode 0 :errmsg "not an error" :changes 0 :rowid 0
+              :autocommit? true :tx nil :tx-evidence []
+              :autocommit-evidence []}
+          next-state (-> s
+                         (assoc-in [:dbs handle] db)
+                         (update :next-connection-id inc))]
+      (if (compare-and-set! st s next-state)
+        connection-id
+        (recur)))))
 
 (defn- require-db! [w addr]
   (let [s @(:state w)]
@@ -376,6 +458,50 @@
 (defn- free-list! [w addrs]
   (doseq [addr addrs]
     (invoke-mem w :free [addr])))
+
+;; ---- physical transaction boundary ---------------------------------------
+
+(defn- tx-effect-decision [db stmt reported]
+  (let [tx-effect (:tx-effect (:plan stmt))
+        op (:op tx-effect)
+        mode (:when tx-effect)
+        requested? (case mode
+                     :on-success (= :done reported)
+                     :always true
+                     :never false)
+        before (:autocommit? db)
+        impossible? (and requested?
+                         (or (and (= :begin op) (not before))
+                             (and (not= :begin op) before)))
+        applied? (and requested? (not impossible?))
+        after (if applied? (not= :begin op) before)
+        sequence (count (:tx-evidence db))
+        event {:sequence sequence
+               :plan-index (:plan-index stmt)
+               :op op
+               :when mode
+               :reported reported
+               :applied? applied?
+               :reason (cond
+                         impossible? :impossible-state
+                         (= :never mode) :withheld
+                         (not requested?) :reported-error
+                         :else nil)
+               :before-autocommit? before
+               :after-autocommit? after}
+        next-db (cond-> (update db :tx-evidence conj event)
+                  applied?
+                  (assoc :autocommit? after
+                         :tx (when (= :begin op)
+                               {:begin-event sequence
+                                :begin-plan-index (:plan-index stmt)})))]
+    {:db next-db
+     :impossible? impossible?
+     :error-data {:op op
+                  :connection-id (:connection-id db)
+                  :plan-index (:plan-index stmt)
+                  :autocommit? before
+                  :reported reported}}))
 
 ;; ---- bind matching ------------------------------------------------------
 
@@ -421,6 +547,86 @@
              "sqlite3_step reached a statement with required parameters unbound"
              {:missing-indices missing
               :bound-indices (vec (sort (keys actual)))}))))
+
+(defn- complete-tx-terminal!
+  "Atomically owns one transaction statement's terminal step, records its
+  boundary decision, updates the physical connection and publishes the
+  reported SQLite result. A competing terminal step observes misuse; a close
+  that wins the same CAS makes the step fail as use-after-close."
+  [w stmt-addr reported]
+  (loop []
+    (let [st (:state w)
+          s @st
+          stmt (get-in s [:stmts stmt-addr])]
+      (cond
+        (nil? stmt)
+        (if (contains? (:finalized-stmts s) stmt-addr)
+          (fail! :jolt.sim.sqlite/use-after-finalize
+                 "statement handle was already finalized"
+                 {:handle stmt-addr})
+          (fail! :jolt.sim.sqlite/unknown-handle
+                 "pointer is not a known statement handle"
+                 {:handle stmt-addr}))
+
+        (or (:done? stmt) (:errored? stmt))
+        (:misuse result-codes)
+
+        :else
+        (let [db-addr (:db stmt)
+              live-db (get-in s [:dbs db-addr])]
+          (cond
+            (nil? live-db)
+            (if (contains? (:closed-dbs s) db-addr)
+              (fail! :jolt.sim.sqlite/use-after-close
+                     "statement belongs to a closed connection"
+                     {:connection-id (:connection-id stmt)
+                      :plan-index (:plan-index stmt)})
+              (fail! :jolt.sim.sqlite/unknown-handle
+                     "statement refers to an unknown connection handle"
+                     {:plan-index (:plan-index stmt)}))
+
+            :else
+            (let [plan (:plan stmt)
+                  _ (require-bindings-complete! stmt)
+                  decision (tx-effect-decision live-db stmt reported)
+                  next-db (:db decision)
+                  impossible? (:impossible? decision)
+                  error-data (:error-data decision)
+                  err (:error plan)
+                  terminal-db
+                  (if impossible?
+                    next-db
+                    (if (= :error reported)
+                      (assoc next-db
+                             :errcode (:code err)
+                             :errmsg (or (:msg err) "database error")
+                             :changes 0
+                             :rowid 0)
+                      (assoc next-db
+                             :errcode 0
+                             :errmsg "not an error"
+                             :changes (or (:changes plan) 0)
+                             :rowid (or (:last-row-id plan) 0))))
+                  terminal-stmt
+                  (assoc stmt
+                         :tx-effect-evaluated? true
+                         :done? (and (= :done reported) (not impossible?))
+                         :errored? (or (= :error reported) impossible?)
+                         :borrowed []
+                         :blob-cache {})
+                  next-state (-> s
+                                 (assoc-in [:dbs db-addr] terminal-db)
+                                 (assoc-in [:stmts stmt-addr] terminal-stmt))]
+              (if (compare-and-set! st s next-state)
+                (if impossible?
+                  (fail!
+                   :jolt.sim.sqlite/impossible-tx-transition
+                   "declared :tx-effect is impossible for the connection's physical autocommit state"
+                   error-data)
+                  (if (= :error reported)
+                    (:code err)
+                    (:done result-codes)))
+                (recur)))))))))
 
 ;; ---- result cell access -------------------------------------------------
 
@@ -473,17 +679,48 @@
         handle-size (invoke-mem w :sizeof [:pointer])
         handle (invoke-mem w :alloc [handle-size])]
     (invoke-mem w :write [db-out-ptr :pointer 0 handle])
-    (swap! (:state w) assoc-in [:dbs handle]
-           {:errcode 0 :errmsg "not an error" :changes 0 :rowid 0})
+    (register-db! w handle)
     (:ok result-codes)))
+
+(defn- claim-close! [w db-addr]
+  (loop []
+    (let [st (:state w)
+          s @st]
+      (cond
+        (contains? (:closed-dbs s) db-addr)
+        (fail! :jolt.sim.sqlite/use-after-close
+               "connection handle was already closed"
+               {:handle db-addr})
+
+        (not (contains? (:dbs s) db-addr))
+        (fail! :jolt.sim.sqlite/unknown-handle
+               "pointer is not a known connection handle"
+               {:handle db-addr})
+
+        :else
+        (let [db (get-in s [:dbs db-addr])
+              evidence (cond-> (assoc db
+                                      :close-index
+                                      (count (:closed-db-evidence s)))
+                         (not (:autocommit? db))
+                         (assoc :discarded-transaction (:tx db)))
+              next-state (-> s
+                             (update :dbs dissoc db-addr)
+                             (update :closed-dbs conj db-addr)
+                             (update :closed-db-evidence conj evidence))]
+          (if (compare-and-set! st s next-state)
+            evidence
+            (recur)))))))
 
 (defn- h-close [w {:keys [arguments]}]
   (let [[db-addr] (vec arguments)]
-    (require-db! w db-addr)
+    ;; Closing with an active transaction discards it (SQLite rolls back on
+    ;; close). First atomically claim the close and retain the latest complete
+    ;; record; then free the opaque handle. A probe or terminal transaction
+    ;; transition either wins before this CAS and is captured, or observes the
+    ;; closed state afterwards.
+    (claim-close! w db-addr)
     (invoke-mem w :free [db-addr])
-    (swap! (:state w)
-           #(-> % (update :dbs dissoc db-addr)
-                  (update :closed-dbs conj db-addr)))
     (:ok result-codes)))
 
 (defn- h-errmsg [w {:keys [arguments]}]
@@ -491,6 +728,30 @@
 
 (defn- h-errcode [w {:keys [arguments]}]
   (:errcode (require-db! w (first (vec arguments)))))
+
+(defn- h-get-autocommit [w {:keys [arguments]}]
+  (let [db-addr (first (vec arguments))]
+    (loop []
+      (let [st (:state w)
+            s @st]
+        (cond
+          (contains? (:closed-dbs s) db-addr)
+          (fail! :jolt.sim.sqlite/use-after-close
+                 "connection handle was already closed"
+                 {:handle db-addr})
+
+          (not (contains? (:dbs s) db-addr))
+          (fail! :jolt.sim.sqlite/unknown-handle
+                 "pointer is not a known connection handle"
+                 {:handle db-addr})
+
+          :else
+          (let [result (if (get-in s [:dbs db-addr :autocommit?]) 1 0)
+                next-state (update-in s [:dbs db-addr :autocommit-evidence]
+                                      conj result)]
+            (if (compare-and-set! st s next-state)
+              result
+              (recur))))))))
 
 (defn- h-changes [w {:keys [arguments]}]
   (:changes (require-db! w (first (vec arguments)))))
@@ -505,9 +766,9 @@
 
 (defn- h-prepare [w {:keys [arguments]}]
   (let [[db-addr sql-ptr nbytes stmt-out-ptr tail-out-ptr] (vec arguments)]
-    (require-db! w db-addr)
-    (let [sql (read-sql w sql-ptr nbytes)
-          plan (claim-plan! w)]
+    (let [connection-id (:connection-id (require-db! w db-addr))
+          sql (read-sql w sql-ptr nbytes)
+          [plan-index plan] (claim-plan! w)]
       (when-not (= sql (:sql plan))
         (fail! :jolt.sim.sqlite/sql-mismatch
                "prepared SQL differs from the plan"
@@ -519,10 +780,11 @@
           (invoke-mem w :write [tail-out-ptr :pointer 0
                                 (+ sql-ptr (utf8-length sql))]))
         (swap! (:state w) assoc-in [:stmts handle]
-               {:db db-addr :plan plan :sql sql
+               {:db db-addr :connection-id connection-id
+                :plan-index plan-index :plan plan :sql sql
                 :columns (column-names plan)
                 :bindings {} :row-index -1 :done? false :errored? false
-                :borrowed [] :blob-cache {}})
+                :borrowed [] :blob-cache {} :tx-effect-evaluated? false})
         (:ok result-codes)))))
 
 (defn- h-step [w {:keys [arguments]}]
@@ -536,13 +798,20 @@
       (let [plan (:plan stmt)]
         (require-bindings-complete! stmt)
         (if-let [err (:error plan)]
-          (do
-            (swap! st assoc-in [:stmts stmt-addr :errored?] true)
-            (swap! st assoc-in [:dbs (:db stmt)]
-                   {:errcode (:code err 1)
-                    :errmsg (:msg err "database error")
-                    :changes 0 :rowid 0})
-            (:code err 1))
+          (if (:tx-effect plan)
+            ;; The physical transition (when the directive applies) precedes
+            ;; the reported error, so an :always plan models an uncertain
+            ;; BEGIN: in-transaction physically, error over the wire. The
+            ;; transaction decision and terminal statement result share one
+            ;; CAS, so a competing step cannot report the terminal result too.
+            (complete-tx-terminal! w stmt-addr :error)
+            (do
+              (swap! st assoc-in [:stmts stmt-addr :errored?] true)
+              (swap! st update-in [:dbs (:db stmt)]
+                     assoc :errcode (:code err)
+                     :errmsg (or (:msg err) "database error")
+                     :changes 0 :rowid 0)
+              (:code err)))
           (let [rows (vec (:rows plan))
                 next-idx (inc (:row-index stmt))]
             (swap! st update-in [:stmts stmt-addr]
@@ -556,14 +825,17 @@
                        :errmsg "not an error")
                 (:row result-codes))
               (do
-                (swap! st update-in [:stmts stmt-addr]
-                       assoc :done? true :borrowed [] :blob-cache {})
-                (swap! st assoc-in [:dbs (:db stmt)]
-                       {:errcode 0
-                        :errmsg "not an error"
-                        :changes (or (:changes plan) 0)
-                        :rowid (or (:last-row-id plan) 0)})
-                (:done result-codes)))))))))
+                (if (:tx-effect plan)
+                  (complete-tx-terminal! w stmt-addr :done)
+                  (do
+                    (swap! st update-in [:stmts stmt-addr]
+                           assoc :done? true :borrowed [] :blob-cache {})
+                    (swap! st update-in [:dbs (:db stmt)]
+                           assoc :errcode 0
+                           :errmsg "not an error"
+                           :changes (or (:changes plan) 0)
+                           :rowid (or (:last-row-id plan) 0))
+                    (:done result-codes)))))))))))
 
 (defn- h-finalize [w {:keys [arguments]}]
   (let [[stmt-addr] (vec arguments)
@@ -700,11 +972,12 @@
    "sqlite3_bind_null" (partial h-bind-null w)
    "sqlite3_bind_blob64" (partial h-bind-blob64 w)
    "sqlite3_errcode" (partial h-errcode w)
+   "sqlite3_get_autocommit" (partial h-get-autocommit w)
    "sqlite3_changes" (partial h-changes w)
    "sqlite3_last_insert_rowid" (partial h-last-rowid w)})
 
 (defn foreign-handlers
-  "Returns only the exact 22 SQLite foreign-function handlers keyed by the
+  "Returns only the exact 23 SQLite foreign-function handlers keyed by the
   runtime's accepted five-element descriptor shorthands. Handler-pack/runtime
   validation normalizes them to canonical seven-element keys with capture false
   and varargs-after nil. The memory world's
@@ -727,7 +1000,7 @@
 
 (defn handlers
   "Returns the memory world's 16 native-operation handlers merged with exactly
-  the 22 SQLite foreign-function keys, as one :ffi-handlers map. Both layers
+  the 23 SQLite foreign-function keys, as one :ffi-handlers map. Both layers
   share the single memory world."
   [w]
   (merge (:memory-handlers w) (foreign-handlers w)))
@@ -759,7 +1032,7 @@
       (runtime/substitute pointer))))
 
 (defn hybrid-foreign-handlers
-  "Returns exactly the 22 SQLite foreign-function handlers, compatible with
+  "Returns exactly the 23 SQLite foreign-function handlers, compatible with
   jolt.sim.runtime :hybrid :ffi-handlers. Every key except sqlite3_column_blob
   reuses the corresponding foreign-handlers result exactly once per call and
   classifies it with classify-foreign-result. sqlite3_column_blob bypasses
@@ -782,7 +1055,7 @@
 
 (defn hybrid-handlers
   "Returns the memory world's 16 hybrid native-operation handlers merged with
-  the 22 hybrid SQLite foreign-function handlers, as one :ffi-handlers map for
+  the 23 hybrid SQLite foreign-function handlers, as one :ffi-handlers map for
   jolt.sim.runtime :hybrid routing. The two key sets never collide: every
   memory key is a 2-element [:native-operation op] vector and every SQLite key
   is a 5-element [:foreign-function ...] vector, so no key is shared."
@@ -794,8 +1067,12 @@
 (defn state
   "Returns the current SQLite state (plans, plan-index, dbs, stmts) for
   evidence. Handle addresses are the keys; connection records carry errcode,
-  errmsg, changes, and rowid; statement records carry the plan, bindings, the
-  current row index, and done/errored flags."
+  errmsg, changes, and rowid plus the physical transaction boundary:
+  :autocommit?, the active address-free :tx descriptor, stable :tx-evidence,
+  and every :autocommit-evidence observation. Statement records carry the
+  plan, stable plan index, bindings, current row index, done/errored flags, and
+  :tx-effect-evaluated?. Removed connection records are appended in close order
+  to :closed-db-evidence without their raw handle addresses."
   [w]
   @(:state w))
 

@@ -9,6 +9,9 @@
 (def ^:private key-by-symbol
   (into {} (map (fn [k] [(nth k 1) k]) sqlite/handler-keys)))
 
+(def ^:private tx-effect-decision-var
+  (resolve 'jolt.sim.sqlite/tx-effect-decision))
+
 (def ^:private native-ops
   [:load-library :loaded? :alloc :free :read :write :sizeof :read-bytes
    :write-bytes :read-array :read-array! :write-array
@@ -64,16 +67,16 @@
 
 ;; ---- handler shape ------------------------------------------------------
 
-(deftest handlers-merge-22-sqlite-keys-and-16-native-ops
+(deftest handlers-merge-23-sqlite-keys-and-16-native-ops
   (let [w (sqlite/world [])
         h (sqlite/handlers w)
         h-keys (set (keys h))
         ff-keys (set sqlite/handler-keys)
         native-keys (set (map #(vec [:native-operation %]) native-ops))]
-    (is (= 22 (count ff-keys)))
+    (is (= 23 (count ff-keys)))
     (is (= ff-keys (set (filter #(= :foreign-function (nth % 0)) h-keys))))
     (is (= native-keys (set (filter #(= :native-operation (nth % 0)) h-keys))))
-    (is (= 38 (count h-keys)))
+    (is (= 39 (count h-keys)))
     (doseq [k sqlite/handler-keys]
       (is (ifn? (get h k))))))
 
@@ -323,6 +326,494 @@
     (close-db H db)
     (is (true? (sqlite/clean? w)))))
 
+;; ---- physical transaction boundary ---------------------------------------
+
+(defn- tx-event
+  [sequence plan-index op when reported applied? reason before after]
+  {:sequence sequence
+   :plan-index plan-index
+   :op op
+   :when when
+   :reported reported
+   :applied? applied?
+   :reason reason
+   :before-autocommit? before
+   :after-autocommit? after})
+
+;; Raw-handler coverage of the R0-R4 begin-recovery outcomes: the model owns
+;; the physical autocommit boundary, driven only by the closed :tx-effect plan
+;; directive. R5/R7 (a probe handler that throws) are explicitly out of scope
+;; here and are never faked as integer returns. R6 is a DB-level routing rule:
+;; when the pre-probe observes a pre-existing transaction, ordinary db.sqlite
+;; must not issue BEGIN or ROLLBACK. That belongs to the integration slice.
+
+(deftest get-autocommit-tracks-the-physical-transaction-boundary-r0
+  (let [plans [{:sql "BEGIN" :tx-effect {:op :begin}}
+               {:sql "INSERT INTO t VALUES(1)" :changes 1 :last-row-id 3}
+               {:sql "COMMIT" :tx-effect {:op :commit}}]
+        w (sqlite/world plans)
+        H (sqlite/handlers w)
+        db (open-db H)]
+    ;; R0 substrate: a fresh connection is in autocommit; the probe itself is
+    ;; retained as evidence.
+    (is (= 1 (ff H "sqlite3_get_autocommit" [db])))
+    (is (= {:connection-id 0
+            :errcode 0 :errmsg "not an error" :changes 0 :rowid 0
+            :autocommit? true :tx nil :tx-evidence []
+            :autocommit-evidence [1]}
+           (get-in (sqlite/state w) [:dbs db])))
+    (let [s1 (prepare H db "BEGIN")]
+      (is (= 101 (ff H "sqlite3_step" [s1])))
+      (is (= 0 (ff H "sqlite3_get_autocommit" [db])))
+      (is (= {:begin-event 0 :begin-plan-index 0}
+             (get-in (sqlite/state w) [:dbs db :tx])))
+      (let [s2 (prepare H db "INSERT INTO t VALUES(1)")]
+        (is (= 101 (ff H "sqlite3_step" [s2])))
+        (is (= 1 (ff H "sqlite3_changes" [db])))
+        (is (= 3 (ff H "sqlite3_last_insert_rowid" [db])))
+        ;; ordinary statements never move the physical boundary
+        (is (= 0 (ff H "sqlite3_get_autocommit" [db])))
+        (is (= 0 (ff H "sqlite3_finalize" [s2])))
+        (let [s3 (prepare H db "COMMIT")]
+          (is (= 101 (ff H "sqlite3_step" [s3])))
+          (is (= 1 (ff H "sqlite3_get_autocommit" [db])))
+          (is (nil? (get-in (sqlite/state w) [:dbs db :tx])))
+          (is (= [(tx-event 0 0 :begin :on-success :done true nil true false)
+                  (tx-event 1 2 :commit :on-success :done true nil false true)]
+                 (get-in (sqlite/state w) [:dbs db :tx-evidence])))
+          (is (= [1 0 0 1]
+                 (get-in (sqlite/state w)
+                         [:dbs db :autocommit-evidence])))
+          (is (= 0 (ff H "sqlite3_finalize" [s3]))))
+      (is (= 0 (ff H "sqlite3_finalize" [s1])))))
+    (close-db H db)
+    (is (true? (sqlite/clean? w)))))
+
+(deftest begin-error-without-a-transition-leaves-autocommit-r1
+  (let [plans [{:sql "BEGIN"
+                :tx-effect {:op :begin}
+                :error {:code 1 :msg "begin failed"}}
+               {:sql "SELECT 1" :columns ["c"]
+                :rows [[{:type :integer :value 1}]]}]
+        w (sqlite/world plans)
+        H (sqlite/handlers w)
+        db (open-db H)
+        s (prepare H db "BEGIN")]
+    ;; default :on-success gate: a reported failure applies no transition, so
+    ;; the post-probe observes autocommit and no rollback is needed
+    (is (= 1 (ff H "sqlite3_get_autocommit" [db])))
+    (is (= 1 (ff H "sqlite3_step" [s])))
+    (is (= 1 (ff H "sqlite3_get_autocommit" [db])))
+    (is (nil? (get-in (sqlite/state w) [:dbs db :tx])))
+    (is (= [(tx-event 0 0 :begin :on-success :error false
+                      :reported-error true true)]
+           (get-in (sqlite/state w) [:dbs db :tx-evidence])))
+    (is (true? (get-in (sqlite/state w)
+                       [:stmts s :tx-effect-evaluated?])))
+    (is (= 1 (ff H "sqlite3_errcode" [db])))
+    (is (= "begin failed" (ff H "sqlite3_errmsg" [db])))
+    (is (= [1 1]
+           (get-in (sqlite/state w) [:dbs db :autocommit-evidence])))
+    (is (= 0 (ff H "sqlite3_finalize" [s])))
+    ;; the connection stays reusable
+    (let [s2 (prepare H db "SELECT 1")]
+      (is (= 100 (ff H "sqlite3_step" [s2])))
+      (is (= 1 (ff H "sqlite3_column_int64" [s2 0])))
+      (is (= 101 (ff H "sqlite3_step" [s2])))
+      (is (= 0 (ff H "sqlite3_finalize" [s2]))))
+    (close-db H db)
+    (is (true? (sqlite/clean? w)))))
+
+(deftest begin-transition-then-error-then-rollback-r2
+  (let [plans [{:sql "BEGIN"
+                :tx-effect {:op :begin :when :always}
+                :error {:code 1 :msg "begin outcome uncertain"}}
+               {:sql "ROLLBACK" :tx-effect {:op :rollback}}]
+        w (sqlite/world plans)
+        H (sqlite/handlers w)
+        db (open-db H)
+        s (prepare H db "BEGIN")]
+    ;; :always applies the physical transition before the error is reported:
+    ;; the uncertain BEGIN. The post-probe observes an active transaction
+    ;; despite the reported failure.
+    (is (= 1 (ff H "sqlite3_get_autocommit" [db])))
+    (is (= 1 (ff H "sqlite3_step" [s])))
+    (is (= 0 (ff H "sqlite3_get_autocommit" [db])))
+    (is (= {:begin-event 0 :begin-plan-index 0}
+           (get-in (sqlite/state w) [:dbs db :tx])))
+    (is (= [(tx-event 0 0 :begin :always :error true nil true false)]
+           (get-in (sqlite/state w) [:dbs db :tx-evidence])))
+    (is (= 1 (ff H "sqlite3_errcode" [db])))
+    (is (= 0 (ff H "sqlite3_finalize" [s])))
+    ;; the counter-rollback succeeds and the final probe observes autocommit
+    (let [s2 (prepare H db "ROLLBACK")]
+      (is (= 101 (ff H "sqlite3_step" [s2])))
+      (is (= 1 (ff H "sqlite3_get_autocommit" [db])))
+      (is (nil? (get-in (sqlite/state w) [:dbs db :tx])))
+      (is (= [(tx-event 0 0 :begin :always :error true nil true false)
+              (tx-event 1 1 :rollback :on-success :done true nil false true)]
+             (get-in (sqlite/state w) [:dbs db :tx-evidence])))
+      (is (= [1 0 1]
+             (get-in (sqlite/state w) [:dbs db :autocommit-evidence])))
+      (is (= 0 (ff H "sqlite3_finalize" [s2]))))
+    (close-db H db)
+    (is (true? (sqlite/clean? w)))))
+
+(deftest successful-rollback-can-withhold-the-physical-transition-r3
+  (let [plans [{:sql "BEGIN"
+                :tx-effect {:op :begin :when :always}
+                :error {:code 1 :msg "begin outcome uncertain"}}
+               {:sql "ROLLBACK"
+                :tx-effect {:op :rollback :when :never}}]
+        w (sqlite/world plans)
+        H (sqlite/handlers w)
+        db (open-db H)
+        s (prepare H db "BEGIN")]
+    ;; The uncertain BEGIN physically applies before reporting its error.
+    (is (= 1 (ff H "sqlite3_get_autocommit" [db])))
+    (is (= 1 (ff H "sqlite3_step" [s])))
+    (is (= 0 (ff H "sqlite3_get_autocommit" [db])))
+    (is (= 0 (ff H "sqlite3_finalize" [s])))
+    ;; R3: cleanup reports SQLITE_DONE, but its physical transition is
+    ;; deliberately withheld. The final probe therefore still observes an
+    ;; active transaction and the connection must be poisoned by db.sqlite.
+    (let [s2 (prepare H db "ROLLBACK")]
+      (is (= 101 (ff H "sqlite3_step" [s2])))
+      (is (true? (get-in (sqlite/state w)
+                         [:stmts s2 :tx-effect-evaluated?])))
+      (is (= 21 (ff H "sqlite3_step" [s2])))
+      (is (= 0 (ff H "sqlite3_finalize" [s2]))))
+    (is (= 0 (ff H "sqlite3_get_autocommit" [db])))
+    (is (= {:begin-event 0 :begin-plan-index 0}
+           (get-in (sqlite/state w) [:dbs db :tx])))
+    (is (= [(tx-event 0 0 :begin :always :error true nil true false)
+            (tx-event 1 1 :rollback :never :done false :withheld false false)]
+           (get-in (sqlite/state w) [:dbs db :tx-evidence])))
+    (is (= [1 0 0]
+           (get-in (sqlite/state w) [:dbs db :autocommit-evidence])))
+    (close-db H db)
+    (is (true? (sqlite/clean? w)))))
+
+(deftest rollback-error-keeps-the-transaction-active-r4
+  (let [plans [{:sql "BEGIN"
+                :tx-effect {:op :begin :when :always}
+                :error {:code 1 :msg "begin outcome uncertain"}}
+               {:sql "ROLLBACK"
+                :tx-effect {:op :rollback}
+                :error {:code 5 :msg "cannot rollback"}}]
+        w (sqlite/world plans)
+        H (sqlite/handlers w)
+        db (open-db H)
+        s1 (prepare H db "BEGIN")]
+    (is (= 1 (ff H "sqlite3_get_autocommit" [db])))
+    (is (= 1 (ff H "sqlite3_step" [s1])))
+    (is (= 0 (ff H "sqlite3_get_autocommit" [db])))
+    (is (= 0 (ff H "sqlite3_finalize" [s1])))
+    ;; a reported rollback failure under the default :on-success gate applies
+    ;; no transition: the transaction is still physically active afterwards
+    (let [s2 (prepare H db "ROLLBACK")]
+      (is (= 5 (ff H "sqlite3_step" [s2])))
+      (is (= {:begin-event 0 :begin-plan-index 0}
+             (get-in (sqlite/state w) [:dbs db :tx])))
+      (is (= [(tx-event 0 0 :begin :always :error true nil true false)
+              (tx-event 1 1 :rollback :on-success :error false
+                        :reported-error false false)]
+             (get-in (sqlite/state w) [:dbs db :tx-evidence])))
+      (is (= [1 0]
+             (get-in (sqlite/state w) [:dbs db :autocommit-evidence])))
+      (is (= 0 (ff H "sqlite3_finalize" [s2]))))
+    ;; db.sqlite does not attempt another cleanup after the rollback error.
+    ;; Closing the poisoned connection discards the still-active transaction.
+    (close-db H db)
+    (is (true? (sqlite/clean? w)))))
+
+(deftest begin-while-active-is-a-hard-model-error
+  (let [plans [{:sql "BEGIN" :tx-effect {:op :begin}}
+               {:sql "BEGIN" :tx-effect {:op :begin}}
+               {:sql "ROLLBACK" :tx-effect {:op :rollback}}]
+        w (sqlite/world plans)
+        H (sqlite/handlers w)
+        db (open-db H)
+        s1 (prepare H db "BEGIN")]
+    (is (= 101 (ff H "sqlite3_step" [s1])))
+    (is (= 0 (ff H "sqlite3_get_autocommit" [db])))
+    (is (= 0 (ff H "sqlite3_finalize" [s1])))
+    ;; with a pre-existing active transaction an extra BEGIN is an impossible
+    ;; applied transition: a typed hard failure, never a faked return code
+    (let [s2 (prepare H db "BEGIN")
+          data (ex-data-of #(ff H "sqlite3_step" [s2]))]
+      (is (= :jolt.sim.sqlite/impossible-tx-transition (:type data)))
+      (is (= :begin (:op data)))
+      (is (= false (:autocommit? data)))
+      (is (= :done (:reported data)))
+      (is (= 0 (:connection-id data)))
+      (is (= 1 (:plan-index data)))
+      (is (true? (get-in (sqlite/state w)
+                         [:stmts s2 :tx-effect-evaluated?])))
+      (is (true? (get-in (sqlite/state w) [:stmts s2 :errored?])))
+      (is (= 21 (ff H "sqlite3_step" [s2])))
+      (is (= 0 (ff H "sqlite3_finalize" [s2]))))
+    ;; the pre-existing transaction is untouched and still active
+    (is (= 0 (ff H "sqlite3_get_autocommit" [db])))
+    (is (= [(tx-event 0 0 :begin :on-success :done true nil true false)
+            (tx-event 1 1 :begin :on-success :done false
+                      :impossible-state false false)]
+           (get-in (sqlite/state w) [:dbs db :tx-evidence])))
+    (let [s3 (prepare H db "ROLLBACK")]
+      (is (= 101 (ff H "sqlite3_step" [s3])))
+      (is (= 0 (ff H "sqlite3_finalize" [s3]))))
+    (close-db H db)
+    (is (true? (sqlite/clean? w)))))
+
+(deftest tx-effect-applies-at-most-once-at-the-first-terminal-step
+  (let [plans [{:sql "BEGIN" :tx-effect {:op :begin}}
+               {:sql "ROLLBACK" :tx-effect {:op :rollback}}]
+        w (sqlite/world plans)
+        H (sqlite/handlers w)
+        db (open-db H)
+        s (prepare H db "BEGIN")]
+    (is (= 101 (ff H "sqlite3_step" [s])))
+    (is (true? (get-in (sqlite/state w)
+                       [:stmts s :tx-effect-evaluated?])))
+    (is (= 1 (count (get-in (sqlite/state w) [:dbs db :tx-evidence]))))
+    ;; steps after the terminal step are misuse and never reapply the effect
+    (is (= 21 (ff H "sqlite3_step" [s])))
+    (is (= 21 (ff H "sqlite3_step" [s])))
+    (is (= 1 (count (get-in (sqlite/state w) [:dbs db :tx-evidence]))))
+    (is (= 0 (ff H "sqlite3_get_autocommit" [db])))
+    (is (= 0 (ff H "sqlite3_finalize" [s])))
+    (let [s2 (prepare H db "ROLLBACK")]
+      (is (= 101 (ff H "sqlite3_step" [s2])))
+      (is (= 2 (count (get-in (sqlite/state w) [:dbs db :tx-evidence]))))
+      (is (= 0 (ff H "sqlite3_finalize" [s2]))))
+    (close-db H db)
+    (is (true? (sqlite/clean? w)))))
+
+(deftest concurrent-terminal-step-has-exactly-one-reported-winner
+  (let [plans [{:sql "BEGIN" :tx-effect {:op :begin}}
+               {:sql "ROLLBACK" :tx-effect {:op :rollback}}]
+        w (sqlite/world plans)
+        H (sqlite/handlers w)
+        db (open-db H)
+        s (prepare H db "BEGIN")
+        original @tx-effect-decision-var
+        arrivals (atom 0)
+        both-inside (promise)
+        wrapped-decision
+        (fn [db-state stmt reported]
+          (let [arrival (swap! arrivals inc)]
+            ;; The first two callers have both read the same nonterminal
+            ;; statement snapshot before either can attempt its CAS. This
+            ;; discriminates atomic terminal ownership from a merely
+            ;; serialized scheduling of two h-step calls.
+            (when (<= arrival 2)
+              (when (= arrival 2)
+                (deliver both-inside true))
+              (when (= ::timeout (deref both-inside 5000 ::timeout))
+                (throw (ex-info "terminal-step contention barrier timed out"
+                                {:arrival arrival}))))
+            (original db-state stmt reported)))
+        run-step (fn []
+                   (try
+                     {:value (ff H "sqlite3_step" [s])}
+                     (catch :default error
+                       {:error (ex-data error)})))
+        results
+        (with-redefs-fn
+          {tx-effect-decision-var wrapped-decision}
+          #(let [a (future (run-step))
+                 b (future (run-step))]
+             [(deref a 5000 ::timeout)
+              (deref b 5000 ::timeout)]))]
+    (is (= 2 @arrivals))
+    (is (not-any? #{::timeout} results) (pr-str results))
+    (is (every? map? results) (pr-str results))
+    (when (every? map? results)
+      (is (every? #(contains? % :value) results) (pr-str results))
+      (is (= #{21 101} (set (map :value results))) (pr-str results)))
+    (is (= 1 (count (get-in (sqlite/state w) [:dbs db :tx-evidence]))))
+    (is (true? (get-in (sqlite/state w)
+                       [:stmts s :tx-effect-evaluated?])))
+    (is (= 0 (ff H "sqlite3_finalize" [s])))
+    (let [rollback (prepare H db "ROLLBACK")]
+      (is (= 101 (ff H "sqlite3_step" [rollback])))
+      (is (= 0 (ff H "sqlite3_finalize" [rollback]))))
+    (close-db H db)
+    (is (true? (sqlite/clean? w)))))
+
+(deftest close-claims-current-forensic-state-before-freeing-the-handle
+  (let [base (sqlite/world [{:sql "BEGIN" :tx-effect {:op :begin}}])
+        target (atom nil)
+        free-entered (promise)
+        allow-free (promise)
+        original-free (get-in base
+                              [:memory-handlers
+                               [:native-operation :free]])
+        w (assoc-in
+           base
+           [:memory-handlers [:native-operation :free]]
+           (fn [effect]
+             (when (= @target (first (:arguments effect)))
+               (deliver free-entered true)
+               @allow-free)
+             (original-free effect)))
+        H (sqlite/handlers w)
+        db (open-db H)
+        s (prepare H db "BEGIN")
+        _ (reset! target db)
+        closing
+        (future
+          (try
+            {:value (ff H "sqlite3_close_v2" [db])}
+            (catch :default error
+              {:error (ex-data error)})))]
+    (try
+      (is (= true (deref free-entered 5000 ::timeout)))
+      ;; State ownership precedes the potentially blocking/freeing native
+      ;; action. A concurrent statement cannot append to a stale DB snapshot
+      ;; or recreate the removed connection record under its freed address.
+      (is (not (contains? (:dbs (sqlite/state w)) db)))
+      (is (= 1 (count (:closed-db-evidence (sqlite/state w)))))
+      (is (= [] (get-in (sqlite/state w)
+                        [:closed-db-evidence 0 :tx-evidence])))
+      (let [data (ex-data-of #(ff H "sqlite3_step" [s]))]
+        (is (= :jolt.sim.sqlite/use-after-close (:type data)))
+        (is (= 0 (:connection-id data)))
+        (is (= 0 (:plan-index data))))
+      (is (not (contains? (:dbs (sqlite/state w)) db)))
+      (finally
+        (deliver allow-free true)))
+    (is (= {:value 0} (deref closing 5000 ::timeout)))
+    (is (= 0 (ff H "sqlite3_finalize" [s])))
+    (is (true? (sqlite/clean? w)))))
+
+(deftest terminal-step-branches-preserve-connection-transaction-fields
+  (let [plans [{:sql "BEGIN" :tx-effect {:op :begin}}
+               {:sql "INSERT INTO uniq(x) VALUES(1)"
+                :error {:code 19 :msg "UNIQUE constraint failed"}}
+               {:sql "ROLLBACK" :tx-effect {:op :rollback}}]
+        w (sqlite/world plans)
+        H (sqlite/handlers w)
+        db (open-db H)
+        s1 (prepare H db "BEGIN")]
+    ;; the done branch publishes result state without erasing tx fields
+    (is (= 101 (ff H "sqlite3_step" [s1])))
+    (is (= false (get-in (sqlite/state w) [:dbs db :autocommit?])))
+    (is (= {:begin-event 0 :begin-plan-index 0}
+           (get-in (sqlite/state w) [:dbs db :tx])))
+    (is (= 0 (ff H "sqlite3_finalize" [s1])))
+    ;; the error branch updates errcode/errmsg/changes/rowid in place too
+    (let [s2 (prepare H db "INSERT INTO uniq(x) VALUES(1)")]
+      (is (= 19 (ff H "sqlite3_step" [s2])))
+      (let [db-state (get-in (sqlite/state w) [:dbs db])]
+        (is (= 19 (:errcode db-state)))
+        (is (= "UNIQUE constraint failed" (:errmsg db-state)))
+        (is (= false (:autocommit? db-state)))
+        (is (= {:begin-event 0 :begin-plan-index 0} (:tx db-state)))
+        (is (= [(tx-event 0 0 :begin :on-success :done true nil true false)]
+               (:tx-evidence db-state))))
+      (is (= 0 (ff H "sqlite3_finalize" [s2]))))
+    (let [s3 (prepare H db "ROLLBACK")]
+      (is (= 101 (ff H "sqlite3_step" [s3])))
+      (is (= 0 (ff H "sqlite3_finalize" [s3]))))
+    (close-db H db)
+    (is (true? (sqlite/clean? w)))))
+
+(deftest close-discards-an-active-transaction-and-retains-complete-evidence
+  (let [plans [{:sql "BEGIN" :tx-effect {:op :begin}}
+               {:sql "INSERT INTO t VALUES(9)"
+                :changes 4 :last-row-id 9}]
+        w (sqlite/world plans)
+        H (sqlite/handlers w)
+        db (open-db H)
+        s (prepare H db "BEGIN")]
+    (is (= 101 (ff H "sqlite3_step" [s])))
+    (is (= 0 (ff H "sqlite3_get_autocommit" [db])))
+    (is (= 0 (ff H "sqlite3_finalize" [s])))
+    (let [insert (prepare H db "INSERT INTO t VALUES(9)")]
+      (is (= 101 (ff H "sqlite3_step" [insert])))
+      (is (= 0 (ff H "sqlite3_finalize" [insert]))))
+    (close-db H db)
+    ;; the live record is gone; the close-time forensic snapshot remains
+    (is (not (contains? (:dbs (sqlite/state w)) db)))
+    (is (= {:connection-id 0
+            :errcode 0 :errmsg "not an error" :changes 4 :rowid 9
+            :autocommit? false
+            :tx {:begin-event 0 :begin-plan-index 0}
+            :tx-evidence
+            [(tx-event 0 0 :begin :on-success :done true nil true false)]
+            :autocommit-evidence [0]
+            :close-index 0
+            :discarded-transaction {:begin-event 0 :begin-plan-index 0}}
+           (first (:closed-db-evidence (sqlite/state w)))))
+    (is (= :jolt.sim.sqlite/use-after-close
+           (:type (ex-data-of #(ff H "sqlite3_get_autocommit" [db])))))
+    ;; a connection closed in autocommit leaves evidence with no discard
+    (let [db2 (open-db H)]
+      (close-db H db2)
+      (let [evidence (second (:closed-db-evidence (sqlite/state w)))]
+        (is (= {:connection-id 1
+                :errcode 0 :errmsg "not an error" :changes 0 :rowid 0
+                :autocommit? true :tx nil :tx-evidence []
+                :autocommit-evidence [] :close-index 1}
+               evidence))))
+    (is (true? (sqlite/clean? w)))))
+
+(deftest tx-effect-is-validated-and-nothing-is-inferred-from-sql-text
+  (is (= :jolt.sim.sqlite/invalid-plan
+         (:type (ex-data-of
+                 #(sqlite/world [{:sql "BEGIN" :tx-effect "begin"}])))))
+  (is (= :jolt.sim.sqlite/invalid-plan
+         (:type (ex-data-of
+                 #(sqlite/world [{:sql "BEGIN" :tx-effect {}}])))))
+  (is (= :jolt.sim.sqlite/invalid-plan
+         (:type (ex-data-of
+                 #(sqlite/world [{:sql "BEGIN" :tx-effect {:op :savepoint}}])))))
+  (is (= :jolt.sim.sqlite/invalid-plan
+         (:type (ex-data-of
+                 #(sqlite/world
+                   [{:sql "BEGIN"
+                     :tx-effect {:op :begin :when :sometimes}}])))))
+  (is (= :jolt.sim.sqlite/invalid-plan
+         (:type (ex-data-of
+                 #(sqlite/world
+                   [{:sql "BEGIN"
+                     :tx-effect {:op :begin :extra 1}}])))))
+  (doseq [success-code [0 100 101]]
+    (is (= :jolt.sim.sqlite/invalid-plan
+           (:type
+            (ex-data-of
+             #(sqlite/world
+               [{:sql "BEGIN"
+                 :tx-effect {:op :begin}
+                 :error {:code success-code}}]))))))
+  (is (= [:a :z]
+         (:unknown-keys
+          (ex-data-of
+           #(sqlite/world
+             [{:sql "BEGIN"
+               :tx-effect {:op :begin :z 1 :a 2}}])))))
+  ;; :when defaults to :on-success at validation time
+  (let [w (sqlite/world [{:sql "ROLLBACK" :tx-effect {:op :rollback}}])]
+    (is (= {:op :rollback :when :on-success}
+           (get-in (sqlite/state w) [:plans 0 :tx-effect]))))
+  ;; transaction-control SQL text without a directive changes nothing
+  (let [w (sqlite/world [{:sql "BEGIN"} {:sql "COMMIT"}])
+        H (sqlite/handlers w)
+        db (open-db H)
+        s1 (prepare H db "BEGIN")]
+    (is (= 101 (ff H "sqlite3_step" [s1])))
+    (is (= 1 (ff H "sqlite3_get_autocommit" [db])))
+    (is (nil? (get-in (sqlite/state w) [:dbs db :tx])))
+    (is (= [] (get-in (sqlite/state w) [:dbs db :tx-evidence])))
+    (is (= 0 (ff H "sqlite3_finalize" [s1])))
+    (let [s2 (prepare H db "COMMIT")]
+      (is (= 101 (ff H "sqlite3_step" [s2])))
+      (is (= 1 (ff H "sqlite3_get_autocommit" [db])))
+      (is (= 0 (ff H "sqlite3_finalize" [s2]))))
+    (close-db H db)
+    (is (true? (sqlite/clean? w)))))
+
 ;; ---- mismatch / lifetime / range errors ---------------------------------
 
 (deftest sql-mismatch-and-plan-exhaustion-are-typed
@@ -363,7 +854,7 @@
 (deftest foreign-handlers-exclude-shared-native-operations
   (let [w (sqlite/world [])
         foreign (sqlite/foreign-handlers w)]
-    (is (= 22 (count foreign)))
+    (is (= 23 (count foreign)))
     (is (= (set sqlite/handler-keys) (set (keys foreign))))
     (is (every? fn? (vals foreign)))
     (is (every? #(= :foreign-function (first %)) (keys foreign)))
@@ -427,15 +918,15 @@
 (defn- close-db-hybrid [H db]
   (is (= (runtime/substitute 0) (ff-hybrid H "sqlite3_close_v2" [db]))))
 
-(deftest hybrid-handlers-cover-the-same-38-keys-as-the-hermetic-handlers
+(deftest hybrid-handlers-cover-the-same-39-keys-as-the-hermetic-handlers
   (let [w (sqlite/world [])
         h (sqlite/handlers w)
         hybrid (sqlite/hybrid-handlers w)
         hybrid-foreign (sqlite/hybrid-foreign-handlers w)]
     (is (= (set (keys h)) (set (keys hybrid))))
-    (is (= 38 (count hybrid)))
+    (is (= 39 (count hybrid)))
     (is (= (set sqlite/handler-keys) (set (keys hybrid-foreign))))
-    (is (= 22 (count hybrid-foreign)))
+    (is (= 23 (count hybrid-foreign)))
     (doseq [k (keys hybrid)]
       (is (ifn? (get hybrid k))))))
 
@@ -524,5 +1015,27 @@
       (is (= [{:base addr :size 2}]
              (filter #(= addr (:base %)) (sqlite/leaks w)))))
     (ff-hybrid H "sqlite3_finalize" [s])
+    (close-db-hybrid H db)
+    (is (true? (sqlite/clean? w)))))
+
+(deftest hybrid-get-autocommit-classifies-as-substitute
+  (let [plans [{:sql "BEGIN" :tx-effect {:op :begin}}
+               {:sql "COMMIT" :tx-effect {:op :commit}}]
+        w (sqlite/world plans)
+        H (sqlite/hybrid-handlers w)
+        db (open-db-hybrid H)]
+    ;; the new nonblocking key rides the generic hybrid classification like
+    ;; every other scalar SQLite result
+    (is (= (runtime/substitute 1) (ff-hybrid H "sqlite3_get_autocommit" [db])))
+    (let [s (prepare-hybrid H db "BEGIN")]
+      (is (= (runtime/substitute 101) (ff-hybrid H "sqlite3_step" [s])))
+      (is (= (runtime/substitute 0)
+             (ff-hybrid H "sqlite3_get_autocommit" [db])))
+      (is (= (runtime/substitute 0) (ff-hybrid H "sqlite3_finalize" [s]))))
+    (let [s (prepare-hybrid H db "COMMIT")]
+      (is (= (runtime/substitute 101) (ff-hybrid H "sqlite3_step" [s])))
+      (is (= (runtime/substitute 1)
+             (ff-hybrid H "sqlite3_get_autocommit" [db])))
+      (is (= (runtime/substitute 0) (ff-hybrid H "sqlite3_finalize" [s]))))
     (close-db-hybrid H db)
     (is (true? (sqlite/clean? w)))))
