@@ -602,3 +602,67 @@ Every addition came from a probe designed to break the previous claim, and none
 from the spot checks the specification supplied. That pattern is now the method
 note in §6, restated: derive the acceptance criterion from the specification's
 own semantics, not from its examples.
+
+---
+
+## 8. E7 — devirtualization is worth ~3%, not 24x; the cost is the method body
+
+**This supersedes §5's closing attribution and retires the backend-devirtualization
+work item.**
+
+§5 attributed the residual gap to "the `jolt-nth` cond preamble and generic
+`jolt-invoke`" and proposed call-site devirtualization for collection-interface
+methods. Investigation found a real structural blocker for that proposal:
+`passes/types.clj` attaches `:devirt-type` only when the callee resolves through
+`env`'s `:protocol-methods` — user-defined protocol methods. `nth` is
+`clojure.core/nth`, so it never gets `:proto`/`:method`, never devirtualizes,
+and never receives even a PIC.
+
+That blocker is real but **irrelevant**, because the premise was wrong.
+
+`measurements/profile3.clj` puts every path in one run on one deftype:
+
+| path | ns/byte |
+| --- | ---: |
+| `nth` on a persistent vector | 81 |
+| `pget`, a USER protocol method (devirt-eligible) | 263 |
+| `nth`, a core builtin (never devirt-eligible) | 300 |
+| `.b` dot-field form | 945 |
+| `nth` on the real `jolt.bytes/Window` | 1145 |
+
+Decomposition:
+
+- **deftype dispatch overhead ≈ 219 ns/byte** (300 trivial-body vs 81 vector).
+- **Window's own `nth` body ≈ 845 ns/byte** (1145 real vs 300 trivial) —
+  **74% of the cost**.
+- **Devirtualization is worth ≈ 37 ns/byte** (300 vs 263, the devirt-eligible
+  protocol method on the same receiver) — about **3%** of 1145.
+
+So the remaining gap is not a dispatch problem. It is `Window/nth`'s body:
+bounds checks, offset arithmetic, and the backing-array access, at ~15x the
+54 ns/byte a bare `aget` costs in a tight loop. That points at generic numeric
+operations and array indexing inside deftype method bodies — the unboxed
+representation question of §2.2, not the call-site question.
+
+**Retired:** backend devirtualization for collection-interface methods. It
+would buy ~3% and requires changing how core collection fns are recognized in
+the type pass.
+
+**Redirected:** the open performance question is now whether deftype method
+bodies can get unboxed fixnum arithmetic and direct array indexing. Not
+investigated.
+
+### Method note, third instance
+
+This is the third hypothesis of mine that measurement refuted:
+
+1. host-interop `String` emulation dominates → it is 0.2% (§1/E1);
+2. allocation dominates, per `PERFORMANCE.md` → it is the minority term (§1/E1);
+3. dispatch dominates, so devirtualization is the fix → dispatch is 19%,
+   devirtualization worth 3% (this section).
+
+Each was plausible from source reading and each was wrong. The pattern matches
+§6's finding on the rule set: what survived was always what was tested against
+an independent measurement or specification, never what was argued from
+inspection. No performance claim in this document should be trusted ahead of a
+number.
