@@ -859,3 +859,64 @@ in the same session.
 That makes E10 the second correction to arrive from repeated sampling alone
 (E9's ~10% floor was the first), and both invalidated numbers that had been
 stated with more confidence than a single sample can carry.
+
+---
+
+## 12. E11 — `aget` is generic dispatch, and a byte array costs 8 bytes per element
+
+Both found with `jolt.perf` (`jolt@aa278165`, `73dc9aee`), statically or with a
+deterministic counter. Neither needed a benchmark.
+
+### `aget` is not an array read
+
+```
+(fn [b i] (aget b i))  →  (lambda (b i) (jolt-nth b i))
+```
+
+An array read lowers to the generic collection dispatch — the same `jolt-nth`
+`cond` chain §1/E1 and §5 optimised. The 54 ns/byte that E1 recorded as the
+"floor" and §2.1 cited as evidence that Chez codegen is adequate is therefore
+not a primitive read at all; it is generic dispatch that happens to hit an
+early `cond` arm.
+
+A typed fast path already exists as precedent: `jolt-flaget` is emitted for
+`(aget ^doubles a i)` when `jolt.passes.numeric` proves the array kind, and it
+"skips jolt-nth's case-lambda + jolt-array?/flvector? dispatch". The insertion
+points for a `^bytes` analogue are exact — `passes/numeric.clj:170` (the
+`:fl-aget` clause), `backend_scheme.clj:838` (emit), a native beside
+`jolt-flaget` in `natives-array.ss`, and a gate mirroring `run-flarr.ss`.
+**Not attempted:** it spans the analyzer's array-hint plumbing, the numeric
+pass's kind lattice (which knows `:doubles`/`:floats`, not `:bytes`), the
+backend, and a new gate — more than could be implemented and verified
+responsibly in the remaining session.
+
+### A byte array is eight bytes per element
+
+`natives-array.ss` builds a byte array as
+`(make-jolt-array (list->vector (bytevector->u8-list a)) 'byte)` — a Scheme
+**vector of fixnums**, not a bytevector. Measured with the allocation counter:
+
+| allocation | bytes/element |
+| --- | ---: |
+| `(byte-array 1000)` | **8** |
+| `(make-array Long/TYPE 1000)` | 8 |
+
+A byte array and a long array cost the same. For the codec path this is an 8x
+memory and cache-footprint penalty on precisely the data being scanned, and it
+is invisible to every timing measurement in this document because it changes
+the constant, not the shape.
+
+Switching the backing to a Chez `bytevector` is the larger and more valuable
+change, and also the riskier one: it touches `na-byte-array`, `ja-set!`, the
+`aset` path, seq/reduce over arrays, and the FFI byte-array interop —
+including the `borrow-byte-array`/`release-byte-array` loan contract that
+jolt-sim depends on (§1/E2). **Not attempted.**
+
+### Method note, fourth instance
+
+E1's table named `aget` at 54 ns/byte as the floor and §2.1 leaned on it to
+conclude "the measured gap is dispatch structure, not Chez codegen." Both
+sentences were built on the assumption that `aget` is an array read. One line
+of `optimized-scheme` output shows it is not, and one counter reading shows the
+array is eight times larger than assumed. Neither fact is visible from timing,
+which is why ten sections of timing did not surface them.
