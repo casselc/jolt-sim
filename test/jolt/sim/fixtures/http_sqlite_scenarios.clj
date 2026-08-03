@@ -560,6 +560,45 @@
       :tx-effect {:op :begin}}
      (insert-plan)]))
 
+(defn- recovery-simulated-evidence
+  "Builds the hermetic memory + SQLite + POSIX handler packs for `scenario`,
+   runs the unchanged fixture/exercise-http-sqlite-recovery once under
+   jolt.sim.runtime/run-controlled, and returns the canonical
+   {:http :observations :routes :sqlite :clean?} evidence map -- exactly what
+   run-recovery-scenario's :simulated mode returns. `overrides` is merged into
+   the run-controlled configuration (empty for the ordinary caller below;
+   the process-explorer worker's runtime-overrides map for the Hegel scenario
+   seam), so this is the single place that constructs the simulated handlers
+   and world for a recovery scenario."
+  [scenario overrides]
+  (let [mem (memory/world)
+        sqlite-world (sqlite/world mem (recovery-statement-plans scenario))
+        posix-world (posix/world mem (net/target-descriptor)
+                                 {:stream-capacity 1
+                                  :pipe-capacity 1})
+        handlers (hp/compose
+                  (hp/pack :jolt.sim/memory (memory/handlers mem))
+                  (hp/pack :jolt.sim/sqlite
+                           (sqlite/foreign-handlers sqlite-world))
+                  (hp/pack :jolt.sim/posix
+                           (posix/foreign-handlers posix-world)))
+        controlled (rt/run-controlled
+                    (merge {:ffi-handlers handlers :drain-timeout-ms 10000}
+                           overrides)
+                    #(fixture/exercise-http-sqlite-recovery scenario))
+        effect-trace (:effect-trace controlled)
+        fixture-result (:result controlled)]
+    {:http (canonical-http-evidence fixture-result)
+     :observations (:observations fixture-result)
+     :routes {:count (count effect-trace)
+              :all-handled? (every? #(= :handler (:route %)) effect-trace)
+              :foreign-symbols (foreign-symbols effect-trace)}
+     :sqlite {:summary (sqlite/summary sqlite-world)
+              :closed-db-evidence (closed-db-evidence sqlite-world)}
+     :clean? {:memory (memory/clean? mem)
+              :sqlite (sqlite/clean? sqlite-world)
+              :posix (posix/clean? posix-world)}}))
+
 (defn run-recovery-scenario
   "Runs the unchanged ordinary begin-recovery/poisoning fixture once for
    `scenario` (one of recovery-scenarios) in `mode` (:real or :simulated),
@@ -586,37 +625,70 @@
        :observations (:observations fixture-result)})
 
     :simulated
-    (let [mem (memory/world)
-          sqlite-world (sqlite/world mem (recovery-statement-plans scenario))
-          posix-world (posix/world mem (net/target-descriptor)
-                                   {:stream-capacity 1
-                                    :pipe-capacity 1})
-          handlers (hp/compose
-                    (hp/pack :jolt.sim/memory (memory/handlers mem))
-                    (hp/pack :jolt.sim/sqlite
-                             (sqlite/foreign-handlers sqlite-world))
-                    (hp/pack :jolt.sim/posix
-                             (posix/foreign-handlers posix-world)))
-          controlled (rt/run-controlled
-                      {:ffi-handlers handlers
-                       :drain-timeout-ms 10000}
-                      #(fixture/exercise-http-sqlite-recovery scenario))
-          effect-trace (:effect-trace controlled)
-          fixture-result (:result controlled)]
-      {:http (canonical-http-evidence fixture-result)
-       :observations (:observations fixture-result)
-       :routes {:count (count effect-trace)
-                :all-handled? (every? #(= :handler (:route %)) effect-trace)
-                :foreign-symbols (foreign-symbols effect-trace)}
-       :sqlite {:summary (sqlite/summary sqlite-world)
-                :closed-db-evidence (closed-db-evidence sqlite-world)}
-       :clean? {:memory (memory/clean? mem)
-                :sqlite (sqlite/clean? sqlite-world)
-                :posix (posix/clean? posix-world)}})
+    (recovery-simulated-evidence scenario {})
 
     (throw (ex-info "unknown http-sqlite recovery mode"
                     {:mode mode
                      :supported [:real :simulated]}))))
+
+;; ---- Fresh-worker recovery scenario case (Hegel protocol-v2 seam) ---------
+;; The minimal protocol-v2 tagged seam needed to run one generated
+;; begin-recovery/poisoning scenario (R2/R3/R4/R6) in a fresh sim-enabled
+;; worker. It duplicates no application, DB, or evidence-construction logic:
+;; it validates the closed {:scenario ...} input domain and delegates straight
+;; to recovery-simulated-evidence, the same helper run-recovery-scenario's
+;; :simulated mode uses above.
+
+(def ^:private recovery-case-input-keys #{:scenario})
+
+(defn- invalid-recovery-case-input [reason data]
+  (ex-info
+   "invalid http-sqlite recovery scenario case input"
+   (merge {:type :jolt.sim.fixtures.http-sqlite-scenarios/invalid-recovery-case-input
+           :reason reason}
+          data)))
+
+(defn- validate-recovery-case-input!
+  "Validates the closed {:scenario one-of-recovery-scenarios} input domain
+   fail-closed, before any world is created. :scenario must be exactly one of
+   :uncertain-begin-recovered, :counter-rollback-unverified-poisoned,
+   :counter-rollback-failed-poisoned, or :preexisting-transaction-poisoned; no
+   other key is permitted."
+  [input]
+  (when-not (map? input)
+    (throw (invalid-recovery-case-input :not-a-map {:input input})))
+  (let [unknown (seq (sort (remove recovery-case-input-keys (keys input))))]
+    (when unknown
+      (throw (invalid-recovery-case-input
+              :unknown-keys
+              {:unknown-keys (vec unknown) :input input}))))
+  (when-not (contains? input :scenario)
+    (throw (invalid-recovery-case-input :missing-scenario {:input input})))
+  (when-not (contains? recovery-scenarios (:scenario input))
+    (throw (invalid-recovery-case-input
+            :invalid-scenario
+            {:scenario (:scenario input)
+             :supported (vec (sort recovery-scenarios))})))
+  input)
+
+(defn ^{:jolt.sim/scenario true
+        :jolt.sim/accepts-input true} run-recovery-scenario-case
+  "Runs the unchanged begin-recovery/poisoning fixture once, in a fresh
+   sim-enabled worker, for the closed {:scenario one-of-recovery-scenarios}
+   input. Validates the input fail-closed before any world is created, then
+   reuses recovery-simulated-evidence -- the exact simulated-mode handler and
+   world construction plus run-controlled invocation run-recovery-scenario
+   drives -- merging the worker's runtime-overrides into its configuration.
+   Returns the same {:http :observations :routes :sqlite :clean?} evidence
+   shape run-recovery-scenario returns for :simulated mode; no expected result
+   is synthesized here. Accepts the standard jolt.sim.explore-worker
+   protocol-v2 (runtime-overrides, input) arity used by
+   jolt.sim.process-explorer/run-case."
+  ([input]
+   (run-recovery-scenario-case {} input))
+  ([overrides input]
+   (validate-recovery-case-input! input)
+   (recovery-simulated-evidence (:scenario input) overrides)))
 
 ;; ---- Historical BEGIN fail-open control (permanent Hegel witness) ---------
 ;; Drives the permanent, test-only fixture/exercise-http-sqlite-begin-fail-open

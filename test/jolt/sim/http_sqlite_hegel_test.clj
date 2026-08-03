@@ -207,7 +207,8 @@
       ;; Effect/route evidence: every intercepted POSIX and SQLite call was
       ;; served by a registered handler; nothing routed to a real socket or the
       ;; real SQLite library, and the fixture actually made native calls.
-      (when-not (pos? (:count routes))
+      (when-not (and (integer? (:count routes))
+                     (pos? (:count routes)))
         (violation "jolt.sim.http-sqlite-hegel-test/route-count"
                    input
                    {:routes routes}))
@@ -509,6 +510,340 @@
              :before-autocommit? true
              :after-autocommit? false}]
            (:tx-evidence actual)))))
+
+;; ---- Begin-recovery / poisoning scenarios (corrected passing property) ----
+;; The corrected passing counterpart to the historical fail-open witness
+;; above: a bounded Hegel property over the ALREADY-CORRECTED SQLite
+;; begin-recovery/poison-application contract
+;; (jolt.sim.fixtures.http-sqlite-scenarios/run-recovery-scenario-case),
+;; exercised over exactly the four begin-recovery/poisoning scenarios R2-R4
+;; and R6. Every generated case spawns a fresh worker, exactly like the
+;; properties above, and the worker delegates straight to
+;; jolt.sim.fixtures.http-sqlite-scenarios/recovery-simulated-evidence -- the
+;; unchanged simulated-mode handler/world construction and run-controlled
+;; invocation run-recovery-scenario itself drives. No application, DB, or
+;; evidence-construction logic is reimplemented here.
+;;
+;; This parent process does not load jolt.net/db/jolt-http (see the poll-id/
+;; connect-id comment above), so the expected literals below are duplicated
+;; from jolt.sim.http-sqlite-integration-test's begin-recovery/poisoning
+;; deftests rather than shared by requiring that namespace.
+
+(def ^:private recovery-case-scenario-sym
+  'jolt.sim.fixtures.http-sqlite-scenarios/run-recovery-scenario-case)
+
+;; R2, R3, R4, R6 in the same order the task and the integration test present
+;; them. g/sampled-from shrinks toward index 0 (:uncertain-begin-recovered).
+(def ^:private recovery-case-domain
+  [:uncertain-begin-recovered
+   :counter-rollback-unverified-poisoned
+   :counter-rollback-failed-poisoned
+   :preexisting-transaction-poisoned])
+
+(def ^:private expected-recovery-posix-foreign-symbols
+  #{"accept" "bind" "close" "connect" "fcntl" "freeaddrinfo"
+    "getaddrinfo" "getpeername" "getsockname" "listen" "pipe"
+    "poll" "read" "recv" "send" "getsockopt" "setsockopt"
+    "socket" "write"})
+
+(def ^:private expected-recovery-empty-http
+  {:status 200
+   :content-type "application/octet-stream"
+   :content-length "0"
+   :server-errors []
+   :body-octets []})
+
+(def ^:private expected-preexisting-observations
+  {:primary {:caught? true
+             :message "connection is physically inside a transaction while logical depth is zero; close connection"
+             :poisoned? true
+             :close-required? true}
+   :follow-up {:rejected? true
+               :message "connection transaction state is indeterminate; close connection"
+               :poisoned? true
+               :close-required? true
+               :cleanup [{:phase :begin-precondition :sql "BEGIN"}]}})
+
+(def ^:private expected-discarded-transaction
+  {:begin-event 0 :begin-plan-index 2})
+
+;; One expectation entry per scenario, grounded exactly in the corresponding
+;; jolt.sim.http-sqlite-integration-test deftest, strengthened with the exact
+;; live/discarded transaction and staging evidence recorded on close.
+(def ^:private recovery-expectations
+  {:uncertain-begin-recovered
+   {:http {:status 200
+           :content-type "application/octet-stream"
+           :content-length "5"
+           :server-errors []
+           :body-octets [0 65 127 -128 -1]}
+    :observations {:primary {:caught? true :rc 5
+                             :message "sqlite step failed: database is locked"}
+                   :body-ran-before-recovery? false
+                   :retried? true
+                   :retry-body-ran? true}
+    :foreign-symbols
+    (into expected-recovery-posix-foreign-symbols
+          #{"sqlite3_open" "sqlite3_close_v2" "sqlite3_errmsg"
+            "sqlite3_prepare_v2" "sqlite3_step" "sqlite3_finalize"
+            "sqlite3_column_count" "sqlite3_column_name"
+            "sqlite3_column_type" "sqlite3_bind_int64"
+            "sqlite3_bind_blob64" "sqlite3_column_blob"
+            "sqlite3_column_bytes" "sqlite3_get_autocommit"
+            "sqlite3_changes"})
+    :sqlite-summary {:plan-index 8 :plan-count 8 :open-dbs 0 :active-stmts 0}
+    :autocommit? true
+    :autocommit-evidence [1 0 1 1]
+    :tx-evidence [{:sequence 0 :plan-index 2 :op :begin :when :always
+                   :reported :error :applied? true :reason nil
+                   :before-autocommit? true :after-autocommit? false}
+                  {:sequence 1 :plan-index 3 :op :rollback :when :on-success
+                   :reported :done :applied? true :reason nil
+                   :before-autocommit? false :after-autocommit? true}
+                  {:sequence 2 :plan-index 4 :op :begin :when :on-success
+                   :reported :done :applied? true :reason nil
+                   :before-autocommit? true :after-autocommit? false}
+                  {:sequence 3 :plan-index 6 :op :commit :when :on-success
+                   :reported :done :applied? true :reason nil
+                   :before-autocommit? false :after-autocommit? true}]
+    :store-evidence [{:sequence 0 :plan-index 5 :op :put :reported :done
+                      :key {:type :integer :value 1} :location :staging
+                      :present? true}
+                     {:sequence 1 :plan-index 7 :op :get :reported :done
+                      :key {:type :integer :value 1} :location :committed
+                      :present? true}]
+    :committed {{:type :integer :value 1}
+               {:type :blob :value [0 65 127 128 255]}}
+    :tx nil
+    :staging nil
+    :discarded-transaction nil
+    :discarded-staging nil}
+
+   :counter-rollback-unverified-poisoned
+   {:http expected-recovery-empty-http
+    :observations {:primary {:caught? true :rc 5
+                             :message "sqlite step failed: database is locked"}
+                   :follow-up {:rejected? true
+                               :message "connection transaction state is indeterminate; close connection"
+                               :poisoned? true
+                               :close-required? true
+                               :cleanup [{:phase :begin-rollback-verify
+                                         :sql "sqlite3_get_autocommit"}]}}
+    :foreign-symbols
+    (into expected-recovery-posix-foreign-symbols
+          #{"sqlite3_open" "sqlite3_close_v2" "sqlite3_errmsg"
+            "sqlite3_prepare_v2" "sqlite3_step" "sqlite3_finalize"
+            "sqlite3_column_count" "sqlite3_get_autocommit"
+            "sqlite3_changes"})
+    :sqlite-summary {:plan-index 4 :plan-count 4 :open-dbs 0 :active-stmts 0}
+    :autocommit? false
+    :autocommit-evidence [1 0 0]
+    :tx-evidence [{:sequence 0 :plan-index 2 :op :begin :when :always
+                   :reported :error :applied? true :reason nil
+                   :before-autocommit? true :after-autocommit? false}
+                  {:sequence 1 :plan-index 3 :op :rollback :when :never
+                   :reported :done :applied? false :reason :withheld
+                   :before-autocommit? false :after-autocommit? false}]
+    :store-evidence []
+    :tx expected-discarded-transaction
+    :staging {}
+    :discarded-transaction expected-discarded-transaction
+    :discarded-staging {}
+    :committed {}}
+
+   :counter-rollback-failed-poisoned
+   {:http expected-recovery-empty-http
+    :observations {:primary {:caught? true :rc 5
+                             :message "sqlite step failed: database is locked"}
+                   :follow-up {:rejected? true
+                               :message "connection transaction state is indeterminate; close connection"
+                               :poisoned? true
+                               :close-required? true
+                               :cleanup [{:phase :begin-rollback :sql "ROLLBACK"}]}}
+    :foreign-symbols
+    (into expected-recovery-posix-foreign-symbols
+          #{"sqlite3_open" "sqlite3_close_v2" "sqlite3_errmsg"
+            "sqlite3_prepare_v2" "sqlite3_step" "sqlite3_finalize"
+            "sqlite3_column_count" "sqlite3_get_autocommit"
+            "sqlite3_changes"})
+    :sqlite-summary {:plan-index 4 :plan-count 4 :open-dbs 0 :active-stmts 0}
+    :autocommit? false
+    :autocommit-evidence [1 0]
+    :tx-evidence [{:sequence 0 :plan-index 2 :op :begin :when :always
+                   :reported :error :applied? true :reason nil
+                   :before-autocommit? true :after-autocommit? false}
+                  {:sequence 1 :plan-index 3 :op :rollback :when :on-success
+                   :reported :error :applied? false :reason :reported-error
+                   :before-autocommit? false :after-autocommit? false}]
+    :store-evidence []
+    :tx expected-discarded-transaction
+    :staging {}
+    :discarded-transaction expected-discarded-transaction
+    :discarded-staging {}
+    :committed {}}
+
+   :preexisting-transaction-poisoned
+   {:http expected-recovery-empty-http
+    :observations expected-preexisting-observations
+    :foreign-symbols
+    (into expected-recovery-posix-foreign-symbols
+          #{"sqlite3_open" "sqlite3_close_v2" "sqlite3_prepare_v2"
+            "sqlite3_step" "sqlite3_finalize" "sqlite3_column_count"
+            "sqlite3_bind_int64" "sqlite3_bind_blob64"
+            "sqlite3_get_autocommit" "sqlite3_changes"})
+    :sqlite-summary {:plan-index 4 :plan-count 4 :open-dbs 0 :active-stmts 0}
+    :autocommit? false
+    :autocommit-evidence [0]
+    :tx-evidence [{:sequence 0 :plan-index 2 :op :begin :when :on-success
+                   :reported :done :applied? true :reason nil
+                   :before-autocommit? true :after-autocommit? false}]
+    :store-evidence [{:sequence 0 :plan-index 3 :op :put :reported :done
+                      :key {:type :integer :value 1} :location :staging
+                      :present? true}]
+    :tx expected-discarded-transaction
+    :staging {{:type :integer :value 1}
+              {:type :blob :value [0 65 127 128 255]}}
+    :discarded-transaction expected-discarded-transaction
+    :discarded-staging {{:type :integer :value 1}
+                        {:type :blob :value [0 65 127 128 255]}}
+    :committed {}}})
+
+(defn- check-recovery-case!
+  "Runs one fresh-worker case for the drawn {:scenario ...} `input` and
+  independently asserts the corrected R2/R3/R4/R6 contract looked up from
+  recovery-expectations: the ordinary HTTP outcome, the fixture's primary/
+  follow-up observations, exact plan consumption, handled routes and required
+  SQLite calls, physical autocommit and full transaction evidence, required
+  store/discard evidence, and clean memory/SQLite/POSIX worlds. Every
+  assertion site's :hegel/origin is a fixed string independent of the drawn
+  scenario; only :input and :actual vary per case."
+  [input]
+  (let [base-config
+        (merge (process-config)
+               {:scenario recovery-case-scenario-sym
+                :timeout-ms 20000
+                :kill-grace-ms 500})
+        outcome (process-explorer/run-case
+                 (assoc base-config :input input))
+        completed (require-completed-carrying-input! outcome input)
+        evidence (:result completed)]
+    (when-not (map? evidence)
+      (violation "jolt.sim.http-sqlite-hegel-test/recovery-evidence-shape"
+                 input
+                 {:evidence-class (str (class evidence))}))
+    (let [expected (get recovery-expectations (:scenario input))
+          {:keys [http observations routes sqlite clean?]} evidence
+          db (first (get-in evidence [:sqlite :closed-db-evidence]))]
+      (when-not (= (:http expected) (dissoc http :raw-length))
+        (violation "jolt.sim.http-sqlite-hegel-test/recovery-http"
+                   input {:http http :expected (:http expected)}))
+      (when-not (= (:observations expected) observations)
+        (violation "jolt.sim.http-sqlite-hegel-test/recovery-observations"
+                   input {:observations observations
+                          :expected (:observations expected)}))
+      (when-not (true? (:all-handled? routes))
+        (violation "jolt.sim.http-sqlite-hegel-test/recovery-all-handled"
+                   input {:routes routes}))
+      ;; Identical runs can perform different numbers of ordinary POSIX
+      ;; readiness calls, so the total route count is intentionally not an
+      ;; exact invariant. Require non-vacuity here; the exact foreign-symbol
+      ;; set and the complete SQLite plan/transaction/store evidence below
+      ;; constrain the meaningful work independently.
+      (when-not (and (integer? (:count routes))
+                     (pos? (:count routes)))
+        (violation "jolt.sim.http-sqlite-hegel-test/recovery-route-count"
+                   input {:routes routes}))
+      (when-not (= (:foreign-symbols expected) (set (:foreign-symbols routes)))
+        (violation "jolt.sim.http-sqlite-hegel-test/recovery-foreign-symbols"
+                   input {:foreign-symbols (:foreign-symbols routes)
+                          :expected (:foreign-symbols expected)}))
+      (when-not (= (:sqlite-summary expected) (:summary sqlite))
+        (violation "jolt.sim.http-sqlite-hegel-test/recovery-sqlite-summary"
+                   input {:summary (:summary sqlite)
+                          :expected (:sqlite-summary expected)}))
+      (when-not (= 1 (count (:closed-db-evidence sqlite)))
+        (violation "jolt.sim.http-sqlite-hegel-test/recovery-closed-db-count"
+                   input {:count (count (:closed-db-evidence sqlite))}))
+      (when-not (= (:autocommit? expected) (:autocommit? db))
+        (violation "jolt.sim.http-sqlite-hegel-test/recovery-autocommit"
+                   input {:autocommit? (:autocommit? db)
+                          :expected (:autocommit? expected)}))
+      (when-not (= (:autocommit-evidence expected) (:autocommit-evidence db))
+        (violation "jolt.sim.http-sqlite-hegel-test/recovery-autocommit-evidence"
+                   input {:autocommit-evidence (:autocommit-evidence db)
+                          :expected (:autocommit-evidence expected)}))
+      (when-not (= (:tx-evidence expected) (:tx-evidence db))
+        (violation "jolt.sim.http-sqlite-hegel-test/recovery-tx-evidence"
+                   input {:tx-evidence (:tx-evidence db)
+                          :expected (:tx-evidence expected)}))
+      (when-not (= (:store-evidence expected) (:store-evidence db))
+        (violation "jolt.sim.http-sqlite-hegel-test/recovery-store-evidence"
+                   input {:store-evidence (:store-evidence db)
+                          :expected (:store-evidence expected)}))
+      (when-not (= (:committed expected) (:committed db))
+        (violation "jolt.sim.http-sqlite-hegel-test/recovery-committed"
+                   input {:committed (:committed db)
+                          :expected (:committed expected)}))
+      (when-not (= (:tx expected) (:tx db))
+        (violation "jolt.sim.http-sqlite-hegel-test/recovery-tx"
+                   input {:tx (:tx db) :expected (:tx expected)}))
+      (when-not (= (:staging expected) (:staging db))
+        (violation "jolt.sim.http-sqlite-hegel-test/recovery-staging"
+                   input {:staging (:staging db)
+                          :expected (:staging expected)}))
+      (when-not (= (:discarded-transaction expected)
+                   (:discarded-transaction db))
+        (violation
+         "jolt.sim.http-sqlite-hegel-test/recovery-discarded-transaction"
+         input {:discarded-transaction (:discarded-transaction db)
+                :expected (:discarded-transaction expected)}))
+      (when-not (= (:discarded-staging expected) (:discarded-staging db))
+        (violation "jolt.sim.http-sqlite-hegel-test/recovery-discarded-staging"
+                   input {:discarded-staging (:discarded-staging db)
+                          :expected (:discarded-staging expected)}))
+      (when-not (= {:memory true :sqlite true :posix true} clean?)
+        (violation "jolt.sim.http-sqlite-hegel-test/recovery-world-cleanup"
+                   input {:clean? clean?})))))
+
+(deftest hegel-http-sqlite-recovery-scenarios-hold-across-r2-r3-r4-and-r6
+  ;; The corrected passing counterpart to
+  ;; hegel-http-sqlite-begin-fail-open-finds-the-uncertain-begin-witness
+  ;; above: every generated case must pass, and every generated case spawns a
+  ;; fresh worker, so only :too-slow is suppressed -- flakiness and
+  ;; generation errors must still fail this test outright.
+  (let [seen-scenarios (atom #{})
+        result
+        (h/run-test!
+         ;; The finite sampled-from domain executes one case per member under
+         ;; the pinned Hegel build. Making the four-case ceiling explicit keeps
+         ;; 4 * (20 s worker deadline + 500 ms kill grace) far below the
+         ;; unchanged 300 s namespace watchdog; the assertion below proves the
+         ;; pinned seed still visited every member.
+         {:test-cases 4
+          :suppress-health-checks [:too-slow]
+          :seed 1
+          :database ""
+          :report-multiple-failures? false
+          :verbosity :quiet}
+         (fn [_]
+           (let [scenario (h/draw! (g/sampled-from recovery-case-domain)
+                                    "recovery-scenario")
+                 input {:scenario scenario}]
+             (check-recovery-case! input)
+             (swap! seen-scenarios conj scenario)
+             nil)))]
+    (is (true? (:passed? result))
+        (pr-str {:status (:status result)
+                 :n-failures (:n-failures result)
+                 :flaky? (:flaky? result)
+                 :failures (:failures result)
+                 :final (:final result)}))
+    (is (false? (:flaky? result))
+        (pr-str {:flaky? (:flaky? result)
+                 :observed-failures (:observed-failures result)}))
+    (is (= (set recovery-case-domain) @seen-scenarios)
+        (str "Hegel did not exercise all four recovery scenarios: "
+             (pr-str @seen-scenarios)))))
 
 (def ^:private watchdog-timeout-ms 300000)
 
