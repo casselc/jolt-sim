@@ -421,3 +421,79 @@ bump, no remint. A weak side table keyed by descriptor measured within noise
 (836 vs 863 ns/byte at `380e59e`); the ptable form was kept for its structural
 properties. Q1's remaining sub-question — whether closing the rest requires
 backend devirtualization — is answered yes, and is now the open item.
+
+---
+
+## 6. E5 — the capability tier needs three disciplines, not two
+
+**This section qualifies §2.2 and §2.3.**
+
+`docs/research/prototypes/mode_checker.py` implements a rule set for the
+capability tier; `equivalence.py` transcribes `jolt-hako/proofs/prolog/
+ownership.pl` `step/3` and compares verdicts over **every** operation sequence
+to a given depth, rather than the 9 traces `queries.json` spot-checks.
+
+The successive results, each a genuine correction:
+
+| rule set | unsound acceptances, depth 8 |
+| --- | ---: |
+| uniqueness + linearity (as §2.2 specifies) | **1051 / 6470** |
+| + typestate (role-indexed operation legality) | 103 |
+| + exclusive borrow (a lease blocks reads, not only moves) | **0** |
+
+Final state: depth 8 — 6,470 sequences examined, 1,236 accepted by both, zero
+disagreements in either direction. Depth 10 — 23,430 examined, 4,406 accepted
+by both, zero disagreements. `queries.json`: 9/9 decided as recorded.
+
+### What the two corrections mean
+
+**Typestate is a required third axis.** Every move in the model carries a
+*source* precondition — `detach_result`, `move_to_region`, `return_pool`, and
+`reset_writer` are legal only from `writer`; `checkout_pool` only from `pool`.
+That is not a uniqueness property. The capability carries a role (writer =
+mutable working state, result = published, pool = returned, region = arena-held,
+none = consumed) and each operation is legal only from specific roles.
+Uniqueness and linearity supply the exclusion and the consume-once discipline;
+they say nothing about role sequencing. Dropping the source preconditions
+wrongly admitted 16% of the space.
+
+**A borrow must be exclusive, not merely move-blocking.** The model forbids
+`use_region` while a native lease is live: the owner cannot *read* through a
+live lease either. Enforcing the freeze only on ownership transfer left 103
+sequences wrongly accepted.
+
+### Consequences for §2.2 / §2.3
+
+§2.2's axis list — "Axes kept: uniqueness, linearity" — is **insufficient** as
+stated. The capability tier requires uniqueness, linearity, and typestate, with
+borrows exclusive by default.
+
+§2.3's claim that capability-tier refinements "cover 100% of the existing proof
+surface" survives but is now qualified: coverage requires the typestate axis,
+which E3's survey did not name because the obligations it catalogued
+(bounds, ownership, linearity, commit geometry) hide role sequencing inside
+"ownership". Bounds and commit geometry remain refinement obligations; role
+sequencing is a separate typing judgement.
+
+### What this does and does not establish
+
+Establishes: a syntactic type discipline decides, without state-space search,
+exactly what `ownership.pl` decides by bounded reachability — over the whole
+space to depth 10, not merely the recorded queries. Where the model answers
+"no double ownership within 8 steps" by exhaustion, the environment holds one
+owner field, so `writer_result` is unrepresentable; that specific query becomes
+structural rather than bounded-complete.
+
+Does not establish: soundness beyond depth 10; that the rule set generalizes to
+capabilities other than this one buffer; or that a real perturb checker over the
+Jolt IR would infer these judgements rather than check them on a pre-supplied
+operation sequence. The prototype checks a straight-line sequence, not a program
+with branching, loops, or higher-order calls — where the reachability property
+becomes genuinely harder. `equivalence.py` is a differential test against one
+model, not a proof.
+
+**Method note.** The 9 recorded queries passed at the *first* rule set — the one
+carrying 1,051 unsound acceptances. Spot checks drawn from a specification are
+not a substitute for differential testing against the specification's own
+semantics, which is the discipline `bin/verify-*` already applies elsewhere in
+these repositories.
