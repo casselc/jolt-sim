@@ -920,3 +920,60 @@ sentences were built on the assumption that `aget` is an array read. One line
 of `optimized-scheme` output shows it is not, and one counter reading shows the
 array is eight times larger than assumed. Neither fact is visible from timing,
 which is why ten sections of timing did not surface them.
+
+---
+
+## 13. E12 — encapsulating the array backing, and two semantics carried forward
+
+`jolt@57980315` routed all `jolt-array` backing access through `ja-*` helpers,
+as the safe precondition for changing the byte backing. Delegated to a
+subagent; the results correct this document twice.
+
+### My survey was wrong in two ways
+
+Recorded in §12 as "~35 direct uses across 10 files". Verified: **41 raw
+operations across 7 files**, all under `host/chez/java/`. Three of the ten
+files I named have no backing access at all — `natives-coll.ss`'s `jolt-array`
+hits are `jolt-array-map`, an unrelated name collision with Clojure's
+`array-map`; `records.ss` uses only `jolt-array?`/`jolt-array-kind`; `io.ss`
+has none.
+
+More seriously, **I framed the problem as reads and it is not**. Six
+*construction* sites hand-build byte backings outside `na-byte-array` —
+`ByteBuffer/allocate`, `/allocateDirect`, `.slice`, `jolt.ffi/read-array`,
+`io/copy`'s output-stream shim, and `Files/readAllBytes` — using
+`(make-vector n 0)` or `(list->vector (bytevector->u8-list bv))` directly.
+Those would have broken under a representation change exactly as badly as the
+reads, and nothing in a grep for read operations would have surfaced them.
+
+### Two semantics that must be decided, not discovered
+
+Both were found by the refactor and are recorded here because each would
+otherwise reappear later as a regression with no obvious cause:
+
+1. **Cross-kind array equality.** `ja-equal?` is `equal?` today, so
+   `(Arrays/equals (byte-array [1 2]) (int-array [1 2]))` is `true`. On a
+   bytevector backing the naive form becomes `false`. The refactor extracted
+   `ja-equal?` specifically so this has one home.
+2. **Write range-checking.** `bytevector-u8-set!` *errors* on out-of-range
+   values where `vector-set!` accepts them silently. Today only `na-aset-byte`
+   masks; the generic `aset` / `jolt.host/ref-put!` path does not. The byte arm
+   must mask or throw deliberately, consistently with `na-aset-byte`.
+
+A third, higher-risk one is signed-versus-unsigned: Java `byte[]` slots are
+signed, Chez `bytevector-u8-*` is unsigned, and Jolt's convention appears to be
+storing octets and converting on read (`jolt-bytes`' `signed-byte-at` is
+`(unchecked-byte (aget b i))`). That must be verified empirically rather than
+assumed.
+
+### Method note, fifth instance — now about delegation
+
+The delegated agent verified the file list rather than trusting the brief, and
+the brief was wrong. It also found a category of site the brief's framing
+excluded by construction. The pattern from §6 and §8 extends: **a brief is a
+specification, and its examples are not its semantics.** Delegation is not
+exempt — an agent told what to change will change that; an agent told what
+property must hold will find what the instructions missed. The instruction that
+did the work here was "an honest inventory of the remaining hard cases is a
+valuable deliverable, do not force-fit those", which licensed reporting over
+compliance.
