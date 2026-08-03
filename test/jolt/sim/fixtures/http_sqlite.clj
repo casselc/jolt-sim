@@ -262,3 +262,231 @@
    BLOB scenario."
   [scenario]
   (run-request-cycle (transaction-handler scenario)))
+
+;; ---- Begin-recovery / poisoning scenarios ----------------------------------
+;; The four scenarios below exercise the pinned db.jdbc verified-sqlite-begin!
+;; recovery contract: an uncertain BEGIN failure that jdbc.core reconciles
+;; against sqlite3_get_autocommit before deciding whether the connection is
+;; reusable. Every predicate below matches the pinned jdbc.core/db.sqlite
+;; exception shapes exactly (code, message, and/or ex-data flags) -- never an
+;; arbitrary Throwable -- so a real logic bug elsewhere is never silently
+;; absorbed as "the injected failure".
+
+(def injected-begin-error
+  "The exact simulated BEGIN failure this fixture's exact-predicate recovery
+   and poisoning logic recognizes. It only ever surfaces when a simulated
+   SQLite world's BEGIN plan declares precisely this :error; real SQLite
+   never reports it, so every scenario that injects it is simulated-only."
+  {:code 5 :msg "database is locked"})
+
+(def injected-rollback-error
+  "The exact simulated counter-rollback failure the
+   :counter-rollback-failed-poisoned scenario's SQLite plan declares on its
+   recovery ROLLBACK. The ordinary fixture never inspects this error
+   directly -- jdbc.core's own verified-sqlite-begin! catches it internally
+   and retains it only inside the poisoned connection's
+   :jdbc/transaction-cleanup context, which the fixture observes secondhand
+   through the later rejected JDBC operation."
+  {:code 10 :msg "disk I/O error"})
+
+(defn- injected-begin-error?
+  "True only for the exact db.sqlite step-failure exception the injected
+   BEGIN plan produces: the same :rc code and the same fully-formatted
+   message db.sqlite's run-prepared builds from the plan's :error. Never
+   matches on class alone."
+  [error]
+  (and (= (:code injected-begin-error) (:rc (ex-data error)))
+       (= (str "sqlite step failed: " (:msg injected-begin-error))
+          (ex-message error))))
+
+(defn- preexisting-transaction-error?
+  "True only for jdbc.core's own stable R6 divergence exception: a physical
+   transaction observed active while logical depth is zero, at the exact
+   message jdbc.core authors plus its exact :jdbc/transaction-poisoned and
+   :jdbc/close-required data flags."
+  [error]
+  (let [data (ex-data error)]
+    (and (true? (:jdbc/transaction-poisoned data))
+         (true? (:jdbc/close-required data))
+         (= "connection is physically inside a transaction while logical depth is zero; close connection"
+            (ex-message error)))))
+
+(defn- poisoned-transaction-error?
+  "True only for jdbc.core's own stable poisoned-connection exception raised
+   by ensure-transaction-usable! once a prior boundary failure has poisoned
+   the connection, at jdbc.core's exact message and exact
+   :jdbc/transaction-poisoned/:jdbc/close-required data flags. Distinguished
+   from preexisting-transaction-error? by message text alone -- both share
+   the same two data flags."
+  [error]
+  (let [data (ex-data error)]
+    (and (true? (:jdbc/transaction-poisoned data))
+         (true? (:jdbc/close-required data))
+         (= "connection transaction state is indeterminate; close connection"
+            (ex-message error)))))
+
+(defn- insert-blob! [connection]
+  (jdbc/execute!
+   connection
+   ["insert into sim_blob (id, payload) values (?, ?)"
+    1
+    (byte-array blob-octets)]))
+
+(defn- select-blob-response [connection]
+  (let [row (jdbc/fetch-one
+             connection
+             ["select payload from sim_blob where id = ?" 1])]
+    (if-let [payload (:payload row)]
+      {:status  200
+       :headers {"Content-Type" "application/octet-stream"}
+       :body    payload}
+      {:status  404
+       :headers {"Content-Type" "application/octet-stream"}
+       :body    (byte-array 0)})))
+
+(def ^:private empty-recovery-response
+  {:status  200
+   :headers {"Content-Type" "application/octet-stream"}
+   :body    (byte-array 0)})
+
+(defn- recovery-handler
+  "Builds the ordinary begin-recovery/poisoning handler for `scenario`. Every
+   branch opens an in-memory database and creates the fixture table exactly
+   like the other handlers in this namespace, then drives one of the four
+   application scenarios described on exercise-http-sqlite-recovery, recording
+   the exact-predicate primary (and, where applicable, follow-up) outcome into
+   `observations` -- a plain map atom owned by the caller. Each recorded
+   outcome carries only stable, address-free data (predicate match, :rc/
+   message text, and jdbc.core's own :jdbc/transaction-cleanup phase/sql
+   context); no Throwable object or host identity is ever retained."
+  [scenario observations]
+  (fn recovery-request-handler [_request]
+    (with-open [connection (jdbc/connection "sqlite::memory:")]
+      ;; Opening the connection runs "PRAGMA foreign_keys=1;" via the
+      ;; db.sqlite connection initialization before the first explicit
+      ;; statement below.
+      (jdbc/execute!
+       connection
+       "create table sim_blob (id integer primary key, payload blob)")
+      (case scenario
+        :uncertain-begin-recovered
+        (let [body-ran? (atom false)
+              primary
+              (try
+                (jdbc/atomic connection
+                  (reset! body-ran? true)
+                  (insert-blob! connection))
+                nil
+                (catch Exception error
+                  (when-not (injected-begin-error? error)
+                    (throw error))
+                  {:caught?  true
+                   :rc       (:rc (ex-data error))
+                   :message  (ex-message error)}))]
+          (swap! observations assoc
+                 :primary primary
+                 :body-ran-before-recovery? @body-ran?)
+          (let [retry-body-ran? (atom false)]
+            (jdbc/atomic connection
+              (reset! retry-body-ran? true)
+              (insert-blob! connection))
+            (swap! observations assoc
+                   :retried? true
+                   :retry-body-ran? @retry-body-ran?))
+          (select-blob-response connection))
+
+        (:counter-rollback-unverified-poisoned
+         :counter-rollback-failed-poisoned)
+        (let [primary
+              (try
+                (jdbc/atomic connection (insert-blob! connection))
+                nil
+                (catch Exception error
+                  (when-not (injected-begin-error? error)
+                    (throw error))
+                  {:caught?  true
+                   :rc       (:rc (ex-data error))
+                   :message  (ex-message error)}))
+              follow-up
+              (try
+                (jdbc/fetch-one
+                 connection
+                 ["select payload from sim_blob where id = ?" 1])
+                nil
+                (catch Exception error
+                  (when-not (poisoned-transaction-error? error)
+                    (throw error))
+                  {:rejected?        true
+                   :message          (ex-message error)
+                   :poisoned?        (true? (:jdbc/transaction-poisoned (ex-data error)))
+                   :close-required?  (true? (:jdbc/close-required (ex-data error)))
+                   :cleanup          (:jdbc/transaction-cleanup (ex-data error))}))]
+          (swap! observations assoc :primary primary :follow-up follow-up)
+          empty-recovery-response)
+
+        :preexisting-transaction-poisoned
+        (do
+          ;; A raw public execute! -- outside jdbc/atomic entirely -- opens a
+          ;; physical transaction at logical depth zero, then inserts the
+          ;; fixture BLOB into it, before jdbc/atomic is ever invoked.
+          (jdbc/execute! connection "BEGIN")
+          (insert-blob! connection)
+          (let [primary
+                (try
+                  (jdbc/atomic connection (insert-blob! connection))
+                  nil
+                  (catch Exception error
+                    (when-not (preexisting-transaction-error? error)
+                      (throw error))
+                    {:caught?          true
+                     :message          (ex-message error)
+                     :poisoned?        (true? (:jdbc/transaction-poisoned (ex-data error)))
+                     :close-required?  (true? (:jdbc/close-required (ex-data error)))}))
+                follow-up
+                (try
+                  (jdbc/fetch-one
+                   connection
+                   ["select payload from sim_blob where id = ?" 1])
+                  nil
+                  (catch Exception error
+                    (when-not (poisoned-transaction-error? error)
+                      (throw error))
+                    {:rejected?        true
+                     :message          (ex-message error)
+                     :poisoned?        (true? (:jdbc/transaction-poisoned (ex-data error)))
+                     :close-required?  (true? (:jdbc/close-required (ex-data error)))
+                     :cleanup          (:jdbc/transaction-cleanup (ex-data error))}))]
+            (swap! observations assoc :primary primary :follow-up follow-up)
+            empty-recovery-response))))))
+
+(defn exercise-http-sqlite-recovery
+  "Runs the same one-request lifecycle as exercise-http-sqlite-transaction
+   with the ordinary begin-recovery/poisoning handler for `scenario`:
+
+   - :uncertain-begin-recovered -- the first jdbc/atomic attempt's BEGIN
+     physically begins but reports the injected begin error; the fixture
+     catches only that exact error, proves its atomic body never ran, retries
+     through a second successful jdbc/atomic that inserts the BLOB and
+     commits, then selects and observes the committed row.
+   - :counter-rollback-unverified-poisoned / :counter-rollback-failed-poisoned
+     -- the same injected BEGIN failure, but jdbc.core's own counter-rollback
+     recovery cannot prove the connection clean, so it poisons the connection
+     and rethrows the original begin error as primary; the fixture catches
+     only that exact error, then attempts one later ordinary JDBC query and
+     observes it rejected by jdbc.core's own poisoned-connection guard.
+   - :preexisting-transaction-poisoned -- a raw public execute! opens a
+     physical transaction and inserts the BLOB at logical depth zero, before
+     jdbc/atomic is invoked; jdbc.core's pre-BEGIN probe observes the
+     divergence and fails closed without issuing an atomic-owned BEGIN or any
+     ROLLBACK, and a later ordinary JDBC query is again observed rejected.
+
+   Returns the same raw result map as exercise-http-sqlite-transaction, plus
+   an :observations key: the handler's own plain, Throwable-free summary of
+   its exact-predicate primary and follow-up outcomes. The scenario keyword
+   selects application behavior only; whether the underlying POSIX and SQLite
+   foreign calls reach the host or a simulated FFI world remains the caller's
+   choice, exactly as for the other scenarios in this namespace."
+  [scenario]
+  (let [observations (atom {})]
+    (assoc (run-request-cycle (recovery-handler scenario observations))
+           :observations @observations)))

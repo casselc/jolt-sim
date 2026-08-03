@@ -335,3 +335,201 @@
         ;; world is clean.
         (is (= {:memory true :sqlite true :posix true}
                (:clean? simulated)))))))
+
+;; ---- Begin-recovery / poisoning scenarios ----------------------------------
+
+(def ^:private expected-recovery-empty-http
+  {:status 200
+   :content-type "application/octet-stream"
+   :content-length "0"
+   :server-errors []
+   :body-octets []})
+
+(deftest uncertain-begin-recovered-runs-in-the-hermetic-world
+  (let [result (scenarios/run-recovery-scenario :uncertain-begin-recovered :simulated)]
+    (testing "http"
+      (is (= {:status 200
+              :content-type "application/octet-stream"
+              :content-length "5"
+              :server-errors []
+              :body-octets [0 65 127 -128 -1]}
+             (dissoc (:http result) :raw-length))))
+    (testing "observations"
+      (is (= {:primary {:caught? true :rc 5
+                        :message "sqlite step failed: database is locked"}
+              :body-ran-before-recovery? false
+              :retried? true
+              :retry-body-ran? true}
+             (:observations result))))
+    (testing "routes"
+      (is (true? (get-in result [:routes :all-handled?])))
+      (is (= (set/union expected-posix-foreign-symbols
+                        #{"sqlite3_open" "sqlite3_close_v2" "sqlite3_errmsg"
+                          "sqlite3_prepare_v2" "sqlite3_step" "sqlite3_finalize"
+                          "sqlite3_column_count" "sqlite3_column_name"
+                          "sqlite3_column_type" "sqlite3_bind_int64"
+                          "sqlite3_bind_blob64" "sqlite3_column_blob"
+                          "sqlite3_column_bytes" "sqlite3_get_autocommit"
+                          "sqlite3_changes"})
+             (set (get-in result [:routes :foreign-symbols])))))
+    (testing "sqlite plan consumption and physical evidence"
+      (is (= {:plan-index 8 :plan-count 8 :open-dbs 0 :active-stmts 0}
+             (get-in result [:sqlite :summary])))
+      (let [closed (get-in result [:sqlite :closed-db-evidence])]
+        (is (= 1 (count closed)))
+        (let [db (first closed)]
+          (is (true? (:autocommit? db)))
+          (is (nil? (:tx db)))
+          (is (= [1 0 1 1] (:autocommit-evidence db)))
+          (is (= [{:sequence 0 :plan-index 2 :op :begin :when :always
+                   :reported :error :applied? true :reason nil
+                   :before-autocommit? true :after-autocommit? false}
+                  {:sequence 1 :plan-index 3 :op :rollback :when :on-success
+                   :reported :done :applied? true :reason nil
+                   :before-autocommit? false :after-autocommit? true}
+                  {:sequence 2 :plan-index 4 :op :begin :when :on-success
+                   :reported :done :applied? true :reason nil
+                   :before-autocommit? true :after-autocommit? false}
+                  {:sequence 3 :plan-index 6 :op :commit :when :on-success
+                   :reported :done :applied? true :reason nil
+                   :before-autocommit? false :after-autocommit? true}]
+                 (:tx-evidence db)))
+          (is (= [{:sequence 0 :plan-index 5 :op :put :reported :done
+                   :key {:type :integer :value 1} :location :staging
+                   :present? true}
+                  {:sequence 1 :plan-index 7 :op :get :reported :done
+                   :key {:type :integer :value 1} :location :committed
+                   :present? true}]
+                 (:store-evidence db)))
+          (is (= {{:type :integer :value 1}
+                  {:type :blob :value [0 65 127 128 255]}}
+                 (:committed db)))
+          (is (nil? (:staging db))))))
+    (testing "clean worlds"
+      (is (= {:memory true :sqlite true :posix true} (:clean? result))))))
+
+(deftest counter-rollback-unverified-poisoned-runs-in-the-hermetic-world
+  (let [result (scenarios/run-recovery-scenario
+                :counter-rollback-unverified-poisoned :simulated)]
+    (is (= expected-recovery-empty-http (dissoc (:http result) :raw-length)))
+    (is (= {:primary {:caught? true :rc 5
+                      :message "sqlite step failed: database is locked"}
+            :follow-up {:rejected? true
+                        :message "connection transaction state is indeterminate; close connection"
+                        :poisoned? true
+                        :close-required? true
+                        :cleanup [{:phase :begin-rollback-verify
+                                   :sql "sqlite3_get_autocommit"}]}}
+           (:observations result)))
+    (is (true? (get-in result [:routes :all-handled?])))
+    (is (= (set/union expected-posix-foreign-symbols
+                      #{"sqlite3_open" "sqlite3_close_v2" "sqlite3_errmsg"
+                        "sqlite3_prepare_v2" "sqlite3_step" "sqlite3_finalize"
+                        "sqlite3_column_count"
+                        "sqlite3_get_autocommit" "sqlite3_changes"})
+           (set (get-in result [:routes :foreign-symbols]))))
+    (is (= {:plan-index 4 :plan-count 4 :open-dbs 0 :active-stmts 0}
+           (get-in result [:sqlite :summary])))
+    (let [db (first (get-in result [:sqlite :closed-db-evidence]))]
+      (is (false? (:autocommit? db)))
+      (is (= [1 0 0] (:autocommit-evidence db)))
+      (is (= [{:sequence 0 :plan-index 2 :op :begin :when :always
+               :reported :error :applied? true :reason nil
+               :before-autocommit? true :after-autocommit? false}
+              {:sequence 1 :plan-index 3 :op :rollback :when :never
+               :reported :done :applied? false :reason :withheld
+               :before-autocommit? false :after-autocommit? false}]
+             (:tx-evidence db)))
+      (is (empty? (:store-evidence db)))
+      (is (some? (:discarded-transaction db)))
+      (is (= {} (:discarded-staging db)))
+      (is (= {} (:committed db))))
+    (is (= {:memory true :sqlite true :posix true} (:clean? result)))))
+
+(deftest counter-rollback-failed-poisoned-runs-in-the-hermetic-world
+  (let [result (scenarios/run-recovery-scenario
+                :counter-rollback-failed-poisoned :simulated)]
+    (is (= expected-recovery-empty-http (dissoc (:http result) :raw-length)))
+    (is (= {:primary {:caught? true :rc 5
+                      :message "sqlite step failed: database is locked"}
+            :follow-up {:rejected? true
+                        :message "connection transaction state is indeterminate; close connection"
+                        :poisoned? true
+                        :close-required? true
+                        :cleanup [{:phase :begin-rollback :sql "ROLLBACK"}]}}
+           (:observations result)))
+    (is (true? (get-in result [:routes :all-handled?])))
+    (is (= (set/union expected-posix-foreign-symbols
+                      #{"sqlite3_open" "sqlite3_close_v2" "sqlite3_errmsg"
+                        "sqlite3_prepare_v2" "sqlite3_step" "sqlite3_finalize"
+                        "sqlite3_column_count"
+                        "sqlite3_get_autocommit" "sqlite3_changes"})
+           (set (get-in result [:routes :foreign-symbols]))))
+    (is (= {:plan-index 4 :plan-count 4 :open-dbs 0 :active-stmts 0}
+           (get-in result [:sqlite :summary])))
+    (let [db (first (get-in result [:sqlite :closed-db-evidence]))]
+      (is (false? (:autocommit? db)))
+      (is (= [1 0] (:autocommit-evidence db)))
+      (is (= [{:sequence 0 :plan-index 2 :op :begin :when :always
+               :reported :error :applied? true :reason nil
+               :before-autocommit? true :after-autocommit? false}
+              {:sequence 1 :plan-index 3 :op :rollback :when :on-success
+               :reported :error :applied? false :reason :reported-error
+               :before-autocommit? false :after-autocommit? false}]
+             (:tx-evidence db)))
+      (is (empty? (:store-evidence db)))
+      (is (some? (:discarded-transaction db)))
+      (is (= {} (:discarded-staging db)))
+      (is (= {} (:committed db))))
+    (is (= {:memory true :sqlite true :posix true} (:clean? result)))))
+
+(def ^:private expected-preexisting-observations
+  {:primary {:caught? true
+             :message "connection is physically inside a transaction while logical depth is zero; close connection"
+             :poisoned? true
+             :close-required? true}
+   :follow-up {:rejected? true
+               :message "connection transaction state is indeterminate; close connection"
+               :poisoned? true
+               :close-required? true
+               :cleanup [{:phase :begin-precondition :sql "BEGIN"}]}})
+
+(deftest preexisting-transaction-poisoned-runs-in-real-and-hermetic-worlds
+  (let [real (when-not *sim-only?*
+               (scenarios/run-recovery-scenario
+                :preexisting-transaction-poisoned :real))
+        simulated (scenarios/run-recovery-scenario
+                   :preexisting-transaction-poisoned :simulated)]
+    (when-not *sim-only?*
+      (is (= (:http real) (:http simulated)))
+      (is (= expected-preexisting-observations (:observations real))))
+    (is (= expected-recovery-empty-http
+           (dissoc (:http simulated) :raw-length)))
+    (is (= expected-preexisting-observations (:observations simulated)))
+    (is (true? (get-in simulated [:routes :all-handled?])))
+    (is (= (set/union expected-posix-foreign-symbols
+                      #{"sqlite3_open" "sqlite3_close_v2" "sqlite3_prepare_v2"
+                        "sqlite3_step" "sqlite3_finalize" "sqlite3_column_count"
+                        "sqlite3_bind_int64"
+                        "sqlite3_bind_blob64" "sqlite3_get_autocommit"
+                        "sqlite3_changes"})
+           (set (get-in simulated [:routes :foreign-symbols]))))
+    (is (= {:plan-index 4 :plan-count 4 :open-dbs 0 :active-stmts 0}
+           (get-in simulated [:sqlite :summary])))
+    (let [db (first (get-in simulated [:sqlite :closed-db-evidence]))]
+      (is (false? (:autocommit? db)))
+      (is (= [0] (:autocommit-evidence db)))
+      (is (= [{:sequence 0 :plan-index 2 :op :begin :when :on-success
+               :reported :done :applied? true :reason nil
+               :before-autocommit? true :after-autocommit? false}]
+             (:tx-evidence db)))
+      (is (= [{:sequence 0 :plan-index 3 :op :put :reported :done
+               :key {:type :integer :value 1} :location :staging
+               :present? true}]
+             (:store-evidence db)))
+      (is (some? (:discarded-transaction db)))
+      (is (= {{:type :integer :value 1}
+              {:type :blob :value [0 65 127 128 255]}}
+             (:discarded-staging db)))
+      (is (= {} (:committed db))))
+    (is (= {:memory true :sqlite true :posix true} (:clean? simulated)))))

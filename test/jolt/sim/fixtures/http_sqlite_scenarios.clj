@@ -470,3 +470,150 @@
     (throw (ex-info "unknown http-sqlite transaction mode"
                     {:mode mode
                      :supported [:real :simulated]}))))
+
+;; ---- Begin-recovery / poisoning scenarios ----------------------------------
+
+(def ^:private recovery-scenarios
+  #{:uncertain-begin-recovered
+    :counter-rollback-unverified-poisoned
+    :counter-rollback-failed-poisoned
+    :preexisting-transaction-poisoned})
+
+;; R2/R3/R4 inject a BEGIN failure no real SQLite driver ever reports; only
+;; R6 (a real pre-existing physical transaction) is meaningful under real
+;; SQLite too.
+(def ^:private sim-only-recovery-scenarios
+  #{:uncertain-begin-recovered
+    :counter-rollback-unverified-poisoned
+    :counter-rollback-failed-poisoned})
+
+(def ^:private pragma-plan
+  {:sql "PRAGMA foreign_keys=1;"
+   :params {} :columns [] :rows [] :changes 0 :last-row-id 0})
+
+(def ^:private create-table-plan
+  {:sql "create table sim_blob (id integer primary key, payload blob)"
+   :params {} :columns [] :rows [] :changes 0 :last-row-id 0})
+
+(defn- insert-plan []
+  {:sql "insert into sim_blob (id, payload) values (?, ?)"
+   :params {1 {:type :integer :value 1}
+            2 {:type :blob :value (byte-array expected-blob-octets)}}
+   :columns [] :rows [] :changes 1 :last-row-id 1
+   :store-effect {:op :put :key-param 1 :value-param 2}})
+
+(def ^:private select-plan
+  {:sql "select payload from sim_blob where id = ?"
+   :params {1 {:type :integer :value 1}}
+   :columns ["payload"] :rows [] :changes 0 :last-row-id 1
+   :store-effect {:op :get :key-param 1}})
+
+(defn- recovery-statement-plans
+  "The exact SQLite plans each begin-recovery/poisoning scenario drives over
+   one in-memory connection. SQL text, parameter types/values, and every
+   :tx-effect/:store-effect directive are exactly what the pinned db.jdbc
+   verified-sqlite-begin! recovery contract and db.sqlite driver observe or
+   emit; nothing is inferred from SQL text here or by the model. The BEGIN
+   and ROLLBACK :error fields reuse fixture/injected-begin-error and
+   fixture/injected-rollback-error verbatim so the fixture's exact-predicate
+   catches and this plan construction never drift apart."
+  [scenario]
+  (case scenario
+    :uncertain-begin-recovered
+    [pragma-plan
+     create-table-plan
+     {:sql "BEGIN" :params {} :columns [] :rows [] :changes 0 :last-row-id 0
+      :tx-effect {:op :begin :when :always}
+      :error fixture/injected-begin-error}
+     {:sql "ROLLBACK" :params {} :columns [] :rows [] :changes 0 :last-row-id 0
+      :tx-effect {:op :rollback}}
+     {:sql "BEGIN" :params {} :columns [] :rows [] :changes 0 :last-row-id 0
+      :tx-effect {:op :begin}}
+     (insert-plan)
+     {:sql "COMMIT" :params {} :columns [] :rows [] :changes 0 :last-row-id 0
+      :tx-effect {:op :commit}}
+     select-plan]
+
+    :counter-rollback-unverified-poisoned
+    [pragma-plan
+     create-table-plan
+     {:sql "BEGIN" :params {} :columns [] :rows [] :changes 0 :last-row-id 0
+      :tx-effect {:op :begin :when :always}
+      :error fixture/injected-begin-error}
+     {:sql "ROLLBACK" :params {} :columns [] :rows [] :changes 0 :last-row-id 0
+      :tx-effect {:op :rollback :when :never}}]
+
+    :counter-rollback-failed-poisoned
+    [pragma-plan
+     create-table-plan
+     {:sql "BEGIN" :params {} :columns [] :rows [] :changes 0 :last-row-id 0
+      :tx-effect {:op :begin :when :always}
+      :error fixture/injected-begin-error}
+     {:sql "ROLLBACK" :params {} :columns [] :rows [] :changes 0 :last-row-id 0
+      :tx-effect {:op :rollback}
+      :error fixture/injected-rollback-error}]
+
+    :preexisting-transaction-poisoned
+    [pragma-plan
+     create-table-plan
+     {:sql "BEGIN" :params {} :columns [] :rows [] :changes 0 :last-row-id 0
+      :tx-effect {:op :begin}}
+     (insert-plan)]))
+
+(defn run-recovery-scenario
+  "Runs the unchanged ordinary begin-recovery/poisoning fixture once for
+   `scenario` (one of recovery-scenarios) in `mode` (:real or :simulated),
+   exactly like run-transaction-scenario. R2-R4 (every scenario in
+   sim-only-recovery-scenarios) inject a BEGIN failure no real driver ever
+   reports and therefore reject :real before any world, server, or connection
+   is created; R6 (:preexisting-transaction-poisoned) runs in both modes.
+
+   Returns {:http ... :observations ...} for :real, and additionally
+   :routes/:sqlite/:clean? evidence for :simulated -- the same shape
+   run-transaction-scenario returns, plus the fixture's own :observations
+   map."
+  [scenario mode]
+  (when-not (contains? recovery-scenarios scenario)
+    (throw (ex-info "unknown http-sqlite recovery scenario"
+                    {:scenario scenario :supported (vec recovery-scenarios)})))
+  (when (and (= mode :real) (contains? sim-only-recovery-scenarios scenario))
+    (throw (ex-info "recovery scenario is simulated-only"
+                    {:scenario scenario :mode mode})))
+  (case mode
+    :real
+    (let [fixture-result (fixture/exercise-http-sqlite-recovery scenario)]
+      {:http (canonical-http-evidence fixture-result)
+       :observations (:observations fixture-result)})
+
+    :simulated
+    (let [mem (memory/world)
+          sqlite-world (sqlite/world mem (recovery-statement-plans scenario))
+          posix-world (posix/world mem (net/target-descriptor)
+                                   {:stream-capacity 1
+                                    :pipe-capacity 1})
+          handlers (hp/compose
+                    (hp/pack :jolt.sim/memory (memory/handlers mem))
+                    (hp/pack :jolt.sim/sqlite
+                             (sqlite/foreign-handlers sqlite-world))
+                    (hp/pack :jolt.sim/posix
+                             (posix/foreign-handlers posix-world)))
+          controlled (rt/run-controlled
+                      {:ffi-handlers handlers
+                       :drain-timeout-ms 10000}
+                      #(fixture/exercise-http-sqlite-recovery scenario))
+          effect-trace (:effect-trace controlled)
+          fixture-result (:result controlled)]
+      {:http (canonical-http-evidence fixture-result)
+       :observations (:observations fixture-result)
+       :routes {:count (count effect-trace)
+                :all-handled? (every? #(= :handler (:route %)) effect-trace)
+                :foreign-symbols (foreign-symbols effect-trace)}
+       :sqlite {:summary (sqlite/summary sqlite-world)
+                :closed-db-evidence (closed-db-evidence sqlite-world)}
+       :clean? {:memory (memory/clean? mem)
+                :sqlite (sqlite/clean? sqlite-world)
+                :posix (posix/clean? posix-world)}})
+
+    (throw (ex-info "unknown http-sqlite recovery mode"
+                    {:mode mode
+                     :supported [:real :simulated]}))))

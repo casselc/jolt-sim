@@ -3,7 +3,12 @@
             [jolt.sim.http-sqlite-integration-test :as integration]))
 
 (def ^:private progress-file "/tmp/jolt-sim-http-sqlite-test.progress")
-(def ^:private watchdog-timeout-ms 60000)
+;; Six serial end-to-end cases now each start and stop a real HTTP/TCP/SQLite
+;; lifecycle. The prior two-case gate completed in roughly 34 seconds on the
+;; reference Linux host, so its 60-second suite-wide bound cannot distinguish
+;; the expanded healthy workload from a hang. Retain one bounded outer
+;; watchdog with headroom for slower CI architectures.
+(def ^:private watchdog-timeout-ms 240000)
 
 (defn -main [& args]
   (let [sim-only? (= ["--sim-only"] (vec args))]
