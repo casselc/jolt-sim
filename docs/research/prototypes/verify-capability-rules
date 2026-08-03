@@ -1,0 +1,55 @@
+#!/bin/sh
+# verify-capability-rules — gate for the capability-tier rule-set prototypes.
+#
+# Mirrors the bin/verify-* pattern used in jolt-bytes, jolt-bencode and
+# jolt-hako: run every check, report each, fail the gate if any fails.
+#
+# What each stage establishes, and what it does NOT:
+#
+#   queries      mode_checker.py against jolt-hako proofs/prolog/queries.json --
+#                the 9 recorded queries with their recorded expected answers.
+#                SPOT CHECKS. These passed at a rule set carrying 1051 unsound
+#                acceptances, so passing this stage alone means little.
+#   equivalence  equivalence.py against a transcription of ownership.pl step/3
+#                over EVERY operation sequence to depth 10. This is the load-
+#                bearing stage: it is a differential test against the
+#                specification's own semantics, not its examples.
+#   controlflow  branching and loops. Rules and expectations are both authored
+#                in this repository, so this is a consistency check, not
+#                differential evidence.
+#   multicap     names, aliasing, moves, and function signatures.
+#
+# Nonclaims: bounded to depth 10; one capability domain (the hako codec
+# buffer); straight-line and structured control flow only, no higher-order
+# calls; Python prototypes modelling a rule set, not a checker over Jolt IR.
+#
+# Usage:  ./verify-capability-rules
+set -eu
+
+cd "$(dirname "$0")"
+PY="${PYTHON:-python3}"
+DEPTH="${DEPTH:-10}"
+
+fails=0
+run() {
+    label="$1"; shift
+    printf '=== %s ===\n' "$label"
+    if "$@"; then
+        printf '%s\n\n' "--- $label: OK"
+    else
+        printf '%s\n\n' "--- $label: FAILED"
+        fails=$((fails + 1))
+    fi
+}
+
+run "queries (spot checks, not sufficient alone)" "$PY" mode_checker.py
+run "equivalence vs ownership.pl, depth $DEPTH" "$PY" equivalence.py "$DEPTH"
+run "control flow (consistency check)"           "$PY" controlflow.py
+run "multiple capabilities and aliasing"         "$PY" multicap.py
+
+if [ "$fails" -eq 0 ]; then
+    echo "capability-rule gate: all stages passed"
+    exit 0
+fi
+echo "capability-rule gate: $fails stage(s) FAILED"
+exit 1
