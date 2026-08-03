@@ -809,6 +809,47 @@ the first poll and proves the unchanged stack recovers. It does not yet claim
 concurrent requests, generated schedules or fault plans, database
 locking/durability, other native failures, or bounded liveness.
 
+### Length-framed TCP plus bytes and bencode
+
+`jolt.sim.fixtures.tcp-bencode` is another ordinary application fixture with no
+simulator import. It uses public `teensyp.server`, `teensyp.client`,
+`teensyp.buffer`, `jolt.bytes`, `jolt.bencode`, and `jolt.host` APIs to serve two
+pipelined echo requests over a four-byte big-endian length frame. The parser retains an
+incomplete prefix/body across reads, drains multiple complete frames already in
+one buffer, rejects oversized bodies and trailing codec data, and requires the
+bencode cursor to consume the declared body exactly. Like the other application
+fixtures in this repository, it is a new fixture built from unchanged ecosystem
+libraries, not an unchanged upstream application.
+
+The Hegel lane runs one real-loopback/sim parity witness, then 15 fresh-worker
+cases over one-, two-, four-, and eight-byte modeled stream/self-pipe
+capacities, selected captured `poll(2)` EINTR ordinals, and discriminating
+empty, ASCII, and UTF-8 text. Five additional cases draw shrinkable UTF-8 text
+directly from Hegel. Every requested nonnil EINTR ordinal must actually fire;
+every stream capacity must be reached and produce backpressure. It checks exact
+correlated replies, handler-only FFI routing, capacity and fault evidence, and
+complete socket/pipe/native-memory cleanup:
+
+```sh
+export JOLT_SIM_BIN=/path/to/current-sim/target/sim/jolt
+export JOLT_SIM_PROJECT_DIR=/absolute/path/to/jolt-sim
+"$JOLT_SIM_BIN" -A:tcp-bencode-hegel-test -m hegel.install
+"$JOLT_SIM_BIN" -M:tcp-bencode-hegel-test
+```
+
+This is an unchanged-library integration witness, not a replacement TCP or
+bencode implementation. The current bencode profile carries UTF-8 text and
+integers but does not claim arbitrary binary byte strings. The lane explores
+capacity fragmentation and poll interruption; it does not claim half-close
+coverage, concurrent clients, admission-order search, a stateful Hegel model,
+broad malformed-network generation, load/performance proof, or liveness proof.
+Larger self-pipe capacities are configuration coverage until a wake-coalescing
+workload pressures each bound. Literal independent wire vectors and every
+incomplete frame boundary run via `-M:tcp-bencode-framing-test`. This black-box
+application lane does not observe arbitrary ordinary array accesses or claim
+any backing-array ownership overlap proof. FFI admission-order schedules and
+broader malformed-client generation remain later slices.
+
 ### Composing handler packs
 
 `jolt.sim.handler-pack` is a small public helper for assembling one

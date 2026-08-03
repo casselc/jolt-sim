@@ -95,6 +95,62 @@
      :deps/root "clj"}}
    :main-opts ["-m" "jolt.sim.sqlite-integration-test" "--sim-only"]}
 
+  ;; Independent literal wire vectors and every-boundary fragmentation checks
+  ;; for the ordinary TCP + bencode fixture.
+  :tcp-bencode-framing-test
+  {:extra-paths ["test"]
+   :extra-deps
+   {io.github.casselc/jolt-tcp
+    {:git/url "https://github.com/casselc/jolt-tcp.git"
+     :git/sha "75f2804a08280f39d16f0eacef3aad46cc0a6899"}
+    io.github.casselc/jolt-net
+    {:git/url "https://github.com/casselc/jolt-net.git"
+     :git/sha "b12f691c06c2ae64509586f6359a946bd1cb284c"}
+    io.github.casselc/jolt-bencode
+    {:git/url "https://github.com/casselc/jolt-bencode.git"
+     :git/sha "6c68bf2a1dbd7e438923ce38252c2abbdcb1643f"}
+    io.github.casselc/jolt-bytes
+    {:git/url "https://github.com/casselc/jolt-bytes.git"
+     :git/sha "9c3280eb49c00d0373e32ee6cae74f961a254712"}}
+   :main-opts ["-m" "jolt.sim.tcp-bencode-framing-test"]}
+
+  ;; Fresh-worker lane for the TCP + bencode length-framed request/reply
+  ;; example: unchanged teensyp.server/client/buffer, jolt.bytes, and
+  ;; jolt.bencode application code resolved from jolt.sim.explore-worker.
+  ;; jolt-bytes is pinned directly (rather than left to jolt-bencode's own
+  ;; transitive pin) so this exact commit wins by dependency depth. The
+  ;; scenario imports jolt.net directly for target facts, so its reviewed
+  ;; ecosystem commit is direct rather than an accidental transitive detail.
+  :tcp-bencode-explore-worker
+  {:extra-paths ["test"]
+   :extra-deps
+   {io.github.casselc/jolt-tcp
+    {:git/url "https://github.com/casselc/jolt-tcp.git"
+     :git/sha "75f2804a08280f39d16f0eacef3aad46cc0a6899"}
+    io.github.casselc/jolt-net
+    {:git/url "https://github.com/casselc/jolt-net.git"
+     :git/sha "b12f691c06c2ae64509586f6359a946bd1cb284c"}
+    io.github.casselc/jolt-bencode
+    {:git/url "https://github.com/casselc/jolt-bencode.git"
+     :git/sha "6c68bf2a1dbd7e438923ce38252c2abbdcb1643f"}
+    io.github.casselc/jolt-bytes
+    {:git/url "https://github.com/casselc/jolt-bytes.git"
+     :git/sha "9c3280eb49c00d0373e32ee6cae74f961a254712"}}
+   :main-opts ["-m" "jolt.sim.explore-worker"]}
+
+  ;; Hegel-owned, shrinkable capacities, poll-fault ordinal, and request-text
+  ;; domain drive the unchanged TCP + bencode application in a fresh worker
+  ;; for every case. This parent alias intentionally carries no teensyp/
+  ;; bencode/bytes dependency; only :tcp-bencode-explore-worker resolves the
+  ;; scenario namespace, in a fresh child process per case.
+  :tcp-bencode-hegel-test
+  {:extra-paths ["test"]
+   :extra-deps
+   {io.github.chucklehead-dev/jolt-hegel
+    {:git/url "https://github.com/chucklehead-dev/jolt-hegel.git"
+     :git/sha "ffe523023437862c7e474dc216346426318754c6"}}
+   :main-opts ["-m" "jolt.sim.tcp-bencode-hegel-test"]}
+
   ;; Unchanged public jolt.net application code over the deterministic POSIX
   ;; loopback FFI pack. Pin the reviewed ecosystem integration checkpoint so
   ;; public CI never depends on a sibling checkout or a moving branch.
