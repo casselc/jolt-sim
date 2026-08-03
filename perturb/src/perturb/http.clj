@@ -11,8 +11,8 @@
        different positions of one result. `multicap.py` probed this shape in
        Python; no perturb code had.
 
-    2. A TYPESTATE CYCLE. nREPL's machine is a LINE — created -> active ->
-       closed. Keep-alive is a CYCLE: :reading -> :responding -> :reading. The
+    2. A TYPESTATE CYCLE. nREPL's machine is a LINE — active -> closed.
+       Keep-alive is a CYCLE: :reading -> :responding -> :reading. The
        loop rule preserves the (path, capability, state) SHAPE at a back edge,
        and a cycle is exactly the case where the shape at the top of the loop is
        reachable again from the bottom.
@@ -374,10 +374,20 @@
        {:states  [:reading :responding :writing :closed]
         :initial :reading
         :terminal :closed
+        ;; SIX EDGES, THREE OF WHICH ALSO BELONG TO ANOTHER MACHINE. `accept` is
+        ;; also Listener's self-loop, `respond-begin` also mints a ResponseBody,
+        ;; and `body-finish!` is the `:writing -> :reading` edge here and
+        ;; ResponseBody's `:open -> :finished` at the same time. Until the
+        ;; checker's primitive table was keyed by [capability operation] the last
+        ;; two could not be written down at all: a second declaration naming an
+        ;; operation overwrote the first (PERTURB-DESIGN E18 finding 1(a)).
+        ;; `body-finish!` was simply MISSING from this list for that reason, so
+        ;; the edge `no-response-owed-at-close` talks about was undeclared.
         :transitions [{:op 'perturb.http/accept        :from nil          :to :reading}
                       {:op 'perturb.http/read-request  :from :reading     :to :responding}
                       {:op 'perturb.http/respond!      :from :responding  :to :reading}
                       {:op 'perturb.http/respond-begin :from :responding  :to :writing}
+                      {:op 'perturb.http/body-finish!  :from :writing     :to :reading}
                       {:op 'perturb.http/close-conn!   :from [:reading :responding :writing]
                                                        :to   :closed}]}
        :perturb.cap/representation []
@@ -404,8 +414,13 @@
        {:states  [:open :finished]
         :initial :open
         :terminal :finished
-        :transitions [{:op 'perturb.http/body-write   :from :open :to :open}
-                      {:op 'perturb.http/body-finish! :from :open :to :finished}]}
+        ;; `respond-begin` is the creating edge and it is a transition of
+        ;; ServerConn as well. It could not be named here until the primitive
+        ;; table was keyed by [capability operation] — the docstring on
+        ;; `respond-begin` used to say exactly that (E18 finding 1(a)).
+        :transitions [{:op 'perturb.http/respond-begin :from nil   :to :open}
+                      {:op 'perturb.http/body-write    :from :open :to :open}
+                      {:op 'perturb.http/body-finish!  :from :open :to :finished}]}
        :perturb.cap/representation []
        ;; THE POINT OF THIS CAPABILITY. Neither of these is a typestate
        ;; property. `:finished` says the writer stopped; it does not say it wrote
@@ -479,10 +494,11 @@
 (defn listen
   "Bind and listen. Produces a Listener@:listening, BARE — no `:at`.
 
-  Annotation: consumes nothing. Note the declared transition is `:from nil`, not
-  `:from :created`: `perturb.nrepl/open` says `:from :created` while its
-  annotation consumes nothing, so its declared machine and its annotation
-  disagree about the source state. See PERTURB-DESIGN E18 finding 1."
+  Annotation: consumes nothing. The declared transition is `:from nil`, not
+  `:from :created`: a machine has no pre-creation state, because nothing is ever
+  in one. `perturb.nrepl/open` used to say `:from :created` while its annotation
+  consumed nothing, which is the disagreement E18 finding 1(b) records; that
+  state is now deleted and both creating operations read the same way."
   {:perturb.cap/op {:consumes []
                     :produces [{:cap 'perturb.http/Listener :state :listening}]}}
   [host port]
@@ -610,11 +626,11 @@
   produces [ServerConn@:writing ResponseBody@:open].
 
   A SECOND two-capability signature, and a different shape from `accept`'s: this
-  one MINTS a capability of a machine it is not a declared transition of.
-  ResponseBody's `:transitions` cannot name `respond-begin` as its creator,
-  because `perturb.check`'s primitive table is keyed by OPERATION and an
-  operation can be a transition of at most one capability — PERTURB-DESIGN E18
-  finding 1."
+  one MINTS a capability of a second machine. ResponseBody's `:transitions` now
+  names it as the creating edge, `nil -> :open`. It could not, while the
+  checker's primitive table was keyed by OPERATION and an operation could be a
+  transition of at most one capability — PERTURB-DESIGN E18 finding 1(a), now
+  keyed by [capability operation]."
   {:perturb.cap/op {:consumes [{:cap 'perturb.http/ServerConn :state :responding :arg 0}]
                     :produces [{:cap 'perturb.http/ServerConn   :state :writing :at [0]}
                                {:cap 'perturb.http/ResponseBody :state :open    :at [1]}]}}
@@ -656,8 +672,13 @@
   response whose Content-Length is a lie. That program is the evidence for
   PERTURB-DESIGN E18 finding 3.
 
-  It also consumes two capabilities of two different machines at once, which is
-  what `check-annotation-consistency!` cannot describe (E18 finding 1)."
+  IT ADVANCES TWO MACHINES AT ONCE and both edges are now declared: ResponseBody
+  `:open -> :finished` and ServerConn `:writing -> :reading`. The ResponseBody is
+  consumed and NOT handed back, which the consistency rule permits because
+  `:finished` is terminal — `produced and dropped` and `not produced` are the
+  same thing to every rule the checker has. E18 finding 1(a) recorded the
+  previous state, where the two edges collapsed onto one operation key and the
+  checker reported the impossible `:open -> :reading`."
   {:perturb.cap/op {:consumes [{:cap 'perturb.http/ResponseBody :state :open    :arg 1}
                                {:cap 'perturb.http/ServerConn   :state :writing :arg 0}]
                     :produces [{:cap 'perturb.http/ServerConn :state :reading}]}}

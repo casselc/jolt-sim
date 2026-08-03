@@ -4,12 +4,13 @@
   compiled code runs against a real TCP socket and against an in-memory handler.
 
   It is also the CLAIM 3 exhibit. The connection is a `unique` capability with
-  typestate created -> active -> closed. It is threaded affinely: every operation
-  CONSUMES the connection value and RETURNS its successor, so an expression that
-  reused a closed connection would have to name a value that a `close` already
-  consumed. That is not enforced by anything — §1.2's checker is out of scope —
-  but it is the shape a checker would accept, and the annotations below say so in
-  data.
+  typestate active -> closed, minted by `open` from nothing (there is no
+  pre-creation state; see the declaration below). It is threaded affinely: every
+  operation CONSUMES the connection value and RETURNS its successor, so an
+  expression that reused a closed connection would have to name a value that a
+  `close` already consumed. That is not enforced by anything in THIS namespace —
+  `perturb.check` is what refuses it — but it is the shape a checker would
+  accept, and the annotations below say so in data.
 
   DRIVER. E4/E13's trichotomy drives real I/O here: `:need-more` is the only
   thing that causes a `recv`, and it carries the exact original cursor, so a
@@ -32,14 +33,32 @@
        :perturb.cap/uniqueness  :unique
        :perturb.cap/linearity   :once
        :perturb.cap/contention  :thread-confined
+       ;; NO PRE-CREATION STATE. This machine used to read
+       ;; `[:created :active :closed]` with `open` declared `:created -> :active`,
+       ;; while `open`'s annotation consumes nothing — so the declaration and the
+       ;; annotation disagreed, and had since E17 without ever being printed
+       ;; (E18 finding 1(b)).
+       ;;
+       ;; `:created` was a fiction. No value is ever in it: `open` is what brings
+       ;; the connection into existence, and there is no operation legal FROM
+       ;; `:created` for anything to be in it for. A state with no inhabitants
+       ;; and no outgoing edge is not a state of the machine, it is a name for
+       ;; the machine's absence — and `nil` already denotes that in the three
+       ;; capabilities of `perturb.http`, which were written later and never
+       ;; needed one. So the state is deleted and the CREATING edge declares
+       ;; `:from nil`, which the per-capability consistency rule compares against
+       ;; an annotation that consumes nothing with no special case at all. The
+       ;; alternative — keeping `:created` and giving creating operations their
+       ;; own consistency rule — costs a rule to preserve a state nothing
+       ;; occupies.
        :perturb.cap/typestate
-       {:states      [:created :active :closed]
-        :initial     :created
+       {:states      [:active :closed]
+        :initial     :active
         :terminal    :closed
         ;; role-indexed operation legality (E5)
-        :transitions [{:op 'perturb.nrepl/open    :from :created :to :active}
-                      {:op 'perturb.nrepl/request :from :active  :to :active}
-                      {:op 'perturb.nrepl/close!  :from :active  :to :closed}]}
+        :transitions [{:op 'perturb.nrepl/open    :from nil     :to :active}
+                      {:op 'perturb.nrepl/request :from :active :to :active}
+                      {:op 'perturb.nrepl/close!  :from :active :to :closed}]}
        ;; THE ABSTRACTION BOUNDARY. These operations are INSIDE the Connection:
        ;; they construct or read its concrete map, below the level the modes
        ;; describe. `(:perturb.nrepl/buf c)` is not a capability operation and
@@ -102,14 +121,18 @@
 
   Annotation: consumes nothing, produces a unique Connection@:active.
   No `:at` — this operation returns the connection BARE, and the annotation
-  says so. Contrast `request` below."
+  says so. Contrast `request` below.
+
+  THE CREATING EDGE, and it declares `:from nil`. The ledger records one
+  transition, `nil -> :active`; it used to record two, through a `:created`
+  state that nothing ever observed the connection in. See the note on the
+  declaration above."
   {:perturb.cap/op {:consumes []
                     :produces [{:cap 'perturb.nrepl/Connection :state :active}]}}
   [host port]
   (let [id  (fresh-id)
-        _   (cap/transition! 'perturb.nrepl/Connection id nil :created :perturb.nrepl/open)
         tok (w/connect host port :perturb.nrepl/connect)]
-    (cap/transition! 'perturb.nrepl/Connection id :created :active :perturb.nrepl/open)
+    (cap/transition! 'perturb.nrepl/Connection id nil :active :perturb.nrepl/open)
     (conn id :active tok o/empty-octets 0 0)))
 
 (defn- compact

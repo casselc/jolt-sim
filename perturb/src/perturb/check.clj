@@ -40,6 +40,17 @@
   them from the source. And real Jolt IR, captured by `perturb.ir` from the
   compile spine — not source forms, not a model.
 
+  A SECOND SET OF RULES, ON THE DECLARATIONS THEMSELVES. The judgements above are
+  about a program. `annotation-faults` and `check-annotation-consistency!` are
+  about a DECLARATION: whether an annotation can be read at all, and whether it
+  agrees with the machine it claims to be an edge of. They are separate because
+  E18 found four defects that were not in the flow rules — the flow rules met a
+  second protocol with two capabilities and survived unchanged — but in what the
+  declaration language could say. They are gated by `run-declaration-corpus`
+  against fixtures that name no code, because three of the four had no artifact
+  except a diagnostic raised against an axiom, which was collected and discarded
+  for two sections.
+
   WHAT IT TRUSTS — two classes, and the second is larger than it looks. An
   operation in a capability's declared `:transitions` is a PRIMITIVE of the state
   machine, and one in its `:representation` is INSIDE the capability's
@@ -79,22 +90,38 @@
 
 ;; --- the specification, read from perturb.cap -------------------------------
 
-(defn spec
-  "The checker's specification, built from `cap/checker-input`. Nothing here is
-  derived from source: the declarations and annotations are taken as given."
-  []
-  (let [ci    (cap/checker-input)
-        decls (:perturb.cap/declarations ci)
+(defn spec-from
+  "The checker's specification, built from one `cap/checker-input`-shaped map.
+  Nothing here is derived from source: the declarations and annotations are taken
+  as given. Split out from `spec` so the declaration-level rules can be run
+  against hand-built fixtures that name no code (see `run-declaration-corpus`).
+
+  THE PRIMITIVE TABLE IS KEYED BY `[capability operation]`, NOT BY OPERATION.
+  Keying by operation alone meant a second declaration naming the same operation
+  OVERWROTE the first, so an operation belonged to at most one capability and
+  `perturb.http`'s 10 declared transition entries were seen as 9 primitives.
+  `accept` (mint a ServerConn from a Listener), `respond-begin` (mint a
+  ResponseBody from a ServerConn) and `body-finish!` (end a ResponseBody, return
+  the ServerConn) each advance TWO machines, and none of them could be declared
+  (PERTURB-DESIGN E18 finding 1(a)).
+
+  The value stored is the DECLARED TRANSITION ENTRY ITSELF with `:cap` added, not
+  a three-key summary of it. Any further key a declaration puts on a transition —
+  a side condition, a refinement — travels with it and needs no change here."
+  [ci]
+  (let [decls (:perturb.cap/declarations ci)
         ops   (:perturb.cap/operations ci)
-        ;; opsym -> the transition it is a primitive of, if any
         prims (reduce (fn [acc e]
-                        (let [decl (second e)
-                              ts   (:perturb.cap/typestate decl)]
-                          (reduce (fn [a t]
-                                    (assoc a (:op t) {:cap (first e)
-                                                      :from (:from t) :to (:to t)}))
+                        (let [cname (first e)
+                              ts    (:perturb.cap/typestate (second e))]
+                          (reduce (fn [a t] (assoc a [cname (:op t)] (assoc t :cap cname)))
                                   acc (:transitions ts))))
                       {} decls)
+        ;; opsym -> every declared edge that operation is, across all machines,
+        ;; in a stable order. An operation with no entry here is not a primitive.
+        by-op (reduce (fn [acc k]
+                        (update acc (second k) (fn [v] (conj (or v []) (get prims k)))))
+                      {} (sort-by str (keys prims)))
         ;; Operations INSIDE the capability's implementation: they construct or
         ;; read its concrete value, below the abstraction the modes describe.
         ;; Their bodies are axioms for exactly the reason a transition's body is.
@@ -104,7 +131,13 @@
                         (reduce (fn [a s] (assoc a s (first e)))
                                 acc (:perturb.cap/representation (second e))))
                       {} decls)]
-    {:declarations decls :operations ops :primitives prims :representation repr}))
+    {:declarations decls :operations ops
+     :primitives prims :transitions-of by-op :representation repr}))
+
+(defn spec
+  "The checker's specification, built from `cap/checker-input`."
+  []
+  (spec-from (cap/checker-input)))
 
 (defn- decl-of [sp c] (get (:declarations sp) c))
 
@@ -308,49 +341,54 @@
 (defn- entry-path [entry] (vec (or (:at entry) [])))
 
 (defn- entry-site
-  "How an annotation entry names its argument, for a diagnostic."
+  "How an annotation entry names its argument, for a diagnostic. `:arg` is
+  mandatory, so there is no unpositioned rendering left to produce."
   [entry]
-  (if (:arg entry)
-    (str "argument " (:arg entry) (path-str (entry-path entry)))
-    "any argument (UNPOSITIONED)"))
+  (str "argument " (:arg entry) (path-str (entry-path entry))))
+
+(defn- report-unpositioned! [st opsym entry move?]
+  (report! {:kind :annotation-unpositioned :cap (:cap entry) :op opsym
+            :detail [(str "operation     " opsym (if move? " consumes " " borrows ")
+                          (:cap entry) "@" (want-str (:state entry))
+                          " and does not say WHICH argument holds it")
+                     (str "at            " (pir/site (:pos st)))
+                     "every :consumes / :borrows entry must carry `:arg n`"
+                     "an unpositioned entry is refused, not guessed"]})
+  nil)
 
 (defn- consume-arg
   "TYPESTATE + LIVE. Apply one :consumes/:borrows entry of `opsym` to the argument
-  list. Returns {:st st :used bid|nil}.
+  list. Returns {:st st :used i|nil :ok bool}.
 
-  POSITIONED. If the entry carries `:arg n` (and optionally `:at [i …]`), the
-  capability is looked for exactly there and nowhere else. Without `:arg` the
-  checker falls back to scanning the argument list, which is what §1.2's
-  original unpositioned shape forces and what E15 showed is not sound enough to
-  build on."
-  [st sp opsym entry vals nodes used move?]
+  POSITIONED, AND ONLY POSITIONED. The entry carries `:arg n` (and optionally
+  `:at [i …]`) and the capability is looked for exactly there and nowhere else.
+  The fallback that matched specs to parameters IN ORDER when `:arg` was absent
+  is REMOVED: it was the checker's own convention rather than §1.2's (E17
+  nonclaim 4), and with two capabilities it bound the wrong parameter to the
+  wrong capability and produced five diagnostics, none of which named the
+  annotation (E18 finding 1(d)). An entry without `:arg` is now refused here and
+  at the annotation's own declaration.
+
+  This does NOT establish that the argument really holds what the entry says —
+  the callee's body is an axiom or is checked separately."
+  [st sp opsym entry vals nodes move?]
   (let [want-cap   (:cap entry)
         want-state (:state entry)
         path       (entry-path entry)
-        hit (if (:arg entry)
-              (let [i    (:arg entry)
-                    leaf (val-at (nth' vals i) path)
+        i          (:arg entry)
+        hit (when i
+              (let [leaf (val-at (nth' vals i) path)
                     lc   (live-cap st leaf)]
-                (when (and lc (= (:cap lc) want-cap)) {:i i :lc lc :leaf leaf}))
-              (loop [i 0]
-                (if (>= i (count vals))
-                  nil
-                  (let [lc (live-cap st (nth vals i))]
-                    (if (and lc (= (:cap lc) want-cap) (not (contains? used i)))
-                      {:i i :lc lc :leaf (nth vals i)}
-                      (recur (inc i)))))))
-        dead-leaf (if (:arg entry)
-                    (let [leaf (val-at (nth' vals (:arg entry)) path)]
-                      (when (and (= :dead (:v leaf)) (= want-cap (:cap leaf))) leaf))
-                    (first (remove nil?
-                                   (map (fn [v]
-                                          (:val (first (filter (fn [l]
-                                                                 (and (= :dead (:v (:val l)))
-                                                                      (= want-cap (:cap (:val l)))))
-                                                               (leaves v)))))
-                                        vals))))
+                (when (and lc (= (:cap lc) want-cap)) {:i i :lc lc :leaf leaf})))
+        dead-leaf (when i
+                    (let [leaf (val-at (nth' vals i) path)]
+                      (when (and (= :dead (:v leaf)) (= want-cap (:cap leaf))) leaf)))
         dead-here? (not (nil? dead-leaf))]
     (cond
+      (nil? i)
+      (do (report-unpositioned! st opsym entry move?)
+          {:st st :used nil :ok false})
+
       (nil? hit)
       (do (if dead-here?
             ;; the capability IS at that position — it is just already consumed.
@@ -439,11 +477,10 @@
         vals  (:vals r)
         nodes (:args node)
         step  (fn [acc entry move?]
-                (let [rr (consume-arg (:st acc) sp opsym entry vals nodes (:used acc) move?)]
-                  {:st (:st rr) :used (conj (:used acc) (:used rr))
-                   :ok (and (:ok acc) (:ok rr))}))
-        a1    (reduce (fn [acc e] (step acc e false)) {:st st1 :used #{} :ok true} (:borrows ann))
-        a2    (reduce (fn [acc e] (step acc e true))  a1                           (:consumes ann))
+                (let [rr (consume-arg (:st acc) sp opsym entry vals nodes move?)]
+                  {:st (:st rr) :ok (and (:ok acc) (:ok rr))}))
+        a1    (reduce (fn [acc e] (step acc e false)) {:st st1 :ok true} (:borrows ann))
+        a2    (reduce (fn [acc e] (step acc e true))  a1                 (:consumes ann))
         st2   (:st a2)]
     ;; the operation did not type-check, so its result has no capability type
     (if (not (:ok a2))
@@ -811,22 +848,141 @@
 
 ;; --- per-def entry ----------------------------------------------------------
 
-(defn- primitive? [sp opsym] (contains? (:primitives sp) opsym))
+(defn- primitive? [sp opsym] (contains? (:transitions-of sp) opsym))
 (defn- representation? [sp opsym] (contains? (:representation sp) opsym))
 (defn- axiom? [sp opsym] (or (primitive? sp opsym) (representation? sp opsym)))
 
-(defn- check-annotation-consistency! [sp opsym ann]
-  (let [t (get (:primitives sp) opsym)]
-    (when t
-      (let [c  (first (:consumes ann))
-            p  (first (:produces ann))
-            from (if c (:state c) nil)
-            to   (if p (:state p) nil)]
-        (when (or (not= from (:from t)) (not= to (:to t)))
-          (report! {:kind :annotation-inconsistent :op opsym :cap (:cap t)
-                    :detail [(str "declared machine: " (:from t) " -> " (:to t))
-                             (str "operation annotation: " from " -> " to)
-                             "the two data sources cap/checker-input emits disagree"]}))))))
+;; --- the declaration language's own rules -----------------------------------
+;;
+;; Everything from here to `check-def!` reads an ANNOTATION against a DECLARED
+;; MACHINE and never reads a body. These are the rules PERTURB-DESIGN §4.6 and
+;; E18 finding 1 say were missing; each one refuses a shape the language could
+;; previously state and the checker could previously only misread.
+
+(defn- entries-for [entries c] (filter (fn [e] (= c (:cap e))) entries))
+
+(defn- annotation-faults
+  "Faults that make an annotation UNREADABLE, as data. Returns [] for a usable
+  annotation.
+
+  Two faults, both found by E18:
+
+    :annotation-unpositioned          a :consumes / :borrows entry with no `:arg`
+    :annotation-duplicates-capability the same capability in :borrows and
+                                      :produces
+
+  This does NOT establish that a fault-free annotation describes the code.
+  Nothing here reads a body; `check-def!` does that, separately, and only for a
+  fault-free annotation — a refused annotation is not a specification, so there
+  is nothing to check a body against."
+  [ann]
+  (let [ins (concat (:consumes ann) (:borrows ann))]
+    (vec (concat
+           (map (fn [e] {:fault :annotation-unpositioned :cap (:cap e) :entry e})
+                (filter (fn [e] (nil? (:arg e))) ins))
+           (map (fn [c] {:fault :annotation-duplicates-capability :cap c})
+                (filter (fn [c] (some (fn [p] (= c (:cap p))) (:produces ann)))
+                        (distinct (map :cap (:borrows ann)))))))))
+
+(defn- check-annotation-wellformed!
+  "Report every fault of `ann`. Returns true when the annotation is USABLE."
+  [opsym ann]
+  (let [fs (annotation-faults ann)]
+    (doseq [f fs]
+      (if (= :annotation-unpositioned (:fault f))
+        (report! {:kind :annotation-unpositioned :op opsym :cap (:cap f)
+                  :detail [(str "operation     " opsym)
+                           (str "a :consumes / :borrows entry names " (:cap f) "@"
+                                (want-str (:state (:entry f))) " and carries no `:arg`")
+                           "every such entry must say WHICH parameter holds the capability"
+                           "matching specs to parameters in order was this checker's own"
+                           "convention, not §1.2's, and it is removed (E17 nonclaim 4, E18 1(d))"
+                           "the annotation is REFUSED and this operation's body is not checked"]})
+        (report! {:kind :annotation-duplicates-capability :op opsym :cap (:cap f)
+                  :detail [(str "operation     " opsym)
+                           (str (:cap f) " is both :borrows and :produces")
+                           "a borrowed capability stays the CALLER's; producing it as well"
+                           "mints a SECOND abstract capability for one runtime object, and"
+                           "the caller is then reported for leaking whichever one it does"
+                           "not dispose of (PERTURB-DESIGN E18 finding 1(c))"
+                           "write :consumes + :produces to hand it back, or :borrows alone"
+                           "to look at it without taking it"
+                           "the annotation is REFUSED and this operation's body is not checked"]})))
+    (empty? fs)))
+
+(defn- check-annotation-consistency!
+  "Compare an annotation against the declared machines, PER CAPABILITY.
+
+  The old form took the annotation's FIRST `:consumes` entry and its FIRST
+  `:produces` entry and compared that one pair against whichever single
+  transition the operation-keyed table happened to hold. With two machines that
+  is a category error: it compared `perturb.http/body-finish!`'s ResponseBody
+  `:from` against its ServerConn `:to` and reported `:open -> :reading`, a
+  disagreement that was correct about the data and wrong about the program (E18
+  finding 1(a)).
+
+  Four rules, one per capability the operation declares an edge of:
+
+    1. the `:consumes` state for that capability must be the declared `:from`.
+       A CREATING edge declares `:from nil` and its annotation consumes nothing,
+       so nil = nil and no extra rule is needed — see the note on `:created` in
+       `perturb.nrepl` for why the alternative was rejected (E18 finding 1(b)).
+    2. the `:produces` state must be the declared `:to`, EXCEPT that a `:to`
+       which is TERMINAL need not be produced at all. `produced and dropped` and
+       `not produced` are indistinguishable to every rule this checker has — the
+       leak rule exempts terminal states — so requiring the annotation to state
+       which one it meant would be requiring a distinction the checker cannot
+       make. `body-finish!` consumes a ResponseBody and hands back only the
+       connection, and that is the shape.
+    3. a capability named in the annotation of an operation that IS a primitive
+       must have a declared edge for it. This is what forces `respond-begin` to
+       appear in ResponseBody's `:transitions` and `body-finish!` in
+       ServerConn's: both mint or move a machine they did not declare.
+    4. a capability consumed or produced TWICE by one primitive has no single
+       edge to compare, and the checker says so rather than taking the first.
+       Nothing in perturb has this shape; the silent `first` that used to stand
+       here is precisely what hid (a) for two sections.
+
+  It does NOT establish that the operation's body performs the transition. Every
+  transition body is an axiom, unchanged since `mode_checker.py`."
+  [sp opsym ann]
+  (let [ts (get (:transitions-of sp) opsym)]
+    (when (seq ts)
+      (let [declared (set (map :cap ts))]
+        (doseq [c (distinct (map :cap (concat (:consumes ann) (:produces ann))))]
+          (when (not (contains? declared c))
+            (report! {:kind :annotation-undeclared-transition :op opsym :cap c
+                      :detail [(str "operation     " opsym " is a declared transition of "
+                                    (str/join ", " (sort (map str declared))))
+                               (str "and its annotation also moves " c)
+                               (str "but " c "'s machine declares no edge for " opsym)
+                               "an operation that advances two machines must declare an"
+                               "edge in each; the primitive table is keyed [capability op]"]}))))
+      (doseq [t ts]
+        (let [c  (:cap t)
+              cs (entries-for (:consumes ann) c)
+              ps (entries-for (:produces ann) c)]
+          (if (or (> (count cs) 1) (> (count ps) 1))
+            (report! {:kind :annotation-ambiguous-edge :op opsym :cap c
+                      :detail [(str "operation     " opsym " declares the edge "
+                                    (:from t) " -> " (:to t) " of " c)
+                               (str "and its annotation names " c " " (count cs)
+                                    " time(s) in :consumes and " (count ps)
+                                    " time(s) in :produces")
+                               "there is no single pair to compare it against"]})
+            (let [from (:state (first cs))
+                  to   (:state (first ps))
+                  dropped-at-terminal? (and (nil? to) (terminal? sp c (:to t)))]
+              (when (or (not= from (:from t))
+                        (and (not= to (:to t)) (not dropped-at-terminal?)))
+                (report! {:kind :annotation-inconsistent :op opsym :cap c
+                          :detail [(str "operation     " opsym)
+                                   (str "declared edge     " (pr-str (:from t)) " -> "
+                                        (pr-str (:to t)))
+                                   (str "annotation says   " (pr-str from) " -> "
+                                        (pr-str to))
+                                   (str "the declaration and the annotation disagree about "
+                                        c "'s edge")]})))))))))
 
 (defn check-def!
   "Check one captured :def node. Returns the number of diagnostics it produced."
@@ -834,10 +990,18 @@
   (let [opsym (symbol (:ns node) (:name node))
         ann   (get (:operations sp) opsym)
         init  (:init node)
-        before (count @diagnostics)]
+        before (count @diagnostics)
+        ann-ok (if ann (check-annotation-wellformed! opsym ann) true)]
     (when ann (check-annotation-consistency! sp opsym ann))
     (cond
       (axiom? sp opsym) 0   ;; axiom of the machine, or inside its representation
+      ;; A REFUSED ANNOTATION IS NOT A SPECIFICATION. There is nothing sound to
+      ;; check the body against, so it is not checked and the refusal is the
+      ;; whole of the rejection. That is the difference the fix makes: E18's
+      ;; unpositioned helper drew FIVE diagnostics against calls in its body,
+      ;; none of which named the annotation; it now draws one per unpositioned
+      ;; entry, each naming it.
+      (not ann-ok) 0
       (or (nil? init) (not= :fn (:op init))) 0
       :else
       (do
@@ -846,16 +1010,11 @@
                      :in (str opsym) :spec sp :fn-depth 0 :bottom false
                      :loop-ctx nil :use-ctx nil}
                 ;; A derived (non-primitive) operation's annotation binds its
-                ;; parameters. Entries carrying `:arg n` say which parameter
-                ;; exactly; entries without it fall back to matching specs to
-                ;; parameters IN ORDER, which is the checker's own convention
-                ;; and not §1.2's — see report-limits.
+                ;; parameters, and every entry says which parameter exactly.
+                ;; `ann-ok` above guarantees `:arg` is present on all of them:
+                ;; the in-order fallback is gone.
                 specs (vec (concat (:borrows ann) (:consumes ann)))
-                positioned? (and (seq specs) (every? (fn [e] (:arg e)) specs))
-                spec-for (fn [i]
-                           (if positioned?
-                             (first (filter (fn [e] (= i (:arg e))) specs))
-                             (nth' specs i)))]
+                spec-for (fn [i] (first (filter (fn [e] (= i (:arg e))) specs)))]
             (let [r0  (reduce
                         (fn [acc i]
                           (let [s   (:st acc)
@@ -966,12 +1125,10 @@
    ""
    "  2. :consumes / :produces are POSITIONED — `:arg n` names a parameter,"
    "     `:at [i]` a tuple position of the result — which is what let the real"
-   "     client be annotated at all (E15). Two limits remain: paths are ONE level"
-   "     of tuple nesting only, and an annotation whose entries omit `:arg` still"
-   "     falls back to matching specs to parameters IN ORDER. With ONE capability"
-   "     that fallback is unprincipled; with TWO it binds the wrong parameter to"
-   "     the wrong capability and emits five diagnostics, none naming the"
-   "     annotation (perturb.httpcorpus/unpositioned-two-cap-helper, E18)."
+   "     client be annotated at all (E15). `:arg` is now MANDATORY: the fallback"
+   "     that matched specs to parameters in order is removed, and an entry"
+   "     without `:arg` is refused where it is written rather than guessed at."
+   "     One limit remains: paths are ONE level of tuple nesting only."
    ""
    "  3. Closure bodies are walked for diagnostics but their state does not"
    "     propagate: the checker does not model whether or how often a closure runs."
@@ -996,15 +1153,16 @@
    "     to OPAQUE — which is silent, not a diagnostic. This is the most likely"
    "     place for a FALSE ACCEPT to hide today."
    ""
-   "  9. AN OPERATION BELONGS TO AT MOST ONE CAPABILITY. `spec`'s primitive table"
-   "     is keyed by operation symbol, so a second declaration naming the same"
-   "     operation OVERWRITES the first. perturb.http declares 10 transitions"
-   "     across three capabilities and this checker sees 9 primitives."
-   "     `perturb.http/accept` mints a ServerConn from a Listener and"
-   "     `body-finish!` ends a ResponseBody and returns a ServerConn: both are"
-   "     ordinary, neither can be declared, and both draw a spurious"
-   "     `annotation-inconsistent` printed above. So does `perturb.nrepl/open`,"
-   "     which has since E17 and was never displayed. E18 finding 1."
+   "  9. AN OPERATION MAY NOW ADVANCE TWO MACHINES, AND NOTHING CHECKS THAT IT"
+   "     DOES. The primitive table is keyed [capability operation], so"
+   "     `accept`, `respond-begin` and `body-finish!` each declare an edge in"
+   "     two machines and the consistency rule compares each separately (E18"
+   "     finding 1(a), closed). What is unchanged is the class those bodies are"
+   "     in: all three are AXIOMS, so nothing establishes that `body-finish!`"
+   "     really moves BOTH machines, and nothing relates the two edges in time —"
+   "     the `body-finished-before-conn-reused` obligation is still written as"
+   "     data with nothing to discharge it. Declaring the shape is not checking"
+   "     it, and the second capability doubles what item 1 covers up."
    ""
    " 10. A STATE CANNOT CARRY A REFINEMENT, so an obligation is unstatable. A"
    "     Content-Length body writer that declares 6 octets and writes 3 reaches"
@@ -1012,10 +1170,31 @@
    "     put on the wire. Nothing in §1.2 can relate two machines in time"
    "     either. E18 finding 3."
    ""
-   " 11. `:borrows` AND `:produces` OF THE SAME CAPABILITY duplicates it. The"
-   "     annotation is legal, both halves check, and the caller is then reported"
-   "     for leaking a capability it disposed of correctly"
-   "     (perturb.httpcorpus/uses-borrow-and-return). E18 finding 1(c)."])
+   " 11. `:borrows` AND `:produces` OF THE SAME CAPABILITY is now REFUSED at the"
+   "     annotation, because it mints two abstract capabilities for one runtime"
+   "     object (E18 finding 1(c)). WHAT DID NOT CHANGE: a caller of such an"
+   "     operation is still analysed with the refused annotation, and"
+   "     perturb.httpcorpus/uses-borrow-and-return is still rejected for"
+   "     `dangling` on a listener it disposed of correctly. Suppressing that"
+   "     would mean changing what the flow rules do at a call site, which is a"
+   "     rule change and not a declaration-language change. The fault is now"
+   "     findable at its cause; the consequence at the call site is still"
+   "     reported and still misleading on its own."
+   ""
+   " 12. A REFUSED ANNOTATION MEANS AN UNCHECKED BODY. `annotation-unpositioned`"
+   "     and `annotation-duplicates-capability` refuse an annotation where it is"
+   "     written, and the operation's body is then not checked at all — there is"
+   "     no sound specification to check it against. The verdict is a rejection"
+   "     either way, so this cannot hide a false accept, but it does mean a"
+   "     refused operation's body has NEVER been read: fixing the annotation can"
+   "     surface diagnostics that were never suppressed, only never reached."
+   ""
+   " 13. THE DECLARATION RULES DO NOT READ A BODY. `annotation-inconsistent`,"
+   "     `annotation-undeclared-transition` and `annotation-ambiguous-edge`"
+   "     compare an annotation with a declared machine and nothing else. That an"
+   "     operation DECLARES two edges is not evidence that it takes them: all"
+   "     nine of perturb.http's transitions are still axioms (item 1), and the"
+   "     ledger is the only thing that ever observed one."])
 
 (def ^:private line
   "========================================================================")
@@ -1065,6 +1244,47 @@
       (let [r (get by-var (:var (first (filter (fn [e] (= :reject (:expect e))) exps))))]
         (print (render (:diagnostics r))))
       fails)))
+
+(defn- run-declaration-corpus
+  "Gate the DECLARATION language against hand-built fixtures.
+
+  Every other stage checks a PROGRAM. This one checks a declaration against an
+  annotation and reads no body, because that is where E18 finding 1's four
+  defects live: the flow rules met two capabilities and survived on the first
+  attempt, and what could not be stated was the declaration. Three of the four
+  had no artifact except a diagnostic raised against an axiom, which the report
+  stage used to discard.
+
+  A fixture is `{:name :declarations :operations :expect}` and `:expect` is the
+  exact SET of diagnostic kinds. It does not establish anything about a body."
+  [corpus-sym banner]
+  (println (str "== the DECLARATION language: " corpus-sym " ================"))
+  (println (str "   " banner))
+  (println)
+  (let [fixtures (deref (resolve corpus-sym))
+        fails
+        (reduce
+          (fn [acc f]
+            (let [sp     (spec-from {:perturb.cap/declarations (:declarations f)
+                                     :perturb.cap/operations   (:operations f)})
+                  before (count @diagnostics)]
+              (doseq [e (sort-by (fn [x] (str (first x))) (seq (:operations f)))]
+                (check-annotation-wellformed! (first e) (second e))
+                (check-annotation-consistency! sp (first e) (second e)))
+              (let [ds  (vec (drop before @diagnostics))
+                    got (set (map :kind ds))
+                    ok  (= got (set (:expect f)))]
+                (println (str "  [" (if ok "ok  " "FAIL") "] " (:name f)
+                              "  expected " (pr-str (vec (sort (map name (:expect f)))))
+                              ", got " (pr-str (vec (sort (map name got))))))
+                (when (not ok) (println (render ds)))
+                (if ok acc (conj acc (:name f))))))
+          [] fixtures)]
+    (println)
+    (println (str "  " (- (count fixtures) (count fails)) "/" (count fixtures)
+                  " declaration fixtures decided as recorded"
+                  (if (empty? fails) "" (str "; FAILED " (vec fails)))))
+    fails))
 
 (defn- run-accepts
   "EXECUTE every accepted corpus program under the scripted handler.
@@ -1248,10 +1468,18 @@
   (let [sp (spec)]
     (println (str "  capabilities declared : " (vec (keys (:declarations sp)))))
     (println (str "  operations annotated  : " (vec (sort (map str (keys (:operations sp)))))))
-    (println (str "  machine primitives    : " (vec (sort (map str (keys (:primitives sp)))))))
+    (println (str "  machine primitives    : "
+                  (vec (sort (map (fn [k] (str (second k) " of " (first k)))
+                                  (keys (:primitives sp)))))))
+    (println (str "  declared edges        : " (count (:primitives sp))
+                  " across " (count (:declarations sp)) " capabilities, "
+                  (count (:transitions-of sp)) " distinct operations"
+                  "  (keyed [capability operation]: E18 1(a))"))
     (println (str "  IR defs captured      : " (count @pir/captured)))
     (println)
-    (let [fails  (run-corpus sp "perturb.corpus" 'perturb.corpus/expectations
+    (let [dfails (run-declaration-corpus 'perturb.httpcorpus/declaration-corpus
+                                         "an annotation against a machine; no program, no body")
+          fails  (run-corpus sp "perturb.corpus" 'perturb.corpus/expectations
                              "nREPL: one capability, a straight-line typestate")
           rfails (run-accepts 'perturb.corpus/expectations)
           hfails (run-corpus sp "perturb.httpcorpus" 'perturb.httpcorpus/expectations
@@ -1261,21 +1489,23 @@
                           ["perturb.nrepl, unmodified, checked by the same rules. This is NOT a"
                            "gate: it is the measurement §1.2 and §4.6 say has never been taken."])
       (run-implementation sp "perturb.http"
-                          ["perturb's SECOND protocol. Three capabilities, ten transitions, and"
-                           "ZERO :perturb.cap/representation entries — see the note in that"
-                           "namespace for why that is repackaging and not progress (E18)."])
+                          ["perturb's SECOND protocol. Three capabilities, TWELVE declared edges"
+                           "across NINE operations — three of them advance two machines at once —"
+                           "and ZERO :perturb.cap/representation entries; see the note in that"
+                           "namespace for why that zero is repackaging and not progress (E18)."])
       (report-obligation-finding)
       (report-local-finding)
       (println)
       (doseq [l (report-limits)] (println (str "  " l)))
       (println)
       (println line)
-      (let [all (concat fails rfails hfails hrfails)]
+      (let [all (concat dfails fails rfails hfails hrfails)]
         (if (empty? all)
-          (do (println "CHECK OK — every corpus verdict in BOTH corpora is the recorded one,")
-              (println "           and every accepted program runs")
+          (do (println "CHECK OK — every declaration fixture and every corpus verdict in BOTH")
+              (println "           corpora is the recorded one, and every accepted program runs")
               (System/exit 0))
-          (do (println (str "CHECK FAILED — verdicts " (vec (concat fails hfails))
+          (do (println (str "CHECK FAILED — declarations " (vec dfails)
+                            "  verdicts " (vec (concat fails hfails))
                             "  runs " (vec (concat rfails hrfails))))
               (System/exit 1)))))))
 

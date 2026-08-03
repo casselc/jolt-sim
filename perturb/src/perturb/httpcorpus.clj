@@ -21,6 +21,14 @@
        is no corpus program for it, because it is a fact about which bodies are
        read at all.
 
+  And a fifth section that is not a program corpus at all:
+
+    5. THE DECLARATION LANGUAGE — `declaration-corpus`, hand-built machines and
+       annotations with no code behind them. E18 finding 1's four defects were
+       not in the flow rules, which met two capabilities unchanged; they were in
+       what a declaration could say, and three of the four had no artifact except
+       a diagnostic raised against an axiom.
+
   The scripted network delivers ONE OCTET PER RECV. Every accepted program here
   therefore drives `perturb.http/parse-request` through its `:need-more` arm on
   nearly every octet of every request, and any drift in the exact-original-cursor
@@ -167,16 +175,21 @@
     {:listener l1 :conn c}))
 
 (defn borrow-and-return-listener
-  "ACCEPT — AND IT SHOULD NOT BE. The listener is `:borrows`, so the caller keeps
-  it; and it is also `:produces` at position 0, so the caller is handed one back.
-  Both halves check here: the borrowed parameter is not this function's to close
-  (E17's rule), and the returned value really does hold a Listener at position 0.
+  "REJECT, AT THE ANNOTATION. The listener is `:borrows`, so the caller keeps it;
+  and it is also `:produces` at position 0, so the caller is handed one back.
+  Each half was individually legal — the borrowed parameter is not this
+  function's to close (E17's rule), and the returned value really does hold a
+  Listener at position 0 — and the annotation as a whole is self-contradictory:
+  one runtime listener, TWO abstract capabilities.
 
-  The annotation is nonetheless self-contradictory — one runtime listener, two
-  abstract capabilities — and NOTHING in the annotation language or the checker
-  says so. The cost lands on the CALLER (`uses-borrow-and-return`, rejected
-  below) as a leak of a capability the caller did nothing wrong with.
-  PERTURB-DESIGN E18 finding 1."
+  This was an ACCEPT until the rule that refuses it existed, and the cost landed
+  on the CALLER (`uses-borrow-and-return` below) as a leak of a capability the
+  caller had disposed of correctly. `annotation-duplicates-capability` is now
+  raised HERE, where the fault is, and the body is not checked — a refused
+  annotation is not a specification. PERTURB-DESIGN E18 finding 1(c).
+
+  The way to say what this function meant is `serve-with-listener-held` above:
+  `:consumes` the listener and `:produces` it, one capability in and one out."
   {:perturb.cap/op {:borrows  [{:cap 'perturb.http/Listener   :state :listening :arg 0}]
                     :consumes [{:cap 'perturb.http/ServerConn :state :reading   :arg 1}]
                     :produces [{:cap 'perturb.http/Listener   :state :listening :at [0]}
@@ -189,15 +202,21 @@
                   (:perturb.cap/op (meta (var borrow-and-return-listener))))
 
 (defn uses-borrow-and-return
-  "REJECT, AND THE DIAGNOSTIC BLAMES THE WRONG LINE. Every line of this is the
-  same as `uses-two-cap-helper`, which is accepted; the only difference is that
-  the helper it calls declares the listener `:borrows` as well as `:produces`.
-  The checker therefore holds TWO live Listener capabilities — `l1`, which the
-  borrow left alive, and the fresh one at position 0 of the result — shuts one
-  down and reports the other as dangling.
+  "REJECT — AND ITS OWN DIAGNOSTIC STILL BLAMES THE WRONG LINE. Every line of
+  this is the same as `uses-two-cap-helper`, which is accepted; the only
+  difference is that the helper it calls declares the listener `:borrows` as
+  well as `:produces`. The checker therefore holds TWO live Listener
+  capabilities — `l1`, which the borrow left alive, and the fresh one at
+  position 0 of the result — shuts one down and reports the other as dangling.
 
-  The program is fine. The annotation is not, and the checker has no rule that
-  can point at it."
+  WHAT THE FIX FOR E18 1(c) DID AND DID NOT DO. The annotation is now refused at
+  `borrow-and-return-listener`, which is where a reader can act on it. This
+  caller's diagnostic is UNCHANGED: it is still `dangling` on `l1`, and it is
+  still a leak the program did not commit. Removing it would mean changing what
+  the flow rules do with a call to an operation whose annotation was refused —
+  a change to a flow rule, which is a larger claim than this fix makes. The
+  honest state is: the fault is now findable at its cause, and the consequence
+  at the call site is still reported. Kept as a rejection for that reason."
   [host port]
   (let [l0 (h/listen host port)
         a  (h/accept l0)
@@ -282,8 +301,8 @@
   :responding, and `respond!` brings it back to :reading, so the back edge
   re-enters at the shape it entered with.
 
-  `perturb.nrepl`'s machine cannot produce this program: created -> active ->
-  closed has no edge back to a state it has left."
+  `perturb.nrepl`'s machine cannot produce this program: active -> closed has no
+  edge back to a state it has left."
   [host port n]
   (let [l  (h/listen host port)
         a  (h/accept l)
@@ -423,17 +442,20 @@
     :done))
 
 (defn unpositioned-two-cap-helper
-  "REJECT, AND THE DIAGNOSTIC NAMES THE WRONG ARGUMENT.
+  "REJECT, AND THE DIAGNOSTIC NOW NAMES THE ANNOTATION.
 
-  An annotation whose entries omit `:arg`. `perturb.check` then falls back to
-  matching specs to parameters IN ORDER — its own convention, not §1.2's, and
-  `report-limits` item 2 already flags it. With ONE capability that fallback is
-  merely unprincipled. With TWO it silently binds `c` to the Listener spec and
-  `l` to the ServerConn spec, and the rejection that follows is reported against
-  the call in the body rather than against the annotation that caused it.
+  An annotation whose entries omit `:arg`. `perturb.check` used to fall back to
+  matching specs to parameters IN ORDER — its own convention, not §1.2's. With
+  ONE capability that fallback is merely unprincipled. With TWO it silently bound
+  `c` to the Listener spec and `l` to the ServerConn spec and produced FIVE
+  diagnostics — dangling, produces-mismatch and untracked-consume against the
+  calls in the body — of which none named the annotation.
 
-  Kept as a rejection because it IS one; recorded because the reason it gives is
-  not the reason it is wrong."
+  The fallback is removed. This function now draws TWO diagnostics, one per
+  unpositioned entry, each naming this annotation and the capability it fails to
+  place; the body is not checked, because a refused annotation is not a
+  specification. Same verdict, different reason, and the reason is now the one
+  that is true. PERTURB-DESIGN E18 finding 1(d)."
   {:perturb.cap/op {:consumes [{:cap 'perturb.http/Listener   :state :listening}
                                {:cap 'perturb.http/ServerConn :state :reading}]
                     :produces [{:cap 'perturb.http/Listener :state :closed}]}}
@@ -563,6 +585,191 @@
     :done))
 
 ;; ===========================================================================
+;; 5. THE DECLARATION LANGUAGE ITSELF
+;; ===========================================================================
+;;
+;; Everything above is a PROGRAM: source, compiled, checked from IR. These are
+;; DECLARATIONS: a capability's machine and an operation's annotation, and
+;; nothing else. They are here because the four defects E18 finding 1 records are
+;; not defects in what the flow rules do to a program — the flow rules survived
+;; two capabilities on the first attempt — they are defects in what the
+;; declaration language can say, and a program corpus cannot exhibit them.
+;;
+;; Three of the four were invisible for two sections precisely because their only
+;; artifact was a diagnostic raised against an AXIOM, which the report stage
+;; discarded. A fixture is the artifact those rules were missing.
+
+(def declaration-corpus
+  "Hand-built {declarations, operations} pairs, run through the same
+  `check-annotation-wellformed!` and `check-annotation-consistency!` the real
+  declarations go through. `:expect` is the exact set of diagnostic kinds.
+
+  These fixtures name no code and no capability perturb declares: an operation
+  here is a symbol, not a var, and nothing is ever called. They establish what
+  the DECLARATION rules say and nothing about any body."
+  '[{:name two-machines-one-operation
+     :doc  "(a). One operation, an edge of TWO machines: it consumes a Source and
+            mints a Minted. Both edges are declared and the annotation agrees
+            with each. Keying the primitive table by operation alone made the
+            second declaration overwrite the first, and this pair — which is
+            `perturb.http/accept` with the names changed — could not be stated."
+     :declarations
+     {fixture/Source {:perturb.cap/typestate
+                      {:states [:up :down] :initial :up :terminal :down
+                       :transitions [{:op fixture/mint :from :up :to :up}]}}
+      fixture/Minted {:perturb.cap/typestate
+                      {:states [:new :done] :initial :new :terminal :done
+                       :transitions [{:op fixture/mint :from nil :to :new}]}}}
+     :operations
+     {fixture/mint {:consumes [{:cap fixture/Source :state :up :arg 0}]
+                    :produces [{:cap fixture/Source :state :up  :at [0]}
+                               {:cap fixture/Minted :state :new :at [1]}]}}
+     :expect []}
+
+    {:name two-machines-second-edge-disagrees
+     :doc  "(a), negative. The same operation, with the Minted edge's `:to`
+            changed. The diagnostic must name Minted and only Minted: the point
+            of comparing per capability is that one machine's disagreement does
+            not implicate the other's."
+     :declarations
+     {fixture/Source {:perturb.cap/typestate
+                      {:states [:up :down] :initial :up :terminal :down
+                       :transitions [{:op fixture/mint :from :up :to :up}]}}
+      fixture/Minted {:perturb.cap/typestate
+                      {:states [:new :done] :initial :new :terminal :done
+                       :transitions [{:op fixture/mint :from nil :to :done}]}}}
+     :operations
+     {fixture/mint {:consumes [{:cap fixture/Source :state :up :arg 0}]
+                    :produces [{:cap fixture/Source :state :up  :at [0]}
+                               {:cap fixture/Minted :state :new :at [1]}]}}
+     :expect [:annotation-inconsistent]}
+
+    {:name creating-edge-declares-from-nil
+     :doc  "(b). A machine with no pre-creation state. The creating operation
+            consumes nothing and the edge says `:from nil`, so the derived
+            `from` and the declared `:from` are both nil and agree with no
+            special rule. This is `perturb.nrepl/open` as it now reads."
+     :declarations
+     {fixture/Conn {:perturb.cap/typestate
+                    {:states [:active :closed] :initial :active :terminal :closed
+                     :transitions [{:op fixture/open :from nil :to :active}]}}}
+     :operations
+     {fixture/open {:consumes []
+                    :produces [{:cap fixture/Conn :state :active}]}}
+     :expect []}
+
+    {:name creating-edge-declares-a-pre-creation-state
+     :doc  "(b), negative, and it is the exact shape `perturb.nrepl` carried from
+            E17 until this fixture existed: `:from :created` against an
+            annotation that consumes nothing. `:created` is a state nothing is
+            ever in, because the operation declaring it is what brings the
+            capability into existence."
+     :declarations
+     {fixture/Conn {:perturb.cap/typestate
+                    {:states [:created :active :closed] :initial :created
+                     :terminal :closed
+                     :transitions [{:op fixture/open :from :created :to :active}]}}}
+     :operations
+     {fixture/open {:consumes []
+                    :produces [{:cap fixture/Conn :state :active}]}}
+     :expect [:annotation-inconsistent]}
+
+    {:name terminal-edge-need-not-be-produced
+     :doc  "An operation may consume a capability at an edge whose `:to` is
+            TERMINAL and not hand it back. `produced and dropped` and `not
+            produced` are indistinguishable to every rule the checker has, since
+            the leak rule exempts terminal states. This is `body-finish!`'s
+            ResponseBody half."
+     :declarations
+     {fixture/Body {:perturb.cap/typestate
+                    {:states [:open :finished] :initial :open :terminal :finished
+                     :transitions [{:op fixture/finish :from :open :to :finished}]}}}
+     :operations
+     {fixture/finish {:consumes [{:cap fixture/Body :state :open :arg 0}]
+                      :produces []}}
+     :expect []}
+
+    {:name non-terminal-edge-must-be-produced
+     :doc  "The other half of that rule, and what stops it being a hole: an edge
+            whose `:to` is NOT terminal must appear in `:produces`, or the
+            capability vanishes from the caller's view while still live."
+     :declarations
+     {fixture/Body {:perturb.cap/typestate
+                    {:states [:open :half :finished] :initial :open
+                     :terminal :finished
+                     :transitions [{:op fixture/finish :from :open :to :half}]}}}
+     :operations
+     {fixture/finish {:consumes [{:cap fixture/Body :state :open :arg 0}]
+                      :produces []}}
+     :expect [:annotation-inconsistent]}
+
+    {:name moves-a-machine-it-does-not-declare
+     :doc  "(a)'s corollary. The operation is a declared edge of Source and its
+            annotation also mints a Minted, whose machine names no edge for it.
+            This is `perturb.http/respond-begin` as it stood before the fix: it
+            minted a ResponseBody, ResponseBody's machine did not name it, and
+            NOTHING reported that — the operation-keyed table held only its
+            ServerConn edge, which its annotation agreed with. `body-finish!`
+            had the same gap on ServerConn and it was worse than silent: the
+            mismatched pair produced the impossible `:open -> :reading`."
+     :declarations
+     {fixture/Source {:perturb.cap/typestate
+                      {:states [:up :down] :initial :up :terminal :down
+                       :transitions [{:op fixture/mint :from :up :to :up}]}}
+      fixture/Minted {:perturb.cap/typestate
+                      {:states [:new :done] :initial :new :terminal :done
+                       :transitions [{:op fixture/other :from nil :to :new}]}}}
+     :operations
+     {fixture/mint {:consumes [{:cap fixture/Source :state :up :arg 0}]
+                    :produces [{:cap fixture/Source :state :up  :at [0]}
+                               {:cap fixture/Minted :state :new :at [1]}]}}
+     :expect [:annotation-undeclared-transition]}
+
+    {:name one-capability-consumed-twice-by-one-edge
+     :doc  "The silent `first` that hid (a) for two sections, made loud. A
+            primitive naming one capability twice in `:consumes` has no single
+            pair to compare against its declared edge, and the checker says so
+            instead of taking whichever entry came first. Nothing in perturb has
+            this shape; a splice of two connections would."
+     :declarations
+     {fixture/Conn {:perturb.cap/typestate
+                    {:states [:active :closed] :initial :active :terminal :closed
+                     :transitions [{:op fixture/splice :from :active :to :closed}]}}}
+     :operations
+     {fixture/splice {:consumes [{:cap fixture/Conn :state :active :arg 0}
+                                 {:cap fixture/Conn :state :active :arg 1}]
+                      :produces [{:cap fixture/Conn :state :closed}]}}
+     :expect [:annotation-ambiguous-edge]}
+
+    {:name borrows-and-produces-the-same-capability
+     :doc  "(c). `perturb.httpcorpus/borrow-and-return-listener`'s annotation,
+            with the names changed and no body at all — which is the point: the
+            fault is in the annotation, and it is visible without reading a line
+            of code."
+     :declarations
+     {fixture/Listen {:perturb.cap/typestate
+                      {:states [:up :down] :initial :up :terminal :down
+                       :transitions [{:op fixture/shut :from :up :to :down}]}}}
+     :operations
+     {fixture/hold {:borrows  [{:cap fixture/Listen :state :up :arg 0}]
+                    :produces [{:cap fixture/Listen :state :up :at [0]}]}}
+     :expect [:annotation-duplicates-capability]}
+
+    {:name consumes-entry-without-arg
+     :doc  "(d). An entry that does not say which parameter holds the capability.
+            Refused where it is written. The removed fallback matched specs to
+            parameters in order and, with two capabilities, bound each to the
+            other's."
+     :declarations
+     {fixture/Conn {:perturb.cap/typestate
+                    {:states [:active :closed] :initial :active :terminal :closed
+                     :transitions [{:op fixture/shut :from :active :to :closed}]}}}
+     :operations
+     {fixture/derived {:consumes [{:cap fixture/Conn :state :active}]
+                       :produces [{:cap fixture/Conn :state :closed}]}}
+     :expect [:annotation-unpositioned]}])
+
+;; ===========================================================================
 ;; what the checker must say — and, for every accept, that it RUNS
 ;; ===========================================================================
 
@@ -582,10 +789,13 @@
    {:var 'perturb.httpcorpus/short-body-still-type-checks :expect :accept
     :run ["in-memory" 0] :handler 'perturb.httpcorpus/net-post}
 
-   {:var 'perturb.httpcorpus/borrow-and-return-listener :expect :accept}
    {:var 'perturb.httpcorpus/loop-holding-both :expect :accept
     :run ["in-memory" 0 2] :handler 'perturb.httpcorpus/net-2}
 
+   ;; MOVED, deliberately: was :accept. The annotation is refused at its
+   ;; declaration now (E18 finding 1(c)).
+   {:var 'perturb.httpcorpus/borrow-and-return-listener  :expect :reject
+    :kind :annotation-duplicates-capability}
    {:var 'perturb.httpcorpus/uses-borrow-and-return      :expect :reject :kind :dangling}
    {:var 'perturb.httpcorpus/loop-holding-both-swapped   :expect :reject
     :kind :loop-not-preserving}
@@ -599,8 +809,10 @@
     :kind :loop-not-preserving}
    {:var 'perturb.httpcorpus/keepalive-drops-the-connection :expect :reject :kind :dangling}
    {:var 'perturb.httpcorpus/keepalive-conditional-close-value :expect :reject :kind :join}
+   ;; KIND MOVED, deliberately: was :untracked-consume, raised against a call in
+   ;; the body. The fallback that mis-bound the parameters is removed (E18 1(d)).
    {:var 'perturb.httpcorpus/unpositioned-two-cap-helper :expect :reject
-    :kind :untracked-consume}
+    :kind :annotation-unpositioned}
    {:var 'perturb.httpcorpus/accept-loop-shuts-down-inside  :expect :reject
     :kind :loop-not-preserving}
    {:var 'perturb.httpcorpus/respond-without-reading     :expect :reject :kind :typestate}

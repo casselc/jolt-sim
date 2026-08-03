@@ -123,12 +123,14 @@ perturb.cap       capability declarations, operation annotations, and an
 perturb.ir        captures real Jolt IR from the compile spine (INHERITED I18)
 perturb.check     the static capability checker. Ports the validated rule set in
                   docs/research/prototypes/ onto real IR and REJECTS.
-perturb.corpus    the nREPL acceptance corpus: real perturb source, 22 programs
+perturb.corpus    the nREPL acceptance corpus: real perturb source, 25 programs
                   with the verdict each must get; every ACCEPT is also executed
 perturb.http      the SECOND protocol. Sans-io HTTP/1.1, server side: three
                   capabilities, a typestate CYCLE, and an obligation §1.2
                   cannot state
-perturb.httpcorpus  the HTTP acceptance corpus, 25 programs
+perturb.httpcorpus  the HTTP acceptance corpus, 25 programs, plus
+                  `declaration-corpus`: 10 hand-built machine/annotation pairs
+                  that name no code, gating the DECLARATION language itself
 perturb.httpdemo  one keep-alive driver under both handlers, octets compared
 perturb.nrepl     the session. Threads the connection affinely; drives I/O from
                   nothing but a :need-more.
@@ -195,9 +197,11 @@ the compile spine by `perturb.ir` — as the program. The judgements are ports o
 `docs/research/prototypes/`, which were validated against artifacts perturb did
 not author (jolt-hako's `ownership.pl` and `queries.json`).
 
-Two corpora, 47 programs, all decided as recorded: `perturb.corpus` (22 — one
+Two corpora, 50 programs, all decided as recorded: `perturb.corpus` (25 — one
 capability, a straight-line typestate) and `perturb.httpcorpus` (25 — two
-capabilities live at once, a typestate cycle, an obligation). The rejections
+capabilities live at once, a typestate cycle, an obligation), plus 10
+declaration fixtures that check an annotation against a machine and read no body
+at all. The program rejections
 include use-after-close (`INHERITED.md` I16's example, verbatim), double-close,
 use-after-move through an affine rebinding, a dangling connection at scope exit,
 a conditional close, a loop that closes on its back edge, a capability captured
@@ -210,18 +214,33 @@ on `:produces` — which is what made the real client annotatable at all (E17),
 and what lets `perturb.http/accept` say it consumes a Listener and produces a
 Listener *and* a ServerConn at two different result positions.
 
-**The most useful things it does are the four it cannot do.** See E18 in
-`docs/research/PERTURB-DESIGN.md`, and items 9–11 of `-M:check`'s own limits
-list:
+The DECLARATION language grew its own rules, because E18 found four defects that
+were not in the flow rules — those met a second protocol with two capabilities
+unchanged — but in what a declaration could say. An operation is now an edge of
+**as many machines as it moves**: the primitive table is keyed
+`[capability operation]`, so `accept`, `respond-begin` and `body-finish!` each
+declare an edge in two machines and each is compared against its annotation per
+capability. A machine has **no pre-creation state** — `perturb.nrepl`'s
+`:created` was a state nothing was ever in, and it is deleted. `:borrows` plus
+`:produces` of the same capability is **refused at the annotation**, and so is a
+`:consumes`/`:borrows` entry without `:arg`; the fallback that matched specs to
+parameters in order is gone.
 
-- an operation that advances **two capability machines at once** cannot be
-  declared — the primitive table is keyed by operation, so `accept` and
-  `body-finish!` both draw a spurious `annotation-inconsistent`;
+**The most useful things it does are still the ones it cannot do.** See E18 in
+`docs/research/PERTURB-DESIGN.md`, and the limits list `-M:check` prints:
+
 - a state cannot carry a **refinement**, so a Content-Length body that declares
   6 octets and writes 3 reaches `:finished`, is ACCEPTED, and RUNS — `-M:http`
   prints the malformed response it emits;
-- `:borrows` **and** `:produces` of the same capability duplicates it, and the
-  false leak is reported at the caller;
+- declaring that an operation advances two machines is not **checking** that it
+  does: all nine of `perturb.http`'s transitions are still axioms, and nothing
+  in §1.2 relates two machines in time;
+- a refused annotation means an **unchecked body** — the rejection is the
+  refusal, and the body was never read;
+- the caller of an operation whose annotation was refused is still analysed with
+  it, so `uses-borrow-and-return` is still rejected for a leak it did not
+  commit. Fixing that would be a change to a flow rule, not to the declaration
+  language;
 - `:perturb.cap/representation` is **gameable**: `perturb.http` has an empty list
   for each of three capabilities and 31 unchecked concrete-map accesses, against
   `perturb.nrepl`'s 5-entry list and 12 accesses. Counting operations counts the

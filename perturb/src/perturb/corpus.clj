@@ -113,9 +113,64 @@
         c2 (n/close! c1)]
     :done))
 
+(defn ping-with-code-first
+  "ACCEPT. The capability is parameter 1 and an ordinary value is parameter 0.
+  `:arg 1` is the only thing that says so, and since the in-order fallback was
+  removed it is the only thing that CAN. Written as the positive half of the pair
+  with `unpositioned-ping` below, which is this function with `:arg` deleted."
+  {:perturb.cap/op {:consumes [{:cap 'perturb.nrepl/Connection :state :active :arg 1}]
+                    :produces [{:cap 'perturb.nrepl/Connection :state :active :at [0]}]}}
+  [code c]
+  (let [c1 (first (n/request c {"op" "eval" "code" code}))]
+    [c1 :pinged]))
+
+(cap/annotate-op! (var ping-with-code-first)
+                  (:perturb.cap/op (meta (var ping-with-code-first))))
+
+(defn uses-ping-with-code-first
+  "ACCEPT, and it RUNS. Composition through a helper whose capability is not its
+  first parameter."
+  [host port]
+  (let [r  (ping-with-code-first "(+ 1 1)" (n/open host port))
+        c1 (first r)
+        c2 (n/close! c1)]
+    :done))
+
 ;; ===========================================================================
 ;; REJECT
 ;; ===========================================================================
+
+(defn unpositioned-ping
+  "REJECT — AND THE DIAGNOSTIC NAMES THE ANNOTATION. `ping-with-code-first` with
+  `:arg 1` deleted from its `:consumes` entry.
+
+  The checker used to match specs to parameters IN ORDER when `:arg` was absent,
+  which bound the STRING `code` to the Connection spec and left `c` untracked.
+  Measured against the previous checker, this function drew FOUR diagnostics —
+  escape, untracked-consume, produces-mismatch, dangling — of which the first
+  reads
+
+      escape  perturb.nrepl/Connection
+        capability    `code` : perturb.nrepl/Connection@:active
+        enters a map at perturb/src/perturb/corpus.clj:158:19
+
+  naming a parameter that is a string and a line that is `{\"op\" \"eval\" …}`.
+  None of the four named the annotation. That is E18 finding 1(d)'s
+  two-capability result reproduced on one capability, which §1.2 had called
+  merely unprincipled.
+
+  The fallback is removed: an entry without `:arg` is refused where it is
+  written, and the body is not checked at all, because a refused annotation is
+  not a specification to check a body against. One diagnostic, and it names the
+  annotation."
+  {:perturb.cap/op {:consumes [{:cap 'perturb.nrepl/Connection :state :active}]
+                    :produces [{:cap 'perturb.nrepl/Connection :state :active :at [0]}]}}
+  [code c]
+  (let [c1 (first (n/request c {"op" "eval" "code" code}))]
+    [c1 :pinged]))
+
+(cap/annotate-op! (var unpositioned-ping)
+                  (:perturb.cap/op (meta (var unpositioned-ping))))
 
 (defn use-after-close
   "INHERITED I16, verbatim: `(let [c (open …)] (close! c) (request c …))`
@@ -273,6 +328,9 @@
    {:var 'perturb.corpus/uses-ping          :expect :accept :run ["in-memory" 0]}
    {:var 'perturb.corpus/ping-tuple         :expect :accept}       ;; run via uses-ping-tuple
    {:var 'perturb.corpus/uses-ping-tuple    :expect :accept :run ["in-memory" 0]}
+   ;; run via uses-ping-with-code-first
+   {:var 'perturb.corpus/ping-with-code-first :expect :accept}
+   {:var 'perturb.corpus/uses-ping-with-code-first :expect :accept :run ["in-memory" 0]}
 
    {:var 'perturb.corpus/use-after-close        :expect :reject :kind :use-after-move}
    {:var 'perturb.corpus/double-close           :expect :reject :kind :typestate}
@@ -287,4 +345,6 @@
    {:var 'perturb.corpus/helper-without-a-signature :expect :reject :kind :untracked-consume}
    {:var 'perturb.corpus/wrong-position         :expect :reject :kind :produces-mismatch}
    {:var 'perturb.corpus/connection-into-a-map  :expect :reject :kind :escape}
-   {:var 'perturb.corpus/capture-in-closure     :expect :reject :kind :capture}])
+   {:var 'perturb.corpus/capture-in-closure     :expect :reject :kind :capture}
+   {:var 'perturb.corpus/unpositioned-ping      :expect :reject
+    :kind :annotation-unpositioned}])

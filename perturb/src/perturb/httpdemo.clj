@@ -158,7 +158,8 @@
       (println "  Nothing else in the driver decides to read.")
 
       (banner "the typestate CYCLE, from the ledger")
-      (println "  perturb.nrepl's machine is a line: created -> active -> closed.")
+      (println "  perturb.nrepl's machine is a line: active -> closed, minted from")
+      (println "  nothing (it had a `:created` state until E18 1(b) deleted it).")
       (println "  this one returns to a state it has left, twice:")
       (println)
       (println (str "    ServerConn   " (render-trace (conn-trace 'perturb.http/ServerConn))))
