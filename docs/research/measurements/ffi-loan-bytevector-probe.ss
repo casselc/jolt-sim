@@ -1,0 +1,30 @@
+;; Probe: with an s8-bytevector byte-array backing, can the FFI loan hand native
+;; code a pointer DIRECTLY into the array's own storage (no bounce buffer)?
+(import (chezscheme))
+(load "host/chez/gate-boot.ss")
+(load "host/chez/java/ffi.ss")
+(define (ev s) (jolt-compile-eval s "user"))
+(define so (getenv "JOLT_FFI_BYTE_ARRAY_POINTER_HELPER"))
+(load-shared-object so)
+(define fill (foreign-procedure "jolt_test_fill_bytes" (void* unsigned-8 size_t) void*))
+
+(define a (ev "(byte-array [1 2 3 4 5 6])"))
+(define bv (jolt-array-vec a))
+(printf "backing is a bytevector: ~a\n" (bytevector? bv))
+(lock-object bv)
+(let* ((base (object->reference-address bv))
+       (start 2) (cnt 3))
+  ;; native writes into the array's OWN storage at [2,5)
+  (fill (+ base start) 200 cnt)
+  (printf "after direct native fill [2,5) with 200: ja->list = ~a\n" (ja->list bv))
+  ;; and the reverse direction: a jolt-side store is visible to native immediately
+  (ja-set! bv 0 -2)
+  (printf "  jolt store -2 at 0 seen by native as u8 = ~a\n" (foreign-ref 'unsigned-8 base 0))
+  ;; collection with the object locked must not move it
+  (let ((before base))
+    (make-bytevector 4194304 0)
+    (collect (collect-maximum-generation))
+    (printf "  address stable across collect: ~a\n" (= before (object->reference-address bv)))
+    (printf "  contents survive collect: ~a\n" (ja->list bv))))
+(unlock-object bv)
+(printf "unlocked: ~a\n" (not (locked-object? bv)))

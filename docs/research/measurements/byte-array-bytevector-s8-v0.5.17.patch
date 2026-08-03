@@ -1,0 +1,566 @@
+diff --git a/host/chez/java/byte-buffer.ss b/host/chez/java/byte-buffer.ss
+index 663ac9c2..6ce12734 100644
+--- a/host/chez/java/byte-buffer.ss
++++ b/host/chez/java/byte-buffer.ss
+@@ -11,24 +11,24 @@
+ (define (bb-limit b) (vector-ref (jhost-state b) 2))
+ (define (bb-pos! b n) (vector-set! (jhost-state b) 1 n))
+ (define (bb-limit! b n) (vector-set! (jhost-state b) 2 n))
+-(define (bb-capacity b) (vector-length (jolt-array-vec (bb-backing b))))
++(define (bb-capacity b) (ja-len (jolt-array-vec (bb-backing b))))
+ 
+ ;; (ByteBuffer/wrap ba) | (ByteBuffer/wrap ba off len) | (ByteBuffer/allocate n)
+ (register-class-statics! "ByteBuffer"
+   (list
+     (cons "wrap" (lambda (ba . rest)
+-                   (let ((cap (vector-length (jolt-array-vec ba))))
++                   (let ((cap (ja-len (jolt-array-vec ba))))
+                      (if (pair? rest)
+                          (let ((off (jnum->exact (car rest))) (len (jnum->exact (cadr rest))))
+                            (make-byte-buffer ba off (+ off len)))
+                          (make-byte-buffer ba 0 cap)))))
+     (cons "allocate" (lambda (n)
+                        (let ((cap (jnum->exact n)))
+-                         (make-byte-buffer (make-jolt-array (make-vector cap 0) 'byte) 0 cap))))
++                         (make-byte-buffer (make-jolt-array (na-make-backing cap 'byte 0) 'byte) 0 cap))))
+     ;; jolt has one heap; a direct buffer is just a buffer here.
+     (cons "allocateDirect" (lambda (n)
+                              (let ((cap (jnum->exact n)))
+-                               (make-byte-buffer (make-jolt-array (make-vector cap 0) 'byte) 0 cap))))))
++                               (make-byte-buffer (make-jolt-array (na-make-backing cap 'byte 0) 'byte) 0 cap))))))
+ 
+ (register-host-methods! "byte-buffer"
+   (list
+@@ -49,8 +49,8 @@
+     ;; (read paths — hexdumps, decoders — are unaffected).
+     (cons "slice" (lambda (self)
+                     (let* ((src (jolt-array-vec (bb-backing self))) (p (bb-pos self))
+-                           (n (- (bb-limit self) p)) (nv (make-vector n 0)))
+-                      (do ((i 0 (fx+ i 1))) ((fx=? i n)) (vector-set! nv i (vector-ref src (+ p i))))
++                           (n (- (bb-limit self) p)) (nv (na-make-backing n 'byte 0)))
++                      (do ((i 0 (fx+ i 1))) ((fx=? i n)) (ja-set! nv i (ja-ref src (+ p i))))
+                       (make-byte-buffer (make-jolt-array nv 'byte) 0 n))))
+     (cons "rewind" (lambda (self) (bb-pos! self 0) self))
+     (cons "flip" (lambda (self) (bb-limit! self (bb-pos self)) (bb-pos! self 0) self))
+@@ -66,16 +66,16 @@
+                        (let* ((sv (jolt-array-vec (bb-backing src))) (sp (bb-pos src))
+                               (n (- (bb-limit src) sp)))
+                          (do ((i 0 (fx+ i 1))) ((fx=? i n))
+-                           (vector-set! dv (+ dp i) (vector-ref sv (+ sp i))))
++                           (ja-set! dv (+ dp i) (ja-ref sv (+ sp i))))
+                          (bb-pos! src (bb-limit src)) (bb-pos! self (+ dp n))))
+                       ((jolt-array? src)
+-                       (let* ((sv (jolt-array-vec src)) (n (vector-length sv)))
++                       (let* ((sv (jolt-array-vec src)) (n (ja-len sv)))
+                          (do ((i 0 (fx+ i 1))) ((fx=? i n))
+-                           (vector-set! dv (+ dp i) (vector-ref sv i)))
++                           (ja-set! dv (+ dp i) (ja-ref sv i)))
+                          (bb-pos! self (+ dp n))))
+                       ;; a lone byte: narrowed like any byte-array store, so the
+                       ;; backing stays in -128..127 whichever form the caller used.
+-                      (else (vector-set! dv dp (na-byte-of src)) (bb-pos! self (+ dp 1))))
++                      (else (ja-set! dv dp (na-byte-of src)) (bb-pos! self (+ dp 1))))
+                     self)))
+     ;; get(): relative single byte at position, advancing it.
+     ;; get(int i): absolute single byte at index i (position unchanged).
+@@ -84,16 +84,16 @@
+                   (let ((src (jolt-array-vec (bb-backing self))))
+                     (cond
+                       ((null? args)
+-                       (let ((p (bb-pos self))) (bb-pos! self (+ p 1)) (->num (vector-ref src p))))
++                       (let ((p (bb-pos self))) (bb-pos! self (+ p 1)) (->num (ja-ref src p))))
+                       ((number? (car args))
+-                       (->num (vector-ref src (jnum->exact (car args)))))
++                       (->num (ja-ref src (jnum->exact (car args)))))
+                       (else
+                        (let* ((dst (car args)) (rest (cdr args)) (dv (jolt-array-vec dst))
+                               (off (if (pair? rest) (jnum->exact (car rest)) 0))
+-                              (len (if (and (pair? rest) (pair? (cdr rest))) (jnum->exact (cadr rest)) (vector-length dv)))
++                              (len (if (and (pair? rest) (pair? (cdr rest))) (jnum->exact (cadr rest)) (ja-len dv)))
+                               (p (bb-pos self)))
+                          (do ((i 0 (+ i 1))) ((= i len))
+-                           (vector-set! dv (+ off i) (vector-ref src (+ p i))))
++                           (ja-set! dv (+ off i) (ja-ref src (+ p i))))
+                          (bb-pos! self (+ p len))
+                          self))))))))
+ 
+diff --git a/host/chez/java/ffi.ss b/host/chez/java/ffi.ss
+index dd8ce10e..e09ec875 100644
+--- a/host/chez/java/ffi.ss
++++ b/host/chez/java/ffi.ss
+@@ -114,7 +114,7 @@
+       (throw-jvm (quote IllegalArgumentException)
+                  (string-append "jolt.ffi/" who ": expected byte-array"))))
+ (define (ffi-check-array-range who v off len)
+-  (let ((n (vector-length v)))
++  (let ((n (ja-len v)))
+     ;; Keep the final check in subtraction form. Besides admitting the exact
+     ;; empty tail, it never constructs the potentially huge sum off+len.
+     (when (or (< off 0) (< len 0) (> off n) (> len (- n off)))
+@@ -127,8 +127,8 @@
+     (throw-jvm (quote NullPointerException)
+                (string-append "jolt.ffi/" who ": null pointer"))))
+ (define (ffi-read-array ptr n)
+-  (let* ((n (jnum->exact n)) (p (jnum->exact ptr)) (v (make-vector n 0)))
+-    (do ((i 0 (+ i 1))) ((= i n)) (vector-set! v i (na-u8->byte (foreign-ref 'unsigned-8 p i))))
++  (let* ((n (jnum->exact n)) (p (jnum->exact ptr)) (v (na-make-backing n 'byte 0)))
++    (do ((i 0 (+ i 1))) ((= i n)) (ja-set! v i (na-u8->byte (foreign-ref 'unsigned-8 p i))))
+     (make-jolt-array v 'byte)))
+ (define (ffi-read-array! ptr len dest dest-off)
+   (let* ((v (ffi-byte-array-vector "read-array!" dest))
+@@ -138,14 +138,14 @@
+     (let ((p (jnum->exact ptr)))
+       (ffi-check-transfer-pointer "read-array!" p n)
+       (do ((i 0 (+ i 1))) ((= i n))
+-        (vector-set! v (+ off i) (na-u8->byte (foreign-ref 'unsigned-8 p i))))
++        (ja-set! v (+ off i) (na-u8->byte (foreign-ref 'unsigned-8 p i))))
+       n)))
+ (define ffi-write-array
+   (case-lambda
+     ((ptr arr)                          ; whole-array form (unchanged)
+-     (let* ((v (jolt-array-vec arr)) (n (vector-length v)) (p (jnum->exact ptr)))
++     (let* ((v (jolt-array-vec arr)) (n (ja-len v)) (p (jnum->exact ptr)))
+        (do ((i 0 (+ i 1))) ((= i n))
+-         (foreign-set! 'unsigned-8 p i (bitwise-and (exact (vector-ref v i)) #xff)))
++         (foreign-set! 'unsigned-8 p i (bitwise-and (exact (ja-ref v i)) #xff)))
+        n))
+     ((ptr src src-off len)              ; source sub-range form
+      (let* ((v (ffi-byte-array-vector "write-array" src))
+@@ -155,7 +155,7 @@
+        (let ((p (jnum->exact ptr)))
+          (ffi-check-transfer-pointer "write-array" p n)
+          (do ((i 0 (+ i 1))) ((= i n))
+-           (foreign-set! 'unsigned-8 p i (bitwise-and (exact (vector-ref v (+ off i))) #xff)))
++           (foreign-set! 'unsigned-8 p i (bitwise-and (exact (ja-ref v (+ off i))) #xff)))
+          n)))))
+ (def-var! "jolt.ffi" "read-array" ffi-read-array)
+ (def-var! "jolt.ffi" "read-array!" ffi-read-array!)
+@@ -204,10 +204,10 @@
+ (define (ffi-copy-vector-to-bytevector! src start tmp cnt)
+   (do ((i 0 (+ i 1))) ((= i cnt))
+     (bytevector-u8-set! tmp i
+-                        (bitwise-and (exact (vector-ref src (+ start i))) #xff))))
++                        (bitwise-and (exact (ja-ref src (+ start i))) #xff))))
+ (define (ffi-copy-bytevector-to-vector! tmp dest start cnt)
+   (do ((i 0 (+ i 1))) ((= i cnt))
+-    (vector-set! dest (+ start i) (na-u8->byte (bytevector-u8-ref tmp i)))))
++    (ja-set! dest (+ start i) (na-u8->byte (bytevector-u8-ref tmp i)))))
+ ;; who names the public entry for error messages; `proc` is a Scheme callback
+ ;; receiving (pointer validated-length) — distinct from the jolt fn the public
+ ;; form wraps via jolt-invoke2. Exposed so the gate can exercise host exceptions
+@@ -254,7 +254,7 @@
+   (case-lambda
+     ((arr f)
+      (let ((v (ffi-byte-array-vector "with-byte-array-pointer" arr)))
+-       (ffi-with-byte-array-pointer-range arr 0 (vector-length v) f)))
++       (ffi-with-byte-array-pointer-range arr 0 (ja-len v) f)))
+     ((arr off len f)
+      (ffi-with-byte-array-pointer-range arr off len f))))
+ (def-var! "jolt.ffi" "with-byte-array-pointer" ffi-with-byte-array-pointer)
+diff --git a/host/chez/java/host-static-classes.ss b/host/chez/java/host-static-classes.ss
+index 7cfb6186..ec76296c 100644
+--- a/host/chez/java/host-static-classes.ss
++++ b/host/chez/java/host-static-classes.ss
+@@ -645,7 +645,7 @@
+                               (if (>= p slen) -1
+                                   (let ((cbuf (car rest)) (off (jnum->exact (cadr rest))) (len (jnum->exact (caddr rest))))
+                                     (let ((n (min len (- slen p))) (dv (jolt-array-vec cbuf)))
+-                                      (let loop ((i 0)) (when (< i n) (vector-set! dv (+ off i) (string-ref s (+ p i))) (loop (+ i 1))))
++                                      (let loop ((i 0)) (when (< i n) (ja-set! dv (+ off i) (string-ref s (+ p i))) (loop (+ i 1))))
+                                       (sr-pos! self (+ p n)) (->num n))))))))))
+         (cons "mark" (lambda (self . _) (vector-set! (jhost-state self) 2 (sr-pos self)) jolt-nil))
+         (cons "reset" (lambda (self) (sr-pos! self (vector-ref (jhost-state self) 2)) jolt-nil))
+@@ -722,7 +722,7 @@
+                     (if (>= i len) (->num i)
+                         (let ((c (jnum->exact (read1))))
+                           (if (= c -1) (if (= i 0) -1 (->num i))
+-                              (begin (vector-set! dv (+ off i) (integer->char c)) (loop (+ i 1)))))))))))
++                              (begin (ja-set! dv (+ off i) (integer->char c)) (loop (+ i 1)))))))))))
+         (cons "unread"
+           (lambda (self ch . rest)
+             (if (null? rest)
+@@ -735,7 +735,7 @@
+                   (let loop ((i (- (+ off len) 1)) (acc (vector-ref (jhost-state self) 1)))
+                     (if (< i off)
+                         (vector-set! (jhost-state self) 1 acc)
+-                        (loop (- i 1) (cons (->num (char->integer (vector-ref dv i))) acc))))))
++                        (loop (- i 1) (cons (->num (char->integer (ja-ref dv i))) acc))))))
+             jolt-nil))
+         (cons "close" (lambda (self) jolt-nil))
+         ;; 1-based, like clojure.lang.LineNumberingPushbackReader's own +1 over the
+@@ -829,9 +829,9 @@
+            (let ((v (jolt-array-vec x)))
+              (if (pair? rest)
+                  (let* ((off (jnum->exact (car rest))) (cnt (jnum->exact (cadr rest))) (out (make-string cnt)))
+-                   (let loop ((i 0)) (when (fx<? i cnt) (string-set! out i (vector-ref v (fx+ off i))) (loop (fx+ i 1))))
++                   (let loop ((i 0)) (when (fx<? i cnt) (string-set! out i (ja-ref v (fx+ off i))) (loop (fx+ i 1))))
+                    out)
+-                 (list->string (vector->list v)))))
++                 (list->string (ja->list v)))))
+           ((string? x) x)
+           (else (jolt-str-render-one x)))))
+ ;; (BigInteger. s) | (BigInteger. s radix) — parse a string in the given radix
+@@ -1469,7 +1469,7 @@
+          (cons "equals" (lambda (a b)
+                           (cond ((and (jolt-nil? a) (jolt-nil? b)) #t)
+                                 ((or (jolt-nil? a) (jolt-nil? b)) #f)
+-                                (else (equal? (jolt-array-vec a) (jolt-array-vec b))))))
++                                (else (ja-equal? (jolt-array-vec a) (jolt-array-vec b))))))
+          (cons "fill" (lambda (a v)
+                         (let* ((bv (jolt-array-vec a)) (n (ja-len bv))
+                                (v (na-elem-of (jolt-array-kind a) v)))
+@@ -1547,14 +1547,14 @@
+     ;; produced a different stream from the JVM's for the same seed. Elements are
+     ;; signed bytes (the JVM's (byte)rnd cast).
+     (cons "nextBytes" (lambda (self ba)
+-                        (let* ((v (jolt-array-vec ba)) (n (vector-length v))
++                        (let* ((v (jolt-array-vec ba)) (n (ja-len v))
+                                (st (jhost-state self)))
+                           (let loop ((i 0))
+                             (when (fx<? i n)
+                               (let inner ((rnd (random-u32->s32 (random-next 32 st)))
+                                           (k (min (fx- n i) 4)) (i i))
+                                 (if (fx=? k 0) (loop i)
+-                                    (begin (vector-set! v i (na-byte-of (bitwise-and rnd #xff)))
++                                    (begin (ja-set! v i (na-byte-of (bitwise-and rnd #xff)))
+                                            (inner (bitwise-arithmetic-shift-right rnd 8)
+                                                   (fx- k 1) (fx+ i 1)))))))
+                           jolt-nil)))
+diff --git a/host/chez/java/host-static-methods.ss b/host/chez/java/host-static-methods.ss
+index 05a04610..a67fa5d6 100644
+--- a/host/chez/java/host-static-methods.ss
++++ b/host/chez/java/host-static-methods.ss
+@@ -469,7 +469,7 @@
+   (list (cons "valueOf" (lambda (x . _)
+                           (cond ((jolt-nil? x) "null")
+                                 ((and (jolt-array? x) (eq? (jolt-array-kind x) 'char))
+-                                 (list->string (vector->list (jolt-array-vec x))))
++                                 (list->string (ja->list (jolt-array-vec x))))
+                                 (else (jolt-str-render-one x)))))
+         ;; String.join(delim, elems) — elems as a collection or spread as varargs,
+         ;; the two shapes the JVM overloads on.
+diff --git a/host/chez/java/io-streams.ss b/host/chez/java/io-streams.ss
+index 70e9133c..ee789bf9 100644
+--- a/host/chez/java/io-streams.ss
++++ b/host/chez/java/io-streams.ss
+@@ -32,13 +32,13 @@
+                  (let* ((buf (car rest))
+                         (vec (jolt-array-vec buf))
+                         (off (if (>= (length rest) 3) (jnum->exact (cadr rest)) 0))
+-                        (len (if (>= (length rest) 3) (jnum->exact (caddr rest)) (vector-length vec))))
++                        (len (if (>= (length rest) 3) (jnum->exact (caddr rest)) (ja-len vec))))
+                    (let loop ((i 0))
+                      (if (>= i len) (->num i)
+                          (let ((b (get-u8 port)))
+                            (if (eof-object? b)
+                                (if (= i 0) -1 (->num i))
+-                               (begin (vector-set! vec (+ off i) (na-u8->byte b)) (loop (+ i 1))))))))))))
++                               (begin (ja-set! vec (+ off i) (na-u8->byte b)) (loop (+ i 1))))))))))))
+    (cons "readAllBytes" (lambda (self) (let ((bv (get-bytevector-all (in-stream-port self))))
+                                          (na-byte-array (if (eof-object? bv) (make-bytevector 0) bv)))))
+    (cons "skip" (lambda (self n) (let ((bv (get-bytevector-n (in-stream-port self) (jnum->exact n))))
+@@ -127,13 +127,13 @@
+                  (let* ((buf (car rest))
+                         (vec (jolt-array-vec buf))
+                         (off (if (>= (length rest) 3) (jnum->exact (cadr rest)) 0))
+-                        (len (if (>= (length rest) 3) (jnum->exact (caddr rest)) (vector-length vec))))
++                        (len (if (>= (length rest) 3) (jnum->exact (caddr rest)) (ja-len vec))))
+                    (let loop ((i 0))
+                      (if (>= i len) (->num i)
+                          (let ((c (get-char port)))
+                            (if (eof-object? c)
+                                (if (= i 0) -1 (->num i))
+-                               (begin (vector-set! vec (+ off i) c) (loop (+ i 1))))))))))))
++                               (begin (ja-set! vec (+ off i) c) (loop (+ i 1))))))))))))
+    (cons "readLine" (lambda (self) (let ((l (get-line (char-reader-port self)))) (if (eof-object? l) jolt-nil l))))
+    (cons "lines" (lambda (self)
+                    (let loop ((acc '()))
+diff --git a/host/chez/java/natives-array.ss b/host/chez/java/natives-array.ss
+index 3cafcdc6..15cca62e 100644
+--- a/host/chez/java/natives-array.ss
++++ b/host/chez/java/natives-array.ss
+@@ -18,12 +18,39 @@
+ 
+ (define (na-idx i) (if (and (number? i) (not (exact? i))) (exact (floor i)) (jolt-need-num i)))
+ 
+-;; A double/float jolt-array is backed by a Chez FLVECTOR (unboxed flonums); every
+-;; other kind keeps a boxed Chez vector. These helpers let the collection
+-;; dispatchers (count/seq/nth/ref-put!/aset/aclone) and java.util.Arrays work over
+-;; either backing. Chez has flvector? / make-flvector / flvector-ref / -set! / -length.
++;; A byte-array element is a SIGNED byte, -128..127, like the JVM's byte[]: a value
++;; above 127 reads negative, so (neg? b), a (bit-and b 0xff) mask, and arithmetic
++;; over a high byte all behave as they do on the JVM. na-byte-of is the ONE place a
++;; value entering a byte array is narrowed — Byte.byteValue() semantics: truncate
++;; toward zero (the JVM's d2i, not floor — (byte-array [-1.9]) is -1, not -2), take
++;; the low 8 bits, fold the sign bit.
++;; Defined AHEAD of the backing seam because ja-set! / na-make-backing /
++;; na-list->backing narrow through it.
++(define (na-u8->byte b) (if (fx<? b 128) b (fx- b 256)))
++(define (na-byte-of v) (na-u8->byte (bitwise-and (exact (truncate v)) #xff)))
++
++;; THREE backings, keyed off the element kind:
++;;   byte           -> a Chez BYTEVECTOR, read/written through the SIGNED s8
++;;                     accessors (1 byte/element, unboxed)
++;;   double/float   -> a Chez FLVECTOR   (8 bytes/element, unboxed flonums)
++;;   everything else-> a boxed Chez VECTOR
++;; These helpers let the collection dispatchers (count/seq/nth/ref-put!/aset/aclone)
++;; and java.util.Arrays work over any of them. Chez has bytevector? /
++;; make-bytevector / bytevector-s8-ref / -s8-set! / bytevector-length, and
++;; flvector? / make-flvector / flvector-ref / -set! / -length.
++;;
++;; WHY s8 AND NOT u8: a byte-array element is a SIGNED byte, -128..127 (see
++;; na-byte-of below) — that is the value domain every constructor already
++;; produces and every reader already sees. bytevector-s8-ref/-set! carry exactly
++;; that domain, so the representation narrows from 8 bytes to 1 with NO change to
++;; the value domain and no sign fold anywhere on the element path. The u8 and s8
++;; views share the same octets, so the raw-byte seam (na-bv->bytearray /
++;; na-bytearray->bv, and the FFI transfers) becomes a straight bytevector copy.
+ (define (na-fl-kind? k) (or (eq? k 'double) (eq? k 'float)))
+-(define (ja-len v)     (if (flvector? v) (flvector-length v) (vector-length v)))
++(define (ja-len v)
++  (cond ((bytevector? v) (bytevector-length v))
++        ((flvector? v)   (flvector-length v))
++        (else            (vector-length v))))
+ ;; An out-of-range index on the generic aget/aset path throws the typed JVM
+ ;; exception with the JVM message. The proven ^doubles fast path (jolt-flaget/
+ ;; jolt-flaset below) skips this pre-check — it relies on flvector-ref's own
+@@ -38,32 +65,72 @@
+         (na-oob-throw i (ja-len v)))))
+ (define (ja-ref v i)
+   (ja-check v i)
+-  (if (flvector? v) (flvector-ref v i) (vector-ref v i)))
++  (cond ((bytevector? v) (bytevector-s8-ref v i))
++        ((flvector? v)   (flvector-ref v i))
++        (else            (vector-ref v i))))
++;; The byte arm narrows through na-byte-of. Every caller on the aset /
++;; jolt.host/ref-put! path already narrows via na-elem-of, so this is defensive
++;; rather than a behaviour change; it matters because bytevector-s8-set! ERRORS
++;; outside -128..127 where vector-set! silently accepted anything.
+ (define (ja-set! v i x)
+   (ja-check v i)
+-  (if (flvector? v)
+-      (flvector-set! v i (if (flonum? x) x (exact->inexact x)))
+-      (vector-set! v i x)))
++  (cond ((bytevector? v)
++         (bytevector-s8-set! v i (if (and (fixnum? x) (fx>=? x -128) (fx<=? x 127))
++                                     x
++                                     (na-byte-of x))))
++        ((flvector? v) (flvector-set! v i (if (flonum? x) x (exact->inexact x))))
++        (else (vector-set! v i x))))
+ (define (ja->list v)
+-  (if (flvector? v)
+-      (let loop ((i (- (flvector-length v) 1)) (acc '()))
+-        (if (< i 0) acc (loop (- i 1) (cons (flvector-ref v i) acc))))
+-      (vector->list v)))
++  (cond ((bytevector? v) (bytevector->s8-list v))
++        ((flvector? v)
++         (let loop ((i (- (flvector-length v) 1)) (acc '()))
++           (if (< i 0) acc (loop (- i 1) (cons (flvector-ref v i) acc)))))
++        (else (vector->list v))))
+ (define (ja-copy v)
+-  (if (flvector? v)
+-      (let* ((n (flvector-length v)) (r (make-flvector n 0.0)))
+-        (do ((i 0 (+ i 1))) ((= i n) r) (flvector-set! r i (flvector-ref v i))))
+-      (vector-copy v)))
++  (cond ((bytevector? v) (bytevector-copy v))
++        ((flvector? v)
++         (let* ((n (flvector-length v)) (r (make-flvector n 0.0)))
++           (do ((i 0 (+ i 1))) ((= i n) r) (flvector-set! r i (flvector-ref v i)))))
++        (else (vector-copy v))))
++;; Element-wise equality of two backings (java.util.Arrays/equals).
++;;
++;; CROSS-KIND EQUALITY IS PRESERVED. `equal?` alone would now answer #f for
++;; (Arrays/equals (byte-array [1 2]) (int-array [1 2])) — a bytevector is never
++;; equal? to a vector — where jolt answers #t today. That comparison is a compile
++;; error on the JVM (no Arrays.equals(byte[],int[]) overload), so neither answer is
++;; "the JVM's"; #t is what jolt has always said and the representation change is not
++;; a reason to move it. Same backing shape -> one `equal?` (the fast path, and the
++;; only path byte/byte, int/int and double/double take); different shapes -> walk
++;; elements. Element comparison stays `equal?`, so exact-vs-inexact stays distinct:
++;; a byte-array and a double-array of the same numbers are still NOT equal.
++(define (ja-same-shape? a b)
++  (or (and (bytevector? a) (bytevector? b))
++      (and (flvector? a) (flvector? b))
++      (and (vector? a) (vector? b))))
++(define (ja-equal? a b)
++  (if (ja-same-shape? a b)
++      (equal? a b)
++      (let ((n (ja-len a)))
++        (and (= n (ja-len b))
++             (let loop ((i 0))
++               (or (= i n)
++                   (and (equal? (ja-ref a i) (ja-ref b i)) (loop (+ i 1)))))))))
+ (define (na-make-backing n kind init)
+-  (if (na-fl-kind? kind)
+-      (make-flvector (exact n) (if (flonum? init) init (exact->inexact init)))
+-      (make-vector (exact n) init)))
++  (cond ((eq? kind 'byte) (make-bytevector (exact n) (na-byte-of init)))
++        ((na-fl-kind? kind)
++         (make-flvector (exact n) (if (flonum? init) init (exact->inexact init))))
++        (else (make-vector (exact n) init))))
+ (define (na-list->backing lst kind)
+-  (if (na-fl-kind? kind)
+-      (let* ((n (length lst)) (fv (make-flvector n 0.0)))
+-        (let loop ((i 0) (l lst))
+-          (if (null? l) fv (begin (flvector-set! fv i (exact->inexact (car l))) (loop (+ i 1) (cdr l))))))
+-      (list->vector lst)))
++  (cond ((eq? kind 'byte)
++         (let* ((n (length lst)) (bv (make-bytevector n 0)))
++           (let loop ((i 0) (l lst))
++             (if (null? l) bv
++                 (begin (bytevector-s8-set! bv i (na-byte-of (car l))) (loop (+ i 1) (cdr l)))))))
++        ((na-fl-kind? kind)
++         (let* ((n (length lst)) (fv (make-flvector n 0.0)))
++           (let loop ((i 0) (l lst))
++             (if (null? l) fv (begin (flvector-set! fv i (exact->inexact (car l))) (loop (+ i 1) (cdr l)))))))
++        (else (list->vector lst))))
+ 
+ (define (na-from-seq x kind) (make-jolt-array (na-list->backing (seq->list (jolt-seq x)) kind) kind))
+ ;; (T-array size) | (T-array size init) | (T-array seq)
+@@ -75,15 +142,7 @@
+ ;; numeric tower: array element defaults / narrowed bytes / count are
+ ;; EXACT integers (= JVM byte/short/int), matching exact integer literals.
+ 
+-;; A byte-array element is a SIGNED byte, -128..127, like the JVM's byte[]: a value
+-;; above 127 reads negative, so (neg? b), a (bit-and b 0xff) mask, and arithmetic
+-;; over a high byte all behave as they do on the JVM. na-byte-of is the ONE place a
+-;; value entering a byte array is narrowed — Byte.byteValue() semantics: truncate
+-;; toward zero (the JVM's d2i, not floor — (byte-array [-1.9]) is -1, not -2), take
+-;; the low 8 bits, fold the sign bit. na-bytearray->bv masks back to 0..255 at the
+-;; raw-byte seam, so the two carriers round-trip byte-exactly.
+-(define (na-u8->byte b) (if (fx<? b 128) b (fx- b 256)))
+-(define (na-byte-of v) (na-u8->byte (bitwise-and (exact (truncate v)) #xff)))
++;; (na-u8->byte / na-byte-of are defined ahead of the backing seam above.)
+ ;; Narrow a value being STORED into an array to its element kind. Only 'byte has a
+ ;; range jolt must maintain (the u8 <-> s8 bridge above depends on it); the other
+ ;; kinds hold whatever integer/flonum they are given, as they always have.
+@@ -110,25 +169,26 @@
+ ;; Chez bytevector (unsigned 0..255) -> jolt byte-array (signed -128..127). The
+ ;; inbound half of the raw-bytes seam: every producer of a byte-array from raw bytes
+ ;; — .getBytes, stream reads, Files/readAllBytes, Base64, FFI — funnels through here.
++;; The u8 and s8 views share the same octets, so the fold is a no-op on the
++;; representation: this is now a straight copy. It must COPY — the caller keeps
++;; its bytevector and may mutate it.
+ (define (na-bv->bytearray bv)
+-  (let* ((n (bytevector-length bv)) (v (make-vector n 0)))
+-    (do ((i 0 (+ i 1))) ((= i n)) (vector-set! v i (na-u8->byte (bytevector-u8-ref bv i))))
+-    (make-jolt-array v 'byte)))
++  (make-jolt-array (bytevector-copy bv) 'byte))
+ ;; (byte-array n [init]) | (byte-array coll). Also coerces the host's OTHER byte
+ ;; carrier — a Chez bytevector (what the charset encoders produce) — and a string's
+ ;; UTF-8 bytes, so bytevector and byte-array interconvert across interop seams.
+ (define (na-byte-array a . rest)
+   (cond
+-    ((number? a) (make-jolt-array (make-vector (exact (na-idx a)) (na-byte-of (if (pair? rest) (car rest) 0))) 'byte))
++    ((number? a) (make-jolt-array (na-make-backing (na-idx a) 'byte (if (pair? rest) (car rest) 0)) 'byte))
+     ((bytevector? a) (na-bv->bytearray a))
+     ((string? a) (na-bv->bytearray (string->utf8 a)))
+-    (else (make-jolt-array (list->vector (map na-byte-of (seq->list (jolt-seq a)))) 'byte))))
++    (else (make-jolt-array (na-list->backing (seq->list (jolt-seq a)) 'byte) 'byte))))
+ ;; jolt byte-array -> Chez bytevector (for String decode / utf8->string). The
+-;; outbound half: the #xff mask folds a signed element back to its raw byte.
++;; outbound half of the raw-bytes seam. The s8 backing already holds exactly the
++;; raw octets, so the old #xff element fold is a no-op on the representation and
++;; this is a straight copy. It must COPY — the caller may mutate the result.
+ (define (na-bytearray->bv arr)
+-  (let* ((v (jolt-array-vec arr)) (n (vector-length v)) (bv (make-bytevector n)))
+-    (do ((i 0 (+ i 1))) ((= i n)) (bytevector-u8-set! bv i (bitwise-and (exact (vector-ref v i)) #xff)))
+-    bv))
++  (bytevector-copy (jolt-array-vec arr)))
+ (define (na-make-array a . rest)    ; (make-array len) | (make-array type len ...)
+   (make-jolt-array (make-vector (exact (na-idx (if (number? a) a (car rest)))) jolt-nil) 'object))
+ (define (na-into-array a . rest)    (na-from-seq (if (pair? rest) (car rest) a) 'object))
+@@ -209,8 +269,7 @@
+ (define (na-aset-boolean arr i v) (na-aset! arr i v))
+ (define (na-aset-byte arr i v)
+   (let ((bv (jolt-array-vec arr)) (j (exact (na-idx i))) (b (na-byte-of v)))
+-    (ja-check bv j)
+-    (vector-set! bv j b) b))
++    (ja-set! bv j b) b))
+ 
+ ;; --- coercions (identity on arrays; byte/short are masked scalar casts) ------
+ (define (na-bytes x) (if (and (jolt-array? x) (eq? (jolt-array-kind x) 'byte)) x (na-byte-array x)))
+@@ -372,7 +431,7 @@
+ ;; their layout. Lives here (not io.ss) because io.ss loads before byte-array.
+ (define (jolt-io-copy src dst . _opts)
+   (define (write-all! bytes)
+-    (record-method-dispatch dst "write" (list->cseq (list bytes 0 (vector-length (jolt-array-vec bytes))))))
++    (record-method-dispatch dst "write" (list->cseq (list bytes 0 (ja-len (jolt-array-vec bytes))))))
+   (cond
+     ((or (bytevector? src) (string? src)
+          (and (jolt-array? src) (eq? (jolt-array-kind src) 'byte)))
+diff --git a/host/chez/java/natives-str.ss b/host/chez/java/natives-str.ss
+index c4dedf3c..0e0f81e6 100644
+--- a/host/chez/java/natives-str.ss
++++ b/host/chez/java/natives-str.ss
+@@ -363,7 +363,7 @@
+            (dv (jolt-array-vec (arg 2))) (dst-begin (jolt->idx (arg 3))))
+        (let loop ((i src-begin) (j dst-begin))
+          (when (fx<? i src-end)
+-           (vector-set! dv j (string-ref s i))
++           (ja-set! dv j (string-ref s i))
+            (loop (fx+ i 1) (fx+ j 1)))))
+      jolt-nil)
+     ((string=? method "subSequence")
+diff --git a/host/chez/java/nio-file.ss b/host/chez/java/nio-file.ss
+index db0ff8f9..4c0bdaff 100644
+--- a/host/chez/java/nio-file.ss
++++ b/host/chez/java/nio-file.ss
+@@ -57,7 +57,7 @@
+ ;; Paths.get(first, more...) — join with the separator, no normalization. The
+ ;; varargs `more` arrives as a jolt String[] (from into-array); spread it.
+ (define (npath-spread-args args)
+-  (apply append (map (lambda (x) (if (jolt-array? x) (vector->list (jolt-array-vec x)) (list x))) args)))
++  (apply append (map (lambda (x) (if (jolt-array? x) (ja->list (jolt-array-vec x)) (list x))) args)))
+ (define (npath-get first . more)
+   (let ((s (fold-left (lambda (acc x)
+                         (let ((p (npath-string-of x)))
+diff --git a/test/chez/ffi-byte-array-pointer-test.ss b/test/chez/ffi-byte-array-pointer-test.ss
+index 7cff13d8..1db5e24a 100644
+--- a/test/chez/ffi-byte-array-pointer-test.ss
++++ b/test/chez/ffi-byte-array-pointer-test.ss
+@@ -135,7 +135,7 @@
+            locked-inside?
+            (bytevector? tmp)
+            (not (locked-object? tmp))
+-           (equal? '#(1 -56 3 4) v))))
++           (equal? '(1 -56 3 4) (ja->list v)))))
+ (let* ((a (ev "(byte-array [1 2 3 4])")) (v (jolt-array-vec a))
+        (tmp #f) (locked-inside? #f))
+   (ok "host exception copies back and preserves its primary exception"
+@@ -152,7 +152,7 @@
+        locked-inside?
+        (bytevector? tmp)
+        (not (locked-object? tmp))
+-       (= -55 (vector-ref v 1)))))
++       (= -55 (ja-ref v 1)))))
+ (let* ((a (ev "(byte-array [1 2 3 4])")) (v (jolt-array-vec a))
+        (tmp #f) (locked-inside? #f))
+   (ok "nonlocal exit copies back"
+@@ -170,7 +170,7 @@
+        locked-inside?
+        (bytevector? tmp)
+        (not (locked-object? tmp))
+-       (= -54 (vector-ref v 2)))))
++       (= -54 (ja-ref v 2)))))
+ 
+ ;; --- jolt exception: native changes are copied back before propagating --------
+ (ok "Jolt exception copies native changes back before propagating"
+@@ -255,7 +255,7 @@
+                 (begin
+                   (set! phase 1)
+                   ;; A second copy-back would overwrite this caller value.
+-                  (vector-set! v 0 77)
++                  (ja-set! v 0 77)
+                   (saved 'again))
+                 (list 'returned value visits))))))
+   (ok "retired loan rejects continuation re-entry before callback resumes"
+@@ -265,7 +265,7 @@
+            locked-inside?
+            (bytevector? tmp)
+            (not (locked-object? tmp))
+-           (= 77 (vector-ref v 0)))))
++           (= 77 (ja-ref v 0)))))
+ 
+ (printf "~a/~a passed~n" (- total fails) total)
+ (exit (if (zero? fails) 0 1))
