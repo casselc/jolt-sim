@@ -69,13 +69,13 @@ networking, TCP, HTTP, clocks, process isolation, Hegel, replay, and monitoring.
 
 | Capability | State | Accepted evidence |
 | --- | --- | --- |
-| Jolt 0.5.20 / ABI 6 simulation core | Pushed; full Linux Jolt CI and local jolt-sim suite green, hosted jolt-sim matrix pending | `9fc64f93`; jolt-sim `510 tests / 4,026 assertions`; draft PR `casselc/jolt#26` |
+| Jolt 0.5.20 / ABI 6 simulation core | Pushed; full Linux Jolt CI and the downstream jolt-sim hosted matrix are green | `9fc64f93`; hosted run `30857980580`; draft PR `casselc/jolt#26` |
 | Jolt 0.5.17 hosted platform and Windows native-path evidence | Historical baseline retained | `9b5cd6b`; draft PR `casselc/jolt-sim#21` |
 | Pure durable-outbox application transition | Landed | `5d2c61e`; draft PR `casselc/jolt-sim#22` |
 | Real SQLite adapter using ordinary `jdbc.core` | Landed | `2deb01d`, aggregate registration `5663ca4`; draft PR `casselc/jolt-sim#23` |
 | SQLite table-row model and unchanged-adapter parity | Landed on the active stack | Row model `1639507` / draft PR `casselc/jolt-sim#25`; parity integration `47fc0e5`, review corrections `7772c48` / draft PR `casselc/jolt-sim#26` |
 | Framed TCP/bencode example and hosted lanes | Landed as an input to the canonical app | `6e87657`, `386b9d5`, diagnostic follow-up `51f7018` |
-| Whole HTTP -> SQLite -> TCP outbox application | Local real/hermetic slice green; hosted matrix pending | Real/hermetic `1 test / 27 assertions`; hermetic-only `1 / 26`; SQLite parity `1 / 47`; TCP framing `6 / 101`; aggregate `510 / 4,026`; Phase 3 below |
+| Whole HTTP -> SQLite -> TCP outbox application | Real/hermetic base is hosted; generated workload/capacity/poll-fault slice is locally green and awaiting its stacked hosted run | Base draft PR `casselc/jolt-sim#28`; Hegel draft PR `#29`; Hegel `2 tests / 5 assertions` over 2 boundaries plus 15 generated cases; aggregate `513 / 4,042`; Phase 3 below |
 
 Phase 1 was last run on Linux x86-64 using the prior simulator image
 `jolt v0.5.17-13-g3af5622d`
@@ -163,11 +163,21 @@ that pending row, sends it through the existing framed TCP/bencode stack, and
 receives an outbox-id/attempt acknowledgement. It records stable request,
 transaction, outbox, delivery, and attempt identities and runs the same body in
 real and hermetic modes. The acknowledgement does not mark the row delivered;
-retry, marking, cancellation, Hegel search, and POSIX hybrid classification
-remain later feature slices rather than hidden claims of this witness.
+retry, marking, cancellation, schedule/admission search, and POSIX hybrid
+classification remain later feature slices rather than hidden claims of this
+witness.
 The first slice uses one in-memory SQLite connection and therefore establishes
 post-COMMIT reload only; close/reopen and crash durability require the later
 file-backed restart witness.
+
+The next stacked slice, draft PR `casselc/jolt-sim#29`, keeps that application
+body unchanged and runs every case in a fresh sim-enabled process. Hegel owns
+and shrinks the command payload octets, stream capacity, pipe capacity, and one
+captured poll-interruption ordinal. Two explicit payload boundaries plus 15
+generated cases assert exact coverage of every declared capacity/fault choice,
+exact application and SQLite-plan evidence, handler-only routing, and clean
+worlds. Completed worker artifacts remain available until the parent semantic
+verdict and are removed only after all assertions pass.
 
 The simulation layer may provide boundary handlers and models. It must not
 replace the HTTP, DB, TCP, codec, or application implementation with a second
@@ -179,7 +189,13 @@ embedded-zero values, durable restart/retry, and one injected native failure.
 
 ### Phase 4 — Hegel workload, fault, schedule, and replay search
 
-Once the complete app runs in all three modes:
+Status: the first workload/capacity/poll-fault slice is implemented in draft PR
+`casselc/jolt-sim#29`. It deliberately does not yet vary future admission or
+schedules, retry/cancellation/crash actions, deadlines, or one- and two-byte
+HTTP fragmentation. Those are the next bounded slices around the same ordinary
+application, not alternate simulator implementations.
+
+As the complete app gains those modes:
 
 - define one canonical Case/Outcome schema for workload, provider choices,
   capacities, faults, schedules, and replay coordinates;

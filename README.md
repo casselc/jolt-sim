@@ -24,10 +24,10 @@ Public CI builds that exact simulation image. Linux x86_64/aarch64 and macOS
 x86_64/arm64 run the main suite plus the controller-poison, pointer-loan,
 scheduler-deadline, POSIX/HTTP integration, TCP/bencode framing, the
 HTTP/SQLite/TCP outbox application, and fresh-process case gates. Hegel
-schedule generation/shrinking and the
-TCP/bencode real/sim property lane run on Linux x86_64. Windows x86_64 runs the
-main, controller-poison, pointer-loan, and scheduler-deadline gates, but not the
-fresh-process supervisor: the current Jolt process host uses a POSIX shell plus
+schedule generation/shrinking, the TCP/bencode real/sim property lane, and the
+outbox workload/capacity/poll-fault lane run on Linux x86_64. Windows x86_64
+runs the main, controller-poison, pointer-loan, and scheduler-deadline gates,
+but not the fresh-process supervisor: the current Jolt process host uses a POSIX shell plus
 `waitpid`/`kill`. The TCP framing alias also remains POSIX-only because it
 statically loads the POSIX scenario adapter; adding it to Windows requires a
 separate portability witness rather than assuming that load chain is portable.
@@ -99,7 +99,7 @@ only the application surfaces and modes exercised by a durable gate.
 | HTTP Hello World | `jolt-http`, `jolt-tcp`, `jolt.net`, `jolt.ffi` | Not in the durable gate | Modeled POSIX loopback | One request; public CI, no faults |
 | HTTP SQLite BLOB | `jolt-http`, `jolt-tcp`, `jolt.net`, `jdbc.core`, `db.sqlite`, `jolt.ffi`, byte arrays | Host sockets plus system SQLite | Shared FFI-memory, POSIX, and SQLite worlds | One request at one-byte capacities plus one captured first-poll `EINTR`; local gate, no generated schedule/fault search |
 | Length-framed TCP bencode echo | `teensyp.server`, `teensyp.client`, `teensyp.buffer`, `jolt.bytes`, `jolt.bencode`, `jolt.net`, `jolt.ffi` | Host loopback parity witness | Modeled POSIX loopback and native memory | Pipelined requests, finite stream/self-pipe capacities, captured `EINTR`, and Hegel-generated UTF-8; no half-close or concurrent clients |
-| HTTP SQLite outbox delivery | `jolt-http`, `jdbc.core`, `db.sqlite`, `teensyp.server/client`, `jolt.bytes`, `jolt.bencode`, `jolt.net`, `jolt.ffi` | Host HTTP/TCP sockets plus system SQLite | Shared FFI-memory, POSIX, and exact-plan SQLite worlds | HTTP returns after COMMIT; a later delivery phase reloads the pending row, closes SQLite, then sends one octet-vector message and receives an ack; no close/reopen or crash-durability claim |
+| HTTP SQLite outbox delivery | `jolt-http`, `jdbc.core`, `db.sqlite`, `teensyp.server/client`, `jolt.bytes`, `jolt.bencode`, `jolt.net`, `jolt.ffi` | Host HTTP/TCP sockets plus system SQLite | Shared FFI-memory, POSIX, and exact-plan SQLite worlds | HTTP returns after COMMIT; a later delivery phase reloads and sends one octet-vector message; Hegel varies payload bytes, bounded capacities, and captured poll interruption; no schedule/admission, retry, close/reopen, or crash-durability claim |
 | Maelstrom Echo | `jolt.maelstrom` node/handler code | JSON-lines lane reviewed but not integrated | Deterministic memory transport | FIFO/history integrity only; no nemesis or liveness claim |
 
 These capabilities belong to two deliberately different execution tracks:
@@ -875,16 +875,26 @@ omits the system SQLite native-library metadata:
 
 ```sh
 export JOLT_SIM_BIN=/path/to/current-sim/target/sim/jolt
+export JOLT_SIM_PROJECT_DIR=/absolute/path/to/jolt-sim
 "$JOLT_SIM_BIN" -M:outbox-delivery-test
 "$JOLT_SIM_BIN" -M:outbox-delivery-sim-test
+"$JOLT_SIM_BIN" -A:outbox-delivery-hegel-test -m hegel.install
+"$JOLT_SIM_BIN" -M:outbox-delivery-hegel-test
 ```
 
-Each command prints the path of an append-only EDN progress file. Set
-`JOLT_SIM_OUTBOX_DELIVERY_PROGRESS_FILE` to retain it at a chosen location.
+Each direct integration command prints the path of an append-only EDN progress
+file. Set `JOLT_SIM_OUTBOX_DELIVERY_PROGRESS_FILE` to retain it at a chosen
+location.
 These records are best-effort test-process breadcrumbs, not the later
-crash-safe journal contract. The first slice proves one post-COMMIT reload and
-acknowledged delivery attempt; it does not prove close/reopen persistence,
-crash durability, retry, delivery marking, or generated schedule/fault search.
+crash-safe journal contract. The Hegel lane runs two explicit payload
+boundaries and 15 fresh-process generated cases. It shrinks payload octets,
+stream capacity, pipe capacity, and one captured poll `EINTR` activation
+ordinal; it requires exact finite-domain coverage and exact application,
+SQLite-plan, route, fault, capacity, and cleanup evidence. Completed child
+artifacts survive until the parent verdict, while passing cases clean them up.
+The current slices do not prove close/reopen persistence, crash durability,
+retry, delivery marking, future-admission schedules, or extreme one- and
+two-byte HTTP fragmentation.
 
 ### Composing handler packs
 
@@ -1009,11 +1019,12 @@ extension boundaries rather than growing a parallel simulator architecture.
 ## Roadmap
 
 The live implementation order and release boundary are maintained in
-[`docs/ROADMAP.md`](docs/ROADMAP.md). The immediate path is unchanged SQLite
-adapter parity, failure preservation and stable replay coordinates, then one
-ordinary HTTP -> SQLite -> TCP/bencode outbox application in real, hermetic,
-and hybrid modes. Hegel search, causal monitors, the crash-safe journal, broader
-runtime hooks, and release hardening build on that executable application.
+[`docs/ROADMAP.md`](docs/ROADMAP.md). The ordinary HTTP -> SQLite -> TCP/bencode
+outbox application and its first generated workload/capacity/poll-fault lane
+are now executable. The immediate path is schedule/admission exploration,
+followed by retry, cancellation, close/reopen, restart/crash durability, and
+hybrid-native scenarios. Causal monitors, the crash-safe journal, broader
+runtime hooks, and release hardening build on that application evidence.
 
 The original P0-P5 research packet and adversarial reviews remain preserved in
 [`casselc/jolt-sim-planning`](https://github.com/casselc/jolt-sim-planning);
