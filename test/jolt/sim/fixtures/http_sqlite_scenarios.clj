@@ -22,7 +22,15 @@
   canonical evidence map (HTTP response projection plus route, cleanup,
   capacity, fault, and admission-plan/coordinator evidence) sized to catch a
   model bypass. A regression failure carries bounded case data because the
-  caller's drawn input is the only per-case variable."
+  caller's drawn input is the only per-case variable.
+
+  The transaction section below owns scenario selection, exact SQLite plan
+  construction, runtime handler composition, execution, and canonical
+  evidence for the fixture's ordinary jdbc/atomic scenarios
+  (:commit-visible and :rollback-invisible). It reuses the same composed
+  memory + SQLite + POSIX handler packs and the same unchanged fixture
+  lifecycle; transaction logic itself lives only in the pinned db.jdbc
+  library and the closed :tx-effect/:store-effect plan directives."
   (:require [jolt.net :as net]
             [jolt.sim.ffi-memory :as memory]
             [jolt.sim.ffi-schedule :as ffi-schedule]
@@ -303,3 +311,162 @@
    (exercise-with-capacities {} input))
   ([overrides input]
    (evidence-for overrides input)))
+
+;; ---- Ordinary jdbc/atomic transaction scenarios ---------------------------
+
+(def ^:private transaction-scenarios #{:commit-visible :rollback-invisible})
+
+(defn- transaction-statement-plans
+  "The six exact SQLite plans the unchanged transaction fixture drives for
+   `scenario` over one in-memory connection: PRAGMA foreign_keys=1 (run by
+   db.sqlite connection init), create, BEGIN, insert, COMMIT or ROLLBACK, and
+   select. SQL text and parameter types/values are exactly what the pinned
+   db.jdbc depth-0 sqlite atomic path and db.sqlite driver emit; nothing is
+   inferred from SQL text here or by the model. BEGIN/COMMIT/ROLLBACK carry
+   the closed :tx-effect physical boundary directive, the insert carries
+   :store-effect :put over its bound key/value parameters, and the select
+   carries :store-effect :get so the model derives the row from physical
+   staged/committed visibility instead of serving a predeclared row."
+  [scenario]
+  [{:sql "PRAGMA foreign_keys=1;"
+    :params {}
+    :columns []
+    :rows []
+    :changes 0
+    :last-row-id 0}
+   {:sql "create table sim_blob (id integer primary key, payload blob)"
+    :params {}
+    :columns []
+    :rows []
+    :changes 0
+    :last-row-id 0}
+   {:sql "BEGIN"
+    :params {}
+    :columns []
+    :rows []
+    :changes 0
+    :last-row-id 0
+    :tx-effect {:op :begin}}
+   {:sql "insert into sim_blob (id, payload) values (?, ?)"
+    :params {1 {:type :integer :value 1}
+             2 {:type :blob
+                :value (byte-array expected-blob-octets)}}
+    :columns []
+    :rows []
+    :changes 1
+    :last-row-id 1
+    :store-effect {:op :put :key-param 1 :value-param 2}}
+   (case scenario
+     :commit-visible
+     {:sql "COMMIT"
+      :params {}
+      :columns []
+      :rows []
+      :changes 0
+      :last-row-id 0
+      :tx-effect {:op :commit}}
+     :rollback-invisible
+     {:sql "ROLLBACK"
+      :params {}
+      :columns []
+      :rows []
+      :changes 0
+      :last-row-id 0
+      :tx-effect {:op :rollback}})
+   {:sql "select payload from sim_blob where id = ?"
+    :params {1 {:type :integer :value 1}}
+    :columns ["payload"]
+    :rows []
+    :changes 0
+    :last-row-id 1
+    :store-effect {:op :get :key-param 1}}])
+
+(defn- canonical-http-evidence
+  "Projects one raw fixture result into canonical application evidence. The
+   projection keeps exactly the response status, content type, content
+   length, raw response length, server errors, and exact body octets.
+   Host-only incidental fields are excluded by name: the ephemeral :port,
+   :connection-info addresses, :sent-result/:close-results, the Date response
+   header value, and the reason phrase never enter canonical evidence."
+  [fixture-result]
+  (let [parsed (:parsed fixture-result)]
+    {:status (:status parsed)
+     :content-type (get (:headers parsed) "content-type")
+     :content-length (get (:headers parsed) "content-length")
+     :raw-length (:raw-length fixture-result)
+     :server-errors (:server-errors fixture-result)
+     ;; vec over the byte-array body matches the existing exact-octets
+     ;; projection and keeps the result canonical.
+     :body-octets (vec (:body parsed))}))
+
+(defn- closed-db-evidence
+  "Projects each closed SQLite connection record to its address-free physical
+   transaction/store boundary evidence."
+  [sqlite-world]
+  (mapv #(select-keys % [:autocommit? :tx :tx-evidence :autocommit-evidence
+                         :committed :staging :store-evidence
+                         :discarded-transaction :discarded-staging])
+        (:closed-db-evidence (sqlite/state sqlite-world))))
+
+(defn run-transaction-scenario
+  "Runs the unchanged ordinary transaction fixture once for `scenario` (one of
+   :commit-visible or :rollback-invisible) in `mode`:
+
+   - :real executes
+     jolt.sim.fixtures.http-sqlite/exercise-http-sqlite-transaction directly
+     against host sockets and system SQLite and returns only the canonical
+     application evidence.
+   - :simulated executes the same fixture function unchanged under one
+     controlled run whose POSIX loopback (one-byte stream and self-pipe
+     capacities) and SQLite worlds share one FFI-memory heap, then adds
+     route, plan-consumption, physical transaction/store, and cleanup
+     evidence sized to catch a model bypass.
+
+   The scenario and mode sets are closed; anything else fails before any
+   world, server, or connection is created."
+  [scenario mode]
+  (when-not (contains? transaction-scenarios scenario)
+    (throw (ex-info "unknown http-sqlite transaction scenario"
+                    {:scenario scenario
+                     :supported [:commit-visible :rollback-invisible]})))
+  (case mode
+    :real
+    {:http (canonical-http-evidence
+            (fixture/exercise-http-sqlite-transaction scenario))}
+
+    :simulated
+    (let [mem (memory/world)
+          sqlite-world (sqlite/world mem
+                                     (transaction-statement-plans scenario))
+          ;; The same one-byte capacities as the BLOB hermetic run: every HTTP
+          ;; octet still crosses the capacity model.
+          posix-world (posix/world mem (net/target-descriptor)
+                                   {:stream-capacity 1
+                                    :pipe-capacity 1})
+          ;; The same three named packs over one shared memory world: memory +
+          ;; SQLite foreign handlers + the POSIX foreign set. No fault
+          ;; frontend interposes in this slice.
+          handlers (hp/compose
+                    (hp/pack :jolt.sim/memory (memory/handlers mem))
+                    (hp/pack :jolt.sim/sqlite
+                             (sqlite/foreign-handlers sqlite-world))
+                    (hp/pack :jolt.sim/posix
+                             (posix/foreign-handlers posix-world)))
+          controlled (rt/run-controlled
+                      {:ffi-handlers handlers
+                       :drain-timeout-ms 10000}
+                      #(fixture/exercise-http-sqlite-transaction scenario))
+          effect-trace (:effect-trace controlled)]
+      {:http (canonical-http-evidence (:result controlled))
+       :routes {:count (count effect-trace)
+                :all-handled? (every? #(= :handler (:route %)) effect-trace)
+                :foreign-symbols (foreign-symbols effect-trace)}
+       :sqlite {:summary (sqlite/summary sqlite-world)
+                :closed-db-evidence (closed-db-evidence sqlite-world)}
+       :clean? {:memory (memory/clean? mem)
+                :sqlite (sqlite/clean? sqlite-world)
+                :posix (posix/clean? posix-world)}})
+
+    (throw (ex-info "unknown http-sqlite transaction mode"
+                    {:mode mode
+                     :supported [:real :simulated]}))))

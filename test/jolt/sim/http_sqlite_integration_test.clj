@@ -1,9 +1,10 @@
 (ns jolt.sim.http-sqlite-integration-test
   (:require [clojure.set :as set]
-            [clojure.test :refer [deftest is]]
+            [clojure.test :refer [deftest is testing]]
             [jolt.net :as net]
             [jolt.sim.ffi-memory :as memory]
             [jolt.sim.fixtures.http-sqlite :as fixture]
+            [jolt.sim.fixtures.http-sqlite-scenarios :as scenarios]
             [jolt.sim.handler-pack :as hp]
             [jolt.sim.net.posix-fault :as posix-fault]
             [jolt.sim.net.posix-loopback :as posix]
@@ -185,3 +186,152 @@
     (is (true? (memory/clean? mem)))
     (is (true? (sqlite/clean? sqlite-world)))
     (is (true? (posix/clean? posix-world)))))
+
+;; ---- Ordinary jdbc/atomic transaction scenarios ---------------------------
+
+;; Canonical application evidence per transaction scenario. :commit-visible
+;; observes the committed BLOB row; :rollback-invisible observes no row after
+;; the fixture's sentinel rolls the transaction back.
+(def ^:private expected-transaction-http
+  {:commit-visible
+   {:status 200
+    :content-type "application/octet-stream"
+    :content-length "5"
+    :server-errors []
+    :body-octets [0 65 127 -128 -1]}
+   :rollback-invisible
+   {:status 404
+    :content-type "application/octet-stream"
+    :content-length "0"
+    :server-errors []
+    :body-octets []}})
+
+;; Exact SQLite foreign symbols per scenario. Both lanes add
+;; sqlite3_get_autocommit (the pinned jdbc depth-0 verified-begin probe) and
+;; drop the BLOB scenario's unused keys; :rollback-invisible's get misses, so
+;; no column accessor fires there at all.
+(def ^:private expected-transaction-sqlite-foreign-symbols
+  {:commit-visible
+   #{"sqlite3_open"
+     "sqlite3_close_v2"
+     "sqlite3_prepare_v2"
+     "sqlite3_step"
+     "sqlite3_finalize"
+     "sqlite3_column_count"
+     "sqlite3_column_name"
+     "sqlite3_column_type"
+     "sqlite3_bind_int64"
+     "sqlite3_bind_blob64"
+     "sqlite3_column_blob"
+     "sqlite3_column_bytes"
+     "sqlite3_get_autocommit"
+     "sqlite3_changes"}
+   :rollback-invisible
+   #{"sqlite3_open"
+     "sqlite3_close_v2"
+     "sqlite3_prepare_v2"
+     "sqlite3_step"
+     "sqlite3_finalize"
+     "sqlite3_column_count"
+     "sqlite3_bind_int64"
+     "sqlite3_bind_blob64"
+     "sqlite3_get_autocommit"
+     "sqlite3_changes"}})
+
+;; Physical boundary evidence the model must record for plan indices 2 (BEGIN)
+;; and 4 (COMMIT/ROLLBACK): each directive applies exactly once, at the
+;; statement's terminal step, against the physical autocommit state.
+(def ^:private expected-transaction-tx-evidence
+  {:commit-visible
+   [{:sequence 0 :plan-index 2 :op :begin :when :on-success :reported :done
+     :applied? true :reason nil :before-autocommit? true
+     :after-autocommit? false}
+    {:sequence 1 :plan-index 4 :op :commit :when :on-success :reported :done
+     :applied? true :reason nil :before-autocommit? false
+     :after-autocommit? true}]
+   :rollback-invisible
+   [{:sequence 0 :plan-index 2 :op :begin :when :on-success :reported :done
+     :applied? true :reason nil :before-autocommit? true
+     :after-autocommit? false}
+    {:sequence 1 :plan-index 4 :op :rollback :when :on-success :reported :done
+     :applied? true :reason nil :before-autocommit? false
+     :after-autocommit? true}]})
+
+;; Store visibility evidence: the insert (plan index 3) stages while the
+;; transaction is open; the select (plan index 5) sees the staged value merged
+;; into committed storage after COMMIT, and nothing after ROLLBACK.
+(def ^:private expected-transaction-store-evidence
+  {:commit-visible
+   [{:sequence 0 :plan-index 3 :op :put :reported :done
+     :key {:type :integer :value 1} :location :staging :present? true}
+    {:sequence 1 :plan-index 5 :op :get :reported :done
+     :key {:type :integer :value 1} :location :committed :present? true}]
+   :rollback-invisible
+   [{:sequence 0 :plan-index 3 :op :put :reported :done
+     :key {:type :integer :value 1} :location :staging :present? true}
+    {:sequence 1 :plan-index 5 :op :get :reported :done
+     :key {:type :integer :value 1} :location nil :present? false}]})
+
+(def ^:private expected-transaction-committed
+  {:commit-visible {{:type :integer :value 1}
+                    {:type :blob :value [0 65 127 128 255]}}
+   :rollback-invisible {}})
+
+(deftest unchanged-transaction-code-runs-in-real-and-hermetic-worlds
+  (doseq [scenario [:commit-visible :rollback-invisible]]
+    (testing (name scenario)
+      (let [real (when-not *sim-only?*
+                   (scenarios/run-transaction-scenario scenario :real))
+            simulated (scenarios/run-transaction-scenario scenario :simulated)]
+        ;; Real/sim canonical application evidence parity: one exact equality
+        ;; over the whole projection. Host-only incidental fields (ephemeral
+        ;; port, connection-info addresses, sent/close results, the Date
+        ;; header value, the reason phrase) are excluded by name inside the
+        ;; projection, not by weakening this equality.
+        (when-not *sim-only?*
+          (is (= (:http real) (:http simulated))))
+        ;; :raw-length is exact cross-lane framing evidence (compared above),
+        ;; not a scenario-owned literal -- header layout belongs to jolt-http,
+        ;; so it is excluded by name from the literal check only.
+        (is (= (get expected-transaction-http scenario)
+               (dissoc (:http simulated) :raw-length)))
+
+        ;; Every intercepted POSIX and SQLite effect was served by a
+        ;; registered handler; nothing routed to a real socket or the real
+        ;; SQLite library.
+        (is (true? (get-in simulated [:routes :all-handled?])))
+        (is (= (set/union (get expected-transaction-sqlite-foreign-symbols
+                               scenario)
+                          expected-posix-foreign-symbols)
+               (set (get-in simulated [:routes :foreign-symbols]))))
+
+        ;; SQLite: all six plans consumed; no live connections or statements.
+        (is (= {:plan-index 6
+                :plan-count 6
+                :open-dbs 0
+                :active-stmts 0}
+               (get-in simulated [:sqlite :summary])))
+
+        ;; The closed connection's physical boundary evidence proves the
+        ;; transaction semantics behind the application-visible result: one
+        ;; verified-begin autocommit probe, the exact BEGIN + COMMIT/ROLLBACK
+        ;; transitions, the staged put, and the get's post-boundary
+        ;; visibility.
+        (let [closed (get-in simulated [:sqlite :closed-db-evidence])]
+          (is (= 1 (count closed)))
+          (let [db (first closed)]
+            (is (true? (:autocommit? db)))
+            (is (nil? (:tx db)))
+            (is (= [1] (:autocommit-evidence db)))
+            (is (= (get expected-transaction-tx-evidence scenario)
+                   (:tx-evidence db)))
+            (is (= (get expected-transaction-store-evidence scenario)
+                   (:store-evidence db)))
+            (is (= (get expected-transaction-committed scenario)
+                   (:committed db)))
+            (is (nil? (:staging db)))))
+
+        ;; The single shared memory world backs SQLite and POSIX, and every
+        ;; world is clean.
+        (is (= {:memory true :sqlite true :posix true}
+               (:clean? simulated)))))))

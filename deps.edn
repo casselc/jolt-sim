@@ -69,7 +69,7 @@
    :extra-deps
    {io.github.casselc/db
     {:git/url "https://github.com/casselc/db.git"
-     :git/sha "53db5cfbc36e43ff4eebe86764583476e561c072"
+     :git/sha "df8f434f7ebf5e63b3f52ab6c5c2a2b2c92d3a6d"
      :deps/root "clj"}
     io.github.casselc/jolt-http
     {:git/url "https://github.com/casselc/jolt-http.git"
@@ -83,7 +83,7 @@
    :extra-deps
    {io.github.casselc/db
     {:git/url "https://github.com/casselc/db.git"
-     :git/sha "53db5cfbc36e43ff4eebe86764583476e561c072"}}
+     :git/sha "df8f434f7ebf5e63b3f52ab6c5c2a2b2c92d3a6d"}}
    :main-opts ["-m" "jolt.sim.sqlite-integration-test"]}
 
   :sqlite-sim-test
@@ -91,7 +91,7 @@
    :extra-deps
    {io.github.casselc/db
     {:git/url "https://github.com/casselc/db.git"
-     :git/sha "53db5cfbc36e43ff4eebe86764583476e561c072"
+     :git/sha "df8f434f7ebf5e63b3f52ab6c5c2a2b2c92d3a6d"
      :deps/root "clj"}}
    :main-opts ["-m" "jolt.sim.sqlite-integration-test" "--sim-only"]}
 
@@ -126,7 +126,7 @@
    :extra-deps
    {io.github.casselc/db
     {:git/url "https://github.com/casselc/db.git"
-     :git/sha "53db5cfbc36e43ff4eebe86764583476e561c072"}
+     :git/sha "df8f434f7ebf5e63b3f52ab6c5c2a2b2c92d3a6d"}
     io.github.casselc/jolt-http
     {:git/url "https://github.com/casselc/jolt-http.git"
      :git/sha "96bd0fc93f1a2c77128d06f74802dd2a4631c0d4"}}
@@ -139,7 +139,7 @@
    :extra-deps
    {io.github.casselc/db
     {:git/url "https://github.com/casselc/db.git"
-     :git/sha "53db5cfbc36e43ff4eebe86764583476e561c072"
+     :git/sha "df8f434f7ebf5e63b3f52ab6c5c2a2b2c92d3a6d"
      :deps/root "clj"}
     io.github.casselc/jolt-http
     {:git/url "https://github.com/casselc/jolt-http.git"

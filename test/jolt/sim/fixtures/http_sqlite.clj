@@ -15,7 +15,15 @@
   boundary, reads that BLOB back, and returns the fetched byte array verbatim
   as an application/octet-stream HTTP body. The response framing is parsed by
   scanning raw bytes for the header terminator, so the binary body survives
-  byte-exact while only the headers are decoded."
+  byte-exact while only the headers are decoded.
+
+  A second ordinary handler exercises unchanged public jdbc/atomic
+  transaction code over the same table: it inserts the fixture BLOB inside
+  one atomic transaction, then -- after atomic returns -- queries through
+  ordinary JDBC and reports what the transaction boundary made visible. One
+  scenario commits and observes the row; the other throws a private fixture
+  sentinel from the atomic body so jdbc rolls back, catches only that
+  sentinel, and observes no row."
   (:require [clojure.string :as str]
             [jdbc.core :as jdbc]
             [jolt.http.server :as http]
@@ -146,17 +154,15 @@
        :headers headers
        :body    body})))
 
-(defn exercise-http-sqlite
-  "Runs a jolt-http server whose synchronous handler opens an in-memory SQLite
-  database, inserts and reads back a BLOB spanning the signed/unsigned byte
-  boundary, and serves the fetched octets as an application/octet-stream body.
-  One request/response cycle is driven through the public teensyp.client --
-  itself built exclusively on jolt.net. Port 0 selects an ephemeral listener;
-  the server's actual bound port is read back from its own public return
-  value."
-  []
+(defn- run-request-cycle
+  "Starts a jolt-http server on an ephemeral port with `handler`, drives one
+   request/response cycle through the public teensyp.client -- itself built
+   exclusively on jolt.net -- and returns the raw result map shared by every
+   scenario in this namespace. Port 0 selects an ephemeral listener; the
+   server's actual bound port is read back from its own public return value."
+  [handler]
   (let [server-errors (atom [])
-        server (http/run-server blob-handler
+        server (http/run-server handler
                                  :port 0
                                  :reuse-address? true
                                  :error-logger
@@ -188,3 +194,71 @@
       ;; stop-server quiesces the reactor and active handlers, either of which
       ;; may report a late error. Snapshot only after shutdown has completed.
       (assoc result :server-errors @server-errors))))
+
+(defn exercise-http-sqlite
+  "Runs a jolt-http server whose synchronous handler opens an in-memory SQLite
+   database, inserts and reads back a BLOB spanning the signed/unsigned byte
+   boundary, and serves the fetched octets as an application/octet-stream body."
+  []
+  (run-request-cycle blob-handler))
+
+;; Private sentinel identity marking only this fixture's deliberate rollback
+;; request. The transaction handler catches the atomic body's exception only
+;; when its ex-data carries exactly this value; every other error propagates
+;; unchanged, so arbitrary failures are never swallowed.
+(def ^:private rollback-sentinel (Object.))
+
+(defn- transaction-handler
+  "Builds the ordinary transaction handler for `scenario`. The handler opens
+   an in-memory database, creates the fixture table, inserts the fixture BLOB
+   inside one successful jdbc/atomic transaction and -- only after atomic
+   returns -- queries the row back through ordinary JDBC. :commit-visible
+   lets the transaction commit and observes the committed row;
+   :rollback-invisible throws the private fixture sentinel from the atomic
+   body so jdbc rolls the transaction back, catches only that sentinel, and
+   observes no row."
+  [scenario]
+  (fn transaction-request-handler [_request]
+    (with-open [connection (jdbc/connection "sqlite::memory:")]
+      ;; Opening the connection runs "PRAGMA foreign_keys=1;" via the
+      ;; db.sqlite connection initialization before the first explicit
+      ;; statement below.
+      (jdbc/execute!
+       connection
+       "create table sim_blob (id integer primary key, payload blob)")
+      (try
+        (jdbc/atomic connection
+          (jdbc/execute!
+           connection
+           ["insert into sim_blob (id, payload) values (?, ?)"
+            1
+            (byte-array blob-octets)])
+          (case scenario
+            :commit-visible nil
+            :rollback-invisible
+            (throw (ex-info "http-sqlite fixture requested rollback"
+                            {:sentinel rollback-sentinel}))))
+        (catch Exception error
+          (when-not (identical? rollback-sentinel
+                                (:sentinel (ex-data error)))
+            (throw error))))
+      (let [row (jdbc/fetch-one
+                 connection
+                 ["select payload from sim_blob where id = ?" 1])]
+        (if-let [payload (:payload row)]
+          {:status  200
+           :headers {"Content-Type" "application/octet-stream"}
+           :body    payload}
+          {:status  404
+           :headers {"Content-Type" "application/octet-stream"}
+           :body    (byte-array 0)})))))
+
+(defn exercise-http-sqlite-transaction
+  "Runs the same one-request lifecycle as exercise-http-sqlite with the
+   ordinary transaction handler for `scenario` (:commit-visible or
+   :rollback-invisible). The scenario keyword selects application behavior
+   only; whether the underlying POSIX and SQLite foreign calls reach the host
+   or a simulated FFI world remains the caller's choice, exactly as for the
+   BLOB scenario."
+  [scenario]
+  (run-request-cycle (transaction-handler scenario)))
