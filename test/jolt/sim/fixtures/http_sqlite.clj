@@ -154,46 +154,65 @@
        :headers headers
        :body    body})))
 
-(defn- run-request-cycle
+(defn run-request-cycle
   "Starts a jolt-http server on an ephemeral port with `handler`, drives one
    request/response cycle through the public teensyp.client -- itself built
    exclusively on jolt.net -- and returns the raw result map shared by every
    scenario in this namespace. Port 0 selects an ephemeral listener; the
-   server's actual bound port is read back from its own public return value."
-  [handler]
-  (let [server-errors (atom [])
-        server (http/run-server handler
-                                 :port 0
-                                 :reuse-address? true
-                                 :error-logger
-                                 #(swap! server-errors conj
-                                         (stable-error-summary %)))
-        connection* (atom nil)]
-    (let [result
-          (try
-            (let [port (:port server)
-                  connection (client/connect "127.0.0.1" port
-                                              {:connect-timeout-ms 5000})
-                  _ (reset! connection* connection)
-                  request (request-bytes "127.0.0.1" port)
-                  sent (client/send-all! connection request {:timeout-ms 5000})
-                  raw (read-response-until-eof! connection)
-                  parsed (parse-response raw server-errors)]
-              {:port port
-               :sent-result sent
-               :raw-length (alength raw)
-               :parsed parsed
-               :connection-info (client/connection-info connection)
-               :close-results
-               {:connection [(client/close! connection)
-                             (client/close! connection)]}})
-            (finally
-              (when-let [connection @connection*]
-                (client/close! connection))
-              (http/stop-server server)))]
-      ;; stop-server quiesces the reactor and active handlers, either of which
-      ;; may report a late error. Snapshot only after shutdown has completed.
-      (assoc result :server-errors @server-errors))))
+   server's actual bound port is read back from its own public return value.
+
+   The one-argument form preserves this fixture's original fixed GET request.
+   The two-argument form calls `request-builder` with host and bound port and
+   sends the exact byte array it returns. This is deliberately only a request
+   construction seam; server, client, response parsing, and cleanup behavior
+   remain identical for both forms."
+  ([handler]
+   (run-request-cycle handler request-bytes))
+  ([handler request-builder]
+   (let [server-errors (atom [])
+         server (http/run-server handler
+                                  :port 0
+                                  :reuse-address? true
+                                  :error-logger
+                                  #(swap! server-errors conj
+                                          (stable-error-summary %)))
+         connection* (atom nil)]
+     (let [outcome
+           (try
+             {:value
+              (let [port (:port server)
+                    connection (client/connect "127.0.0.1" port
+                                                {:connect-timeout-ms 5000})
+                    _ (reset! connection* connection)
+                    request (request-builder "127.0.0.1" port)
+                    sent (client/send-all! connection request {:timeout-ms 5000})
+                    raw (read-response-until-eof! connection)
+                    parsed (parse-response raw server-errors)]
+                {:port port
+                 :sent-result sent
+                 :raw-length (alength raw)
+                 :parsed parsed
+                 :connection-info (client/connection-info connection)
+                 :close-results
+                 {:connection [(client/close! connection)
+                               (client/close! connection)]}})}
+             (catch :default error
+               {:error error})
+             (finally
+               (when-let [connection @connection*]
+                 (client/close! connection))
+               (http/stop-server server)))]
+       ;; stop-server quiesces the reactor and active handlers, either of which
+       ;; may report a late error. Snapshot only after shutdown has completed.
+       (if-let [error (:error outcome)]
+         (throw
+          (ex-info
+           (or (ex-message error) (str error))
+           (assoc (or (ex-data error) {})
+                  :http-sqlite/client-error (stable-error-summary error)
+                  :http-sqlite/server-errors @server-errors)
+           error))
+         (assoc (:value outcome) :server-errors @server-errors))))))
 
 (defn exercise-http-sqlite
   "Runs a jolt-http server whose synchronous handler opens an in-memory SQLite

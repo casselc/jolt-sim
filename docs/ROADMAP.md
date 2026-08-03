@@ -4,7 +4,7 @@ Updated: 2026-08-03
 
 Status: live execution roadmap for pre-release development
 
-Current platform baseline: Jolt 0.5.17, simulation controller ABI 6, FFI
+Current platform baseline: Jolt 0.5.20, simulation controller ABI 6, FFI
 descriptor version 6, clock descriptor version 1, and Chez Scheme 10.4.1.
 
 This is the current implementation order and acceptance boundary for
@@ -69,20 +69,21 @@ networking, TCP, HTTP, clocks, process isolation, Hegel, replay, and monitoring.
 
 | Capability | State | Accepted evidence |
 | --- | --- | --- |
-| Jolt 0.5.17 / ABI 6 platform and Windows native-path contract | Landed on the active stack | `9b5cd6b`; draft PR `casselc/jolt-sim#21` |
+| Jolt 0.5.20 / ABI 6 simulation core | Pushed; full Linux Jolt CI and local jolt-sim suite green, hosted jolt-sim matrix pending | `9fc64f93`; jolt-sim `510 tests / 4,026 assertions`; draft PR `casselc/jolt#26` |
+| Jolt 0.5.17 hosted platform and Windows native-path evidence | Historical baseline retained | `9b5cd6b`; draft PR `casselc/jolt-sim#21` |
 | Pure durable-outbox application transition | Landed | `5d2c61e`; draft PR `casselc/jolt-sim#22` |
 | Real SQLite adapter using ordinary `jdbc.core` | Landed | `2deb01d`, aggregate registration `5663ca4`; draft PR `casselc/jolt-sim#23` |
 | SQLite table-row model and unchanged-adapter parity | Landed on the active stack | Row model `1639507` / draft PR `casselc/jolt-sim#25`; parity integration `47fc0e5`, review corrections `7772c48` / draft PR `casselc/jolt-sim#26` |
 | Framed TCP/bencode example and hosted lanes | Landed as an input to the canonical app | `6e87657`, `386b9d5`, diagnostic follow-up `51f7018` |
-| Whole HTTP -> SQLite -> TCP outbox application | Not yet landed | Phase 3 below |
+| Whole HTTP -> SQLite -> TCP outbox application | Local real/hermetic slice green; hosted matrix pending | Real/hermetic `1 test / 27 assertions`; hermetic-only `1 / 26`; SQLite parity `1 / 47`; TCP framing `6 / 101`; aggregate `510 / 4,026`; Phase 3 below |
 
-Phase 1 is green on Linux x86-64 using the pinned simulator image
+Phase 1 was last run on Linux x86-64 using the prior simulator image
 `jolt v0.5.17-13-g3af5622d`
 (`sha256:e84f8d764a8f44f8458d05f4a4e98f02676d903c4207782fd5c1e50ba1f3e7ab`):
 
 - table-row model: 60 tests / 1111 assertions;
 - unchanged-adapter real/hermetic/hybrid parity: 1 test / 47 assertions;
-- ordinary durable SQLite outbox: 13 tests / 94 assertions;
+- ordinary transactional SQLite outbox: 13 tests / 94 assertions;
 - existing real SQLite integration: 1 test / 19 assertions; and
 - dependency-light aggregate: 507 tests / 4008 assertions.
 
@@ -155,6 +156,18 @@ Build outward from the same pure core and SQLite adapter:
 - delivery marking, retry, cancellation, deadline, close, and crash boundaries;
 - explicit real, hermetic, and hybrid providers; and
 - Linux, macOS, and Windows capability classification.
+
+The first implementation slice is intentionally narrower than Phase 3's final
+boundary: one ordinary bencoded HTTP POST commits one SQLite outbox row, reloads
+that pending row, sends it through the existing framed TCP/bencode stack, and
+receives an outbox-id/attempt acknowledgement. It records stable request,
+transaction, outbox, delivery, and attempt identities and runs the same body in
+real and hermetic modes. The acknowledgement does not mark the row delivered;
+retry, marking, cancellation, Hegel search, and POSIX hybrid classification
+remain later feature slices rather than hidden claims of this witness.
+The first slice uses one in-memory SQLite connection and therefore establishes
+post-COMMIT reload only; close/reopen and crash durability require the later
+file-backed restart witness.
 
 The simulation layer may provide boundary handlers and models. It must not
 replace the HTTP, DB, TCP, codec, or application implementation with a second
@@ -255,7 +268,7 @@ the critical path.
 
 | Original material | Current disposition |
 | --- | --- |
-| [Research backlog](https://github.com/casselc/jolt-sim-planning/blob/main/RESEARCH_BACKLOG.md) | Evidence discipline and findings retained; baseline facts require v0.5.17 / ABI 6 refresh |
+| [Research backlog](https://github.com/casselc/jolt-sim-planning/blob/main/RESEARCH_BACKLOG.md) | Evidence discipline and findings retained; baseline facts require v0.5.20 / ABI 6 refresh |
 | [P0 evidence and contract clarifications](https://github.com/casselc/jolt-sim-planning/blob/main/P0-evidence-and-contract-clarifications.md) and [review](https://github.com/casselc/jolt-sim-planning/blob/main/P0-adversarial-review.md) | Fold small wording and contract tests into adjacent slices; not a feature blocker |
 | [P1 rank-spread schedules](https://github.com/casselc/jolt-sim-planning/blob/main/P1-rank-spread-schedules.md) and [review](https://github.com/casselc/jolt-sim-planning/blob/main/P1-adversarial-review.md) | Retain as an optional Phase 4 search baseline; reuse existing permutation arithmetic |
 | [P2 fault frontend state and bounds](https://github.com/casselc/jolt-sim-planning/blob/main/P2-fault-frontend-state-and-bounds.md) and [review](https://github.com/casselc/jolt-sim-planning/blob/main/P2-adversarial-review.md) | Defer the large opacity/checkpoint design until real corruption or load evidence requires it; implement only observed blockers |
@@ -298,7 +311,7 @@ seams only from demonstrated application needs.
 ## Existing branches awaiting disposition
 
 These commits are useful inputs, not accepted dependencies of the active
-stack. Revalidate them against Jolt 0.5.17, controller ABI 6, and the current
+stack. Revalidate them against Jolt 0.5.20, controller ABI 6, and the current
 application before cherry-picking or reminting them.
 
 The former parity candidate `deepseek/outbox-sqlite-parity` at `a09d3de` has

@@ -15,15 +15,16 @@ and simulated worlds belong here.
 ## Development baseline and CI
 
 Current development targets `casselc/jolt` commit
-`fa3f7bbf8fac400567a4e3fbde07499537895008`, based on upstream Jolt 0.5.17,
+`9fc64f93eba8b56a319f91bb1a322e2efced9c70`, based on upstream Jolt 0.5.20,
 with Chez Scheme 10.4.1. The full suite requires the special Jolt simulation
 image from that commit; an ordinary Jolt image can run only the controller-free
 portion of the suite.
 
 Public CI builds that exact simulation image. Linux x86_64/aarch64 and macOS
 x86_64/arm64 run the main suite plus the controller-poison, pointer-loan,
-scheduler-deadline, POSIX/HTTP integration, TCP/bencode framing, and
-fresh-process case gates. Hegel schedule generation/shrinking and the
+scheduler-deadline, POSIX/HTTP integration, TCP/bencode framing, the
+HTTP/SQLite/TCP outbox application, and fresh-process case gates. Hegel
+schedule generation/shrinking and the
 TCP/bencode real/sim property lane run on Linux x86_64. Windows x86_64 runs the
 main, controller-poison, pointer-loan, and scheduler-deadline gates, but not the
 fresh-process supervisor: the current Jolt process host uses a POSIX shell plus
@@ -98,6 +99,7 @@ only the application surfaces and modes exercised by a durable gate.
 | HTTP Hello World | `jolt-http`, `jolt-tcp`, `jolt.net`, `jolt.ffi` | Not in the durable gate | Modeled POSIX loopback | One request; public CI, no faults |
 | HTTP SQLite BLOB | `jolt-http`, `jolt-tcp`, `jolt.net`, `jdbc.core`, `db.sqlite`, `jolt.ffi`, byte arrays | Host sockets plus system SQLite | Shared FFI-memory, POSIX, and SQLite worlds | One request at one-byte capacities plus one captured first-poll `EINTR`; local gate, no generated schedule/fault search |
 | Length-framed TCP bencode echo | `teensyp.server`, `teensyp.client`, `teensyp.buffer`, `jolt.bytes`, `jolt.bencode`, `jolt.net`, `jolt.ffi` | Host loopback parity witness | Modeled POSIX loopback and native memory | Pipelined requests, finite stream/self-pipe capacities, captured `EINTR`, and Hegel-generated UTF-8; no half-close or concurrent clients |
+| HTTP SQLite outbox delivery | `jolt-http`, `jdbc.core`, `db.sqlite`, `teensyp.server/client`, `jolt.bytes`, `jolt.bencode`, `jolt.net`, `jolt.ffi` | Host HTTP/TCP sockets plus system SQLite | Shared FFI-memory, POSIX, and exact-plan SQLite worlds | HTTP returns after COMMIT; a later delivery phase reloads the pending row, closes SQLite, then sends one octet-vector message and receives an ack; no close/reopen or crash-durability claim |
 | Maelstrom Echo | `jolt.maelstrom` node/handler code | JSON-lines lane reviewed but not integrated | Deterministic memory transport | FIFO/history integrity only; no nemesis or liveness claim |
 
 These capabilities belong to two deliberately different execution tracks:
@@ -862,6 +864,27 @@ incomplete frame boundary run via `-M:tcp-bencode-framing-test`. This black-box
 application lane does not observe arbitrary ordinary array accesses or claim
 any backing-array ownership overlap proof. FFI admission-order schedules and
 broader malformed-client generation remain later slices.
+
+### HTTP, SQLite, and TCP outbox application
+
+`jolt.sim.fixtures.outbox-delivery` composes the ordinary HTTP, SQLite outbox,
+and framed TCP/bencode paths above. The full gate runs the same application
+body once with host sockets and system SQLite and once with the composed
+hermetic POSIX, FFI-memory, and exact-plan SQLite worlds. The sim-only gate
+omits the system SQLite native-library metadata:
+
+```sh
+export JOLT_SIM_BIN=/path/to/current-sim/target/sim/jolt
+"$JOLT_SIM_BIN" -M:outbox-delivery-test
+"$JOLT_SIM_BIN" -M:outbox-delivery-sim-test
+```
+
+Each command prints the path of an append-only EDN progress file. Set
+`JOLT_SIM_OUTBOX_DELIVERY_PROGRESS_FILE` to retain it at a chosen location.
+These records are best-effort test-process breadcrumbs, not the later
+crash-safe journal contract. The first slice proves one post-COMMIT reload and
+acknowledged delivery attempt; it does not prove close/reopen persistence,
+crash durability, retry, delivery marking, or generated schedule/fault search.
 
 ### Composing handler packs
 

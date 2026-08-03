@@ -162,32 +162,39 @@
            :tcp-bencode/cleanup-errors (cleanup-summaries cleanup-errors)}
           first-error))))))
 
-(defn- echo-handler
-  "teensyp handler: accept starts a fresh not-yet-closed connection state; read
-  drains every complete pipelined frame currently buffered, replying to each
-  and closing on the first malformed or overlong frame; close is a no-op."
-  ([_socket]
-   {:closed? false})
-  ([state socket b]
-   (loop [state state]
-     (if (:closed? state)
-       state
-       (let [frame (try-read-frame b)]
-         (case (:status frame)
-           :need-more
-           state
+(defn framed-handler
+  "Builds the ordinary teensyp length-framed bencode handler used by this
+  fixture. `request->reply` receives each exactly decoded request value and
+  returns the value to encode in its reply frame. Accept/read/close behavior,
+  fragmented-frame buffering, pipelined draining, and malformed-frame handling
+  remain the same as the original echo handler."
+  [request->reply]
+  (fn
+    ([_socket]
+     {:closed? false})
+    ([state socket b]
+     (loop [state state]
+       (if (:closed? state)
+         state
+         (let [frame (try-read-frame b)]
+           (case (:status frame)
+             :need-more
+             state
 
-           :invalid
-           (let [payload (bencode/encode (build-error-reply (:reason frame)))]
-             (tcp/write socket (buf/wrap (frame-bytes payload)))
-             (tcp/close socket)
-             (assoc state :closed? true))
+             :invalid
+             (let [payload (bencode/encode (build-error-reply (:reason frame)))]
+               (tcp/write socket (buf/wrap (frame-bytes payload)))
+               (tcp/close socket)
+               (assoc state :closed? true))
 
-           :ok
-           (let [payload (bencode/encode (build-reply (:value frame)))]
-             (tcp/write socket (buf/wrap (frame-bytes payload)))
-             (recur state)))))))
-  ([_state _ex] nil))
+             :ok
+             (let [payload (bencode/encode (request->reply (:value frame)))]
+               (tcp/write socket (buf/wrap (frame-bytes payload)))
+               (recur state)))))))
+    ([_state _ex] nil)))
+
+(def ^:private echo-handler
+  (framed-handler build-reply))
 
 (defn- read-exact-into!
   [connection ^bytes dest len]
@@ -219,6 +226,27 @@
           (throw (ex-info "tcp-bencode fixture: reply frame failed to decode"
                           {:reason (:reason decoded)})))
         {:value (:value decoded) :bytes (+ 4 declared-length)}))))
+
+(defn exchange!
+  "Sends `requests` as one pipelined length-framed bencode write over an already
+  connected public teensyp client, then reads one ordered reply per request.
+  The caller retains connection lifecycle ownership. Returns only canonical
+  request/reply values and byte counts; framing and decoding use the same
+  private implementation as exercise-tcp-bencode."
+  [connection requests]
+  (let [requests (vec requests)
+        combined
+        (concat-byte-arrays
+         (mapv #(frame-bytes (bencode/encode %)) requests))
+        _ (client/send-all! connection combined {:timeout-ms 5000})
+        replies
+        (mapv (fn [_request]
+                (receive-frame! connection))
+              requests)]
+    {:sent-bytes (alength combined)
+     :received-bytes (reduce + (map :bytes replies))
+     :requests requests
+     :replies (mapv :value replies)}))
 
 (defn exercise-tcp-bencode
   "Exercises the length-framed bencode request/reply protocol through only the
@@ -256,27 +284,15 @@
                         (map-indexed
                          (fn [i text] (build-request (inc i) text)))
                         texts)
-                  combined
-                  (concat-byte-arrays
-                   (mapv #(frame-bytes (bencode/encode %)) requests))
-                  _
-                  (client/send-all! connection combined {:timeout-ms 5000})
-                  replies
-                  (mapv
-                   (fn [[index _request]]
-                     (receive-frame! connection))
-                   (map-indexed vector requests))
+                  exchange (exchange! connection requests)
                   first-close
                   (client/close! connection)
                   second-close
                   (client/close! connection)]
-              {:port port
-               :sent-bytes (alength combined)
-               :received-bytes (reduce + (map :bytes replies))
-               :requests requests
-               :replies (mapv :value replies)
-               :close-results
-               {:connection [first-close second-close]}})}
+              (assoc exchange
+                     :port port
+                     :close-results
+                     {:connection [first-close second-close]}))}
            (catch :default error
              {:error error}))
          cleanup-errors

@@ -13,7 +13,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  JOLT_CORE_SHA: fa3f7bbf8fac400567a4e3fbde07499537895008
+  JOLT_CORE_SHA: 9fc64f93eba8b56a319f91bb1a322e2efced9c70
   CHEZ_RELEASE_TAG: chez-ci-10.4.1.1
 
 jobs:
@@ -125,6 +125,14 @@ jobs:
           "$sim" -M:posix-loopback-test
           "$sim" -M:http-hello-test
           "$sim" -M:tcp-bencode-framing-test
+          # Every POSIX host runs the hermetic ordinary-app witness. Linux
+          # x86_64 additionally runs the same body against host sockets and
+          # system SQLite as an independent control.
+          if [ "${{ matrix.name }}" = "Linux x86_64" ]; then
+            "$sim" -M:outbox-delivery-test
+          else
+            "$sim" -M:outbox-delivery-sim-test
+          fi
           "$sim" -M:future-schedule-poison-test
           JOLT_SIM_BIN="$sim" JOLT_SIM_PROJECT_DIR="$PWD" \
             "$sim" -M:explore-process-test
