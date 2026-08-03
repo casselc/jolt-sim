@@ -1,0 +1,259 @@
+# Perturb: design record
+
+**Status:** DRAFT research record. No implementation is authorized by this
+document. It records decisions taken in session, the evidence behind them, and
+the open questions that must close before a v0 spec is written.
+
+**Scope:** `perturb` is a fork of Jolt into a distinct language — a formal
+Clojure-like whose deterministic simulation, effect discipline, and capability
+safety are language features rather than an interception layer bolted on
+underneath one. It is not a Jolt release, not a Jolt compatibility target, and
+carries no JVM Clojure conformance obligation.
+
+**Relationship to prior records.** `jolt/docs/research/APPLICATION-CORE-SEMANTIC-CHARTER.md`
+predates the fork decision. Its §1.2 value set, §2 evaluation order, §2.4 error
+model, and Appendix A normalization are written implementation-neutrally
+("Clojure.next") and are inherited. Its §1.3 non-goals were written for a core
+where "developers write ordinary Jolt" and nothing is a rewrite target; those
+premises no longer hold, and each is re-decided below rather than assumed.
+
+**Evidence labels** follow the charter §5 lattice: `proved | bounded-complete |
+sampled | monitored | assumed | opaque | failed`. Nothing here is `proved`.
+
+---
+
+## 1. Findings
+
+### E1 — Byte access through a deftype collection interface dominates codec cost
+
+`monitored`, single non-isolated sample, unpinned toolchain (see Nonclaims).
+
+Measured on the jolt-bencode nREPL benchmark frame (98 bytes, 10 strings):
+
+| path | ns/byte |
+| --- | ---: |
+| `aget` on byte-array | 54 |
+| arithmetic only, no access | 45 |
+| `nth` on persistent vector | 81 |
+| `reduce` over Window (IReduce) | 518 |
+| `nth` on Window (deftype `Indexed`) | 1336 |
+
+Decomposition of `decode-utf8` over a 22-byte string (45.5 µs):
+`window-octets` 33 µs (72%), of which the bare `octet` scan is 29 µs (64%);
+`String.`/`.getBytes` round-trip 1 µs (2%); remainder ~11.5 µs.
+
+Root cause: `host/chez/collections.ss` `jolt-nth` is a `cond` chain whose
+persistent-vector fast path is position 2 and whose `deftype` path is position
+5, reached via `rec-coll-method` → `find-method-any-protocol`, which allocated a
+fresh `hashtable-keys` vector and performed up to 2N string-keyed lookups per
+call for an N-protocol type.
+
+**Two prior hypotheses are refuted by this measurement.** Host-interop `String`
+emulation was hypothesized (in session) to dominate: it is 0.2% of decode.
+`jolt-bytes/docs/PERFORMANCE.md` attributes the gap to allocation of "decoded
+Clojure values and parser result maps": allocation is real but minor —
+`window-octets` costs only ~12% more than the bare scan it wraps.
+
+Partial fix landed as `jolt@048582c3`: flatten and memoize per-type protocol
+method resolution, guarded by `jolt-proto-epoch` and per-type-table identity.
+Result: 1336 → 1009 ns/byte; full decode 493 → 368 µs (25%). Gates: unit
+1054/1054, devirt 12/12, pic 22/22, protoret 4/4, infer 36/36.
+
+The residual gap to persistent-vector `nth` is two string-keyed lookups still on
+the path (the `type-registry` tag hash and the method-name hash) plus generic
+invoke. Closing it requires resolving collection methods to a descriptor-local
+slot at registration time, which changes the `nongenerative` `jrdesc` record
+layout — **not attempted**; a deliberate stop, not a completed fix.
+
+### E2 — Five independent hand-rolled ownership systems exist
+
+`assumed` (source inspection, complete across the repos read).
+
+| location | mechanism |
+| --- | --- |
+| `jolt-sim` | modeled-resource provenance ledger; self-described "not general taint tracking", "conservative for the whole scope (no early retirement yet)" |
+| `jolt` core | `borrow-byte-array`/`release-byte-array` scoped descriptor loan |
+| `jolt-bytes` | documented gap: "do not establish exclusive ownership or native-operation leases… callers retain responsibility" |
+| `jolt-hako` | `proofs/prolog/ownership.pl` — exclusive `BaseOwner` + coexisting lease borrowers; canonical bug state is `owner_count(writer_result, 2)`; SMT families for borrow generation and lease release |
+| `jolt-sim-planning` P4 | capability registry `cap[k] = :held \| [:consumed-by p]` with source closure — granted once, held, consumed exactly once, consumer recorded |
+
+Each is a static property enforced dynamically or by convention, re-derived per
+library. P4's is a linear capability type written out as a model.
+
+### E3 — Every existing proof obligation is capability-tier
+
+`assumed` (source inspection, complete across the repos read).
+
+| source | proves | about |
+| --- | --- | --- |
+| jolt-bytes (Ansatz/CIC) | slice end preserved, slice contained, cursor reads | bounds geometry |
+| jolt-hako (Z3) | builder growth prefix, bounds transactional commit, utf8 count capacity, preflight encode atomic | bounds, capacity, commit geometry |
+| jolt-hako (Z3) | native lease completion, borrow generation, non-inheriting scratch | ownership, leases |
+| jolt-hako (Prolog) | exclusive owner + lease lifecycle | ownership |
+| jolt-bencode (Z3) | byte-string frame header, failure-consumes | framing/commit geometry |
+| jolt-sim-planning P4 | capability held → consumed-by, source closure | linearity |
+
+**No obligation is about application semantics.** Every one concerns bounds,
+ownership, linearity, or commit geometry — the same tier E2's ownership systems
+guard. This is the load-bearing finding for §2.2.
+
+### E4 — The sans-io decoder shape is already validated
+
+`bounded-complete` within its stated corpus (jolt-bytes/jolt-bencode oracles).
+
+`jolt.bytes/read-window` and `jolt.bencode/decode` return a transactional
+trichotomy — `:ok` with a new cursor, `:need-more` with the *exact original*
+cursor, `:invalid` with reason/offset and the original cursor — with commit only
+at the exact frame boundary. Backed by 132,672 assertions over 969 bounded
+parents, 20,349 slices, 2,601 cursor reads, 4,845 two-read compositions, plus
+Hegel state machines.
+
+This is a pure step function: it never blocks and never performs I/O. The
+protocol/codec layer therefore requires no continuations, empirically rather
+than by design preference.
+
+---
+
+## 2. Decisions
+
+### 2.1 Substrate — fork Jolt onto Chez
+
+Keeps the reader, analyzer, IR, backend, deps, and build; keeps multi-shot
+`call/cc`, the exact numeric tower, and self-hosting. OxCaml was evaluated: its
+mode system (locality, uniqueness, linearity, portability, contention, yielding,
+statefulness, visibility) is a static form of E2's hand-rolled systems, and its
+unboxed types would address representation cost. It was not selected because
+modes are a checker perturb writes over its own IR rather than a host feature it
+must inherit, and because OxCaml supports no multi-shot handlers and has no
+formalization of one-shot effects against its own extensions.
+
+E1 is **not** evidence against this choice: `aget` at 54 ns/byte is adequate;
+the measured gap is dispatch structure, not Chez codegen.
+
+Required IR changes, from inspection of `jolt-core/jolt/ir.clj`:
+`:local` carries a name, not binding identity — linearity checking needs
+alpha-conversion or a `:binding-id`. The `:host`/`:host-static`/`:host-new`/
+`:host-call` ops are untyped, un-effected escapes and should be replaced by a
+single `:extern` carrying a declared effect row and signature. Note charter
+rejected-alternative A1 ("annotate optimization IR: identity not durable through
+passes") applies: the effect boundary's `site-id` must come from a durable
+identity spine, not a pass-attached annotation.
+
+### 2.2 Typing — two tiers
+
+Ordinary values: static types with full inference, `Any` escape hatch. No proof
+obligations, no modes; immutability makes the mode questions trivial.
+
+Capabilities (handles, cursors, buffers, leases, continuations, mutable cells):
+modes plus refinements. Axes kept: **uniqueness** (`unique`/`shared`),
+**linearity** (`once`/`many`). Axis dropped: **locality** — regions are the
+specific feature that makes effects unsound (cf. arXiv 2607.15876, Yarrow:
+non-local control breaks stack discipline; multi-shot handlers break
+exit-at-most-once). Escape safety for loans, handler scope, and task containment
+follows from uniqueness plus linearity alone, so dropping regions avoids the
+unsolved interaction at no cost to the properties E2 needs.
+
+E3 is the justification for the tier split: refinements confined to capabilities
+cover 100% of the existing proof surface without dependent types over ordinary
+values and without giving up inference.
+
+### 2.3 Proof — capability-tier refinements, Ansatz retained
+
+Ansatz (`org.replikativ/ansatz`, a Lean 4 CIC kernel in Java with a Clojure
+surface) currently proves a **pure model**, with an exhaustive bounded runtime
+oracle bridging model to implementation — explicitly "not a compiler or an
+executable extraction into Jolt". That bridge is load-bearing only because the
+proof is about a separate artifact.
+
+Capability-tier refinements collapse the bridge: if containment is a type on
+`slice`, the implementation *is* the model and the oracle becomes a cross-check
+rather than the connection. Session types over sans-io step functions are a
+special case (protocol state), not a separate mechanism. Ansatz is retained for
+obligations outside the type system.
+
+Acceptance criterion for the checker, using artifacts it did not author: accept
+the `*-corrected` models and reject `double-owner-bug.pl`,
+`early-release-bug.pl`, `borrow-generation-check-omitted-buggy.smt2`,
+`native-lease-early-release-buggy.smt2`; non-vacuity controls must still pass.
+
+### 2.4 Effects — charter D4 retained, D3 deferred not foreclosed
+
+Effects substitute a validated result or abort; no continuations at that layer.
+Control (blocking, scheduling, virtual time) stays in the explicit cooperative
+kernel. Protocols are step functions over both.
+
+This is retained on its merits, not inherited: P5 §4.2 places bounded
+completeness solely with `explore_states.clj` BFS, under stated preconditions
+including **value-semantic state** — the precondition continuations break. E4
+shows the codec layer needs no continuations anyway.
+
+D3 (delimited control) stays open for direct-style application code, at a lower
+evidence tier — the two-track wall P5 already draws between bounded-complete
+model exploration and heuristic runtime search is the right boundary. To keep it
+cheap to add, the `perform` boundary must remain a real call site with durable
+identity rather than being inlined at analysis time.
+
+### 2.5 v0 — port a measured slice, don't build a new one
+
+Ordered:
+
+1. **Re-measure at a pinned target tuple.** Re-run the profiles under
+   `jolt-toolchains/setup-chez` at the recipe's Chez commit and jolt-bencode's
+   pinned `89fe46e8`, to promote E1 from indication to evidence.
+2. **Close the residual dispatch gap** (descriptor-local method slots), or
+   establish that byte views must be primitive rather than user `deftype`.
+3. **Mode checker against E3's existing controls.**
+4. **`unique` Cursor, mutated in place** — satisfy jolt-bytes and jolt-bencode
+   oracle corpora byte-identically, pass both Hegel suites, state an explicit
+   target against `docs/PERFORMANCE.md`.
+5. **Session type over the decode trichotomy**, then nREPL.
+
+Steps 1–2 must precede 3–4: with dispatch dominant, the mode system's
+performance case is untestable, and on current evidence modes address at most
+the ~20–30% of decode that is allocation.
+
+Gate architecture follows `jolt-toolchains`: producer records its own claims;
+an independent clean-consumer job revalidates after fresh extraction; the
+verifier's limits are stated rather than implied.
+
+---
+
+## 3. Nonclaims
+
+1. E1's absolute numbers are not evidence at any pinned target tuple. They were
+   taken on a self-built Chez 10.4.1 (unpinned against
+   `jolt-toolchains/config/toolchains.json`) and jolt at `380e59e`, not
+   jolt-bencode's pinned `89fe46e8`; single sample per measurement; measured
+   full decode 368–493 µs against a recorded 991 µs. Ratios are structural and
+   source-corroborated; absolutes are not.
+2. `jolt@048582c3` is not claimed to fix E1. It is a 25% partial; the structural
+   fix is identified and deliberately not attempted.
+3. Modes are **not** claimed to address the measured gap. On current evidence
+   they address allocation, which is the minority term.
+4. The jolt-bytes suite does not validate `048582c3`: it fails identically with
+   and without the patch on this jolt commit (version mismatch, pre-existing).
+   Neutrality is established; validation is not.
+5. No completeness, partial-order-reduction, or Molly/LDFI claim is made or
+   extended. P5 §4.2/§4.3 govern.
+6. E2/E3 are source-inspection surveys over the repositories read
+   (jolt, jolt-sim, jolt-sim-planning, jolt-bytes, jolt-hako, jolt-bencode,
+   jolt-toolchains). `jolt-toolchain` (singular) was not readable.
+7. The fork is a declared remint event. Portable artifacts survive — SMT
+   families, the Prolog model, Ansatz proof closures, oracle decision tables,
+   Hegel property designs. Artifacts pinned to a Jolt image do not: runtime
+   gates, `verify-runtime-jolt`, evidence records naming Jolt commits, and the
+   jolt-sim controller ABI work. This must be declared, never silently
+   reinterpreted (charter F4).
+
+## 4. Open questions
+
+- **Q1.** Does closing the residual dispatch gap require the `jrdesc` layout
+  change, and does that break seed/AOT compatibility? Blocks 2.5 step 2.
+- **Q2.** Can HM inference and capability-tier refinements coexist without
+  gradual-typing soundness boundaries? Blocks 2.2.
+- **Q3.** Does the `unique` × multi-shot-continuation rule (a `many`
+  continuation may not capture `unique` resources) hold under formalization?
+  Blocks 2.4's D3 option.
+- **Q4.** Macro expansion precedes analysis, so type errors point at expanded
+  code. `:pos` exists; does provenance survive expansion well enough for
+  usable diagnostics? Blocks 2.2 in practice, not in principle.
