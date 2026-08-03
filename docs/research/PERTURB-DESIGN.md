@@ -20,6 +20,16 @@ premises no longer hold, and each is re-decided below rather than assumed.
 **Evidence labels** follow the charter §5 lattice: `proved | bounded-complete |
 sampled | monitored | assumed | opaque | failed`. Nothing here is `proved`.
 
+**Standing method commitment.** Every correction in this document came from
+testing against an independent measurement or specification. None came from
+source reading, and none from the examples a specification supplied. The record
+so far: three performance hypotheses refuted by measurement (host-interop
+emulation, allocation, dispatch — §1/E1, §8/E7), and two rule-set claims refuted
+by probes built to attack them, both of which had passed their spot checks
+(§6/E5, §7/E6). Accordingly: **no claim here should be trusted ahead of the
+artifact that tests it**, and an acceptance criterion is derived from a
+specification's semantics, never from its examples.
+
 ---
 
 ## 1. Findings
@@ -666,3 +676,72 @@ Each was plausible from source reading and each was wrong. The pattern matches
 an independent measurement or specification, never what was argued from
 inspection. No performance claim in this document should be trusted ahead of a
 number.
+
+---
+
+## 9. E8 — the dominant byte-path cost is `unchecked-byte`, a Clojure-level defn
+
+E7 put 74% of `Window/nth` in the method body and redirected to representation.
+`measurements/profile4.clj` decomposes that body. Net of a 27 ns/byte loop floor:
+
+| stage | ns/byte | net |
+| --- | ---: | ---: |
+| loop only | 27 | 0 |
+| `aget`, inline | 54 | 27 |
+| `aget` through a `defn-`, `^bytes` hinted | 72 | 45 |
+| `aget` through a `defn-`, **hintless** | 72 | 45 |
+| `(int index)` checked cast | 36 | 9 |
+| generic `(+ offset index)` | 36 | 9 |
+| `integer?` | 54 | 27 |
+| `valid-index?` (three predicates, through a `defn-`) | 100 | 73 |
+| `signed-byte-at` = `(unchecked-byte (aget b i))` | 290 | 263 |
+| **`unchecked-byte`, on a CONSTANT** | **236** | **209** |
+
+`unchecked-byte` alone — no array access at all — is **~8x the `aget` it wraps**
+and ~80% of `signed-byte-at`. Function-call overhead is ~18 ns/byte, and the
+`^bytes` hint is worth **nothing** (72 hinted, 72 hintless).
+
+### Cause
+
+`jolt-core/clojure/core/22-coll.clj:295` defines it in Clojure, not as a host
+native:
+
+```clojure
+(defn unchecked-byte [x]
+  (let [b (bit-and (unchecked-long x) 0xff)] (if (< b 128) b (- b 256))))
+```
+
+Per call: a var deref and invoke, a call to `unchecked-long`, then generic
+`bit-and`, `<`, and possibly `-` — five-ish numeric-tower operations and two
+calls for what should be a mask and sign-extend. The comment directly above it
+records that **`unchecked-long`/`unchecked-int` are host natives**
+(`converters.ss`); the byte, short, and char variants were left at the Clojure
+level. That looks like an oversight rather than a decision.
+
+### Proposed fix (not attempted)
+
+Implement `unchecked-byte`, `unchecked-short`, and `unchecked-char` as host
+natives alongside the existing `unchecked-long`/`unchecked-int`. Small and
+local. **Not attempted here** because it edits the `clojure.core` overlay, which
+per the Jolt README requires `make remint` to iterate the bootstrap seed to a
+byte fixpoint — too long to start and verify within the remaining session.
+
+### Attribution chain
+
+Pinned full bencode decode 985 µs → ~70–80% byte access → `nth` on Window
+1145 ns/byte → 74% method body → 72% of the body is `signed-byte-at` → ~80% of
+that is `unchecked-byte`. On those proportions `unchecked-byte` is a
+double-digit percentage of total decode time, for one arithmetic primitive.
+
+This is a **Jolt finding independent of perturb**, and it is more actionable
+than anything the devirtualization line would have produced.
+
+### Consequence for §2.1
+
+§2.1 says "E1 is **not** evidence against this choice: `aget` at 54 ns/byte is
+adequate; the measured gap is dispatch structure, not Chez codegen." E7 and E8
+show the gap is neither dispatch nor Chez codegen — it is **which primitives
+Jolt implements natively versus in its own core overlay**. The conclusion (Chez
+is not the problem) survives, and is in fact strengthened: `aget` at 54 ns/byte
+and a function call at 18 ns/byte are both fine. The stated *reason* was wrong
+and is corrected here.
