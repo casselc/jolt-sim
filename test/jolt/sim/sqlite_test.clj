@@ -32,6 +32,12 @@
 (defn- ex-data-of [f]
   (try (f) nil (catch :default e (ex-data e))))
 
+(defn- await-worker [worker]
+  (let [result (deref worker 6000 ::timeout)]
+    (when (= ::timeout result)
+      (future-cancel worker))
+    result))
+
 (defn- open-db [H]
   (let [filename (native H :string->ptr "file:test.db")
         cell (native H :alloc 8)]
@@ -360,7 +366,8 @@
     (is (= {:connection-id 0
             :errcode 0 :errmsg "not an error" :changes 0 :rowid 0
             :autocommit? true :tx nil :tx-evidence []
-            :autocommit-evidence [1]}
+            :autocommit-evidence [1]
+            :committed {} :staging nil :store-evidence []}
            (get-in (sqlite/state w) [:dbs db])))
     (let [s1 (prepare H db "BEGIN")]
       (is (= 101 (ff H "sqlite3_step" [s1])))
@@ -743,8 +750,10 @@
             :tx-evidence
             [(tx-event 0 0 :begin :on-success :done true nil true false)]
             :autocommit-evidence [0]
+            :committed {} :staging {} :store-evidence []
             :close-index 0
-            :discarded-transaction {:begin-event 0 :begin-plan-index 0}}
+            :discarded-transaction {:begin-event 0 :begin-plan-index 0}
+            :discarded-staging {}}
            (first (:closed-db-evidence (sqlite/state w)))))
     (is (= :jolt.sim.sqlite/use-after-close
            (:type (ex-data-of #(ff H "sqlite3_get_autocommit" [db])))))
@@ -755,7 +764,9 @@
         (is (= {:connection-id 1
                 :errcode 0 :errmsg "not an error" :changes 0 :rowid 0
                 :autocommit? true :tx nil :tx-evidence []
-                :autocommit-evidence [] :close-index 1}
+                :autocommit-evidence []
+                :committed {} :staging nil :store-evidence []
+                :close-index 1}
                evidence))))
     (is (true? (sqlite/clean? w)))))
 
@@ -811,6 +822,844 @@
       (is (= 101 (ff H "sqlite3_step" [s2])))
       (is (= 1 (ff H "sqlite3_get_autocommit" [db])))
       (is (= 0 (ff H "sqlite3_finalize" [s2]))))
+    (close-db H db)
+    (is (true? (sqlite/clean? w)))))
+
+;; ---- physical store visibility boundary ---------------------------------
+
+(deftest store-effect-autocommit-put-then-get-hits
+  (let [plans [{:sql "PUT k v"
+                :params {1 {:type :integer :value 42}
+                         2 {:type :text :value "hello"}}
+                :store-effect {:op :put :key-param 1 :value-param 2}}
+               {:sql "GET k"
+                :params {1 {:type :integer :value 42}}
+                :columns ["value"]
+                :store-effect {:op :get :key-param 1}}]
+        w (sqlite/world plans)
+        H (sqlite/handlers w)
+        db (open-db H)
+        put (prepare H db "PUT k v")]
+    (is (= 0 (ff H "sqlite3_bind_int64" [put 1 42])))
+    (is (= 0 (ff H "sqlite3_bind_text" [put 2 "hello" 5 0])))
+    (is (= 101 (ff H "sqlite3_step" [put])))
+    (is (= {{:type :integer :value 42} {:type :text :value "hello"}}
+           (get-in (sqlite/state w) [:dbs db :committed])))
+    (is (nil? (get-in (sqlite/state w) [:dbs db :staging])))
+    (is (= 0 (ff H "sqlite3_finalize" [put])))
+    (let [get (prepare H db "GET k")]
+      (is (= 0 (ff H "sqlite3_bind_int64" [get 1 42])))
+      (is (= 100 (ff H "sqlite3_step" [get])))
+      (is (= 3 (ff H "sqlite3_column_type" [get 0])))
+      (is (= "hello" (ff H "sqlite3_column_text" [get 0])))
+      (is (= 101 (ff H "sqlite3_step" [get])))
+      (is (= 0 (ff H "sqlite3_finalize" [get]))))
+    (is (= [{:sequence 0 :plan-index 0 :op :put :reported :done
+             :key {:type :integer :value 42}
+             :location :committed :present? true}
+            {:sequence 1 :plan-index 1 :op :get :reported :done
+             :key {:type :integer :value 42}
+             :location :committed :present? true}]
+           (get-in (sqlite/state w) [:dbs db :store-evidence])))
+    (close-db H db)
+    (is (true? (sqlite/clean? w)))))
+
+(deftest store-effect-rollback-discards-staged-put-so-get-misses
+  (let [plans [{:sql "BEGIN" :tx-effect {:op :begin}}
+               {:sql "PUT k v"
+                :params {1 {:type :integer :value 1}
+                         2 {:type :integer :value 100}}
+                :store-effect {:op :put :key-param 1 :value-param 2}}
+               {:sql "ROLLBACK" :tx-effect {:op :rollback}}
+               {:sql "GET k"
+                :params {1 {:type :integer :value 1}}
+                :columns ["value"]
+                :store-effect {:op :get :key-param 1}}]
+        w (sqlite/world plans)
+        H (sqlite/handlers w)
+        db (open-db H)
+        begin (prepare H db "BEGIN")]
+    (is (= 101 (ff H "sqlite3_step" [begin])))
+    (is (= 0 (ff H "sqlite3_finalize" [begin])))
+    (let [put (prepare H db "PUT k v")]
+      (is (= 0 (ff H "sqlite3_bind_int64" [put 1 1])))
+      (is (= 0 (ff H "sqlite3_bind_int64" [put 2 100])))
+      (is (= 101 (ff H "sqlite3_step" [put])))
+      (is (= {{:type :integer :value 1} {:type :integer :value 100}}
+             (get-in (sqlite/state w) [:dbs db :staging])))
+      (is (= {} (get-in (sqlite/state w) [:dbs db :committed])))
+      (is (= 0 (ff H "sqlite3_finalize" [put]))))
+    (let [rollback (prepare H db "ROLLBACK")]
+      (is (= 101 (ff H "sqlite3_step" [rollback])))
+      (is (= 0 (ff H "sqlite3_finalize" [rollback]))))
+    (is (= {} (get-in (sqlite/state w) [:dbs db :committed])))
+    (is (nil? (get-in (sqlite/state w) [:dbs db :staging])))
+    (let [get (prepare H db "GET k")]
+      (is (= 0 (ff H "sqlite3_bind_int64" [get 1 1])))
+      (is (= 101 (ff H "sqlite3_step" [get])))
+      (is (= 0 (ff H "sqlite3_finalize" [get]))))
+    (close-db H db)
+    (is (true? (sqlite/clean? w)))))
+
+(deftest store-effect-commit-merges-staged-put-so-get-hits
+  (let [plans [{:sql "BEGIN" :tx-effect {:op :begin}}
+               {:sql "PUT k v"
+                :params {1 {:type :integer :value 1}
+                         2 {:type :integer :value 100}}
+                :store-effect {:op :put :key-param 1 :value-param 2}}
+               {:sql "COMMIT" :tx-effect {:op :commit}}
+               {:sql "GET k"
+                :params {1 {:type :integer :value 1}}
+                :columns ["value"]
+                :store-effect {:op :get :key-param 1}}]
+        w (sqlite/world plans)
+        H (sqlite/handlers w)
+        db (open-db H)
+        begin (prepare H db "BEGIN")]
+    (is (= 101 (ff H "sqlite3_step" [begin])))
+    (is (= 0 (ff H "sqlite3_finalize" [begin])))
+    (let [put (prepare H db "PUT k v")]
+      (is (= 0 (ff H "sqlite3_bind_int64" [put 1 1])))
+      (is (= 0 (ff H "sqlite3_bind_int64" [put 2 100])))
+      (is (= 101 (ff H "sqlite3_step" [put])))
+      (is (= 0 (ff H "sqlite3_finalize" [put]))))
+    (let [commit (prepare H db "COMMIT")]
+      (is (= 101 (ff H "sqlite3_step" [commit])))
+      (is (= 0 (ff H "sqlite3_finalize" [commit]))))
+    (is (= {{:type :integer :value 1} {:type :integer :value 100}}
+           (get-in (sqlite/state w) [:dbs db :committed])))
+    (is (nil? (get-in (sqlite/state w) [:dbs db :staging])))
+    (let [get (prepare H db "GET k")]
+      (is (= 0 (ff H "sqlite3_bind_int64" [get 1 1])))
+      (is (= 100 (ff H "sqlite3_step" [get])))
+      (is (= 100 (ff H "sqlite3_column_int64" [get 0])))
+      (is (= 101 (ff H "sqlite3_step" [get])))
+      (is (= 0 (ff H "sqlite3_finalize" [get]))))
+    (close-db H db)
+    (is (true? (sqlite/clean? w)))))
+
+(deftest store-effect-staged-value-shadows-older-committed-value
+  (let [plans [{:sql "PUT k old"
+                :params {1 {:type :integer :value 1}
+                         2 {:type :text :value "old"}}
+                :store-effect {:op :put :key-param 1 :value-param 2}}
+               {:sql "BEGIN" :tx-effect {:op :begin}}
+               {:sql "PUT k new"
+                :params {1 {:type :integer :value 1}
+                         2 {:type :text :value "new"}}
+                :store-effect {:op :put :key-param 1 :value-param 2}}
+               {:sql "GET k"
+                :params {1 {:type :integer :value 1}}
+                :columns ["value"]
+                :store-effect {:op :get :key-param 1}}
+               {:sql "ROLLBACK" :tx-effect {:op :rollback}}]
+        w (sqlite/world plans)
+        H (sqlite/handlers w)
+        db (open-db H)
+        put1 (prepare H db "PUT k old")]
+    (is (= 0 (ff H "sqlite3_bind_int64" [put1 1 1])))
+    (is (= 0 (ff H "sqlite3_bind_text" [put1 2 "old" 3 0])))
+    (is (= 101 (ff H "sqlite3_step" [put1])))
+    (is (= 0 (ff H "sqlite3_finalize" [put1])))
+    (let [begin (prepare H db "BEGIN")]
+      (is (= 101 (ff H "sqlite3_step" [begin])))
+      (is (= 0 (ff H "sqlite3_finalize" [begin]))))
+    (let [put2 (prepare H db "PUT k new")]
+      (is (= 0 (ff H "sqlite3_bind_int64" [put2 1 1])))
+      (is (= 0 (ff H "sqlite3_bind_text" [put2 2 "new" 3 0])))
+      (is (= 101 (ff H "sqlite3_step" [put2])))
+      (is (= 0 (ff H "sqlite3_finalize" [put2]))))
+    ;; the staged write shadows the get; the older committed value is untouched
+    (let [get (prepare H db "GET k")]
+      (is (= 0 (ff H "sqlite3_bind_int64" [get 1 1])))
+      (is (= 100 (ff H "sqlite3_step" [get])))
+      (is (= "new" (ff H "sqlite3_column_text" [get 0])))
+      (is (= 101 (ff H "sqlite3_step" [get])))
+      (is (= 0 (ff H "sqlite3_finalize" [get]))))
+    (is (= "old"
+           (:value (get (get-in (sqlite/state w) [:dbs db :committed])
+                        {:type :integer :value 1}))))
+    (is (= "new"
+           (:value (get (get-in (sqlite/state w) [:dbs db :staging])
+                        {:type :integer :value 1}))))
+    (let [rollback (prepare H db "ROLLBACK")]
+      (is (= 101 (ff H "sqlite3_step" [rollback])))
+      (is (= 0 (ff H "sqlite3_finalize" [rollback]))))
+    (close-db H db)
+    (is (true? (sqlite/clean? w)))))
+
+(deftest store-effect-errored-put-does-not-write
+  (let [plans [{:sql "PUT k v"
+                :params {1 {:type :integer :value 5}
+                         2 {:type :integer :value 9}}
+                :store-effect {:op :put :key-param 1 :value-param 2}
+                :error {:code 1 :msg "put failed"}}
+               {:sql "GET k"
+                :params {1 {:type :integer :value 5}}
+                :columns ["value"]
+                :store-effect {:op :get :key-param 1}}]
+        w (sqlite/world plans)
+        H (sqlite/handlers w)
+        db (open-db H)
+        put (prepare H db "PUT k v")]
+    (is (= 0 (ff H "sqlite3_bind_int64" [put 1 5])))
+    (is (= 0 (ff H "sqlite3_bind_int64" [put 2 9])))
+    (is (= 1 (ff H "sqlite3_step" [put])))
+    (is (= 1 (ff H "sqlite3_errcode" [db])))
+    (is (= {} (get-in (sqlite/state w) [:dbs db :committed])))
+    (is (nil? (get-in (sqlite/state w) [:dbs db :staging])))
+    (is (= 21 (ff H "sqlite3_step" [put])))          ; step after error is misuse
+    (is (= 0 (ff H "sqlite3_finalize" [put])))
+    (let [get (prepare H db "GET k")]
+      (is (= 0 (ff H "sqlite3_bind_int64" [get 1 5])))
+      (is (= 101 (ff H "sqlite3_step" [get])))
+      (is (= 0 (ff H "sqlite3_finalize" [get]))))
+    (close-db H db)
+    (is (true? (sqlite/clean? w)))))
+
+(deftest store-effect-errored-get-records-one-attempt-not-a-miss
+  (let [plans [{:sql "GET k"
+                :params {1 {:type :integer :value 5}}
+                :columns ["value"]
+                :store-effect {:op :get :key-param 1}
+                :error {:code 5 :msg "read failed"}}]
+        w (sqlite/world plans)
+        H (sqlite/handlers w)
+        db (open-db H)
+        get (prepare H db "GET k")]
+    (is (= 0 (ff H "sqlite3_bind_int64" [get 1 5])))
+    (is (= 5 (ff H "sqlite3_step" [get])))
+    (is (= 5 (ff H "sqlite3_errcode" [db])))
+    (is (= [{:sequence 0 :plan-index 0 :op :get :reported :error
+             :key {:type :integer :value 5}
+             :location nil :present? false}]
+           (get-in (sqlite/state w) [:dbs db :store-evidence])))
+    (is (= 21 (ff H "sqlite3_step" [get])))
+    (is (= 0 (ff H "sqlite3_finalize" [get])))
+    (close-db H db)
+    (is (true? (sqlite/clean? w)))))
+
+(deftest store-effect-preserves-null-and-empty-blob-result-shapes
+  (let [plans [{:sql "PUT null"
+                :params {1 {:type :integer :value 1}
+                         2 {:type :null}}
+                :store-effect {:op :put :key-param 1 :value-param 2}}
+               {:sql "GET null"
+                :params {1 {:type :integer :value 1}}
+                :columns ["value"]
+                :store-effect {:op :get :key-param 1}}
+               {:sql "PUT empty"
+                :params {1 {:type :integer :value 2}
+                         2 {:type :blob :value []}}
+                :store-effect {:op :put :key-param 1 :value-param 2}}
+               {:sql "GET empty"
+                :params {1 {:type :integer :value 2}}
+                :columns ["value"]
+                :store-effect {:op :get :key-param 1}}
+               {:sql "PUT empty-null-pointer"
+                :params {1 {:type :integer :value 3}
+                         2 {:type :blob :value [] :null-pointer? true}}
+                :store-effect {:op :put :key-param 1 :value-param 2}}
+               {:sql "GET empty-null-pointer"
+                :params {1 {:type :integer :value 3}}
+                :columns ["value"]
+                :store-effect {:op :get :key-param 1}}]
+        w (sqlite/world plans)
+        H (sqlite/handlers w)
+        db (open-db H)]
+    (let [put (prepare H db "PUT null")]
+      (is (= 0 (ff H "sqlite3_bind_int64" [put 1 1])))
+      (is (= 0 (ff H "sqlite3_bind_null" [put 2])))
+      (is (= 101 (ff H "sqlite3_step" [put])))
+      (is (= 0 (ff H "sqlite3_finalize" [put]))))
+    (let [get (prepare H db "GET null")]
+      (is (= 0 (ff H "sqlite3_bind_int64" [get 1 1])))
+      (is (= 100 (ff H "sqlite3_step" [get])))
+      (is (= 5 (ff H "sqlite3_column_type" [get 0])))
+      (is (nil? (ff H "sqlite3_column_text" [get 0])))
+      (is (zero? (ff H "sqlite3_column_blob" [get 0])))
+      (is (= 101 (ff H "sqlite3_step" [get])))
+      (is (= 0 (ff H "sqlite3_finalize" [get]))))
+    (let [put (prepare H db "PUT empty")]
+      (is (= 0 (ff H "sqlite3_bind_int64" [put 1 2])))
+      (is (= 0 (ff H "sqlite3_bind_blob64" [put 2 0 0 0])))
+      (is (= 101 (ff H "sqlite3_step" [put])))
+      (is (= 0 (ff H "sqlite3_finalize" [put]))))
+    (let [get (prepare H db "GET empty")]
+      (is (= 0 (ff H "sqlite3_bind_int64" [get 1 2])))
+      (is (= 100 (ff H "sqlite3_step" [get])))
+      (is (= 4 (ff H "sqlite3_column_type" [get 0])))
+      (is (zero? (ff H "sqlite3_column_bytes" [get 0])))
+      (is (pos? (ff H "sqlite3_column_blob" [get 0])))
+      (is (= 101 (ff H "sqlite3_step" [get])))
+      (is (= 0 (ff H "sqlite3_finalize" [get]))))
+    (let [put (prepare H db "PUT empty-null-pointer")]
+      (is (= 0 (ff H "sqlite3_bind_int64" [put 1 3])))
+      (is (= 0 (ff H "sqlite3_bind_blob64" [put 2 0 0 0])))
+      (is (= 101 (ff H "sqlite3_step" [put])))
+      (is (= 0 (ff H "sqlite3_finalize" [put]))))
+    (let [get (prepare H db "GET empty-null-pointer")]
+      (is (= 0 (ff H "sqlite3_bind_int64" [get 1 3])))
+      (is (= 100 (ff H "sqlite3_step" [get])))
+      (is (= 4 (ff H "sqlite3_column_type" [get 0])))
+      (is (zero? (ff H "sqlite3_column_bytes" [get 0])))
+      (is (zero? (ff H "sqlite3_column_blob" [get 0])))
+      (is (= 101 (ff H "sqlite3_step" [get])))
+      (is (= 0 (ff H "sqlite3_finalize" [get]))))
+    (is (= {:type :null}
+           (get-in (sqlite/state w)
+                   [:dbs db :committed {:type :integer :value 1}])))
+    (is (= {:type :blob :value []}
+           (get-in (sqlite/state w)
+                   [:dbs db :committed {:type :integer :value 2}])))
+    (is (= {:type :blob :value [] :null-pointer? true}
+           (get-in (sqlite/state w)
+                   [:dbs db :committed {:type :integer :value 3}])))
+    (close-db H db)
+    (is (true? (sqlite/clean? w)))))
+
+(deftest store-effect-key-identity-comes-from-the-canonical-binding
+  (let [plans [{:sql "PUT blob-key"
+                :params {1 {:type :blob :value [] :null-pointer? false}
+                         2 {:type :text :value "blob-hit"}}
+                :store-effect {:op :put :key-param 1 :value-param 2}}
+               {:sql "GET blob-key"
+                :params {1 {:type :blob :value []}}
+                :columns ["value"]
+                :store-effect {:op :get :key-param 1}}
+               {:sql "PUT float-key"
+                :params {1 {:type :float :value 1}
+                         2 {:type :text :value "float-hit"}}
+                :store-effect {:op :put :key-param 1 :value-param 2}}
+               {:sql "GET float-key"
+                :params {1 {:type :float :value 1.0}}
+                :columns ["value"]
+                :store-effect {:op :get :key-param 1}}]
+        w (sqlite/world plans)
+        H (sqlite/handlers w)
+        db (open-db H)]
+    (let [put (prepare H db "PUT blob-key")]
+      (is (= 0 (ff H "sqlite3_bind_blob64" [put 1 0 0 0])))
+      (is (= 0 (ff H "sqlite3_bind_text" [put 2 "blob-hit" 8 0])))
+      (is (= 101 (ff H "sqlite3_step" [put])))
+      (is (= 0 (ff H "sqlite3_finalize" [put]))))
+    (let [get (prepare H db "GET blob-key")]
+      (is (= 0 (ff H "sqlite3_bind_blob64" [get 1 0 0 0])))
+      (is (= 100 (ff H "sqlite3_step" [get])))
+      (is (= "blob-hit" (ff H "sqlite3_column_text" [get 0])))
+      (is (= 101 (ff H "sqlite3_step" [get])))
+      (is (= 0 (ff H "sqlite3_finalize" [get]))))
+    (let [put (prepare H db "PUT float-key")]
+      (is (= 0 (ff H "sqlite3_bind_double" [put 1 1.0])))
+      (is (= 0 (ff H "sqlite3_bind_text" [put 2 "float-hit" 9 0])))
+      (is (= 101 (ff H "sqlite3_step" [put])))
+      (is (= 0 (ff H "sqlite3_finalize" [put]))))
+    (let [get (prepare H db "GET float-key")]
+      (is (= 0 (ff H "sqlite3_bind_double" [get 1 1.0])))
+      (is (= 100 (ff H "sqlite3_step" [get])))
+      (is (= "float-hit" (ff H "sqlite3_column_text" [get 0])))
+      (is (= 101 (ff H "sqlite3_step" [get])))
+      (is (= 0 (ff H "sqlite3_finalize" [get]))))
+    (is (contains? (get-in (sqlite/state w) [:dbs db :committed])
+                   {:type :blob :value []}))
+    (is (contains? (get-in (sqlite/state w) [:dbs db :committed])
+                   {:type :float :value 1.0}))
+    (close-db H db)
+    (is (true? (sqlite/clean? w)))))
+
+(deftest close-evidence-retains-committed-state-and-discarded-active-staging
+  (let [plans [{:sql "PUT k1 v1"
+                :params {1 {:type :integer :value 1}
+                         2 {:type :text :value "committed"}}
+                :store-effect {:op :put :key-param 1 :value-param 2}}
+               {:sql "BEGIN" :tx-effect {:op :begin}}
+               {:sql "PUT k2 v2"
+                :params {1 {:type :integer :value 2}
+                         2 {:type :text :value "staged"}}
+                :store-effect {:op :put :key-param 1 :value-param 2}}]
+        w (sqlite/world plans)
+        H (sqlite/handlers w)
+        db (open-db H)
+        put1 (prepare H db "PUT k1 v1")]
+    (is (= 0 (ff H "sqlite3_bind_int64" [put1 1 1])))
+    (is (= 0 (ff H "sqlite3_bind_text" [put1 2 "committed" 9 0])))
+    (is (= 101 (ff H "sqlite3_step" [put1])))
+    (is (= 0 (ff H "sqlite3_finalize" [put1])))
+    (let [begin (prepare H db "BEGIN")]
+      (is (= 101 (ff H "sqlite3_step" [begin])))
+      (is (= 0 (ff H "sqlite3_finalize" [begin]))))
+    (let [put2 (prepare H db "PUT k2 v2")]
+      (is (= 0 (ff H "sqlite3_bind_int64" [put2 1 2])))
+      (is (= 0 (ff H "sqlite3_bind_text" [put2 2 "staged" 6 0])))
+      (is (= 101 (ff H "sqlite3_step" [put2])))
+      (is (= 0 (ff H "sqlite3_finalize" [put2]))))
+    ;; close without commit: the active staged write is discarded, but the
+    ;; earlier autocommit write survives in the close-time evidence
+    (close-db H db)
+    (let [evidence (first (:closed-db-evidence (sqlite/state w)))]
+      (is (= {{:type :integer :value 1} {:type :text :value "committed"}}
+             (:committed evidence)))
+      (is (= {{:type :integer :value 2} {:type :text :value "staged"}}
+             (:staging evidence)))
+      (is (= (:staging evidence) (:discarded-staging evidence))))
+    (is (true? (sqlite/clean? w)))))
+
+(deftest store-effect-is-validated-and-nothing-is-inferred-from-sql-text
+  ;; unknown op
+  (is (= :jolt.sim.sqlite/invalid-plan
+         (:type (ex-data-of
+                 #(sqlite/world
+                   [{:sql "X" :store-effect {:op :delete :key-param 1}}])))))
+  ;; unknown key for :put
+  (is (= :jolt.sim.sqlite/invalid-plan
+         (:type (ex-data-of
+                 #(sqlite/world
+                   [{:sql "X"
+                     :params {1 {:type :integer :value 1}
+                              2 {:type :integer :value 2}}
+                     :store-effect
+                     {:op :put :key-param 1 :value-param 2 :extra 1}}])))))
+  ;; unknown key for :get (:value-param is not allowed)
+  (is (= :jolt.sim.sqlite/invalid-plan
+         (:type (ex-data-of
+                 #(sqlite/world
+                   [{:sql "X"
+                     :params {1 {:type :integer :value 1}
+                              2 {:type :integer :value 2}}
+                     :columns ["v"]
+                     :store-effect {:op :get :key-param 1 :value-param 2}}])))))
+  ;; missing key-param
+  (is (= :jolt.sim.sqlite/invalid-plan
+         (:type (ex-data-of
+                 #(sqlite/world [{:sql "X" :store-effect {:op :get}}])))))
+  ;; non-positive key-param
+  (is (= :jolt.sim.sqlite/invalid-plan
+         (:type (ex-data-of
+                 #(sqlite/world
+                   [{:sql "X"
+                     :params {1 {:type :integer :value 1}}
+                     :columns ["v"]
+                     :store-effect {:op :get :key-param 0}}])))))
+  ;; missing value-param for :put
+  (is (= :jolt.sim.sqlite/invalid-plan
+         (:type (ex-data-of
+                 #(sqlite/world
+                   [{:sql "X"
+                     :params {1 {:type :integer :value 1}}
+                     :store-effect {:op :put :key-param 1}}])))))
+  ;; both :tx-effect and :store-effect on one plan
+  (is (= :jolt.sim.sqlite/invalid-plan
+         (:type (ex-data-of
+                 #(sqlite/world
+                   [{:sql "X"
+                     :params {1 {:type :integer :value 1}
+                              2 {:type :integer :value 2}}
+                     :tx-effect {:op :begin}
+                     :store-effect {:op :put :key-param 1 :value-param 2}}])))))
+  ;; a :get plan with nonempty predeclared :rows
+  (is (= :jolt.sim.sqlite/invalid-plan
+         (:type (ex-data-of
+                 #(sqlite/world
+                   [{:sql "X"
+                     :params {1 {:type :integer :value 1}}
+                     :columns ["v"]
+                     :rows [[{:type :integer :value 9}]]
+                     :store-effect {:op :get :key-param 1}}])))))
+  ;; a :put plan is write-only and cannot enter the generic result-row path
+  (is (= :jolt.sim.sqlite/invalid-plan
+         (:type (ex-data-of
+                 #(sqlite/world
+                   [{:sql "X"
+                     :params {1 {:type :integer :value 1}
+                              2 {:type :integer :value 2}}
+                     :columns ["v"]
+                     :rows [[{:type :integer :value 2}]]
+                     :store-effect {:op :put :key-param 1
+                                    :value-param 2}}])))))
+  ;; a :get plan without exactly one declared column
+  (is (= :jolt.sim.sqlite/invalid-plan
+         (:type (ex-data-of
+                 #(sqlite/world
+                   [{:sql "X"
+                     :params {1 {:type :integer :value 1}}
+                     :store-effect {:op :get :key-param 1}}])))))
+  (is (= :jolt.sim.sqlite/invalid-plan
+         (:type (ex-data-of
+                 #(sqlite/world
+                   [{:sql "X"
+                     :params {1 {:type :integer :value 1}}
+                     :columns ["a" "b"]
+                     :store-effect {:op :get :key-param 1}}])))))
+  ;; a null key
+  (is (= :jolt.sim.sqlite/invalid-plan
+         (:type (ex-data-of
+                 #(sqlite/world
+                   [{:sql "X"
+                     :params {1 {:type :null}}
+                     :columns ["v"]
+                     :store-effect {:op :get :key-param 1}}])))))
+  ;; heterogeneous unknown keys still fail through the typed plan contract
+  (is (= :jolt.sim.sqlite/invalid-plan
+         (:type (ex-data-of
+                 #(sqlite/world
+                   [{:sql "X"
+                     :params {1 {:type :integer :value 1}}
+                     :columns ["v"]
+                     :store-effect {:op :get :key-param 1
+                                    :extra 1 "extra" 2}}])))))
+  ;; SQL text alone never implies a store effect: PUT/GET-shaped SQL with no
+  ;; directive touches neither committed nor staging
+  (let [w (sqlite/world [{:sql "PUT k v"} {:sql "GET k"}])
+        H (sqlite/handlers w)
+        db (open-db H)
+        s1 (prepare H db "PUT k v")]
+    (is (= 101 (ff H "sqlite3_step" [s1])))
+    (is (= {} (get-in (sqlite/state w) [:dbs db :committed])))
+    (is (nil? (get-in (sqlite/state w) [:dbs db :staging])))
+    (is (= 0 (ff H "sqlite3_finalize" [s1])))
+    (let [s2 (prepare H db "GET k")]
+      (is (= 101 (ff H "sqlite3_step" [s2])))
+      (is (= 0 (ff H "sqlite3_finalize" [s2]))))
+    (close-db H db)
+    (is (true? (sqlite/clean? w)))))
+
+(deftest concurrent-put-terminal-step-writes-exactly-once
+  (let [plans [{:sql "PUT k v"
+                :params {1 {:type :integer :value 7}
+                         2 {:type :integer :value 99}}
+                :store-effect {:op :put :key-param 1 :value-param 2}}]
+        w (sqlite/world plans)
+        H (sqlite/handlers w)
+        db (open-db H)
+        s (prepare H db "PUT k v")
+        _ (is (= 0 (ff H "sqlite3_bind_int64" [s 1 7])))
+        _ (is (= 0 (ff H "sqlite3_bind_int64" [s 2 99])))
+        store-put-decision-var (resolve 'jolt.sim.sqlite/store-put-decision)
+        original @store-put-decision-var
+        arrivals (atom 0)
+        both-inside (promise)
+        wrapped-decision
+        (fn [db-state stmt reported]
+          (let [arrival (swap! arrivals inc)]
+            ;; The first two callers have both read the same nonterminal
+            ;; statement snapshot before either can attempt its CAS. This
+            ;; discriminates atomic terminal ownership from a merely
+            ;; serialized scheduling of two h-step calls.
+            (when (<= arrival 2)
+              (when (= arrival 2)
+                (deliver both-inside true))
+              (when (= ::timeout (deref both-inside 5000 ::timeout))
+                (throw (ex-info "put terminal-step contention barrier timed out"
+                                {:arrival arrival}))))
+            (original db-state stmt reported)))
+        run-step (fn []
+                   (try
+                     {:value (ff H "sqlite3_step" [s])}
+                     (catch :default error
+                       {:error (ex-data error)})))
+        results
+        (with-redefs-fn
+          {store-put-decision-var wrapped-decision}
+          #(let [a (future (run-step))
+                 b (future (run-step))]
+             [(await-worker a)
+              (await-worker b)]))]
+    (is (= 2 @arrivals))
+    (is (not-any? #{::timeout} results) (pr-str results))
+    (is (every? map? results) (pr-str results))
+    (when (every? map? results)
+      (is (every? #(contains? % :value) results) (pr-str results))
+      (is (= #{21 101} (set (map :value results))) (pr-str results)))
+    (is (= 1 (count (get-in (sqlite/state w) [:dbs db :store-evidence]))))
+    (is (= {{:type :integer :value 7} {:type :integer :value 99}}
+           (get-in (sqlite/state w) [:dbs db :committed])))
+    (is (= 0 (ff H "sqlite3_finalize" [s])))
+    (close-db H db)
+    (is (true? (sqlite/clean? w)))))
+
+(deftest finalize-winning-after-put-step-read-cannot-recreate-the-statement
+  (let [plans [{:sql "PUT k v"
+                :params {1 {:type :integer :value 7}
+                         2 {:type :integer :value 99}}
+                :store-effect {:op :put :key-param 1 :value-param 2}}]
+        w (sqlite/world plans)
+        H (sqlite/handlers w)
+        db (open-db H)
+        stmt (prepare H db "PUT k v")
+        _ (is (= 0 (ff H "sqlite3_bind_int64" [stmt 1 7])))
+        _ (is (= 0 (ff H "sqlite3_bind_int64" [stmt 2 99])))
+        require-var (resolve 'jolt.sim.sqlite/require-bindings-complete!)
+        original @require-var
+        after-read (promise)
+        release (promise)
+        wrapped-require
+        (fn [statement]
+          (let [result (original statement)]
+            ;; h-step has already read a live statement. The old put path then
+            ;; performed a generic swap! before its terminal CAS, which could
+            ;; recreate this record after finalize claimed and freed it.
+            (deliver after-read true)
+            (when (= ::timeout (deref release 5000 ::timeout))
+              (throw (ex-info "put/finalize release timed out" {})))
+            result))
+        result
+        (with-redefs-fn
+          {require-var wrapped-require}
+          #(let [step-result
+                 (future
+                   (try
+                     {:value (ff H "sqlite3_step" [stmt])}
+                   (catch :default error
+                       {:error (ex-data error)})))]
+             (is (not= ::timeout (deref after-read 5000 ::timeout)))
+             (try
+               (is (= 0 (ff H "sqlite3_finalize" [stmt])))
+               (finally
+                 (deliver release true)))
+             (await-worker step-result)))]
+    (is (not= ::timeout result) (pr-str result))
+    (is (= :jolt.sim.sqlite/use-after-finalize
+           (get-in result [:error :type]))
+        (pr-str result))
+    (is (not (contains? (:stmts (sqlite/state w)) stmt)))
+    (is (= {} (get-in (sqlite/state w) [:dbs db :committed])))
+    (is (= [] (get-in (sqlite/state w) [:dbs db :store-evidence])))
+    (close-db H db)
+    (is (true? (sqlite/clean? w)))))
+
+(deftest concurrent-get-first-step-snapshots-and-publishes-exactly-once
+  (let [plans [{:sql "PUT k v"
+                :params {1 {:type :integer :value 7}
+                         2 {:type :integer :value 99}}
+                :store-effect {:op :put :key-param 1 :value-param 2}}
+               {:sql "GET k"
+                :params {1 {:type :integer :value 7}}
+                :columns ["value"]
+                :store-effect {:op :get :key-param 1}}]
+        w (sqlite/world plans)
+        H (sqlite/handlers w)
+        db (open-db H)
+        put (prepare H db "PUT k v")]
+    (is (= 0 (ff H "sqlite3_bind_int64" [put 1 7])))
+    (is (= 0 (ff H "sqlite3_bind_int64" [put 2 99])))
+    (is (= 101 (ff H "sqlite3_step" [put])))
+    (is (= 0 (ff H "sqlite3_finalize" [put])))
+    (let [stmt (prepare H db "GET k")
+          _ (is (= 0 (ff H "sqlite3_bind_int64" [stmt 1 7])))
+          decision-var (resolve 'jolt.sim.sqlite/store-get-snapshot-decision)
+          original @decision-var
+          arrivals (atom 0)
+          both-inside (promise)
+          wrapped-decision
+          (fn [db-state statement reported]
+            (let [arrival (swap! arrivals inc)]
+              (when (<= arrival 2)
+                (when (= arrival 2)
+                  (deliver both-inside true))
+                (when (= ::timeout (deref both-inside 5000 ::timeout))
+                  (throw (ex-info "get first-step contention barrier timed out"
+                                  {:arrival arrival}))))
+              (original db-state statement reported)))
+          run-step (fn []
+                     (try
+                       {:value (ff H "sqlite3_step" [stmt])}
+                       (catch :default error
+                         {:error (ex-data error)})))
+          results
+          (with-redefs-fn
+            {decision-var wrapped-decision}
+            #(let [a (future (run-step))
+                   b (future (run-step))]
+               [(await-worker a)
+                (await-worker b)]))]
+      (is (= 2 @arrivals))
+      (is (not-any? #{::timeout} results) (pr-str results))
+      (is (= #{21 100} (set (map :value results))) (pr-str results))
+      (is (= 1 (count (filter #(= :get (:op %))
+                              (get-in (sqlite/state w)
+                                      [:dbs db :store-evidence])))))
+      ;; The losing first-step call cannot advance or invalidate the winner's
+      ;; current row. A later ordinary call advances that row to DONE.
+      (is (= 99 (ff H "sqlite3_column_int64" [stmt 0])))
+      (is (= 101 (ff H "sqlite3_step" [stmt])))
+      (is (= 0 (ff H "sqlite3_finalize" [stmt]))))
+    (close-db H db)
+    (is (true? (sqlite/clean? w)))))
+
+(deftest close-winning-get-first-step-does-not-recreate-the-connection
+  (let [plans [{:sql "GET k"
+                :params {1 {:type :integer :value 7}}
+                :columns ["value"]
+                :store-effect {:op :get :key-param 1}}]
+        w (sqlite/world plans)
+        H (sqlite/handlers w)
+        db (open-db H)
+        stmt (prepare H db "GET k")
+        _ (is (= 0 (ff H "sqlite3_bind_int64" [stmt 1 7])))
+        decision-var (resolve 'jolt.sim.sqlite/store-get-snapshot-decision)
+        original @decision-var
+        inside (promise)
+        release (promise)
+        wrapped-decision
+        (fn [db-state statement reported]
+          (deliver inside true)
+          (when (= ::timeout (deref release 5000 ::timeout))
+            (throw (ex-info "get/close release timed out" {})))
+          (original db-state statement reported))
+        result
+        (with-redefs-fn
+          {decision-var wrapped-decision}
+          #(let [step-result
+                 (future
+                   (try
+                     {:value (ff H "sqlite3_step" [stmt])}
+                     (catch :default error
+                       {:error (ex-data error)})))]
+             (is (not= ::timeout (deref inside 5000 ::timeout)))
+             (try
+               (close-db H db)
+               (finally
+                 (deliver release true)))
+             (await-worker step-result)))]
+    (is (not= ::timeout result) (pr-str result))
+    (is (= :jolt.sim.sqlite/use-after-close
+           (get-in result [:error :type]))
+        (pr-str result))
+    (is (not (contains? (:dbs (sqlite/state w)) db)))
+    (is (= [] (get-in (sqlite/state w)
+                      [:closed-db-evidence 0 :store-evidence])))
+    (is (= 0 (ff H "sqlite3_finalize" [stmt])))
+    (is (true? (sqlite/clean? w)))))
+
+(deftest finalize-claims-state-before-freeing-a-store-get-and-its-blob
+  (let [plans [{:sql "PUT k v"
+                :params {1 {:type :integer :value 7}
+                         2 {:type :blob :value [9]}}
+                :store-effect {:op :put :key-param 1 :value-param 2}}
+               {:sql "GET k"
+                :params {1 {:type :integer :value 7}}
+                :columns ["value"]
+                :store-effect {:op :get :key-param 1}}]
+        w (sqlite/world plans)
+        H (sqlite/handlers w)
+        db (open-db H)
+        put (prepare H db "PUT k v")]
+    (is (= 0 (ff H "sqlite3_bind_int64" [put 1 7])))
+    (let [src (native H :alloc 1)]
+      (native H :write-array src (byte-array [9]))
+      (is (= 0 (ff H "sqlite3_bind_blob64" [put 2 src 1 0])))
+      (native H :free src))
+    (is (= 101 (ff H "sqlite3_step" [put])))
+    (is (= 0 (ff H "sqlite3_finalize" [put])))
+    (let [stmt (prepare H db "GET k")
+          _ (is (= 0 (ff H "sqlite3_bind_int64" [stmt 1 7])))
+          _ (is (= 100 (ff H "sqlite3_step" [stmt])))
+          borrowed (ff H "sqlite3_column_blob" [stmt 0])
+          _ (is (pos? borrowed))
+          invoke-mem-var (resolve 'jolt.sim.sqlite/invoke-mem)
+          original @invoke-mem-var
+          handle-freed (promise)
+          release (promise)
+          wrapped-invoke
+          (fn [world op args]
+            (let [result (original world op args)]
+              ;; This is the exact old unsafe window: h-finalize had freed the
+              ;; borrowed BLOB and statement handle but had not yet removed the
+              ;; live statement record. The corrected path claims state first.
+              (when (and (= :free op) (= stmt (first args)))
+                (deliver handle-freed true)
+                (when (= ::timeout (deref release 5000 ::timeout))
+                  (throw (ex-info "finalize release timed out" {}))))
+              result))
+          result
+          (with-redefs-fn
+            {invoke-mem-var wrapped-invoke}
+            #(let [finalize-result
+                   (future (ff H "sqlite3_finalize" [stmt]))]
+               (is (not= ::timeout (deref handle-freed 5000 ::timeout)))
+               (let [step-result
+                     (try
+                       {:value (ff H "sqlite3_step" [stmt])}
+                       (catch :default error
+                         {:error (ex-data error)}))]
+                 (try
+                   {:step step-result}
+                   (finally
+                     (deliver release true)))
+                 {:step step-result
+                  :finalize (await-worker finalize-result)})))]
+      (is (= 0 (:finalize result)) (pr-str result))
+      (is (= :jolt.sim.sqlite/use-after-finalize
+             (get-in result [:step :error :type]))
+          (pr-str result))
+      (is (not (contains? (:stmts (sqlite/state w)) stmt)))
+      ;; Both the borrowed row pointer and statement handle were freed once.
+      (is (= :jolt.sim.ffi-memory/use-after-free
+             (:type (ex-data-of #(native H :read borrowed :uint8)))))
+      (is (= :jolt.sim.ffi-memory/use-after-free
+             (:type (ex-data-of #(native H :read stmt :pointer))))))
+    (close-db H db)
+    (is (true? (sqlite/clean? w)))))
+
+(deftest blob-borrow-install-losing-to-finalize-frees-the-fresh-allocation
+  (let [plans [{:sql "PUT k v"
+                :params {1 {:type :integer :value 7}
+                         2 {:type :blob :value [9]}}
+                :store-effect {:op :put :key-param 1 :value-param 2}}
+               {:sql "GET k"
+                :params {1 {:type :integer :value 7}}
+                :columns ["value"]
+                :store-effect {:op :get :key-param 1}}]
+        w (sqlite/world plans)
+        H (sqlite/handlers w)
+        db (open-db H)
+        put (prepare H db "PUT k v")]
+    (is (= 0 (ff H "sqlite3_bind_int64" [put 1 7])))
+    (let [src (native H :alloc 1)]
+      (native H :write-array src (byte-array [9]))
+      (is (= 0 (ff H "sqlite3_bind_blob64" [put 2 src 1 0])))
+      (native H :free src))
+    (is (= 101 (ff H "sqlite3_step" [put])))
+    (is (= 0 (ff H "sqlite3_finalize" [put])))
+    (let [stmt (prepare H db "GET k")
+          _ (is (= 0 (ff H "sqlite3_bind_int64" [stmt 1 7])))
+          _ (is (= 100 (ff H "sqlite3_step" [stmt])))
+          invoke-mem-var (resolve 'jolt.sim.sqlite/invoke-mem)
+          original @invoke-mem-var
+          allocated (promise)
+          release (promise)
+          wrapped-invoke
+          (fn [world op args]
+            (let [result (original world op args)]
+              (when (= :alloc op)
+                (deliver allocated result)
+                (when (= ::timeout (deref release 5000 ::timeout))
+                  (throw (ex-info "borrow allocation release timed out" {}))))
+              result))
+          result
+          (with-redefs-fn
+            {invoke-mem-var wrapped-invoke}
+            #(let [column-result
+                   (future
+                     (try
+                       {:value (ff H "sqlite3_column_blob" [stmt 0])}
+                       (catch :default error
+                         {:error (ex-data error)})))
+                   fresh (deref allocated 5000 ::timeout)]
+               (try
+                 (is (not= ::timeout fresh))
+                 (is (= 0 (ff H "sqlite3_finalize" [stmt])))
+                 (finally
+                   (deliver release true)))
+               {:fresh fresh :column (await-worker column-result)}))]
+      (is (= :jolt.sim.sqlite/use-after-finalize
+             (get-in result [:column :error :type]))
+          (pr-str result))
+      (is (not (contains? (:stmts (sqlite/state w)) stmt)))
+      (when (number? (:fresh result))
+        (is (= :jolt.sim.ffi-memory/use-after-free
+               (:type
+                (ex-data-of #(native H :read (:fresh result) :uint8)))))))
     (close-db H db)
     (is (true? (sqlite/clean? w)))))
 

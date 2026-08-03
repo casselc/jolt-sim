@@ -26,6 +26,18 @@
   statement's first terminal step and never infers transaction behavior from
   SQL text. sqlite3_get_autocommit observes the physical autocommit state.
 
+  A plan may instead carry one closed :store-effect directive describing a
+  physical key/value visibility transition over the connection's committed
+  and staged storage (:op :put with :key-param/:value-param, or :op :get with
+  :key-param; never both :tx-effect and :store-effect on one plan). A put
+  writes to the connection's active staging while a transaction is open and
+  directly to committed storage otherwise; BEGIN/COMMIT/ROLLBACK move staged
+  writes exactly like the physical transaction boundary they already model. A
+  get derives at most one result row from current visible state at execution
+  time -- its own staged value first, then committed, otherwise no row -- and
+  never serves a predeclared row. Both ops apply once, at the statement's
+  first terminal step, and are never inferred from SQL text.
+
   handlers returns the 16 native-operation handlers from the memory world
   merged with exactly the 23 SQLite foreign-function keys required by
   db.sqlite, so a single :ffi-handlers map drives both layers unchanged.
@@ -275,6 +287,79 @@
     {:op (:op tx-effect)
      :when (or (:when tx-effect) :on-success)}))
 
+(def ^:private store-effect-ops #{:put :get})
+
+(def ^:private store-effect-keys
+  {:put #{:op :key-param :value-param}
+   :get #{:op :key-param}})
+
+(defn- require-positive-index! [plan-index field value]
+  (when-not (and (integer? value) (pos? value))
+    (fail! :jolt.sim.sqlite/invalid-plan
+           (str "plan :store-effect " field
+                " must be a positive integer parameter index")
+           {:plan-index plan-index field value})))
+
+(defn- require-declared-param! [plan-index field index params]
+  (when-not (contains? params index)
+    (fail! :jolt.sim.sqlite/invalid-plan
+           (str "plan :store-effect " field
+                " must reference a :params index the plan declares")
+           {:plan-index plan-index field index})))
+
+(defn- normalize-store-effect [plan-index store-effect params columns rows]
+  (when-not (or (nil? store-effect) (map? store-effect))
+    (fail! :jolt.sim.sqlite/invalid-plan
+           "plan :store-effect must be a map with :op and parameter indices"
+           {:plan-index plan-index :store-effect store-effect}))
+  (when (some? store-effect)
+    (let [op (:op store-effect)]
+      (when-not (contains? store-effect-ops op)
+        (fail! :jolt.sim.sqlite/invalid-plan
+               "plan :store-effect :op must be :put or :get"
+               {:plan-index plan-index
+                :store-effect store-effect
+                :supported-ops store-effect-ops}))
+      (let [allowed (get store-effect-keys op)
+            unknown (seq (sort-by pr-str
+                                  (remove allowed (keys store-effect))))]
+        (when unknown
+          (fail! :jolt.sim.sqlite/invalid-plan
+                 "plan :store-effect is closed for its :op"
+                 {:plan-index plan-index
+                  :store-effect store-effect
+                  :unknown-keys (vec unknown)})))
+      (require-positive-index! plan-index :key-param (:key-param store-effect))
+      (require-declared-param! plan-index :key-param (:key-param store-effect)
+                                params)
+      (when (= :put op)
+        (require-positive-index! plan-index :value-param
+                                  (:value-param store-effect))
+        (require-declared-param! plan-index :value-param
+                                  (:value-param store-effect) params)
+        (when (seq rows)
+          (fail! :jolt.sim.sqlite/invalid-plan
+                 "a :store-effect :put plan must not predeclare :rows"
+                 {:plan-index plan-index :store-effect store-effect})))
+      (let [key-cell (get params (:key-param store-effect))]
+        (when (= :null (:type key-cell))
+          (fail! :jolt.sim.sqlite/invalid-plan
+                 "plan :store-effect :key-param must not declare a null key"
+                 {:plan-index plan-index :store-effect store-effect})))
+      (when (= :get op)
+        (when (seq rows)
+          (fail! :jolt.sim.sqlite/invalid-plan
+                 "a :store-effect :get plan must not predeclare :rows"
+                 {:plan-index plan-index :store-effect store-effect}))
+        (when-not (= 1 (count columns))
+          (fail! :jolt.sim.sqlite/invalid-plan
+                 "a :store-effect :get plan must declare exactly one column"
+                 {:plan-index plan-index
+                  :store-effect store-effect
+                  :columns columns})))
+      (cond-> {:op op :key-param (:key-param store-effect)}
+        (= :put op) (assoc :value-param (:value-param store-effect))))))
+
 (defn- validate-plans [plans]
   (let [planv (vec plans)]
     (mapv
@@ -287,8 +372,13 @@
          (fail! :jolt.sim.sqlite/invalid-plan
                 "each plan must have a :sql string"
                 {:index i :plan plan}))
+       (when (and (:tx-effect plan) (:store-effect plan))
+         (fail! :jolt.sim.sqlite/invalid-plan
+                "a plan may declare at most one of :tx-effect or :store-effect"
+                {:index i}))
        (let [columns (or (:columns plan) [])
-             error (:error plan)]
+             error (:error plan)
+             params (normalize-params i (:params plan))]
          (when-not
            (and (vector? columns) (every? string? columns))
            (fail! :jolt.sim.sqlite/invalid-plan
@@ -319,10 +409,13 @@
                   "plan :error must contain a positive non-ROW/non-DONE :code and optional string :msg"
                   {:index i :error error}))
          (assoc plan
-                :params (normalize-params i (:params plan))
+                :params params
                 :columns columns
                 :rows (normalize-rows i columns (:rows plan))
-                :tx-effect (normalize-tx-effect i (:tx-effect plan)))))
+                :tx-effect (normalize-tx-effect i (:tx-effect plan))
+                :store-effect (normalize-store-effect
+                               i (:store-effect plan) params columns
+                               (:rows plan)))))
      (range (count planv))
      planv)))
 
@@ -347,8 +440,10 @@
       :changes 0                       ;; served by sqlite3_changes after done
       :last-row-id 0                   ;; served by sqlite3_last_insert_rowid
       :error {:code 1 :msg \"...\"}    ;; optional soft step error
-      :tx-effect {:op :begin :when :on-success}} ;; optional physical
-      ;; transaction-boundary directive
+      :tx-effect {:op :begin :when :on-success}   ;; optional physical
+      ;; transaction-boundary directive; mutually exclusive with :store-effect
+      :store-effect {:op :put :key-param 1 :value-param 2}} ;; optional
+      ;; physical key/value directive; :op :get takes only :key-param
 
   Cell types are :integer :float :text :blob :null. A :blob cell's :value is a
   byte array or unsigned byte vector and an empty BLOB may opt into
@@ -371,7 +466,21 @@
   sqlite3_get_autocommit returns 1 in autocommit and 0 inside a transaction;
   every observation is retained in :autocommit-evidence. Closing a connection
   with an active transaction discards it and appends the complete immutable
-  connection record to :closed-db-evidence after the live record is removed."
+  connection record to :closed-db-evidence after the live record is removed.
+
+  A plan's :store-effect is the only source of physical key/value writes and
+  reads; the model never infers store behavior from SQL text. :op :put
+  requires positive :key-param/:value-param indices into the plan's declared
+  :params and writes the bound value cell to the connection's active staging
+  when a transaction is open, otherwise directly to committed storage, and
+  does not permit predeclared result rows; :op :get requires a positive
+  :key-param, exactly one declared :column, and no
+  predeclared :rows, and derives at most one result row from the current
+  visible state at execution time -- its own staged value first, then
+  committed, otherwise no row. Each executed put or get is recorded in the
+  connection's address-free :store-evidence vector. Closing a connection with
+  active staging discards it; the discarded map is retained in
+  :closed-db-evidence alongside the surviving committed storage."
   ([plans]
    (world (memory/world) plans))
   ([memory-world plans]
@@ -421,7 +530,8 @@
           db {:connection-id connection-id
               :errcode 0 :errmsg "not an error" :changes 0 :rowid 0
               :autocommit? true :tx nil :tx-evidence []
-              :autocommit-evidence []}
+              :autocommit-evidence []
+              :committed {} :staging nil :store-evidence []}
           next-state (-> s
                          (assoc-in [:dbs handle] db)
                          (update :next-connection-id inc))]
@@ -494,7 +604,17 @@
                   (assoc :autocommit? after
                          :tx (when (= :begin op)
                                {:begin-event sequence
-                                :begin-plan-index (:plan-index stmt)})))]
+                                :begin-plan-index (:plan-index stmt)}))
+
+                  (and applied? (= :begin op))
+                  (assoc :staging {})
+
+                  (and applied? (= :commit op))
+                  (assoc :committed (merge (:committed db) (:staging db))
+                         :staging nil)
+
+                  (and applied? (= :rollback op))
+                  (assoc :staging nil))]
     {:db next-db
      :impossible? impossible?
      :error-data {:op op
@@ -588,6 +708,7 @@
             :else
             (let [plan (:plan stmt)
                   _ (require-bindings-complete! stmt)
+                  borrowed (:borrowed stmt)
                   decision (tx-effect-decision live-db stmt reported)
                   next-db (:db decision)
                   impossible? (:impossible? decision)
@@ -618,21 +739,275 @@
                                  (assoc-in [:dbs db-addr] terminal-db)
                                  (assoc-in [:stmts stmt-addr] terminal-stmt))]
               (if (compare-and-set! st s next-state)
-                (if impossible?
-                  (fail!
-                   :jolt.sim.sqlite/impossible-tx-transition
-                   "declared :tx-effect is impossible for the connection's physical autocommit state"
-                   error-data)
+                (do
+                  (free-list! w borrowed)
+                  (if impossible?
+                    (fail!
+                     :jolt.sim.sqlite/impossible-tx-transition
+                     "declared :tx-effect is impossible for the connection's physical autocommit state"
+                     error-data)
+                    (if (= :error reported)
+                      (:code err)
+                      (:done result-codes))))
+                (recur)))))))))
+
+;; ---- physical store visibility boundary ---------------------------------
+
+(defn- canonical-bound-key
+  "Returns value identity from the actual exactly-matched binding. Result-only
+  presentation metadata such as an empty BLOB's :null-pointer? mode is not key
+  identity, and FFI doubles are canonicalized independently of whether their
+  plan literal was written as 1 or 1.0."
+  [stmt index]
+  (let [{:keys [type value]} (get (:bindings stmt) index)]
+    (case type
+      :float {:type :float :value (double value)}
+      :blob  {:type :blob :value (normalize-bytes value)}
+      :null  {:type :null}
+      {:type type :value value})))
+
+(defn- declared-value-cell
+  "Returns the normalized declared result cell for an exactly matched value
+  binding, retaining NULL and empty-BLOB pointer-mode semantics."
+  [stmt index]
+  (get-in stmt [:plan :params index]))
+
+(defn- store-put-decision
+  "Pure decision for one :store-effect :put terminal step: derives the bound
+  key/value cells, decides the write's target (the connection's active
+  staging when a transaction is open, otherwise committed storage) only when
+  reported is :done, and appends one :store-evidence event either way. Never
+  mutates storage for a reported :error."
+  [db stmt reported]
+  (let [store-effect (:store-effect (:plan stmt))
+        key-cell (canonical-bound-key stmt (:key-param store-effect))
+        value-cell (declared-value-cell stmt (:value-param store-effect))
+        success? (= :done reported)
+        location (when success?
+                   (if (some? (:staging db)) :staging :committed))
+        sequence (count (:store-evidence db))
+        event {:sequence sequence
+               :plan-index (:plan-index stmt)
+               :op :put
+               :reported reported
+               :key key-cell
+               :location location
+               :present? (boolean success?)}
+        next-db (cond-> (update db :store-evidence conj event)
+                  success?
+                  (update location assoc key-cell value-cell))]
+    {:db next-db}))
+
+(defn- complete-store-put-terminal!
+  "Atomically owns one :store-effect :put statement's terminal step: derives
+  and applies its storage decision, updates the physical connection, and
+  publishes the reported SQLite result in one CAS, exactly like
+  complete-tx-terminal!. A competing terminal step observes misuse; a close
+  that wins the same CAS makes the step fail as use-after-close."
+  [w stmt-addr reported]
+  (loop []
+    (let [st (:state w)
+          s @st
+          stmt (get-in s [:stmts stmt-addr])]
+      (cond
+        (nil? stmt)
+        (if (contains? (:finalized-stmts s) stmt-addr)
+          (fail! :jolt.sim.sqlite/use-after-finalize
+                 "statement handle was already finalized"
+                 {:handle stmt-addr})
+          (fail! :jolt.sim.sqlite/unknown-handle
+                 "pointer is not a known statement handle"
+                 {:handle stmt-addr}))
+
+        (or (:done? stmt) (:errored? stmt))
+        (:misuse result-codes)
+
+        :else
+        (let [db-addr (:db stmt)
+              live-db (get-in s [:dbs db-addr])]
+          (cond
+            (nil? live-db)
+            (if (contains? (:closed-dbs s) db-addr)
+              (fail! :jolt.sim.sqlite/use-after-close
+                     "statement belongs to a closed connection"
+                     {:connection-id (:connection-id stmt)
+                      :plan-index (:plan-index stmt)})
+              (fail! :jolt.sim.sqlite/unknown-handle
+                     "statement refers to an unknown connection handle"
+                     {:plan-index (:plan-index stmt)}))
+
+            :else
+            (let [plan (:plan stmt)
+                  err (:error plan)
+                  borrowed (:borrowed stmt)
+                  decision (store-put-decision live-db stmt reported)
+                  next-db (:db decision)
+                  terminal-db
                   (if (= :error reported)
-                    (:code err)
-                    (:done result-codes)))
+                    (assoc next-db
+                           :errcode (:code err)
+                           :errmsg (or (:msg err) "database error")
+                           :changes 0
+                           :rowid 0)
+                    (assoc next-db
+                           :errcode 0
+                           :errmsg "not an error"
+                           :changes (or (:changes plan) 0)
+                           :rowid (or (:last-row-id plan) 0)))
+                  terminal-stmt
+                  (assoc stmt
+                         :store-effect-evaluated? true
+                         :done? (= :done reported)
+                         :errored? (= :error reported)
+                         :borrowed []
+                         :blob-cache {})
+                  next-state (-> s
+                                 (assoc-in [:dbs db-addr] terminal-db)
+                                 (assoc-in [:stmts stmt-addr] terminal-stmt))]
+              (if (compare-and-set! st s next-state)
+                (do
+                  (free-list! w borrowed)
+                  (if (= :error reported) (:code err) (:done result-codes)))
+                (recur)))))))))
+
+(defn- store-get-snapshot-decision
+  "Pure first-step decision for one :store-effect :get. A successful get
+  snapshots its staged-then-committed visible row; an errored get records an
+  attempted read without consulting or exposing storage."
+  [db stmt reported]
+  (let [store-effect (:store-effect (:plan stmt))
+        key-cell (canonical-bound-key stmt (:key-param store-effect))
+        staging (:staging db)
+        [value location]
+        (if (= :done reported)
+          (cond
+            (and (some? staging) (contains? staging key-cell))
+            [(get staging key-cell) :staging]
+
+            (contains? (:committed db) key-cell)
+            [(get (:committed db) key-cell) :committed]
+
+            :else [nil nil])
+          [nil nil])
+        present? (some? location)
+        sequence (count (:store-evidence db))
+        event {:sequence sequence
+               :plan-index (:plan-index stmt)
+               :op :get
+               :reported reported
+               :key key-cell
+               :location location
+               :present? present?}]
+    {:db (update db :store-evidence conj event)
+     :stmt (assoc stmt
+                  :store-effect-evaluated? true
+                  :store-rows (if present? [[value]] []))}))
+
+(defn- complete-store-get-step!
+  "Linearizes one :store-effect :get step with connection/statement lifetime.
+  Its first call atomically owns the visible-state snapshot, evidence event,
+  and first ROW/DONE/error publication. A caller that started from the same
+  unsnapshotted statement but loses that CAS observes misuse; a later ordinary
+  call advances the already-snapshotted row to DONE. Close/finalize winners are
+  reported without recreating removed state."
+  [w stmt-addr first-call?]
+  (loop []
+    (let [st (:state w)
+          s @st
+          stmt (get-in s [:stmts stmt-addr])]
+      (cond
+        (nil? stmt)
+        (if (contains? (:finalized-stmts s) stmt-addr)
+          (fail! :jolt.sim.sqlite/use-after-finalize
+                 "statement handle was already finalized"
+                 {:handle stmt-addr})
+          (fail! :jolt.sim.sqlite/unknown-handle
+                 "pointer is not a known statement handle"
+                 {:handle stmt-addr}))
+
+        (or (:done? stmt) (:errored? stmt))
+        (:misuse result-codes)
+
+        (and first-call? (:store-effect-evaluated? stmt))
+        (:misuse result-codes)
+
+        :else
+        (let [db-addr (:db stmt)
+              live-db (get-in s [:dbs db-addr])]
+          (cond
+            (nil? live-db)
+            (if (contains? (:closed-dbs s) db-addr)
+              (fail! :jolt.sim.sqlite/use-after-close
+                     "statement belongs to a closed connection"
+                     {:connection-id (:connection-id stmt)
+                      :plan-index (:plan-index stmt)})
+              (fail! :jolt.sim.sqlite/unknown-handle
+                     "statement refers to an unknown connection handle"
+                     {:plan-index (:plan-index stmt)}))
+
+            :else
+            (let [plan (:plan stmt)
+                  err (:error plan)
+                  snapshot? (not (:store-effect-evaluated? stmt))
+                  decision (when snapshot?
+                             (store-get-snapshot-decision
+                              live-db stmt (if err :error :done)))
+                  db (if snapshot? (:db decision) live-db)
+                  stmt (if snapshot? (:stmt decision) stmt)
+                  rows (vec (:store-rows stmt))
+                  next-idx (inc (:row-index stmt))
+                  borrowed (:borrowed stmt)
+                  [next-db next-stmt result]
+                  (cond
+                    err
+                    [(assoc db
+                            :errcode (:code err)
+                            :errmsg (or (:msg err) "database error")
+                            :changes 0
+                            :rowid 0)
+                     (assoc stmt
+                            :errored? true
+                            :borrowed []
+                            :blob-cache {})
+                     (:code err)]
+
+                    (< next-idx (count rows))
+                    [(assoc db
+                            :errcode (:row result-codes)
+                            :errmsg "not an error")
+                     (assoc stmt
+                            :row-index next-idx
+                            :borrowed []
+                            :blob-cache {})
+                     (:row result-codes)]
+
+                    :else
+                    [(assoc db
+                            :errcode 0
+                            :errmsg "not an error"
+                            :changes (or (:changes plan) 0)
+                            :rowid (or (:last-row-id plan) 0))
+                     (assoc stmt
+                            :done? true
+                            :borrowed []
+                            :blob-cache {})
+                     (:done result-codes)])
+                  next-state (-> s
+                                 (assoc-in [:dbs db-addr] next-db)
+                                 (assoc-in [:stmts stmt-addr] next-stmt))]
+              (if (compare-and-set! st s next-state)
+                (do
+                  (free-list! w borrowed)
+                  result)
                 (recur)))))))))
 
 ;; ---- result cell access -------------------------------------------------
 
 (defn- current-row [stmt]
   (let [idx (:row-index stmt)
-        rows (:rows (:plan stmt))]
+        rows (if (contains? stmt :store-rows)
+               (:store-rows stmt)
+               (:rows (:plan stmt)))]
     (when (or (:done? stmt)
               (:errored? stmt)
               (neg? idx)
@@ -661,16 +1036,67 @@
     :null    []))
 
 (defn- borrow-bytes! [w stmt-addr stmt col bytes]
-  (let [size (max 1 (count bytes))
-        addr (invoke-mem w :alloc [size])]
-    (when (pos? (count bytes))
-      (invoke-mem w :write-array [addr (uvec->byte-array bytes)]))
-    (swap! (:state w)
-           (fn [s]
-             (-> s
-                 (update-in [:stmts stmt-addr :borrowed] conj addr)
-                 (assoc-in [:stmts stmt-addr :blob-cache col] addr))))
-    addr))
+  (let [size (max 1 (count bytes))]
+    (loop [fresh nil]
+      (let [st (:state w)
+            s @st
+            live-stmt (get-in s [:stmts stmt-addr])]
+        (cond
+          (nil? live-stmt)
+          (do
+            (when fresh (invoke-mem w :free [fresh]))
+            (if (contains? (:finalized-stmts s) stmt-addr)
+              (fail! :jolt.sim.sqlite/use-after-finalize
+                     "statement handle was already finalized"
+                     {:handle stmt-addr})
+              (fail! :jolt.sim.sqlite/unknown-handle
+                     "pointer is not a known statement handle"
+                     {:handle stmt-addr})))
+
+          (or (:done? live-stmt)
+              (:errored? live-stmt)
+              (neg? (:row-index live-stmt))
+              (not= (:row-index stmt) (:row-index live-stmt)))
+          (do
+            (when fresh (invoke-mem w :free [fresh]))
+            (fail! :jolt.sim.sqlite/no-current-row
+                   "BLOB borrow lost its current statement row"
+                   {:row-index (:row-index live-stmt)
+                    :expected-row-index (:row-index stmt)
+                    :done? (:done? live-stmt)
+                    :errored? (:errored? live-stmt)}))
+
+          (nil? (get-in s [:dbs (:db live-stmt)]))
+          (do
+            (when fresh (invoke-mem w :free [fresh]))
+            (if (contains? (:closed-dbs s) (:db live-stmt))
+              (fail! :jolt.sim.sqlite/use-after-close
+                     "statement belongs to a closed connection"
+                     {:connection-id (:connection-id live-stmt)
+                      :plan-index (:plan-index live-stmt)})
+              (fail! :jolt.sim.sqlite/unknown-handle
+                     "statement refers to an unknown connection handle"
+                     {:plan-index (:plan-index live-stmt)})))
+
+          (get-in live-stmt [:blob-cache col])
+          (let [cached (get-in live-stmt [:blob-cache col])]
+            (when fresh (invoke-mem w :free [fresh]))
+            cached)
+
+          (nil? fresh)
+          (let [addr (invoke-mem w :alloc [size])]
+            (when (pos? (count bytes))
+              (invoke-mem w :write-array [addr (uvec->byte-array bytes)]))
+            (recur addr))
+
+          :else
+          (let [next-state
+                (-> s
+                    (update-in [:stmts stmt-addr :borrowed] conj fresh)
+                    (assoc-in [:stmts stmt-addr :blob-cache col] fresh))]
+            (if (compare-and-set! st s next-state)
+              fresh
+              (recur fresh))))))))
 
 ;; ---- per-function handlers ----------------------------------------------
 
@@ -703,7 +1129,8 @@
                                       :close-index
                                       (count (:closed-db-evidence s)))
                          (not (:autocommit? db))
-                         (assoc :discarded-transaction (:tx db)))
+                         (assoc :discarded-transaction (:tx db)
+                                :discarded-staging (:staging db)))
               next-state (-> s
                              (update :dbs dissoc db-addr)
                              (update :closed-dbs conj db-addr)
@@ -784,7 +1211,9 @@
                 :plan-index plan-index :plan plan :sql sql
                 :columns (column-names plan)
                 :bindings {} :row-index -1 :done? false :errored? false
-                :borrowed [] :blob-cache {} :tx-effect-evaluated? false})
+                :borrowed [] :blob-cache {}
+                :tx-effect-evaluated? false
+                :store-effect-evaluated? false})
         (:ok result-codes)))))
 
 (defn- h-step [w {:keys [arguments]}]
@@ -795,56 +1224,106 @@
       (:done? stmt)   (:misuse result-codes)
       (:errored? stmt) (:misuse result-codes)
       :else
-      (let [plan (:plan stmt)]
+      (let [plan (:plan stmt)
+            store-effect (:store-effect plan)
+            get-effect? (and store-effect (= :get (:op store-effect)))]
         (require-bindings-complete! stmt)
-        (if-let [err (:error plan)]
-          (if (:tx-effect plan)
+        (cond
+          get-effect?
+          (complete-store-get-step!
+           w stmt-addr (not (:store-effect-evaluated? stmt)))
+
+          (:error plan)
+          (let [err (:error plan)]
+          (cond
             ;; The physical transition (when the directive applies) precedes
             ;; the reported error, so an :always plan models an uncertain
             ;; BEGIN: in-transaction physically, error over the wire. The
             ;; transaction decision and terminal statement result share one
             ;; CAS, so a competing step cannot report the terminal result too.
+            (:tx-effect plan)
             (complete-tx-terminal! w stmt-addr :error)
+
+            ;; A reported error on a :put never writes; the write decision and
+            ;; terminal statement result share one CAS, mirroring :tx-effect.
+            (and store-effect (= :put (:op store-effect)))
+            (complete-store-put-terminal! w stmt-addr :error)
+
+            :else
             (do
               (swap! st assoc-in [:stmts stmt-addr :errored?] true)
               (swap! st update-in [:dbs (:db stmt)]
                      assoc :errcode (:code err)
                      :errmsg (or (:msg err) "database error")
                      :changes 0 :rowid 0)
-              (:code err)))
+              (:code err))))
+
+          :else
           (let [rows (vec (:rows plan))
                 next-idx (inc (:row-index stmt))]
-            (swap! st update-in [:stmts stmt-addr]
-                   assoc :borrowed [] :blob-cache {})
-            (free-list! w (:borrowed stmt))
             (if (< next-idx (count rows))
               (do
+                (swap! st update-in [:stmts stmt-addr]
+                       assoc :borrowed [] :blob-cache {})
+                (free-list! w (:borrowed stmt))
                 (swap! st assoc-in [:stmts stmt-addr :row-index] next-idx)
                 (swap! st update-in [:dbs (:db stmt)]
                        assoc :errcode (:row result-codes)
                        :errmsg "not an error")
                 (:row result-codes))
-              (do
-                (if (:tx-effect plan)
-                  (complete-tx-terminal! w stmt-addr :done)
-                  (do
-                    (swap! st update-in [:stmts stmt-addr]
-                           assoc :done? true :borrowed [] :blob-cache {})
-                    (swap! st update-in [:dbs (:db stmt)]
-                           assoc :errcode 0
-                           :errmsg "not an error"
-                           :changes (or (:changes plan) 0)
-                           :rowid (or (:last-row-id plan) 0))
-                    (:done result-codes)))))))))))
+              (cond
+                (:tx-effect plan)
+                (complete-tx-terminal! w stmt-addr :done)
+
+                (and store-effect (= :put (:op store-effect)))
+                (complete-store-put-terminal! w stmt-addr :done)
+
+                :else
+                (do
+                  (swap! st update-in [:stmts stmt-addr]
+                         assoc :borrowed [] :blob-cache {})
+                  (free-list! w (:borrowed stmt))
+                  (swap! st update-in [:stmts stmt-addr]
+                         assoc :done? true :borrowed [] :blob-cache {})
+                  (swap! st update-in [:dbs (:db stmt)]
+                         assoc :errcode 0
+                         :errmsg "not an error"
+                         :changes (or (:changes plan) 0)
+                         :rowid (or (:last-row-id plan) 0))
+                  (:done result-codes))))))))))
+
+(defn- claim-finalize! [w stmt-addr]
+  (loop []
+    (let [st (:state w)
+          s @st
+          stmt (get-in s [:stmts stmt-addr])]
+      (cond
+        (nil? stmt)
+        (if (contains? (:finalized-stmts s) stmt-addr)
+          (fail! :jolt.sim.sqlite/use-after-finalize
+                 "statement handle was already finalized"
+                 {:handle stmt-addr})
+          (fail! :jolt.sim.sqlite/unknown-handle
+                 "pointer is not a known statement handle"
+                 {:handle stmt-addr}))
+
+        :else
+        (let [next-state (-> s
+                             (update :stmts dissoc stmt-addr)
+                             (update :finalized-stmts conj stmt-addr))]
+          (if (compare-and-set! st s next-state)
+            stmt
+            (recur)))))))
 
 (defn- h-finalize [w {:keys [arguments]}]
   (let [[stmt-addr] (vec arguments)
-        stmt (require-stmt! w stmt-addr)]
+        ;; Remove the live statement atomically before freeing anything. A
+        ;; racing step either linearizes before this claim, or observes
+        ;; use-after-finalize; it can never publish against already-freed
+        ;; statement/BLOB memory.
+        stmt (claim-finalize! w stmt-addr)]
     (free-list! w (:borrowed stmt))
     (invoke-mem w :free [stmt-addr])
-    (swap! (:state w)
-           #(-> % (update :stmts dissoc stmt-addr)
-                  (update :finalized-stmts conj stmt-addr)))
     (:ok result-codes)))
 
 (defn- h-column-count [w {:keys [arguments]}]
@@ -919,8 +1398,7 @@
       {:pointer 0}
       (let [bytes (cell->bytes cell)
             span (max 1 (count bytes))
-            cached (get-in @(:state w) [:stmts stmt-addr :blob-cache col])
-            pointer (or cached (borrow-bytes! w stmt-addr stmt col bytes))]
+            pointer (borrow-bytes! w stmt-addr stmt col bytes)]
         {:pointer pointer :span span}))))
 
 (defn- h-column-blob [w {:keys [arguments]}]
@@ -1069,10 +1547,16 @@
   evidence. Handle addresses are the keys; connection records carry errcode,
   errmsg, changes, and rowid plus the physical transaction boundary:
   :autocommit?, the active address-free :tx descriptor, stable :tx-evidence,
-  and every :autocommit-evidence observation. Statement records carry the
-  plan, stable plan index, bindings, current row index, done/errored flags, and
-  :tx-effect-evaluated?. Removed connection records are appended in close order
-  to :closed-db-evidence without their raw handle addresses."
+  and every :autocommit-evidence observation, plus the physical store
+  boundary: :committed and :staging (nil in autocommit, a map inside a
+  transaction) and stable :store-evidence. Statement records carry the plan,
+  stable plan index, bindings, current row index, done/errored flags,
+  :tx-effect-evaluated?, :store-effect-evaluated?, and (for a :store-effect
+  :get, after its first step) :store-rows. Removed connection records are
+  appended in close order to
+  :closed-db-evidence without their raw handle addresses, retaining their
+  final :committed/:staging and, if closed with an active transaction,
+  :discarded-transaction and :discarded-staging."
   [w]
   @(:state w))
 
