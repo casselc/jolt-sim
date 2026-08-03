@@ -1,0 +1,19 @@
+;; perturb — a namespace set running on the Jolt compiler.
+;;
+;; Deliberately minimal: perturb declares nothing about its semantics here.
+;; See docs/SHAREABLE.md S2 — deps resolution is semantics-neutral and this
+;; file is evidence of how little of it perturb needs.
+{:paths ["src"]
+
+ :aliases
+ {;; The claims demo. Talks to a real jolt nREPL server if one is up
+  ;; (reads .nrepl-port, or takes a port argument), then re-runs the same
+  ;; session code under the scripted handler.
+  :demo   {:main-opts ["-m" "perturb.demo"]}
+
+  ;; Differential oracle: perturb's bencode against jolt.nrepl's, over the
+  ;; profile where the two overlap.
+  :oracle {:main-opts ["-m" "perturb.oracle"]}
+
+  ;; Codec/octet self-tests that need no server and no socket.
+  :selftest {:main-opts ["-m" "perturb.selftest"]}}}
