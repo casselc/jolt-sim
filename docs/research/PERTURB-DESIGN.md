@@ -2667,3 +2667,83 @@ asserts they were adopted without the scrutiny perturb's own decisions received,
 and that the difference was not visible in the record. Re-derivation may well
 reach the same answers — D4 in particular may survive on E4's evidence alone.
 The point is that it has to be asked.
+
+---
+
+## 8. Scoping correction 2 — Jolt is upstream, and what that costs
+
+**Supersedes §7's framing, which treated Jolt and jolt-sim as one lineage.**
+
+- **`jolt-lang/jolt` is not this project.** It is upstream. The working copy here
+  is a fork kept rebased on it; changes sometimes influence upstream but do not
+  belong to it.
+- **`jolt-sim` is this project.**
+- **Jolt will always be Clojure compatible.** That is settled upstream policy,
+  not an open question.
+
+### What this does to §1.1
+
+§1.1 chose to fork Jolt, listing what that "keeps": the reader, analyzer, IR,
+backend, deps, and build. That accounting is **incomplete in one direction**.
+Those are free *once*. Staying current with an upstream that is actively moving
+— this session alone found 203 commits of drift, a changed byte sign
+convention, a new `System/arraycopy`, most of the `ja-*` seam, and a reworked
+`bit-and` lowering — is a **permanent, recurring cost**.
+
+And it is a recurring cost paid to track a project **committed to semantics
+perturb explicitly rejects**. Every upstream change reinforcing Clojure/JVM
+compatibility is churn perturb must absorb and then partly undo. §14's unsigned
+bytes is not a one-off: upstream commit `e54ddb97` ("byte arrays hold signed
+bytes, like the JVM's") moved *toward* the convention perturb declines, after
+the record was written.
+
+That does not overturn §1.1 — Chez, multi-shot `call/cc`, the numeric tower and
+a working self-hosted compiler are real assets. But the decision was taken
+against an understated cost, and the honest restatement is: **forking Jolt buys
+a compiler and signs up for an indefinite rebase burden against a moving target
+with divergent goals.**
+
+### The response: draw the shared layer at semantics-neutrality
+
+If perturb and Jolt share **lower compiler internals**, the divergence surface
+— and therefore the rebase burden — shrinks to the part that actually differs.
+
+| plausibly shared (semantics-neutral) | not shared (semantics-bearing) |
+| --- | --- |
+| Chez host runtime: collections, HAMT/vector-trie, string handling | `clojure.core` overlay |
+| bytevector/array storage, FFI plumbing, the pointer-loan machinery | byte **accessors** (signed vs unsigned) |
+| loader, deps resolution, AOT cache, image build, bootstrap seed | analyzer special forms, macro expansion |
+| IR pass infrastructure (`map-ir-children`, tree walks) | effect rows, modes, binding identity |
+| the toolchain (already separate — `jolt-toolchains` is the precedent) | numeric tower where it diverges |
+
+**The byte work is the worked example, and it lands exactly on this line.** The
+agent's finding was that bytevector *storage* is correct for both — it is
+strictly better for Jolt too, since the FFI loan's bounce buffer exists only to
+work around the vector backing — while `bytevector-s8-*` versus `-u8-*` is the
+whole of the semantic difference. **Storage is shareable; the accessor is where
+divergence lives.** That is a one-line boundary, and it suggests the split is
+real rather than aspirational.
+
+### The coordination problem, stated plainly
+
+Extracting a shared host layer means restructuring **someone else's project**,
+which requires upstream to want it. That is a cost this project does not
+control and should not assume.
+
+The alternative — perturb vendoring or depending on Jolt's host at a pinned
+commit without asking upstream to restructure — needs no buy-in but drifts,
+which is the same burden relabelled.
+
+**Open (Q6):** which of those, and if extraction, what is the smallest layer
+worth proposing upstream. The byte-backing change is a good first probe: it
+benefits Jolt on its own terms (removes a bounce buffer, 7.95x less memory),
+is gated, and needs no perturb-specific concept to justify it.
+
+### Reframing this session's Jolt work
+
+The six rebased commits on `claude/v0517-perf-rebase` are **upstream
+contribution material, not perturb infrastructure**. Each stands on Jolt's own
+terms — measured wins, gates green, no perturb concept involved. Two others
+were dropped precisely because upstream had already done them, better. That is
+the correct relationship, and it is evidence the semantics-neutral layer is
+genuinely shared in practice already, even without a formal boundary.
