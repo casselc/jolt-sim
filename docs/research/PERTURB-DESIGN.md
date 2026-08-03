@@ -615,8 +615,10 @@ Each should get its register row when decided, not retrospectively.
 
 ## 3. Findings
 
-E1–E13, each stated as currently believed. What each said first, and what
-corrected it, is in Appendix A.
+E1–E14, each stated as currently believed. What each said first, and what
+corrected it, is in Appendix A. E1–E13 are measurements and prototypes; E14 is
+a source-and-history survey of the v0.5.17 branch lane and is `assumed`
+throughout — it qualifies §1.4 and §2 row 3 without settling either.
 
 ### E1 — the codec byte path, and where its cost actually is
 
@@ -1553,6 +1555,346 @@ claim survived inspection and failed the check.
    identity is deliberately not representable, which is the subject of one of
    the findings rather than an artifact of the encoding.
 
+### E14 — the v0.5.17 branch lane: a controller seam exists, and the baseline pins hash values
+
+**This qualifies §1.4 and §2 row 3, and dates non-goal 13.** Both were written
+against `origin/codex/upstream-rebase-v0.5.17-candidate` as if that branch were
+the whole of the v0.5.17 lane. It is not: seven unmerged branches carry work
+that bears directly on them.
+
+**Evidence label: `assumed`, throughout.** This is a source-and-history survey
+of branches in `jolt` plus the adapter in `jolt-sim` that consumes them. Nothing
+below was executed — no image built, no gate run, no hash computed, no schedule
+replayed. By this document's standing method commitment that is the weak tier:
+**this section can put a decision in doubt and cannot settle one.** Where a
+branch's *name or commit message* asserts more than its *diff contains*, the
+diff is what is recorded, and the gap is named.
+
+#### The lane, as of 2026-08-03
+
+Baseline `f06f77f0` (2026-08-01, "feat(ffi): expose scoped byte-array pointer
+loans"). Every merge-base below was computed against it.
+
+| branch | tip | dated | ahead / behind baseline | note |
+| --- | --- | --- | --- | --- |
+| `codex/v0517-threadsafe-hasheq-cache` | `c26215cf` | 08-02 | 3 / 0 | the only branch carrying the hasheq concurrency gate |
+| `codex/v0517-sim-hasheq-replay` | `b9293295` | 08-02 | 7 / 0 | integration tip: controller + varargs + target descriptor + clock + hasheq fix |
+| `claude/v0517-sim-controller` | `0f7e86f4` | 08-02 | 1 / 0 | the controller commit itself; contained in six other branches |
+| `claude/v0517-target-descriptor` | `15ccca63` | 08-02 | 3 / 0 | ancestor of the integration tip |
+| `codex/v0517-sim-clock-linearization` | `71f177a6` | 08-02 | 5 / 0 | ancestor of the integration tip |
+| `claude/v0517-executor-admission` | `5b98f249` | 08-01 | 1 / — | **already absorbed**: `concurrency.ss` is byte-identical to the baseline's |
+| `codex/v0513-sim-controller-atomic` | `645757c6` | 08-01 | — / 36 | self-described "archive … checkpoint" at v0.5.13; **superseded** |
+
+Three corrections to the branch list I was given. There is no
+`origin/codex/v0517-sim-controller`; the controller commit lives on
+`claude/v0517-sim-controller` and is `0f7e86f4` on six others.
+`claude/v0517-executor-admission` is not pending work — its content is in the
+baseline already (cherry-picked, not merged: `--contains` still names only its
+own branch). And the branch that matters most was not on the list:
+`opencode/v0513-application-core-charter` carries both the charter itself and
+`docs/research/APPLICATION-FLOW-RUNTIME-SEAMS-2026-08-01.md`, the companion
+artifact non-goal 13 points at when it says seams are "requested".
+
+#### Hashing — what the two branches actually contain
+
+Both hash branches make **one** change to `host/chez/hasheq.ss`, and it is the
+same change, committed twice (`7dc6208f` and `3af5622d`, identical content, tips
+ten seconds apart). The two module-level weak caches become per-thread cells:
+
+```scheme
+-(define symbol-hasheq-cache (make-weak-eq-hashtable))
++(define symbol-hasheq-cache-slot (make-thread-parameter #f))
+```
+
+with an ownership check — `(if (and (pair? owned) (eqv? (car owned) thread-id))
+…)` — because "Chez thread parameters are inherited, hence the explicit owner
+id." No hash *function* changed. `compute-symbol-hasheq` and
+`compute-string-hasheq` are untouched.
+
+The reproduction is on `threadsafe-hasheq-cache` only: `f2ce7c52`,
+"test(runtime): reproduce concurrent hasheq cache corruption", a
+process-isolated 4-thread gate under lowered `collect-trip-bytes` that checks
+"every production `jolt-hasheq` result … with its pure `compute-*` function",
+classifying hangs and hard faults separately. It is wired as `make
+hasheqconcurrency` and deliberately **not** in the CI aggregate ("Keep this
+focused until old-control reliability and fixed cross-platform stability justify
+registering it"). The integration branch `sim-hasheq-replay` carries the fix
+**without** the gate.
+
+**The branch named `sim-hasheq-replay` contains no hash replay.** Its seven
+commits are the sim controller, variadic FFI boundaries, the target descriptor,
+the monotonic clock, clock linearization, and the hasheq fix. The string
+`replay` does not occur in its `host/chez/sim/` overlay or in any test it adds.
+So the specific worry — that replay forces hash values to be reproducible across
+runs — is **not confirmed by anything on the branch**. The name asserts an
+intent the diff does not contain. That is a nonclaim, not a refutation: it says
+nothing about what the branch is *for*.
+
+#### But the baseline already pins hash values, which §2 row 3 did not know
+
+Row 3 argues: *"**Hash values are not observable through any specified
+interface.** The only law is hash-consistency, `(= a b) ⇒ (= (hash a) (hash
+b))`."* Three facts from the baseline contradict that as a description of Jolt:
+
+1. `host/chez/hasheq.ss` opens *"JVM-compatible hash engine for Jolt: Murmur3 +
+   hasheq dispatch. Ports Murmur3.java, Util.hasheq/Util.hashCombine,
+   Numbers.hasheq, Keyword.hasheq/Symbol.hasheq, APersistentMap.mapHasheq,
+   APersistentVector.hasheq, APersistentSet.hasheq."* — 492 lines whose entire
+   purpose is reproducing specific 32-bit values, down to a written soundness
+   argument for the unsafe fixnum primitives.
+2. The CHANGELOG specifies the values as observable and JVM-exact: *"record
+   hashes are JVM-exact defrecord hasheq … vector/map/set hashes are
+   value-identical to the JVM"*, and separately fixes *"A keyword's `.hashCode`
+   is the Java hash, not its hasheq"* — i.e. **two** hash surfaces are specified
+   independently, and disagreeing with the JVM on either was a reported bug.
+3. The new gate's oracle is not the consistency law. It asserts, per call, that
+   the memoized value equals the pure computation for that object — an equation
+   on hash *values*.
+
+So on the artifact row 3 was reasoning about, hash values are observable,
+specified by reference to an external implementation, and gated. Row 3's
+conclusion — *"perturb picks the better hash once, for everything, and no
+register row is needed"* — may still be the right call for a fork that carries
+no JVM conformance obligation, but the premise it rests on is false of Jolt, and
+the argument has to be remade as *perturb chooses not to expose hash values*
+rather than *nothing exposes them*. **Left open here.**
+
+#### Does a thread-safe cache make hash identity load-bearing?
+
+Yes, in a place row 3 did not look. Row 3 reasoned about the hash *algorithm*
+and about `=`/`hash` as a dynamically-scoped effect. The bug these branches fix
+is in neither: it is **memoization of a hash into a mutable table shared across
+threads**. Concurrent insertion and adaptive resize of one weak table could
+corrupt it, and the failure mode the gate is built to catch is a production
+hasheq that disagrees with the pure function — i.e. hash-consistency itself
+breaking, at runtime, for reasons having nothing to do with which hash was
+chosen.
+
+This corroborates row 3's own residue from the rejected effect-handler design —
+*"equality and hash must be carried by the value or its type, fixed at
+construction"* — and supplies a second, independent reason for it: a hash that
+is *computed once and cached* is a piece of shared mutable state, and every such
+cache needs an ownership discipline. Jolt's answer is one weak table per thread,
+which trades memory and cross-thread cache misses for the absence of a mutator
+race. perturb inherits the question the moment it memoizes a hash anywhere.
+
+Residual, and unmeasured: per-thread caches make the *cost* of `hash` depend on
+which thread first saw the object. That is a timing observable only, and I did
+not measure it.
+
+#### Iteration order — the one replay implementation deliberately does not use it
+
+Row 3 strengthens iteration order to "deterministic within a build" and calls it
+"free to state, load-bearing for the determinism claim". Neither half is
+contradicted, but the second is **unconfirmed by the only replay engine in the
+ecosystem**, which solves the problem a different way. `jolt-sim`'s
+`src/jolt/sim/trace.clj` says of its canonical projection:
+
+> The resulting EDN is a collision-free logical representation within this
+> domain and **never relies on a runtime hash** or host-object printer.
+
+and implements that by sorting: `canonical-map` sorts entries by `pr-str` of the
+canonical key, `canonical-set` likewise, and `kernel.clj` keeps task ids in a
+`sorted-map` and hands the scheduler `(sorted-ids …)`. Task *selection* is
+`(nth enabled (mod next-state (count enabled)))` over that sorted vector, so
+scheduling — the thing replay must reproduce exactly — is order-stable without
+any assumption about hash iteration order at all.
+
+Two consequences, both left open. (a) "Load-bearing for the determinism claim"
+is not established: an existing deterministic replay engine pays for canonical
+sorting instead, and a design that assumes iteration order can substitute for
+sorting should say why it is cheaper than the sort it removes. (b) The
+strengthening is still free, and is still worth having for a different reason
+than the one row 3 gives — sorting is a per-observation cost, iteration-order
+determinism is not.
+
+One residual observable I noticed and did not test: `canonical-map` walks the
+map with `reduce-kv` and throws on the *first* unsupported key it meets, so
+*which* key an error names is iteration-order-dependent even though the accepted
+output is not.
+
+#### The controller seam — non-goal 13's factual claim survives, its posture does not
+
+Non-goal 13 reads:
+
+> **No reliance on a runtime lifecycle/controller seam.** None exists at the
+> v0.5.17 baseline (P10: `sim/` overlay REMOVED upstream; the v0.5.13-era
+> private future-lifecycle overlay cannot be cited). Runtime seams are
+> *requested* from the v0.5.17 runtime lane (companion artifact, §8/§9) — never
+> assumed.
+
+The first half is still exactly right: `git ls-tree` on the baseline shows no
+`host/chez/sim/` at all. The second half is out of date. The request has been
+answered — not merged, but written, tested, and documented. `0f7e86f4`
+("feat(sim): add atomic runtime control profile") adds an 867-line
+`host/chez/sim/runtime.ss` that describes itself as
+
+> the complete prerelease controller overlay. It owns lifecycle,
+> monotonic-clock, typed foreign-call, and raw native-operation interception,
+> unified behind ONE atomic install/restore pair
+
+with `jolt.internal.sim/{capabilities, install-controller!, restore-controller!,
+controller-errors, clear-controller-errors!, supervisor-mono-nanos}`, a
+self-describing capability map at `:abi-version 6` / `:descriptor-version 6`,
+strict-LIFO install tokens validated under one mutex, six future lifecycle
+events (`:spawn :start :finish :cancel :exit :abort`), a sixteen-operation raw
+native registry, and a bounded proof note (`docs/proofs/sim-worker-exit.md`) for
+the worker-exit ordering it guarantees. The companion artifact's own request
+list names "items 7–9 (sim image, lifecycle hooks, unified controller)"; all
+three are on the branch.
+
+Where the request is *not* met, precisely: open request **R6** asks for the
+unified controller to carry "charter descriptor fields
+(operation-id/resource-id/site-id)". The delivered descriptor carries `:kind
+:task :symbol :argument-types :return-type :blocking? :capture-native-error?
+:varargs-after :arguments`. No operation-id, resource-id, or site-id. And the
+consumer is behind the producer: `jolt-sim/src/jolt/sim/runtime.clj` still
+declares *"one exact current controller contract: ABI v5 … descriptor-version 4
+FFI interception"* against a runtime now publishing 6 and 6. §6 nonclaim 7
+already says the jolt-sim controller ABI work does not survive the fork; it can
+now say so with version numbers.
+
+#### Continuations — §1.4's rejection survives on the narrow reading, and its dispatch algebra does not
+
+§1.4 states: *"Effects substitute a validated result or abort; no continuations
+at that layer."* The delivered seam splits that sentence in half.
+
+**No continuation capture: upheld, and enforced on purpose.** The FFI
+interception path hands the controller a descriptor and a 0-arity `proceed`
+thunk guarded by a token that is one-shot, owner-thread-pinned, LIFO-ordered,
+and retired in `dynamic-wind`'s after thunk. The overlay's own comment:
+
+> Every routing continuation is an owner-thread, one-shot token at the top of
+> this thread's dynamic proceed stack. … Retiring in dynamic-wind's after thunk
+> rejects escape and continuation re-entry.
+
+with four separate errors for out-of-extent, wrong-thread, non-LIFO, and
+second use. The seams request states the same rule as a requirement: *"**No
+continuation** beyond the invocation-scoped native `proceed`"*, and lists "no
+continuation capture" among the S5 non-goals. Whatever else is true, nobody in
+this ecosystem is building multi-shot control at the runtime seam, and Q3's
+`unique` × multi-shot worry is not made more urgent by anything here.
+
+**"Substitute a validated result or abort" as an exhaustive algebra: refuted at
+the seam.** The delivered dispatch has a third arm. The controller may run the
+real operation, receive its value, and continue — that is what `proceed` is
+for. `jolt-sim`'s adapter classifies handler results as
+`:legacy/:substitute/:modeled-resource/:proceed`, and its own error text calls
+the thunk a continuation:
+
+> The routing controller received an invalid proceed continuation
+
+So the two documents use "continuation" for different things and reach opposite
+verdicts about the same object: §1.4 counts resumption as a continuation and
+excludes it; the runtime lane counts only *capture* as a continuation and ships
+one-shot resumption as ordinary handler vocabulary. **This is a real conflict of
+terms with a real design question inside it — a handler that can invoke the
+operation it intercepted and post-process the result is strictly more expressive
+than substitute-or-abort, and §1.4 does not have a name for it. Named, not
+resolved.**
+
+**"Control … stays in the explicit cooperative kernel": corroborated,
+independently.** The seam does not schedule. `jolt-sim/src/jolt/sim/
+future_schedule.clj` — "the first coarse deterministic scheduler for unchanged
+ordinary Jolt future code" — gets its determinism by *blocking a real worker
+thread*: "an immutable single-use gate (a promise) is created the moment a
+scheduled ordinal's `:spawn` is observed. The `:start` hook for that task blocks
+on the gate." That is §1.4's model built by someone else: a cooperative kernel
+holding control, an effect layer with no continuations, and ordering enforced by
+parking threads. The runtime seam's contribution is that the kernel can now
+reach *unchanged ordinary code*, which it previously could not.
+
+**"The `perform` boundary must remain a real call site with durable identity
+rather than being inlined at analysis time": corroborated, and priced.**
+`jolt-core/jolt/backend_scheme.clj` gains a per-compilation-unit
+`set-sim-instrument!` flag; when armed, every `defcfn` call site emits
+`(let ((h (jolt-sim-current-ffi-hook))) (if h (jolt-ffi-invoke-sim-hook h
+<descriptor built from this site's own types/arity/flags> (lambda ()
+<native-body>)) <native-body>))`, and when not armed emits the bare native body
+with "no simulator reference at all". So durable operation identity is
+affordable — at the cost of a **separate image**. The same binary is not both
+interceptable and uninstrumented. That is a datum for D3's cost, and it is the
+opposite of the "keep it cheap to add" framing: it is cheap to add and it
+bifurcates the build.
+
+One further fact for the scheduler model: the clock controller is invoked
+*inside* the domain mutex (`71f177a6`, "Obtain, validate, and publish now share
+one domain-wide linearization point"), so under a controlled clock every
+`mono-nanos` read across all threads serializes on one lock and is checked
+non-decreasing. Virtual time is a global linearization point, not a per-task
+value.
+
+#### What `executor-admission` admits, and why it barely touches §1.4
+
+`5b98f249` moves `java.util.concurrent` executor **task admission** under the
+same mutex as the shutdown flag, so `execute`/`submit` after `shutdown` throw
+`RejectedExecutionException` synchronously instead of appending work a worker
+may never run, and `isShutdown`/`isTerminated` stop reading the flag with no
+lock at all. Its own comment: *"Admission and shutdown linearize under the queue
+mutex."*
+
+Three things follow. It is **already in the baseline** — the branch's
+`concurrency.ss` and the candidate's are byte-identical — so it changes nothing
+about what §1.4 was written against. It is a JVM-fidelity fix, not a scheduler
+design: the model it adds is a three-state executor lifecycle
+(running → shutdown → terminated) with a synchronous rejection contract, which
+is the kind of boundary a cooperative kernel has to model but not one it gets to
+control. And the seams register is explicit that executors stay *outside* the
+controllable surface — S5 records "raw executor tasks unowned", so the
+lifecycle seam sees `future` and does not see executor tasks. A perturb
+scheduler that assumes it can see every task would be assuming something the
+runtime it is forking does not provide.
+
+#### Verdict table
+
+| claim | where | verdict |
+| --- | --- | --- |
+| `=` is total, `==` is IEEE | §2 row 3 | **untouched** — no branch bears on it |
+| capability equality is identity, derived from the mode | §2 row 3 | **untouched** |
+| hash values are not observable through any specified interface | §2 row 3 | **refuted as a statement about Jolt.** The perturb decision it supports is still available, and must be re-argued as a choice not to expose |
+| the only law is `(= a b) ⇒ (= (hash a) (hash b))` | §2 row 3 | **refuted for the baseline** — the runtime's law is JVM value-identity, and the new gate asserts a per-object value equation |
+| the hash algorithm is not a divergence at all; no register row needed | §2 row 3 | **doubtful.** Turns entirely on whether the `clojure.*` layer inherits Jolt's JVM-exactness obligation — a decision, not a finding |
+| replay forces reproducible hash values | *the worry itself* | **not confirmed.** `sim-hasheq-replay` contains no hash replay; jolt-sim's replay explicitly does not rely on a runtime hash |
+| iteration order deterministic within a build — free to state | §2 row 3 | **survives** |
+| …and load-bearing for the determinism claim | §2 row 3 | **unconfirmed** — the existing replay engine buys the same property by canonical sorting |
+| equality/hash cannot be a dynamically-scoped effect; hash must be fixed at construction | §2 row 3 | **corroborated**, with a second reason (shared mutable memoization) |
+| none exists at the v0.5.17 baseline | non-goal 13 | **survives literally** — no `host/chez/sim/` on the candidate |
+| runtime seams are requested, never assumed | non-goal 13, leaned on by §1.4 | **stale.** Answered on seven branches: sim image, lifecycle hooks, unified controller, ABI 6 |
+| no continuations at that layer | §1.4 | **survives on the narrow reading** (no capture, one-shot, non-re-entrant) — and the runtime enforces it deliberately |
+| effects substitute a validated result or abort | §1.4 | **refuted as exhaustive** at the runtime seam: substitute / abort / **proceed-once** |
+| control stays in the explicit cooperative kernel | §1.4 | **corroborated** by an independent implementation |
+| the `perform` boundary must remain a real call site with durable identity | §1.4 | **corroborated, and priced**: a compile-time profile flag and a second image |
+| D3 (delimited control) deferred, not foreclosed | §1.4 | **survives** — no branch implements delimited control |
+| the jolt-sim controller ABI work does not survive the fork | §6 nonclaim 7 | **survives**, now with versions: producer ABI 6 / descriptor v6, consumer pinned to ABI 5 / descriptor v4 |
+
+#### E14's own nonclaims
+
+1. **Nothing here was executed.** No image was built, no gate run, no hash
+   computed, no schedule replayed. Every row above is source inspection plus git
+   metadata: `assumed`.
+2. No claim about **intent**. Branch names and commit messages are recorded as
+   claims about diffs, not as statements of plan. `sim-hasheq-replay` may well be
+   heading somewhere its diff does not yet go, and `threadsafe-hasheq-cache`'s
+   gate is explicitly staged out of CI.
+3. No claim that any of this **lands**. Seven branches carry the overlay; none is
+   merged into the v0.5.17 candidate, and the candidate is not behind any of
+   them. A design record that treats the seam as present is making a bet.
+4. No claim about the **correctness** of the hasheq fix, the clock
+   linearization, or the worker-exit proof. The proof document states its own
+   bound — it is a sufficiency claim for one forked worker, abstracting values,
+   exceptions, identity and time, and it explicitly does *not* prove that
+   `restore-controller!` waits for quiescence; that is the external supervisor's
+   job.
+5. I did not determine whether **hash values cross the controller ABI**. The
+   descriptor projection validates key *sets* and an alist key *order* internal
+   to the runtime; I found no path by which a hash value is compared across
+   runs, and I did not exhaustively search for one.
+6. `perturb` is a fork with no JVM conformance obligation. Every refutation above
+   is a refutation of a claim **about Jolt** that a perturb decision was resting
+   on. None of them decides the perturb question, and this section deliberately
+   decides nothing.
+
+
 ---
 
 ## 4. Open questions
@@ -2223,3 +2565,80 @@ Two sections shared the number 16 in the chronological record. Bare `§16`
 references in historical text are resolved by content: references to the
 sampling bias, the three property classes, or the codec-shaped ladder mean the
 first; `§16/E13` means the second.
+
+---
+
+## 7. Scoping correction — jolt-sim is input, not authority
+
+**This qualifies the header's "Relationship to prior records" and every place
+below that treats a jolt, jolt-sim, charter, or planning-packet decision as
+inherited.**
+
+perturb is **not bound by jolt-sim's decisions any more than by Clojure's**.
+Both are prior art by the same author lineage, and both are sources of good
+ideas and hard-won evidence. Neither is a specification perturb must satisfy.
+
+### The distinction that matters
+
+| status | examples | how perturb should use it |
+| --- | --- | --- |
+| **evidence** — observations about what real systems need | E2's five hand-rolled ownership systems; E3's proof survey; every measured cost (E1, E7–E11); jolt-hako's bug models; jolt-http's RFC-9112 oracle | load-bearing, cite freely |
+| **convention** — house style worth adopting | the §5 evidence lattice; the corrected/buggy/non-vacuity control triple; producer/consumer gate separation | adopt because it is good, not because it is inherited |
+| **specification** — decisions made under *jolt-sim's* constraints | charter D4; the charter's formal-core value set, evaluation order and error model; P4's bounded-response design; P5's completeness boundaries | **re-derive on perturb's terms or discard** |
+
+The third row is where the record has been sloppy. Several decisions below were
+written as "retains charter decision X" when the honest statement is either "we
+independently reached X" or "we deferred to X and should not have".
+
+### What must be re-derived
+
+**§1.4's effects decision is the important one.** It retains D4 —
+substitute-or-abort handlers, no continuations at that layer — and defers D3
+(delimited control). The record claims this was "retained on its merits", and
+part of it was: E4 established empirically that the codec layer needs no
+continuations. But the rest leaned on two things that are jolt-sim's
+constraints, not perturb's:
+
+- **P5 §4.2's bounded-completeness precondition** ("value-semantic state") was
+  used to argue continuations would break replay. That is a property of
+  `explore_states.clj`'s search design, not a law.
+- **Charter non-goal 13** ("no runtime lifecycle/controller seam exists") was
+  used to argue the seam must be requested rather than assumed — and §6/E14's
+  reconnaissance of the v0517 controller branches may already have overtaken
+  it independently.
+
+So **D3 is reopened on perturb's terms.** perturb controls its own compiler,
+its own scheduler, and Chez's multi-shot `call/cc`; whether delimited control
+belongs at the effect layer is a question perturb must answer from its own
+goals, not one settled by deferring to a plan written for a different system.
+The trade named in §1.4 (small TCB and stateful search versus direct-style
+blocking code) stands as a *trade*; the resolution does not.
+
+**The charter's formal-core semantics** — §1.2's value set, §2's evaluation
+order, §2.4's error model, Appendix A's normalization — are recorded in the
+header as "inherited". They are **available**, and they are good, but perturb
+adopts each because it examined it, or not at all. Nothing has examined them
+yet. That is now an open item.
+
+### What survives unchanged
+
+Decisions this record derived from evidence rather than deference are
+unaffected:
+
+- **unsigned bytes** (§1.5) — derived from E8's 209 ns/byte measurement and
+  corroborated three times independently (§3/E1, E12, and jolt-http's test
+  model). The charter's non-goal 1 was cited as agreement, not authority.
+- **eager sequences** (§2 row 2) — the charter decided it, but the record
+  supplied a perturb-specific argument the charter did not need: lazy
+  realization is nondeterminism that does not pass through the oracle.
+- **the two tiers and four axes** (§1.2) — derived from E5/E6/E13's probes.
+- **capability-tier refinements** (§1.3) — derived from E3's survey, with E3's
+  own sampling bias already recorded against it.
+
+### Nonclaim
+
+This does not assert any specific charter or planning decision is *wrong*. It
+asserts they were adopted without the scrutiny perturb's own decisions received,
+and that the difference was not visible in the record. Re-derivation may well
+reach the same answers — D4 in particular may survive on E4's evidence alone.
+The point is that it has to be asked.
