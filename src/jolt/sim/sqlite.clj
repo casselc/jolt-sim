@@ -38,6 +38,28 @@
   never serves a predeclared row. Both ops apply once, at the statement's
   first terminal step, and are never inferred from SQL text.
 
+  A plan may instead carry one closed :row-effect directive describing a
+  physical table-row transition over the same committed/staged overlay (:op
+  :insert-row with :table/:key-params/:row, :op :update-row with
+  :table/:key-params/:set, or :op :scan-rows with :table/:project/:order-key;
+  never more than one of :tx-effect, :store-effect, and :row-effect on one
+  plan). Complete rows live under tagged [:jolt.sim.sqlite/row table
+  key-cells] identities that cannot collide with legacy :store-effect cell
+  keys, and BEGIN/COMMIT/ROLLBACK/close move staged rows exactly like staged
+  key/value writes. An insert writes its full typed row once from the actual
+  exactly matched bindings, or reports SQLite constraint code 19 with changes
+  0 and no mutation when its primary key is already visible; an update
+  applies its declared typed column replacements to one visible existing row
+  (changes 1) or reports DONE with changes 0 and no write when the key is
+  absent; a scan snapshots its table's visible typed rows at its first
+  sqlite3_step, projects cells in :project order, and serves them sorted by
+  :order-key under a stable total ordering over the supported cell types,
+  immune to any later mutation. Each row directive applies at most once,
+  linearized with statement/connection lifetime exactly like the tx/store
+  effects, and is recorded in the connection's address-free :row-evidence
+  vector whether it applies, finds nothing, hits a constraint, or is reported
+  as a plan-level error without mutating or exposing rows.
+
   handlers returns the 16 native-operation handlers from the memory world
   merged with exactly the 23 SQLite foreign-function keys required by
   db.sqlite, so a single :ffi-handlers map drives both layers unchanged.
@@ -54,7 +76,8 @@
 
 ;; ---- codes --------------------------------------------------------------
 
-(def ^:private result-codes {:ok 0 :row 100 :done 101 :misuse 21})
+(def ^:private result-codes
+  {:ok 0 :row 100 :done 101 :misuse 21 :constraint 19})
 
 (def ^:private type-codes {:integer 1 :float 2 :text 3 :blob 4 :null 5})
 
@@ -360,6 +383,215 @@
       (cond-> {:op op :key-param (:key-param store-effect)}
         (= :put op) (assoc :value-param (:value-param store-effect))))))
 
+(def ^:private row-effect-ops #{:insert-row :update-row :scan-rows})
+
+(def ^:private row-effect-keys
+  {:insert-row #{:op :table :key-params :row}
+   :update-row #{:op :table :key-params :key-columns :set}
+   :scan-rows #{:op :table :project :order-key}})
+
+(defn- require-row-positive-index! [plan-index field value]
+  (when-not (and (integer? value) (pos? value))
+    (fail! :jolt.sim.sqlite/invalid-plan
+           (str "plan :row-effect " field
+                " must be a positive integer parameter index")
+           {:plan-index plan-index field value})))
+
+(defn- require-row-declared-param! [plan-index field index params]
+  (when-not (contains? params index)
+    (fail! :jolt.sim.sqlite/invalid-plan
+           (str "plan :row-effect " field
+                " must reference a :params index the plan declares")
+           {:plan-index plan-index field index})))
+
+(defn- require-row-unique! [plan-index field values]
+  (let [valuev (vec values)]
+    (when-not (= (count valuev) (count (set valuev)))
+      (fail! :jolt.sim.sqlite/invalid-plan
+             (str "plan :row-effect " field " must not contain duplicates")
+             {:plan-index plan-index field valuev}))))
+
+(defn- normalize-row-key-params [plan-index key-params params]
+  (when-not (and (vector? key-params) (seq key-params))
+    (fail! :jolt.sim.sqlite/invalid-plan
+           "plan :row-effect :key-params must be a nonempty vector of parameter indices"
+           {:plan-index plan-index :key-params key-params}))
+  (doseq [index key-params]
+    (require-row-positive-index! plan-index :key-params index)
+    (require-row-declared-param! plan-index :key-params index params)
+    (when (= :null (:type (get params index)))
+      (fail! :jolt.sim.sqlite/invalid-plan
+             "plan :row-effect :key-params must not declare a null key"
+             {:plan-index plan-index :key-params key-params})))
+  (require-row-unique! plan-index :key-params key-params)
+  (vec key-params))
+
+(defn- normalize-row-column-bindings [plan-index field bindings params]
+  (when-not (and (vector? bindings) (seq bindings))
+    (fail! :jolt.sim.sqlite/invalid-plan
+           (str "plan :row-effect " field
+                " must be a nonempty vector of [column param-index] pairs")
+           {:plan-index plan-index field bindings}))
+  (let [pairs
+        (mapv
+         (fn [pair]
+           (when-not (and (vector? pair) (= 2 (count pair)))
+             (fail! :jolt.sim.sqlite/invalid-plan
+                    (str "plan :row-effect " field
+                         " entries must be [column param-index] pairs")
+                    {:plan-index plan-index field pair}))
+           (let [[column index] pair]
+             (when-not (and (string? column) (pos? (count column)))
+               (fail! :jolt.sim.sqlite/invalid-plan
+                      (str "plan :row-effect " field
+                           " column names must be nonempty strings")
+                      {:plan-index plan-index field pair}))
+             (require-row-positive-index! plan-index field index)
+             (require-row-declared-param! plan-index field index params)
+             [column index]))
+         bindings)]
+    (require-row-unique! plan-index field (map first pairs))
+    (require-row-unique! plan-index field (map second pairs))
+    pairs))
+
+(defn- normalize-row-column-names [plan-index field columns]
+  (when-not (vector? columns)
+    (fail! :jolt.sim.sqlite/invalid-plan
+           (str "plan :row-effect " field " must be a vector of column names")
+           {:plan-index plan-index field columns}))
+  (doseq [column columns]
+    (when-not (and (string? column) (pos? (count column)))
+      (fail! :jolt.sim.sqlite/invalid-plan
+             (str "plan :row-effect " field
+                  " column names must be nonempty strings")
+             {:plan-index plan-index field columns})))
+  (require-row-unique! plan-index field columns)
+  (vec columns))
+
+(defn- normalize-row-effect
+  "Normalizes one closed :row-effect plan directive. Table ids are canonical
+  keywords; parameter indices are positive, declared in :params, non-NULL for
+  primary keys, and unique within each list; column names are nonempty strings
+  unique within their list. :insert-row requires every key parameter to be
+  named by a :row column so the stored complete row carries its primary key;
+  :update-row requires one :key-columns name per :key-params entry and forbids
+  replacing any of those columns through :set; :scan-rows requires every
+  :order-key column to be projected and its declared :columns, when present,
+  to equal :project. No :row-effect plan may declare :rows, even an empty one."
+  [plan-index row-effect params columns columns-present? rows-present?]
+  (when-not (or (nil? row-effect) (map? row-effect))
+    (fail! :jolt.sim.sqlite/invalid-plan
+           "plan :row-effect must be a map with :op, :table, and its per-op fields"
+           {:plan-index plan-index :row-effect row-effect}))
+  (when (some? row-effect)
+    (let [op (:op row-effect)]
+      (when-not (contains? row-effect-ops op)
+        (fail! :jolt.sim.sqlite/invalid-plan
+               "plan :row-effect :op must be :insert-row, :update-row, or :scan-rows"
+               {:plan-index plan-index
+                :row-effect row-effect
+                :supported-ops row-effect-ops}))
+      (let [allowed (get row-effect-keys op)
+            unknown (seq (sort-by pr-str
+                                  (remove allowed (keys row-effect))))]
+        (when unknown
+          (fail! :jolt.sim.sqlite/invalid-plan
+                 "plan :row-effect is closed for its :op"
+                 {:plan-index plan-index
+                  :row-effect row-effect
+                  :unknown-keys (vec unknown)})))
+      (when-not (keyword? (:table row-effect))
+        (fail! :jolt.sim.sqlite/invalid-plan
+               "plan :row-effect :table must be a canonical keyword"
+               {:plan-index plan-index :row-effect row-effect}))
+      (when rows-present?
+        (fail! :jolt.sim.sqlite/invalid-plan
+               "a :row-effect plan must not predeclare :rows"
+               {:plan-index plan-index :row-effect row-effect}))
+      (case op
+        :insert-row
+        (let [key-params (normalize-row-key-params
+                          plan-index (:key-params row-effect) params)
+              row (normalize-row-column-bindings
+                   plan-index :row (:row row-effect) params)
+              row-params (set (map second row))
+              param->column (into {} (map (fn [[column index]]
+                                            [index column])
+                                          row))]
+          (doseq [index key-params]
+            (when-not (contains? row-params index)
+              (fail! :jolt.sim.sqlite/invalid-plan
+                     "plan :row-effect :row must name a column for every :key-params index"
+                     {:plan-index plan-index
+                      :row-effect row-effect
+                      :missing-key-param index})))
+          {:op op
+           :table (:table row-effect)
+           :key-params key-params
+           :key-columns (mapv param->column key-params)
+           :row row})
+
+        :update-row
+        (let [key-params (normalize-row-key-params
+                          plan-index (:key-params row-effect) params)
+              key-columns (normalize-row-column-names
+                           plan-index :key-columns
+                           (:key-columns row-effect))
+              set-pairs (normalize-row-column-bindings
+                         plan-index :set (:set row-effect) params)
+              key-column-set (set key-columns)]
+          (when-not (seq key-columns)
+            (fail! :jolt.sim.sqlite/invalid-plan
+                   "plan :row-effect :key-columns must be nonempty"
+                   {:plan-index plan-index :row-effect row-effect}))
+          (when-not (= (count key-params) (count key-columns))
+            (fail! :jolt.sim.sqlite/invalid-plan
+                   "plan :row-effect :key-columns must align one-to-one with :key-params"
+                   {:plan-index plan-index
+                    :row-effect row-effect
+                    :key-param-count (count key-params)
+                    :key-column-count (count key-columns)}))
+          (doseq [[column _] set-pairs]
+            (when (contains? key-column-set column)
+              (fail! :jolt.sim.sqlite/invalid-plan
+                     "plan :row-effect :set must not replace a primary-key column"
+                     {:plan-index plan-index
+                      :row-effect row-effect
+                      :column column})))
+          {:op op
+           :table (:table row-effect)
+           :key-params key-params
+           :key-columns key-columns
+           :set set-pairs})
+
+        :scan-rows
+        (let [project (normalize-row-column-names
+                       plan-index :project (:project row-effect))
+              order-key (normalize-row-column-names
+                         plan-index :order-key (:order-key row-effect))
+              project-set (set project)]
+          (when-not (seq project)
+            (fail! :jolt.sim.sqlite/invalid-plan
+                   "plan :row-effect :project must be nonempty"
+                   {:plan-index plan-index :row-effect row-effect}))
+          (doseq [column order-key]
+            (when-not (contains? project-set column)
+              (fail! :jolt.sim.sqlite/invalid-plan
+                     "plan :row-effect :order-key columns must be included in :project"
+                     {:plan-index plan-index
+                      :row-effect row-effect
+                      :order-column column})))
+          (when (and columns-present? (not= (vec columns) project))
+            (fail! :jolt.sim.sqlite/invalid-plan
+                   "a :scan-rows plan's declared :columns must equal its :project"
+                   {:plan-index plan-index
+                    :row-effect row-effect
+                    :columns (vec columns)}))
+          {:op op
+           :table (:table row-effect)
+           :project project
+           :order-key order-key})))))
+
 (defn- validate-plans [plans]
   (let [planv (vec plans)]
     (mapv
@@ -372,10 +604,12 @@
          (fail! :jolt.sim.sqlite/invalid-plan
                 "each plan must have a :sql string"
                 {:index i :plan plan}))
-       (when (and (:tx-effect plan) (:store-effect plan))
-         (fail! :jolt.sim.sqlite/invalid-plan
-                "a plan may declare at most one of :tx-effect or :store-effect"
-                {:index i}))
+        (when (< 1 (count (filter some? [(:tx-effect plan)
+                                         (:store-effect plan)
+                                         (:row-effect plan)])))
+          (fail! :jolt.sim.sqlite/invalid-plan
+                 "a plan may declare at most one of :tx-effect, :store-effect, or :row-effect"
+                 {:index i}))
        (let [columns (or (:columns plan) [])
              error (:error plan)
              params (normalize-params i (:params plan))]
@@ -408,14 +642,22 @@
            (fail! :jolt.sim.sqlite/invalid-plan
                   "plan :error must contain a positive non-ROW/non-DONE :code and optional string :msg"
                   {:index i :error error}))
-         (assoc plan
-                :params params
-                :columns columns
-                :rows (normalize-rows i columns (:rows plan))
-                :tx-effect (normalize-tx-effect i (:tx-effect plan))
-                :store-effect (normalize-store-effect
-                               i (:store-effect plan) params columns
-                               (:rows plan)))))
+         (let [row-effect (normalize-row-effect
+                           i (:row-effect plan) params columns
+                           (contains? plan :columns)
+                           (contains? plan :rows))
+               columns (if (and row-effect (= :scan-rows (:op row-effect)))
+                         (:project row-effect)
+                         columns)]
+           (assoc plan
+                  :params params
+                  :columns columns
+                  :rows (normalize-rows i columns (:rows plan))
+                  :tx-effect (normalize-tx-effect i (:tx-effect plan))
+                  :store-effect (normalize-store-effect
+                                 i (:store-effect plan) params columns
+                                 (:rows plan))
+                  :row-effect row-effect))))
      (range (count planv))
      planv)))
 
@@ -441,9 +683,18 @@
       :last-row-id 0                   ;; served by sqlite3_last_insert_rowid
       :error {:code 1 :msg \"...\"}    ;; optional soft step error
       :tx-effect {:op :begin :when :on-success}   ;; optional physical
-      ;; transaction-boundary directive; mutually exclusive with :store-effect
-      :store-effect {:op :put :key-param 1 :value-param 2}} ;; optional
+      ;; transaction-boundary directive
+      :store-effect {:op :put :key-param 1 :value-param 2} ;; optional
       ;; physical key/value directive; :op :get takes only :key-param
+      :row-effect {:op :insert-row :table :outbox/entities
+                   :key-params [1]
+                   :row [[\"entity_id\" 1] [\"version\" 2] [\"payload\" 3]]}}
+      ;; optional physical table-row directive; :op :update-row takes
+      ;; :key-params, aligned :key-columns [\"entity_id\"], and
+      ;; :set [[\"version\" 2] [\"payload\" 3]], and
+      ;; :op :scan-rows takes :project [\"entity_id\" \"version\" \"payload\"]
+      ;; and :order-key [\"entity_id\"]. At most one of :tx-effect,
+      ;; :store-effect, and :row-effect may appear on one plan.
 
   Cell types are :integer :float :text :blob :null. A :blob cell's :value is a
   byte array or unsigned byte vector and an empty BLOB may opt into
@@ -477,11 +728,35 @@
   :key-param, exactly one declared :column, and no
   predeclared :rows, and derives at most one result row from the current
   visible state at execution time -- its own staged value first, then
-  committed, otherwise no row. Each executed put or get is recorded in the
-  connection's address-free :store-evidence vector. Closing a connection with
-  active staging discards it; the discarded map is retained in
-  :closed-db-evidence alongside the surviving committed storage."
-  ([plans]
+   committed, otherwise no row. Each executed put or get is recorded in the
+   connection's address-free :store-evidence vector. Closing a connection with
+   active staging discards it; the discarded map is retained in
+   :closed-db-evidence alongside the surviving committed storage.
+
+   A plan's :row-effect is the only source of physical table-row writes and
+   row scans; the model never infers row behavior from SQL text. Every
+   :row-effect names a canonical keyword :table. :op :insert-row requires
+   :key-params and a :row of [column param-index] pairs naming every key
+   parameter, writes the full typed row built from the actual exactly matched
+   bindings under a tagged [:jolt.sim.sqlite/row table key-cells] identity
+   into active staging (or committed storage in autocommit), and reports
+   changes 1 -- or, when the key is already visible, reports SQLite
+   constraint code 19 with changes 0 and no write. :op :update-row requires
+   aligned :key-params/:key-columns and a :set of [column param-index] pairs,
+   replaces the named non-key columns of the one visible existing row (changes
+   1) without ever manufacturing or replacing key columns, and reports DONE
+   with changes 0 and no write when the key is absent. :op :scan-rows requires
+   :project and :order-key,
+   snapshots its table's visible rows at its first sqlite3_step, projects
+   typed cells in :project order (its exposed :columns are exactly :project),
+   sorts them by :order-key under a stable total ordering over the supported
+   cell types, and serves ordinary ROW/DONE from that immutable snapshot. A
+   plan-level :error records the attempted row effect without mutating or
+   exposing rows. Each executed row directive is recorded in the connection's
+   address-free :row-evidence vector with its sequence, plan-index, op,
+   table, reported outcome, key (when applicable), write/snapshot location,
+   update source location, whether a row was present/applied, and changes."
+   ([plans]
    (world (memory/world) plans))
   ([memory-world plans]
    (when-not (and (map? memory-world) (map? (:config memory-world)))
@@ -531,7 +806,8 @@
               :errcode 0 :errmsg "not an error" :changes 0 :rowid 0
               :autocommit? true :tx nil :tx-evidence []
               :autocommit-evidence []
-              :committed {} :staging nil :store-evidence []}
+              :committed {} :staging nil :store-evidence []
+              :row-evidence []}
           next-state (-> s
                          (assoc-in [:dbs handle] db)
                          (update :next-connection-id inc))]
@@ -753,24 +1029,41 @@
 
 ;; ---- physical store visibility boundary ---------------------------------
 
+(defn- canonical-cell-identity
+  "Returns the typed value identity of a cell. Result-only presentation
+  metadata such as an empty BLOB's :null-pointer? mode is deliberately absent."
+  [{:keys [type value]}]
+  (case type
+    :float {:type :float :value (double value)}
+    :blob  {:type :blob :value (normalize-bytes value)}
+    :null  {:type :null}
+    {:type type :value value}))
+
 (defn- canonical-bound-key
-  "Returns value identity from the actual exactly-matched binding. Result-only
-  presentation metadata such as an empty BLOB's :null-pointer? mode is not key
-  identity, and FFI doubles are canonicalized independently of whether their
-  plan literal was written as 1 or 1.0."
+  "Returns value identity from the actual exactly-matched binding. FFI doubles
+  are canonicalized independently of whether their plan literal was written as
+  1 or 1.0."
   [stmt index]
-  (let [{:keys [type value]} (get (:bindings stmt) index)]
-    (case type
-      :float {:type :float :value (double value)}
-      :blob  {:type :blob :value (normalize-bytes value)}
-      :null  {:type :null}
-      {:type type :value value})))
+  (canonical-cell-identity (get (:bindings stmt) index)))
 
 (defn- declared-value-cell
   "Returns the normalized declared result cell for an exactly matched value
   binding, retaining NULL and empty-BLOB pointer-mode semantics."
   [stmt index]
   (get-in stmt [:plan :params index]))
+
+(defn- bound-value-cell
+  "Returns a stored/result cell from the actual exactly-matched binding. The
+  only plan presentation metadata retained is the requested null-pointer mode
+  for an empty BLOB; it does not participate in row identity."
+  [stmt index]
+  (let [bound (canonical-bound-key stmt index)
+        declared (get-in stmt [:plan :params index])]
+    (cond-> bound
+      (and (= :blob (:type bound))
+           (empty? (:value bound))
+           (true? (:null-pointer? declared)))
+      (assoc :null-pointer? true))))
 
 (defn- store-put-decision
   "Pure decision for one :store-effect :put terminal step: derives the bound
@@ -1001,13 +1294,498 @@
                   result)
                 (recur)))))))))
 
+;; ---- physical table-row boundary ----------------------------------------
+
+(def ^:private row-tag :jolt.sim.sqlite/row)
+
+(defn- row-key
+  "Tagged identity for one stored table row: [tag table-id canonical
+  primary-key-cells]. The vector tag can never collide with a legacy
+  :store-effect key, which is always a cell map."
+  [table key-cells]
+  [row-tag table key-cells])
+
+(defn- table-row-key? [table k]
+  (and (vector? k)
+       (= 3 (count k))
+       (= row-tag (nth k 0))
+       (= table (nth k 1))))
+
+(defn- visible-row
+  "Returns [row location] for one tagged row key in the connection's current
+  visible view -- its own staged row first, then committed, otherwise
+  [nil nil] -- exactly like a store get's staged-then-committed lookup."
+  [db key]
+  (let [staging (:staging db)]
+    (cond
+      (and (some? staging) (contains? staging key))
+      [(get staging key) :staging]
+
+      (contains? (:committed db) key)
+      [(get (:committed db) key) :committed]
+
+      :else [nil nil])))
+
+(defn- visible-table-rows
+  "Returns tagged row identity to {:row row :location source} for exactly one
+  table in the connection's current visible view. Staged rows shadow committed
+  rows under the same identity without discarding source provenance."
+  [db table]
+  (let [pick (fn [storage location]
+               (into {}
+                     (keep (fn [[k v]]
+                             (when (table-row-key? table k)
+                               [k {:row v :location location}])))
+                     (or storage {})))]
+    (merge (pick (:committed db) :committed)
+           (pick (:staging db) :staging))))
+
+;; Deterministic model ordering over the supported cell types:
+;; NULL < INTEGER < FLOAT < TEXT < BLOB. INTEGER and FLOAT are intentionally
+;; distinct ranks: coercing a 64-bit integer to double loses identity above
+;; 2^53 and can make the comparator non-transitive. Within each rank values use
+;; their native exact/double ordering. Rows whose order cells compare equal
+;; fall back to their canonical primary-key cells; row-key uniqueness means a
+;; complete tie denotes the same row, never map iteration order.
+
+(defn- compare-byte-vectors [a b]
+  (let [limit (min (count a) (count b))]
+    (loop [i 0]
+      (cond
+        (== i limit)            (compare (count a) (count b))
+        (< (nth a i) (nth b i)) -1
+        (> (nth a i) (nth b i)) 1
+        :else                   (recur (inc i))))))
+
+(defn- compare-floats [a b]
+  ;; Jolt's generic numeric compare treats NaN as equal to every number because
+  ;; neither `<` nor `>` holds. Put all NaNs after ordinary/infinite floats so
+  ;; the row comparator remains total even for adversarial plan cells.
+  (let [a-nan? (not (= a a))
+        b-nan? (not (= b b))]
+    (cond
+      (and a-nan? b-nan?) 0
+      a-nan? 1
+      b-nan? -1
+      :else (compare a b))))
+
+(defn- cell-sort-rank [cell]
+  (case (:type cell)
+    :null 0
+    :integer 1
+    :float 2
+    :text 3
+    :blob 4))
+
+(defn- compare-cells [a b]
+  (let [ra (cell-sort-rank a)
+        rb (cell-sort-rank b)]
+    (cond
+      (< ra rb) -1
+      (> ra rb) 1
+      :else
+      (case (:type a)
+        :null 0
+        :integer (compare (:value a) (:value b))
+        :float (compare-floats (:value a) (:value b))
+        :text (compare (:value a) (:value b))
+        :blob (compare-byte-vectors (normalize-bytes (:value a))
+                                    (normalize-bytes (:value b)))))))
+
+(defn- compare-cell-vectors [as bs]
+  (let [limit (min (count as) (count bs))]
+    (loop [i 0]
+      (if (== i limit)
+        (compare (count as) (count bs))
+        (let [c (compare-cells (nth as i) (nth bs i))]
+          (if (zero? c) (recur (inc i)) c))))))
+
+(defn- compare-scan-entries [a b]
+  (let [c (compare-cell-vectors (:order-cells a) (:order-cells b))]
+    (if (not (zero? c))
+      c
+      (compare-cell-vectors (:key-cells a) (:key-cells b)))))
+
+(defn- scan-project-cell [table row column]
+  (if (contains? row column)
+    (get row column)
+    (fail! :jolt.sim.sqlite/scan-projection
+           "a stored row does not contain a column the scan projects"
+           {:table table :column column :row row})))
+
+(defn- require-visible-row-key!
+  "Fails closed when an update plan's declared key columns do not describe the
+  visible row found under its canonical physical key. This prevents a mistaken
+  per-statement schema from mutating a row while retaining a stale identity."
+  [table row key-columns key-cells]
+  (let [missing-columns (vec (remove #(contains? row %) key-columns))]
+    (when (seq missing-columns)
+      (fail! :jolt.sim.sqlite/row-key-schema-mismatch
+             "update :key-columns are absent from the visible row"
+             {:table table
+              :key-columns key-columns
+              :missing-columns missing-columns
+              :expected-key key-cells})))
+  (let [stored-key (mapv #(canonical-cell-identity (get row %)) key-columns)]
+    (when-not (= key-cells stored-key)
+      (fail! :jolt.sim.sqlite/row-key-schema-mismatch
+             "update :key-columns do not match the visible row identity"
+             {:table table
+              :key-columns key-columns
+              :expected-key key-cells
+              :stored-key stored-key}))))
+
+(defn- row-mutation-decision
+  "Pure decision for one :row-effect :insert-row/:update-row terminal step.
+  The primary key and every stored cell come from the actual exactly matched
+  bindings. An insert whose key is already visible in the current view
+  (staged rows included) is a soft SQLite constraint outcome: evidence, no
+  write. An update replaces one visible existing row's declared columns --
+  writing to active staging when a transaction is open -- and an absent key
+  is ordinary DONE with changes 0. A reported :error records the attempted
+  effect without consulting or mutating storage."
+  [db stmt reported]
+  (let [row-effect (:row-effect (:plan stmt))
+        op (:op row-effect)
+        table (:table row-effect)
+        key-cells (mapv #(canonical-bound-key stmt %)
+                        (:key-params row-effect))
+        key (row-key table key-cells)
+        base-event {:sequence (count (:row-evidence db))
+                    :plan-index (:plan-index stmt)
+                    :op op
+                    :table table
+                    :key key-cells
+                    :source-location nil}]
+    (if (not= :done reported)
+      {:db (update db :row-evidence conj
+                   (assoc base-event
+                          :reported :error
+                          :location nil
+                          :present? false
+                          :applied? false
+                          :changes 0))
+       :outcome :error}
+      (case op
+        :insert-row
+        (let [[_ found-location] (visible-row db key)]
+          (if (some? found-location)
+            {:db (update db :row-evidence conj
+                         (assoc base-event
+                                :reported :constraint
+                                :location found-location
+                                :source-location found-location
+                                :present? true
+                                :applied? false
+                                :changes 0))
+             :outcome :constraint}
+            (let [location (if (some? (:staging db)) :staging :committed)
+                  row (into {}
+                            (map (fn [[column index]]
+                                   [column
+                                    (bound-value-cell stmt index)]))
+                            (:row row-effect))]
+              {:db (-> db
+                       (update :row-evidence conj
+                               (assoc base-event
+                                      :reported :done
+                                      :location location
+                                      :present? false
+                                      :applied? true
+                                      :changes 1))
+                       (update location assoc key row))
+               :outcome :written})))
+        :update-row
+        (let [[existing found-location] (visible-row db key)]
+          (if (nil? found-location)
+            {:db (update db :row-evidence conj
+                         (assoc base-event
+                                :reported :done
+                                :location nil
+                                :present? false
+                                :applied? false
+                                :changes 0))
+             :outcome :unchanged}
+            (let [_ (require-visible-row-key!
+                     table existing (:key-columns row-effect) key-cells)
+                  location (if (some? (:staging db)) :staging :committed)
+                  replacement
+                  (reduce
+                   (fn [row [column index]]
+                     (assoc row column
+                            (bound-value-cell stmt index)))
+                   existing
+                   (:set row-effect))]
+              {:db (-> db
+                       (update :row-evidence conj
+                               (assoc base-event
+                                      :reported :done
+                                      :location location
+                                      :source-location found-location
+                                      :present? true
+                                      :applied? true
+                                      :changes 1))
+                       (update location assoc key replacement))
+               :outcome :written})))))))
+
+(defn- complete-row-mutation-terminal!
+  "Atomically owns one :row-effect :insert-row/:update-row statement's
+  terminal step: derives and applies its row decision, updates the physical
+  connection, and publishes the reported SQLite result in one CAS, exactly
+  like complete-store-put-terminal!. A competing terminal step observes
+  misuse; a close that wins the same CAS makes the step fail as
+  use-after-close. The dynamic duplicate-insert constraint outcome sets
+  errcode 19 and changes 0 like any soft SQLite error; it never throws."
+  [w stmt-addr reported]
+  (loop []
+    (let [st (:state w)
+          s @st
+          stmt (get-in s [:stmts stmt-addr])]
+      (cond
+        (nil? stmt)
+        (if (contains? (:finalized-stmts s) stmt-addr)
+          (fail! :jolt.sim.sqlite/use-after-finalize
+                 "statement handle was already finalized"
+                 {:handle stmt-addr})
+          (fail! :jolt.sim.sqlite/unknown-handle
+                 "pointer is not a known statement handle"
+                 {:handle stmt-addr}))
+
+        (or (:done? stmt) (:errored? stmt))
+        (:misuse result-codes)
+
+        :else
+        (let [db-addr (:db stmt)
+              live-db (get-in s [:dbs db-addr])]
+          (cond
+            (nil? live-db)
+            (if (contains? (:closed-dbs s) db-addr)
+              (fail! :jolt.sim.sqlite/use-after-close
+                     "statement belongs to a closed connection"
+                     {:connection-id (:connection-id stmt)
+                      :plan-index (:plan-index stmt)})
+              (fail! :jolt.sim.sqlite/unknown-handle
+                     "statement refers to an unknown connection handle"
+                     {:plan-index (:plan-index stmt)}))
+
+            :else
+            (let [plan (:plan stmt)
+                  _ (require-bindings-complete! stmt)
+                  err (:error plan)
+                  borrowed (:borrowed stmt)
+                  decision (row-mutation-decision live-db stmt reported)
+                  next-db (:db decision)
+                  outcome (:outcome decision)
+                  terminal-db
+                  (case outcome
+                    :error
+                    (assoc next-db
+                           :errcode (:code err)
+                           :errmsg (or (:msg err) "database error")
+                           :changes 0
+                           :rowid 0)
+                    :constraint
+                    (assoc next-db
+                           :errcode (:constraint result-codes)
+                           :errmsg "UNIQUE constraint failed"
+                           :changes 0
+                           :rowid 0)
+                    :written
+                    (assoc next-db
+                           :errcode 0
+                           :errmsg "not an error"
+                           :changes 1
+                           :rowid (or (:last-row-id plan) 0))
+                    :unchanged
+                    (assoc next-db
+                           :errcode 0
+                           :errmsg "not an error"
+                           :changes 0
+                           :rowid (or (:last-row-id plan) 0)))
+                  terminal-stmt
+                  (assoc stmt
+                         :row-effect-evaluated? true
+                         :done? (or (= :written outcome)
+                                    (= :unchanged outcome))
+                         :errored? (or (= :error outcome)
+                                       (= :constraint outcome))
+                         :borrowed []
+                         :blob-cache {})
+                  next-state (-> s
+                                 (assoc-in [:dbs db-addr] terminal-db)
+                                 (assoc-in [:stmts stmt-addr] terminal-stmt))]
+              (if (compare-and-set! st s next-state)
+                (do
+                  (free-list! w borrowed)
+                  (case outcome
+                    :error (:code err)
+                    :constraint (:constraint result-codes)
+                    (:done result-codes)))
+                (recur)))))))))
+
+(defn- scan-snapshot-decision
+  "Pure first-step decision for one :row-effect :scan-rows. A successful scan
+  snapshots the current visible rows of exactly its own table, projects each
+  row's typed cells in :project order, and sorts them deterministically by
+  the declared :order-key; the snapshot is then immune to any later mutation.
+  An errored scan records an attempted effect without consulting or exposing
+  storage."
+  [db stmt reported]
+  (let [row-effect (:row-effect (:plan stmt))
+        table (:table row-effect)
+        base-event {:sequence (count (:row-evidence db))
+                    :plan-index (:plan-index stmt)
+                    :op :scan-rows
+                    :table table
+                    :key nil}]
+    (if (not= :done reported)
+      {:db (update db :row-evidence conj
+                   (assoc base-event
+                          :reported :error
+                          :location nil
+                          :present? false
+                          :applied? false
+                          :changes 0))
+       :stmt (assoc stmt
+                    :row-effect-evaluated? true
+                    :scan-rows [])}
+      (let [project (:project row-effect)
+            order-key (:order-key row-effect)
+            visible (visible-table-rows db table)
+            entries
+            (mapv
+             (fn [[key {:keys [row location]}]]
+               {:key-cells (nth key 2)
+                :source-location location
+                :order-cells (mapv #(scan-project-cell table row %)
+                                   order-key)
+                :cells (mapv #(scan-project-cell table row %) project)})
+             visible)
+            sorted (vec (sort compare-scan-entries entries))
+            rows (mapv :cells sorted)
+            locations (set (map :source-location sorted))
+            snapshot-location (cond
+                                (empty? locations) nil
+                                (= 1 (count locations)) (first locations)
+                                :else :mixed)]
+        {:db (update db :row-evidence conj
+                     (assoc base-event
+                            :reported :done
+                            :location snapshot-location
+                            :present? (pos? (count rows))
+                            :applied? false
+                            :changes 0))
+         :stmt (assoc stmt
+                      :row-effect-evaluated? true
+                      :scan-rows rows)}))))
+
+(defn- complete-scan-step!
+  "Linearizes one :row-effect :scan-rows step with connection/statement
+  lifetime, exactly like complete-store-get-step!. Its first call atomically
+  owns the visible-table snapshot, evidence event, and first ROW/DONE/error
+  publication. A caller that started from the same unsnapshotted statement
+  but loses that CAS observes misuse; a later ordinary call advances the
+  already-snapshotted rows. Close/finalize winners are reported without
+  recreating removed state."
+  [w stmt-addr first-call?]
+  (loop []
+    (let [st (:state w)
+          s @st
+          stmt (get-in s [:stmts stmt-addr])]
+      (cond
+        (nil? stmt)
+        (if (contains? (:finalized-stmts s) stmt-addr)
+          (fail! :jolt.sim.sqlite/use-after-finalize
+                 "statement handle was already finalized"
+                 {:handle stmt-addr})
+          (fail! :jolt.sim.sqlite/unknown-handle
+                 "pointer is not a known statement handle"
+                 {:handle stmt-addr}))
+
+        (or (:done? stmt) (:errored? stmt))
+        (:misuse result-codes)
+
+        (and first-call? (:row-effect-evaluated? stmt))
+        (:misuse result-codes)
+
+        :else
+        (let [db-addr (:db stmt)
+              live-db (get-in s [:dbs db-addr])]
+          (cond
+            (nil? live-db)
+            (if (contains? (:closed-dbs s) db-addr)
+              (fail! :jolt.sim.sqlite/use-after-close
+                     "statement belongs to a closed connection"
+                     {:connection-id (:connection-id stmt)
+                      :plan-index (:plan-index stmt)})
+              (fail! :jolt.sim.sqlite/unknown-handle
+                     "statement refers to an unknown connection handle"
+                     {:plan-index (:plan-index stmt)}))
+
+            :else
+            (let [plan (:plan stmt)
+                  err (:error plan)
+                  snapshot? (not (:row-effect-evaluated? stmt))
+                  decision (when snapshot?
+                             (scan-snapshot-decision
+                              live-db stmt (if err :error :done)))
+                  db (if snapshot? (:db decision) live-db)
+                  stmt (if snapshot? (:stmt decision) stmt)
+                  rows (vec (:scan-rows stmt))
+                  next-idx (inc (:row-index stmt))
+                  borrowed (:borrowed stmt)
+                  [next-db next-stmt result]
+                  (cond
+                    err
+                    [(assoc db
+                            :errcode (:code err)
+                            :errmsg (or (:msg err) "database error")
+                            :changes 0
+                            :rowid 0)
+                     (assoc stmt
+                            :errored? true
+                            :borrowed []
+                            :blob-cache {})
+                     (:code err)]
+
+                    (< next-idx (count rows))
+                    [(assoc db
+                            :errcode (:row result-codes)
+                            :errmsg "not an error")
+                     (assoc stmt
+                            :row-index next-idx
+                            :borrowed []
+                            :blob-cache {})
+                     (:row result-codes)]
+
+                    :else
+                    [(assoc db
+                            :errcode 0
+                            :errmsg "not an error"
+                            :changes (or (:changes plan) 0)
+                            :rowid (or (:last-row-id plan) 0))
+                     (assoc stmt
+                            :done? true
+                            :borrowed []
+                            :blob-cache {})
+                     (:done result-codes)])
+                  next-state (-> s
+                                 (assoc-in [:dbs db-addr] next-db)
+                                 (assoc-in [:stmts stmt-addr] next-stmt))]
+              (if (compare-and-set! st s next-state)
+                (do
+                  (free-list! w borrowed)
+                  result)
+                (recur)))))))))
+
 ;; ---- result cell access -------------------------------------------------
 
 (defn- current-row [stmt]
   (let [idx (:row-index stmt)
-        rows (if (contains? stmt :store-rows)
-               (:store-rows stmt)
-               (:rows (:plan stmt)))]
+        rows (cond
+               (contains? stmt :scan-rows) (:scan-rows stmt)
+               (contains? stmt :store-rows) (:store-rows stmt)
+               :else (:rows (:plan stmt)))]
     (when (or (:done? stmt)
               (:errored? stmt)
               (neg? idx)
@@ -1212,8 +1990,9 @@
                 :columns (column-names plan)
                 :bindings {} :row-index -1 :done? false :errored? false
                 :borrowed [] :blob-cache {}
-                :tx-effect-evaluated? false
-                :store-effect-evaluated? false})
+                 :tx-effect-evaluated? false
+                 :store-effect-evaluated? false
+                 :row-effect-evaluated? false})
         (:ok result-codes)))))
 
 (defn- h-step [w {:keys [arguments]}]
@@ -1226,12 +2005,24 @@
       :else
       (let [plan (:plan stmt)
             store-effect (:store-effect plan)
-            get-effect? (and store-effect (= :get (:op store-effect)))]
+            row-effect (:row-effect plan)
+            get-effect? (and store-effect (= :get (:op store-effect)))
+            scan-effect? (and row-effect (= :scan-rows (:op row-effect)))
+            row-mutation? (and row-effect
+                               (contains? #{:insert-row :update-row}
+                                          (:op row-effect)))]
         (require-bindings-complete! stmt)
         (cond
           get-effect?
           (complete-store-get-step!
            w stmt-addr (not (:store-effect-evaluated? stmt)))
+
+          ;; A scan owns its first step completely -- snapshot, evidence, and
+          ;; any plan-level error publication -- ahead of every generic path,
+          ;; exactly like a store get.
+          scan-effect?
+          (complete-scan-step!
+           w stmt-addr (not (:row-effect-evaluated? stmt)))
 
           (:error plan)
           (let [err (:error plan)]
@@ -1248,6 +2039,11 @@
             ;; terminal statement result share one CAS, mirroring :tx-effect.
             (and store-effect (= :put (:op store-effect)))
             (complete-store-put-terminal! w stmt-addr :error)
+
+            ;; A reported error on a row mutation records the attempted row
+            ;; effect and never reads or writes a row, in the same one CAS.
+            row-mutation?
+            (complete-row-mutation-terminal! w stmt-addr :error)
 
             :else
             (do
@@ -1277,6 +2073,9 @@
 
                 (and store-effect (= :put (:op store-effect)))
                 (complete-store-put-terminal! w stmt-addr :done)
+
+                row-mutation?
+                (complete-row-mutation-terminal! w stmt-addr :done)
 
                 :else
                 (do
@@ -1549,10 +2348,15 @@
   :autocommit?, the active address-free :tx descriptor, stable :tx-evidence,
   and every :autocommit-evidence observation, plus the physical store
   boundary: :committed and :staging (nil in autocommit, a map inside a
-  transaction) and stable :store-evidence. Statement records carry the plan,
+  transaction) and stable :store-evidence, plus the physical table-row
+  boundary: complete rows live in the same :committed/:staging maps under
+  tagged [:jolt.sim.sqlite/row table key-cells] identities and every row
+  directive lands in stable :row-evidence. Statement records carry the plan,
   stable plan index, bindings, current row index, done/errored flags,
-  :tx-effect-evaluated?, :store-effect-evaluated?, and (for a :store-effect
-  :get, after its first step) :store-rows. Removed connection records are
+  :tx-effect-evaluated?, :store-effect-evaluated?,
+  :row-effect-evaluated?, (for a :store-effect :get, after its first step)
+  :store-rows, and (for a :row-effect :scan-rows, after its first step)
+  :scan-rows. Removed connection records are
   appended in close order to
   :closed-db-evidence without their raw handle addresses, retaining their
   final :committed/:staging and, if closed with an active transaction,

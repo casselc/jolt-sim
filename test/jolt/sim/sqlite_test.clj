@@ -71,6 +71,51 @@
     (native H :free stmt-cell)
     data))
 
+(defn- bind-cell!
+  "Binds one modeled SQLite cell through the same public FFI surface used by
+  db.sqlite. BLOB storage is released immediately after sqlite3_bind_blob64,
+  making every row-effect assertion also exercise the model's copy-in rule."
+  [H stmt index cell]
+  (case (:type cell)
+    :integer
+    (is (= 0 (ff H "sqlite3_bind_int64" [stmt index (:value cell)])))
+
+    :float
+    (is (= 0 (ff H "sqlite3_bind_double"
+                 [stmt index (double (:value cell))])))
+
+    :text
+    (let [value (:value cell)
+          n (alength (.getBytes value "UTF-8"))]
+      (is (= 0 (ff H "sqlite3_bind_text" [stmt index value n 0]))))
+
+    :blob
+    (let [bytes (vec (or (:value cell) []))]
+      (if (empty? bytes)
+        (is (= 0 (ff H "sqlite3_bind_blob64" [stmt index 0 0 0])))
+        (let [ptr (native H :alloc (count bytes))]
+          (try
+            (native H :write-array ptr (byte-array bytes))
+            (is (= 0 (ff H "sqlite3_bind_blob64"
+                         [stmt index ptr (count bytes) 0])))
+            (finally
+              (native H :free ptr))))))
+
+    :null
+    (is (= 0 (ff H "sqlite3_bind_null" [stmt index])))))
+
+(defn- run-row-statement!
+  [H db sql bindings]
+  (let [stmt (prepare H db sql)]
+    (doseq [[index cell] bindings]
+      (bind-cell! H stmt index cell))
+    (let [result (ff H "sqlite3_step" [stmt])]
+      (is (= 0 (ff H "sqlite3_finalize" [stmt])))
+      result)))
+
+(defn- modeled-row-key [table key-cells]
+  [:jolt.sim.sqlite/row table key-cells])
+
 ;; ---- handler shape ------------------------------------------------------
 
 (deftest handlers-merge-23-sqlite-keys-and-16-native-ops
@@ -367,7 +412,8 @@
             :errcode 0 :errmsg "not an error" :changes 0 :rowid 0
             :autocommit? true :tx nil :tx-evidence []
             :autocommit-evidence [1]
-            :committed {} :staging nil :store-evidence []}
+            :committed {} :staging nil :store-evidence []
+            :row-evidence []}
            (get-in (sqlite/state w) [:dbs db])))
     (let [s1 (prepare H db "BEGIN")]
       (is (= 101 (ff H "sqlite3_step" [s1])))
@@ -751,6 +797,7 @@
             [(tx-event 0 0 :begin :on-success :done true nil true false)]
             :autocommit-evidence [0]
             :committed {} :staging {} :store-evidence []
+            :row-evidence []
             :close-index 0
             :discarded-transaction {:begin-event 0 :begin-plan-index 0}
             :discarded-staging {}}
@@ -766,6 +813,7 @@
                 :autocommit? true :tx nil :tx-evidence []
                 :autocommit-evidence []
                 :committed {} :staging nil :store-evidence []
+                :row-evidence []
                 :close-index 1}
                evidence))))
     (is (true? (sqlite/clean? w)))))
@@ -1322,6 +1370,667 @@
       (is (= 0 (ff H "sqlite3_finalize" [s2]))))
     (close-db H db)
     (is (true? (sqlite/clean? w)))))
+
+;; ---- physical table-row boundary ---------------------------------------
+
+(deftest row-effect-plan-contract-is-closed-and-presence-sensitive
+  (let [invalid?
+        (fn [plan]
+          (= :jolt.sim.sqlite/invalid-plan
+             (:type (ex-data-of #(sqlite/world [plan])))))
+        params {1 {:type :integer :value 1}
+                2 {:type :text :value "v"}}
+        insert {:op :insert-row :table :outbox/items
+                :key-params [1]
+                :row [["id" 1] ["value" 2]]}
+        update {:op :update-row :table :outbox/items
+                :key-params [1] :key-columns ["id"]
+                :set [["value" 2]]}
+        scan {:op :scan-rows :table :outbox/items
+              :project ["id" "value"] :order-key ["id"]}]
+    ;; Presence, rather than truthiness or seqability, owns these exclusions.
+    ;; An explicitly empty generic result set or column list is still a second
+    ;; producer for row-effect results and therefore fails closed.
+    (is (invalid? {:sql "insert" :params params :rows []
+                   :row-effect insert}))
+    (is (invalid? {:sql "scan" :columns [] :row-effect scan}))
+
+    ;; Update identity is declared by a one-to-one column/parameter mapping.
+    ;; Parameter position alone must never stand in for key-column identity.
+    (is (invalid? {:sql "update" :params params
+                   :row-effect (dissoc update :key-columns)}))
+    (is (invalid? {:sql "update" :params params
+                   :row-effect (assoc update :key-columns [])}))
+    (is (invalid? {:sql "update" :params params
+                   :row-effect (assoc update :key-columns ["id" "tenant"])}))
+    (is (invalid? {:sql "update" :params params
+                   :row-effect (assoc update :key-columns ["id" "id"]
+                                     :key-params [1 1])}))
+    (is (invalid? {:sql "update" :params params
+                   :row-effect (assoc update :key-columns [1])}))
+    ;; A new value may use a different parameter index, but it may not mutate
+    ;; any column that participates in row identity.
+    (is (invalid? {:sql "update" :params params
+                   :row-effect (assoc update :set [["id" 2]])}))
+    (is (map? (sqlite/world [{:sql "update" :params params
+                              :row-effect update}])))))
+
+(deftest row-insert-uses-actual-bindings-preserves-only-empty-blob-presentation
+  (let [id {:type :integer :value 7 :plan-only :discard-me}
+        score {:type :float :value 1 :plan-only :discard-me}
+        empty-blob {:type :blob :value [] :null-pointer? true
+                    :plan-only :discard-me}
+        row-effect {:op :insert-row :table :outbox/items
+                    :key-params [1]
+                    :row [["id" 1] ["score" 2] ["payload" 3]]}
+        plans [{:sql "insert-1"
+                :params {1 id 2 score 3 empty-blob}
+                :row-effect row-effect}
+               {:sql "insert-duplicate"
+                :params {1 {:type :integer :value 7}
+                         2 {:type :float :value 2}
+                         3 {:type :blob :value [9]}}
+                :row-effect row-effect}
+               {:sql "insert-error"
+                :params {1 {:type :integer :value 8}
+                         2 {:type :float :value 3}
+                         3 {:type :blob :value []}}
+                :row-effect row-effect
+                :error {:code 5 :msg "write failed"}}]
+        w (sqlite/world plans)
+        H (sqlite/handlers w)
+        db (open-db H)
+        key (modeled-row-key :outbox/items
+                             [{:type :integer :value 7}])]
+    (is (= 101 (run-row-statement!
+                H db "insert-1"
+                [[1 {:type :integer :value 7}]
+                 [2 {:type :float :value 1.0}]
+                 [3 {:type :blob :value []}]])))
+    (is (= {"id" {:type :integer :value 7}
+            "score" {:type :float :value 1.0}
+            "payload" {:type :blob :value [] :null-pointer? true}}
+           (get-in (sqlite/state w) [:dbs db :committed key])))
+    (is (= 1 (ff H "sqlite3_changes" [db])))
+
+    ;; Duplicate identity is a soft constraint and cannot replace the row.
+    (is (= 19 (run-row-statement!
+               H db "insert-duplicate"
+               [[1 {:type :integer :value 7}]
+                [2 {:type :float :value 2.0}]
+                [3 {:type :blob :value [9]}]])))
+    (is (= 19 (ff H "sqlite3_errcode" [db])))
+    (is (= 0 (ff H "sqlite3_changes" [db])))
+    (is (= 2 (count (filter #(= key (modeled-row-key
+                                     :outbox/items (:key %)))
+                            (get-in (sqlite/state w)
+                                    [:dbs db :row-evidence])))))
+    (is (= 1 (count (filter #(= key %)
+                            (keys (get-in (sqlite/state w)
+                                          [:dbs db :committed]))))))
+
+    ;; A plan-level failure records one attempted effect but performs no write.
+    (is (= 5 (run-row-statement!
+              H db "insert-error"
+              [[1 {:type :integer :value 8}]
+               [2 {:type :float :value 3.0}]
+               [3 {:type :blob :value []}]])))
+    (is (nil? (get-in (sqlite/state w)
+                      [:dbs db :committed
+                       (modeled-row-key :outbox/items
+                                        [{:type :integer :value 8}])])))
+    (is (= [:done :constraint :error]
+           (mapv :reported
+                 (get-in (sqlite/state w) [:dbs db :row-evidence]))))
+    (close-db H db)
+    (is (true? (sqlite/clean? w)))))
+
+(deftest row-update-hit-miss-and-source-provenance-are-distinct-from-write-target
+  (let [insert {:op :insert-row :table :outbox/items
+                :key-params [1]
+                :row [["id" 1] ["value" 2]]}
+        update {:op :update-row :table :outbox/items
+                :key-params [1] :key-columns ["id"]
+                :set [["value" 2]]}
+        plans [{:sql "insert"
+                :params {1 {:type :integer :value 1}
+                         2 {:type :text :value "old"}}
+                :row-effect insert}
+               {:sql "miss"
+                :params {1 {:type :integer :value 9}
+                         2 {:type :text :value "absent"}}
+                :row-effect update}
+               {:sql "begin" :tx-effect {:op :begin}}
+               {:sql "update-committed"
+                :params {1 {:type :integer :value 1}
+                         2 {:type :text :value "staged-1"}}
+                :row-effect update}
+               {:sql "update-staging"
+                :params {1 {:type :integer :value 1}
+                         2 {:type :text :value "staged-2"}}
+                :row-effect update}
+               {:sql "rollback" :tx-effect {:op :rollback}}]
+        w (sqlite/world plans)
+        H (sqlite/handlers w)
+        db (open-db H)
+        key (modeled-row-key :outbox/items
+                             [{:type :integer :value 1}])]
+    (is (= 101 (run-row-statement!
+                H db "insert"
+                [[1 {:type :integer :value 1}]
+                 [2 {:type :text :value "old"}]])))
+    (is (= 101 (run-row-statement!
+                H db "miss"
+                [[1 {:type :integer :value 9}]
+                 [2 {:type :text :value "absent"}]])))
+    (is (= 0 (ff H "sqlite3_changes" [db])))
+    (is (= "old" (get-in (sqlite/state w)
+                          [:dbs db :committed key "value" :value])))
+    (is (= 101 (run-row-statement! H db "begin" [])))
+    (is (= 101 (run-row-statement!
+                H db "update-committed"
+                [[1 {:type :integer :value 1}]
+                 [2 {:type :text :value "staged-1"}]])))
+    (is (= "old" (get-in (sqlite/state w)
+                          [:dbs db :committed key "value" :value])))
+    (is (= "staged-1" (get-in (sqlite/state w)
+                               [:dbs db :staging key "value" :value])))
+    (is (= 101 (run-row-statement!
+                H db "update-staging"
+                [[1 {:type :integer :value 1}]
+                 [2 {:type :text :value "staged-2"}]])))
+    (is (= 101 (run-row-statement! H db "rollback" [])))
+    (is (= "old" (get-in (sqlite/state w)
+                          [:dbs db :committed key "value" :value])))
+    (is (= [{:location :committed :source-location nil
+             :present? false :applied? true :changes 1}
+            {:location nil :source-location nil
+             :present? false :applied? false :changes 0}
+            {:location :staging :source-location :committed
+             :present? true :applied? true :changes 1}
+            {:location :staging :source-location :staging
+             :present? true :applied? true :changes 1}]
+           (mapv #(select-keys % [:location :source-location :present?
+                                  :applied? :changes])
+                 (get-in (sqlite/state w) [:dbs db :row-evidence]))))
+    (close-db H db)
+    (is (true? (sqlite/clean? w)))))
+
+(deftest row-overlays-scan-provenance-and-commit-rollback-are-explicit
+  (let [insert {:op :insert-row :table :outbox/items
+                :key-params [1]
+                :row [["id" 1] ["value" 2]]}
+        scan {:op :scan-rows :table :outbox/items
+              :project ["id" "value"] :order-key ["id"]}
+        plans [{:sql "insert-1"
+                :params {1 {:type :integer :value 1}
+                         2 {:type :text :value "one"}}
+                :row-effect insert}
+               {:sql "begin-rollback" :tx-effect {:op :begin}}
+               {:sql "insert-2-rollback"
+                :params {1 {:type :integer :value 2}
+                         2 {:type :text :value "two"}}
+                :row-effect insert}
+               {:sql "scan-mixed" :row-effect scan}
+               {:sql "rollback" :tx-effect {:op :rollback}}
+               {:sql "scan-committed" :row-effect scan}
+               {:sql "begin-commit" :tx-effect {:op :begin}}
+               {:sql "insert-2-commit"
+                :params {1 {:type :integer :value 2}
+                         2 {:type :text :value "two"}}
+                :row-effect insert}
+               {:sql "commit" :tx-effect {:op :commit}}
+               {:sql "scan-after-commit" :row-effect scan}]
+        w (sqlite/world plans)
+        H (sqlite/handlers w)
+        db (open-db H)]
+    (is (= 101 (run-row-statement!
+                H db "insert-1"
+                [[1 {:type :integer :value 1}]
+                 [2 {:type :text :value "one"}]])))
+    (is (= 101 (run-row-statement! H db "begin-rollback" [])))
+    (is (= 101 (run-row-statement!
+                H db "insert-2-rollback"
+                [[1 {:type :integer :value 2}]
+                 [2 {:type :text :value "two"}]])))
+    (let [stmt (prepare H db "scan-mixed")]
+      (is (= 100 (ff H "sqlite3_step" [stmt])))
+      (is (= 1 (ff H "sqlite3_column_int64" [stmt 0])))
+      (is (= 100 (ff H "sqlite3_step" [stmt])))
+      (is (= 2 (ff H "sqlite3_column_int64" [stmt 0])))
+      (is (= 101 (ff H "sqlite3_step" [stmt])))
+      (is (= 0 (ff H "sqlite3_finalize" [stmt]))))
+    (is (= 101 (run-row-statement! H db "rollback" [])))
+    (let [stmt (prepare H db "scan-committed")]
+      (is (= 100 (ff H "sqlite3_step" [stmt])))
+      (is (= 1 (ff H "sqlite3_column_int64" [stmt 0])))
+      (is (= 101 (ff H "sqlite3_step" [stmt])))
+      (is (= 0 (ff H "sqlite3_finalize" [stmt]))))
+    (is (= 101 (run-row-statement! H db "begin-commit" [])))
+    (is (= 101 (run-row-statement!
+                H db "insert-2-commit"
+                [[1 {:type :integer :value 2}]
+                 [2 {:type :text :value "two"}]])))
+    (is (= 101 (run-row-statement! H db "commit" [])))
+    (let [stmt (prepare H db "scan-after-commit")]
+      (is (= 100 (ff H "sqlite3_step" [stmt])))
+      (is (= 100 (ff H "sqlite3_step" [stmt])))
+      (is (= 101 (ff H "sqlite3_step" [stmt])))
+      (is (= 0 (ff H "sqlite3_finalize" [stmt]))))
+    (is (= [:mixed :committed :committed]
+           (mapv :location
+                 (filter #(= :scan-rows (:op %))
+                         (get-in (sqlite/state w)
+                                 [:dbs db :row-evidence])))))
+    (close-db H db)
+    (is (true? (sqlite/clean? w)))))
+
+(deftest scan-order-is-type-first-exact-and-independent-of-insertion-order
+  (let [scan-order
+        (fn [cells]
+          (let [insert {:op :insert-row :table :outbox/order
+                        :key-params [1]
+                        :row [["id" 1]]}
+                plans (conj (mapv (fn [i cell]
+                                    {:sql (str "insert-" i)
+                                     :params {1 cell}
+                                     :row-effect insert})
+                                  (range (count cells)) cells)
+                            {:sql "scan"
+                             :row-effect
+                             {:op :scan-rows :table :outbox/order
+                              :project ["id"] :order-key ["id"]}})
+                w (sqlite/world plans)
+                H (sqlite/handlers w)
+                db (open-db H)]
+            (doseq [[i cell] (map-indexed vector cells)]
+              (is (= 101 (run-row-statement!
+                          H db (str "insert-" i) [[1 cell]]))))
+            (let [stmt (prepare H db "scan")
+                  values
+                  (loop [out []]
+                    (let [result (ff H "sqlite3_step" [stmt])]
+                      (if (= 100 result)
+                        (let [type-code (ff H "sqlite3_column_type" [stmt 0])]
+                          (recur
+                           (conj out
+                                 (if (= 1 type-code)
+                                   [:integer
+                                    (ff H "sqlite3_column_int64" [stmt 0])]
+                                   [:float
+                                    (ff H "sqlite3_column_double" [stmt 0])]))))
+                        (do
+                          (is (= 101 result))
+                          out))))]
+              (is (= 0 (ff H "sqlite3_finalize" [stmt])))
+              (close-db H db)
+              (is (true? (sqlite/clean? w)))
+              values)))
+        int-small {:type :integer :value 1}
+        float-small {:type :float :value 1.0}
+        int-wide-a {:type :integer :value 9007199254740992}
+        int-wide-b {:type :integer :value 9007199254740993}
+        expected [[:integer 1]
+                  [:integer 9007199254740992]
+                  [:integer 9007199254740993]
+                  [:float 1.0]]]
+    ;; Type-first means INTEGER always precedes FLOAT; exact integer compare
+    ;; then distinguishes adjacent values which collapse to one IEEE double.
+    (is (= expected
+           (scan-order [float-small int-wide-b int-small int-wide-a])))
+    (is (= expected
+           (scan-order [int-wide-a int-small int-wide-b float-small])))))
+
+(deftest defensive-float-order-puts-nan-last-with-a-stable-key-tiebreak
+  ;; A NaN parameter cannot pass the public exact-binding contract because
+  ;; NaN is not equal to itself. This is deliberately a narrow control of the
+  ;; defensive comparator branch, not a fake row inserted into world state.
+  (let [compare-entries @(resolve 'jolt.sim.sqlite/compare-scan-entries)
+        entry (fn [label key value]
+                {:label label
+                 :key-cells [{:type :integer :value key}]
+                 :order-cells [{:type :float :value value}]
+                 :cells [{:type :float :value value}]})
+        entries [(entry :nan-2 2 ##NaN)
+                 (entry :positive-infinity 12 ##Inf)
+                 (entry :ordinary 11 2.5)
+                 (entry :negative-infinity 10 ##-Inf)
+                 (entry :nan-1 1 ##NaN)]
+        expected [:negative-infinity :ordinary :positive-infinity
+                  :nan-1 :nan-2]
+        labels (fn [xs]
+                 (mapv :label (sort compare-entries xs)))]
+    (is (= expected (labels entries)))
+    (is (= expected (labels (vec (reverse entries)))))))
+
+(deftest runtime-row-schema-failures-preserve-storage-and-evidence
+  (let [insert {:op :insert-row :table :outbox/items
+                :key-params [1]
+                :row [["id" 1] ["value" 2]]}
+        update {:op :update-row :table :outbox/items
+                :key-params [1] :key-columns ["id"]
+                :set [["value" 2]]}
+        update-plans
+        (fn [sql]
+          [{:sql "insert"
+            :params {1 {:type :integer :value 1}
+                     2 {:type :text :value "old"}}
+            :row-effect insert}
+           {:sql sql
+            :params {1 {:type :integer :value 1}
+                     2 {:type :text :value "new"}}
+            :row-effect update}])
+        exercise-update
+        (fn [sql corrupt-row]
+          (let [w (sqlite/world (update-plans sql))
+                H (sqlite/handlers w)
+                db (open-db H)
+                key (modeled-row-key :outbox/items
+                                     [{:type :integer :value 1}])]
+            (is (= 101 (run-row-statement!
+                        H db "insert"
+                        [[1 {:type :integer :value 1}]
+                         [2 {:type :text :value "old"}]])))
+            ;; Establish a physically addressable row whose declared schema
+            ;; disagrees with its tagged identity. This is corruption/setup,
+            ;; not a modeled effect; the public update must fail before CAS.
+            (swap! (:state w) update-in [:dbs db :committed key] corrupt-row)
+            (let [before (get-in (sqlite/state w) [:dbs db])
+                  stmt (prepare H db sql)]
+              (bind-cell! H stmt 1 {:type :integer :value 1})
+              (bind-cell! H stmt 2 {:type :text :value "new"})
+              (is (= :jolt.sim.sqlite/row-key-schema-mismatch
+                     (:type (ex-data-of #(ff H "sqlite3_step" [stmt])))))
+              ;; The hard failure publishes neither a replacement nor an
+              ;; evidence event and leaves the connection byte-for-byte equal.
+              (is (= before (get-in (sqlite/state w) [:dbs db])))
+              (is (= 1 (count (:row-evidence before))))
+              (is (= 0 (ff H "sqlite3_finalize" [stmt]))))
+            (close-db H db)
+            (is (true? (sqlite/clean? w)))))]
+    (exercise-update
+     "update-wrong-key-value"
+     #(assoc % "id" {:type :integer :value 2}))
+    (exercise-update
+     "update-absent-key-column"
+     #(dissoc % "id")))
+
+  ;; A scan's project and order-key share the same fail-closed row lookup. A
+  ;; missing order-key column is also projected, so this one witness covers
+  ;; both consumers without altering the stored row or evidence after failure.
+  (let [plans [{:sql "insert"
+                :params {1 {:type :integer :value 1}
+                         2 {:type :text :value "old"}}
+                :row-effect {:op :insert-row :table :outbox/items
+                             :key-params [1]
+                             :row [["id" 1] ["value" 2]]}}
+               {:sql "scan-missing-column"
+                :row-effect {:op :scan-rows :table :outbox/items
+                             :project ["id" "missing"]
+                             :order-key ["missing"]}}]
+        w (sqlite/world plans)
+        H (sqlite/handlers w)
+        db (open-db H)]
+    (is (= 101 (run-row-statement!
+                H db "insert"
+                [[1 {:type :integer :value 1}]
+                 [2 {:type :text :value "old"}]])))
+    (let [before (get-in (sqlite/state w) [:dbs db])
+          stmt (prepare H db "scan-missing-column")]
+      (is (= :jolt.sim.sqlite/scan-projection
+             (:type (ex-data-of #(ff H "sqlite3_step" [stmt])))))
+      (is (= before (get-in (sqlite/state w) [:dbs db])))
+      (is (= 1 (count (:row-evidence before))))
+      (is (= 0 (ff H "sqlite3_finalize" [stmt]))))
+    (close-db H db)
+    (is (true? (sqlite/clean? w)))))
+
+(deftest rolled-back-staged-insert-does-not-cause-a-false-constraint
+  (let [insert {:op :insert-row :table :outbox/items
+                :key-params [1]
+                :row [["id" 1] ["value" 2]]}
+        params {1 {:type :integer :value 7}
+                2 {:type :text :value "value"}}
+        plans [{:sql "begin" :tx-effect {:op :begin}}
+               {:sql "insert-staged" :params params :row-effect insert}
+               {:sql "rollback" :tx-effect {:op :rollback}}
+               {:sql "insert-after-rollback" :params params
+                :row-effect insert}]
+        w (sqlite/world plans)
+        H (sqlite/handlers w)
+        db (open-db H)
+        bindings [[1 {:type :integer :value 7}]
+                  [2 {:type :text :value "value"}]]]
+    (is (= 101 (run-row-statement! H db "begin" [])))
+    (is (= 101 (run-row-statement! H db "insert-staged" bindings)))
+    (is (= 101 (run-row-statement! H db "rollback" [])))
+    (is (= {} (get-in (sqlite/state w) [:dbs db :committed])))
+    (is (nil? (get-in (sqlite/state w) [:dbs db :staging])))
+    ;; The discarded row identity is absent from the current visible view, so
+    ;; the same insert is a fresh success rather than SQLITE_CONSTRAINT.
+    (is (= 101 (run-row-statement!
+                H db "insert-after-rollback" bindings)))
+    (is (= 0 (ff H "sqlite3_errcode" [db])))
+    (is (= 1 (ff H "sqlite3_changes" [db])))
+    (is (= [[:done :staging] [:done :committed]]
+           (mapv (juxt :reported :location)
+                 (get-in (sqlite/state w) [:dbs db :row-evidence]))))
+    (close-db H db)
+    (is (true? (sqlite/clean? w)))))
+
+(deftest scan-first-step-snapshot-and-current-row-survive-later-update
+  (let [insert {:op :insert-row :table :outbox/items
+                :key-params [1]
+                :row [["id" 1] ["value" 2]]}
+        update {:op :update-row :table :outbox/items
+                :key-params [1] :key-columns ["id"]
+                :set [["value" 2]]}
+        scan {:op :scan-rows :table :outbox/items
+              :project ["id" "value"] :order-key ["id"]}
+        plans [{:sql "insert-1"
+                :params {1 {:type :integer :value 1}
+                         2 {:type :text :value "one"}}
+                :row-effect insert}
+               {:sql "insert-2"
+                :params {1 {:type :integer :value 2}
+                         2 {:type :text :value "old"}}
+                :row-effect insert}
+               {:sql "scan-snapshot" :row-effect scan}
+               {:sql "update-2"
+                :params {1 {:type :integer :value 2}
+                         2 {:type :text :value "new"}}
+                :row-effect update}
+               {:sql "scan-current" :row-effect scan}]
+        w (sqlite/world plans)
+        H (sqlite/handlers w)
+        db (open-db H)]
+    (is (= 101 (run-row-statement!
+                H db "insert-1"
+                [[1 {:type :integer :value 1}]
+                 [2 {:type :text :value "one"}]])))
+    (is (= 101 (run-row-statement!
+                H db "insert-2"
+                [[1 {:type :integer :value 2}]
+                 [2 {:type :text :value "old"}]])))
+    (let [snapshot (prepare H db "scan-snapshot")]
+      (is (= 100 (ff H "sqlite3_step" [snapshot])))
+      (is (= 1 (ff H "sqlite3_column_int64" [snapshot 0])))
+      (is (= "one" (ff H "sqlite3_column_text" [snapshot 1])))
+      (is (= 101 (run-row-statement!
+                  H db "update-2"
+                  [[1 {:type :integer :value 2}]
+                   [2 {:type :text :value "new"}]])))
+      ;; The current row remains routed through the immutable statement-local
+      ;; snapshot, and the later row is the old value captured with it.
+      (is (= "one" (ff H "sqlite3_column_text" [snapshot 1])))
+      (is (= 100 (ff H "sqlite3_step" [snapshot])))
+      (is (= 2 (ff H "sqlite3_column_int64" [snapshot 0])))
+      (is (= "old" (ff H "sqlite3_column_text" [snapshot 1])))
+      (is (= 101 (ff H "sqlite3_step" [snapshot])))
+      (is (= 0 (ff H "sqlite3_finalize" [snapshot]))))
+    (let [current (prepare H db "scan-current")]
+      (is (= 100 (ff H "sqlite3_step" [current])))
+      (is (= 100 (ff H "sqlite3_step" [current])))
+      (is (= "new" (ff H "sqlite3_column_text" [current 1])))
+      (is (= 101 (ff H "sqlite3_step" [current])))
+      (is (= 0 (ff H "sqlite3_finalize" [current]))))
+    (close-db H db)
+    (is (true? (sqlite/clean? w)))))
+
+(deftest concurrent-row-insert-terminal-step-writes-exactly-once
+  (let [plan {:sql "insert"
+              :params {1 {:type :integer :value 7}
+                       2 {:type :text :value "value"}}
+              :row-effect {:op :insert-row :table :outbox/items
+                           :key-params [1]
+                           :row [["id" 1] ["value" 2]]}}
+        w (sqlite/world [plan])
+        H (sqlite/handlers w)
+        db (open-db H)
+        stmt (prepare H db "insert")
+        _ (bind-cell! H stmt 1 {:type :integer :value 7})
+        _ (bind-cell! H stmt 2 {:type :text :value "value"})
+        decision-var (resolve 'jolt.sim.sqlite/row-mutation-decision)
+        original @decision-var
+        arrivals (atom 0)
+        both-inside (promise)
+        wrapped
+        (fn [db-state statement reported]
+          (let [arrival (swap! arrivals inc)]
+            (when (<= arrival 2)
+              (when (= arrival 2) (deliver both-inside true))
+              (when (= ::timeout (deref both-inside 5000 ::timeout))
+                (throw (ex-info "row insert contention timed out"
+                                {:arrival arrival}))))
+            (original db-state statement reported)))
+        run-step (fn []
+                   (try {:value (ff H "sqlite3_step" [stmt])}
+                        (catch :default e {:error (ex-data e)})))
+        results (with-redefs-fn
+                  {decision-var wrapped}
+                  #(let [a (future (run-step))
+                         b (future (run-step))]
+                     [(await-worker a) (await-worker b)]))]
+    (is (= 2 @arrivals))
+    (is (not-any? #{::timeout} results) (pr-str results))
+    (is (= #{21 101} (set (map :value results))) (pr-str results))
+    (is (= 1 (count (get-in (sqlite/state w)
+                            [:dbs db :row-evidence]))))
+    (is (= 1 (count (filter vector?
+                            (keys (get-in (sqlite/state w)
+                                          [:dbs db :committed]))))))
+    (is (= 0 (ff H "sqlite3_finalize" [stmt])))
+    (close-db H db)
+    (is (true? (sqlite/clean? w)))))
+
+(deftest concurrent-scan-first-step-snapshots-and-publishes-exactly-once
+  (let [insert {:op :insert-row :table :outbox/items
+                :key-params [1] :row [["id" 1]]}
+        scan {:op :scan-rows :table :outbox/items
+              :project ["id"] :order-key ["id"]}
+        w (sqlite/world [{:sql "insert"
+                          :params {1 {:type :integer :value 7}}
+                          :row-effect insert}
+                         {:sql "scan" :row-effect scan}])
+        H (sqlite/handlers w)
+        db (open-db H)
+        _ (is (= 101 (run-row-statement!
+                      H db "insert" [[1 {:type :integer :value 7}]])))
+        stmt (prepare H db "scan")
+        decision-var (resolve 'jolt.sim.sqlite/scan-snapshot-decision)
+        original @decision-var
+        arrivals (atom 0)
+        both-inside (promise)
+        wrapped
+        (fn [db-state statement reported]
+          (let [arrival (swap! arrivals inc)]
+            (when (<= arrival 2)
+              (when (= arrival 2) (deliver both-inside true))
+              (when (= ::timeout (deref both-inside 5000 ::timeout))
+                (throw (ex-info "row scan contention timed out"
+                                {:arrival arrival}))))
+            (original db-state statement reported)))
+        run-step (fn []
+                   (try {:value (ff H "sqlite3_step" [stmt])}
+                        (catch :default e {:error (ex-data e)})))
+        results (with-redefs-fn
+                  {decision-var wrapped}
+                  #(let [a (future (run-step))
+                         b (future (run-step))]
+                     [(await-worker a) (await-worker b)]))]
+    (is (= 2 @arrivals))
+    (is (= #{21 100} (set (map :value results))) (pr-str results))
+    (is (= 7 (ff H "sqlite3_column_int64" [stmt 0])))
+    (is (= 1 (count (filter #(= :scan-rows (:op %))
+                            (get-in (sqlite/state w)
+                                    [:dbs db :row-evidence])))))
+    (is (= 101 (ff H "sqlite3_step" [stmt])))
+    (is (= 0 (ff H "sqlite3_finalize" [stmt])))
+    (close-db H db)
+    (is (true? (sqlite/clean? w)))))
+
+(deftest finalize-and-close-winners-cannot-resurrect-row-state
+  (let [plan {:sql "insert"
+              :params {1 {:type :integer :value 7}}
+              :row-effect {:op :insert-row :table :outbox/items
+                           :key-params [1] :row [["id" 1]]}}
+        exercise
+        (fn [winner]
+          (let [w (sqlite/world [plan])
+                H (sqlite/handlers w)
+                db (open-db H)
+                stmt (prepare H db "insert")
+                _ (bind-cell! H stmt 1 {:type :integer :value 7})
+                decision-var (resolve 'jolt.sim.sqlite/row-mutation-decision)
+                original @decision-var
+                inside (promise)
+                release (promise)
+                wrapped (fn [db-state statement reported]
+                          (deliver inside true)
+                          (when (= ::timeout (deref release 5000 ::timeout))
+                            (throw (ex-info "row lifetime race timed out"
+                                            {:winner winner})))
+                          (original db-state statement reported))
+                result
+                (with-redefs-fn
+                  {decision-var wrapped}
+                  #(let [step-result
+                         (future
+                           (try {:value (ff H "sqlite3_step" [stmt])}
+                                (catch :default e {:error (ex-data e)})))]
+                     (is (not= ::timeout (deref inside 5000 ::timeout)))
+                     (try
+                       (case winner
+                         :finalize (is (= 0 (ff H "sqlite3_finalize" [stmt])))
+                         :close (close-db H db))
+                       (finally (deliver release true)))
+                     (await-worker step-result)))]
+            (is (= (case winner
+                     :finalize :jolt.sim.sqlite/use-after-finalize
+                     :close :jolt.sim.sqlite/use-after-close)
+                   (get-in result [:error :type]))
+                (pr-str result))
+            (is (= [] (if (= :close winner)
+                        (get-in (sqlite/state w)
+                                [:closed-db-evidence 0 :row-evidence])
+                        (get-in (sqlite/state w)
+                                [:dbs db :row-evidence]))))
+            (case winner
+              :finalize
+              (do
+                (is (not (contains? (:stmts (sqlite/state w)) stmt)))
+                (close-db H db))
+
+              :close
+              (do
+                ;; close claims/removes the connection, but leaves its live
+                ;; statement record available for the required later cleanup.
+                (is (contains? (:stmts (sqlite/state w)) stmt))
+                (is (= 0 (ff H "sqlite3_finalize" [stmt])))
+                (is (not (contains? (:stmts (sqlite/state w)) stmt)))))
+            (is (true? (sqlite/clean? w)))))]
+    (exercise :finalize)
+    (exercise :close)))
 
 (deftest concurrent-put-terminal-step-writes-exactly-once
   (let [plans [{:sql "PUT k v"
