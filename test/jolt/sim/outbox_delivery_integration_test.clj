@@ -133,7 +133,8 @@
             pipe (posix/pipe-capacity-summary posix-world)]
         ;; The stream bound is smaller than the native progress ceiling, so
         ;; capacity itself must split writes without coupling this smoke gate to
-        ;; the extreme two-byte fragmentation explored by the later Hegel lane.
+        ;; the extreme one- and two-byte fragmentation reserved for a future
+        ;; fragmentation lane.
         (is (= 8 (:stream-capacity stream)))
         (is (pos? (:stream-capacity-limited-writes stream)))
         (is (= 8 (:max-stream-recv-bytes stream)))

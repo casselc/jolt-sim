@@ -153,10 +153,12 @@ jobs:
           "$sim" -A:hegel-explore-test -m hegel.install
           JOLT_SIM_BIN="$sim" JOLT_SIM_PROJECT_DIR="$PWD" \
             "$sim" -M:hegel-explore-test
-          # Both Hegel aliases pin the same exact jolt-hegel commit, so the
+          # All Hegel aliases pin the same exact jolt-hegel commit, so the
           # verified native library installed above is reused here.
           JOLT_SIM_BIN="$sim" JOLT_SIM_PROJECT_DIR="$PWD" \
             "$sim" -M:tcp-bencode-hegel-test
+          JOLT_SIM_BIN="$sim" JOLT_SIM_PROJECT_DIR="$PWD" \
+            "$sim" -M:outbox-delivery-hegel-test
 
   sim-windows-x86-64:
     name: sim image (Windows x86_64)
