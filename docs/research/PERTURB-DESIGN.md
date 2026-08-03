@@ -1657,3 +1657,82 @@ claim survived inspection and failed the check.
 5. The Python model encodes objects field-wise into integers. Descriptor
    identity is deliberately not representable, which is the subject of one of
    the findings rather than an artifact of the encoding.
+
+---
+
+## 17. Revised v0 targets — dogfood the runtime, not a model
+
+**Supersedes §16's closing recommendation** (P4's capacity-one mailbox, or a
+small leader election). Both are models. The runtime already contains better
+targets, and they are things perturb needs early regardless.
+
+### The pairing
+
+| target | property classes exercised | open question it tests |
+| --- | --- | --- |
+| **nREPL session + correlation** | resource safety, **temporal** | E5/E6 modes on a real resource; §16's temporal gap |
+| **nREPL middleware** | higher-order composition | E13's abstract-refinement arity, on a real signature |
+| **Persistent collections** | **structural / inductive** | §16's QF-LIA gap; the Ansatz tier |
+
+Together these cover all three of §16's property classes. Neither is an abstract
+example; both are load-bearing runtime.
+
+### Why nREPL, concretely
+
+Read against `jolt-core/jolt/nrepl.clj`:
+
+- **Session lifecycle.** `clone` creates, `close` destroys. A `unique`
+  capability with typestate — created → active → closed, close-once,
+  use-after-close an error. E5's typestate and E6's affine binding applied to a
+  runtime resource rather than `ownership.pl`'s model.
+- **Request/response correlation.** Per message `id`: exactly one terminal
+  `status ["done"]`, optionally preceded by streamed `out`/`err`, and **nothing
+  after done**. A trace-grammar property, which `monitor.clj` already monitors.
+  "Every request eventually gets a done" is bounded response — P4's shape
+  against real code.
+- **Concurrency.** Concurrent requests and ordering exercise §2.4's kernel,
+  which E4 established codecs do not touch at all.
+- **Middleware.** `(fn [handler] (fn [request] ...))` is exactly E13's
+  higher-order shape. If a handler's type carries the session and the `:reply`
+  channel as refined capabilities, a middleware chain is the transducer problem
+  including the arity-2 requirement E13 found unnamed in §2.2/§2.3. E13 tested
+  it synthetically; this tests it against a signature that exists.
+- **An already-asserted claim to discharge.** The docstring states `:reply` is
+  "a thread-safe `(fn [response-map])`". That is an unverified concurrency claim
+  in shipped code, which makes it a better target than one we invent.
+
+Deferred within nREPL: **`interrupt`** — an in-flight eval racing an interrupt,
+which must either land or report session-idle. The genuine race and the right
+eventual target, but it depends on runtime lifecycle hooks that jolt-sim's
+roadmap item 6 records as not yet existing.
+
+### Why persistent collections
+
+nREPL supplies **nothing structural** — no trees, no balance, no
+ordering-preserved-under-traversal. §16's inductive gap would stay untested.
+
+Jolt's own collections are the natural target: 32-way vector tries with tails,
+and maps that promote from insertion-ordered small maps to HAMTs past a
+threshold. Their invariants are exactly the ones QF-LIA cannot reach — node
+arity, trie depth consistency, tail invariants, and *promotion preserving
+lookup*. That last one is the interesting obligation, because it is a refinement
+between two representations of the same abstract map, which is the same shape as
+the refinement relations §16 noted consensus proofs need.
+
+They are also maximally load-bearing: everything in the language sits on them.
+
+### First slice
+
+**The nREPL session type** — `unique` session with typestate, plus the per-`id`
+trace grammar. Small, and specifiable in a way nREPL's own documentation is not:
+there is no normative nREPL spec, so **writing the machine-checkable session
+contract is the contribution**, not merely the test. That artifact does not
+currently exist anywhere.
+
+### Still not covered
+
+**Consensus and distributed properties.** nREPL is single-node; persistent
+collections are sequential. Multi-node safety, refinement against a spec, and
+liveness under partition remain untested by this ladder, and a leader-election
+target is still eventually required. This revision buys getting off codecs
+without inventing a toy; it does not close the distributed gap.
