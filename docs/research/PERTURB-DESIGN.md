@@ -51,6 +51,7 @@ The complete current tally of claims this document made and then refuted:
 | 18 ‡ | Q2 is a gradual-typing boundary problem | the liquid-types literature — everything here is statically typed; an unrefined value is refined by `true` | Q2 |
 | 19 | the capability corpus's accept set "would run" — and unpositioned `:consumes`/`:produces` is an expressiveness gap | running it: `open-request-close` and `uses-ping` both throw under the scripted handler. The gap is a **false accept**, not only a false reject | E15 |
 | 20 | INHERITED I11: `defcfn` resolves its foreign symbol at def-evaluation | `backend_scheme.clj:589-617` — it lowers to a deferred, memoised, per-binding cell | E16 |
+| 21 | positioned specs are the one thing §1.2 needs to check the real client | building them: the client checks, and the layer *underneath* it then failed — the missing concept is a module boundary, which §1.2 also does not have | E17 |
 
 ‡ Two rows are the exception the sentence above does not cover: they arrived
 from re-examining the argument (and, for 18, from the literature) rather than
@@ -61,7 +62,7 @@ a delegated verification. Rows 6–9 and 16 are cases where the claim had alread
 pattern the commitment exists to name.
 
 **How to read this document.** §1 is the settled design, stated once in final
-corrected form. §2 is the divergence register. §3 is the findings E1–E16, each
+corrected form. §2 is the divergence register. §3 is the findings E1–E17, each
 stated as currently believed rather than as first written. §4 is the open
 questions. §5 is the v0 ladder. §6 is the nonclaims. Appendix A is the
 correction history, Appendix B holds the superseded ladders in full, and
@@ -166,13 +167,25 @@ this section. How often the rule actually fires on real programs is argued, not
 measured (§4.6); the one measurement that exists is zero occurrences outside
 the corpus in `perturb.nrepl` (E15).
 
-**Known defect, now the top of this section's queue.** `:consumes` /
-`:produces` name a capability and a state but not **where in the value** it
-sits. E15 ran the rule set against real IR and found this is not an
-expressiveness gap but a soundness hole: a primitive returning `[conn frames]`
-must be modelled as returning the capability bare, so programs the checker
-accepts crash when run, while the only real client perturb has cannot be
-annotated at all. Positioned specs come before E13's abstract refinements.
+**~~Known defect~~ CLOSED — capability specs are positioned.** `:consumes` /
+`:borrows` carry `:arg n`; `:produces` carries `:at [i]`. The abstract domain has
+one composite, a tuple, and `first`/`second`/`nth`-with-a-constant are its
+eliminators. This closed E15's false accept and made `perturb.nrepl`'s protocol
+layer checkable without changing a line of its bodies (E17).
+
+**The new top of this section's queue: a module boundary.** With the protocol
+layer checkable, the implementation layer under it started failing — `state`,
+`conn-id`, `conn`, `compact`, `read-frame` all touch the connection's concrete
+map, and `(:perturb.nrepl/buf c)` cannot be given a capability signature. They
+are axioms for the same reason a transition's body is, but that is a second
+class §1.2 never named. The artifact names it by listing operations
+(`:perturb.cap/representation`); what it wants to be is a scope — "inside the
+Connection's implementation" — and §1.2 has no module concept (E17). Ahead of
+E13's abstract refinements.
+
+**Borrows do not close.** A `:borrows` parameter is the caller's; it is exempt
+from the scope-exit leak rule. Added in E17, and found by the checker refusing
+`perturb.nrepl/state`.
 
 ### 1.3 Proof — capability-tier refinements, Ansatz retained
 
@@ -397,14 +410,19 @@ at `d883385`):
 | gate | what it decides | limits printed by |
 | --- | --- | --- |
 | `-M:selftest` | codec/octet self-tests, no socket | the run |
-| `-M:check` | 17 corpus programs get their recorded capability verdicts; the real client is checked and reported, not gated | `report-limits`, 8 items (E15) |
+| `-M:check` | 22 corpus programs get their recorded capability verdicts, AND every accepted one is executed under the scripted handler; the real client is checked and reported, not gated | `report-limits`, 8 items (E15, E17) |
 | `-M:oracle` | perturb's bencode against `jolt.nrepl`'s over their shared profile | the run |
 | `-M:demo` | one session var under a real socket and two in-memory handlers; sent octets identical | the transcript |
 | `-M:noio` + `verify-noio.sh` | no syscall attributable to perturb in a scripted window, with a positive control | the verdict block (E16) |
 
 The last two follow the rule literally: each states what its instrument *cannot*
 see (`-M:noio` because `dlopen(NULL)` is invisible to strace; `-M:check` because
-its accept set is only as good as the annotation language, E15).
+8 of `perturb.nrepl`'s 15 functions are axioms whose bodies it never reads).
+
+Both `-M:check` stages are demonstrated able to fail, separately: flipping one
+recorded verdict gives `21/22 … CHECK FAILED`, and making an *accepted* program
+throw gives `22/22 decided as recorded` alongside `5/6 accepted programs ran to
+completion` — the E15 regression, caught by the stage built for it.
 
 ---
 
@@ -641,7 +659,7 @@ Each should get its register row when decided, not retrospectively.
 
 ## 3. Findings
 
-E1–E16, each stated as currently believed. What each said first, and what
+E1–E17, each stated as currently believed. What each said first, and what
 corrected it, is in Appendix A. E1–E13 are measurements and prototypes; E14 is
 a source-and-history survey of the v0.5.17 branch lane and is `assumed`
 throughout — it qualifies §1.4 and §2 row 3 without settling either.
@@ -2182,6 +2200,121 @@ outside the effect discipline again, and nothing in the artifact prevents it.
 
 ---
 
+### E17 — positioned capability specs; and what became checkable then broke
+
+E15 left one item at the top of §1.2's queue: `:consumes` / `:produces` name a
+capability and a state but not **where in the value** it sits, which is both a
+false reject on the real client and a false accept on the corpus. That is now
+done, and doing it moved the frontier somewhere the design did not anticipate.
+
+#### The change
+
+Two keys on a capability spec entry:
+
+| key | on | means |
+| --- | --- | --- |
+| `:arg n` | `:consumes`, `:borrows` | the capability is parameter `n`, and nowhere else |
+| `:at [i]` | `:produces` | the capability is at position `i` of the returned tuple; absent means the result **is** the capability |
+
+`perturb.nrepl/request` now says what it does:
+
+```clojure
+{:consumes [{:cap 'perturb.nrepl/Connection :state :active :arg 0}]
+ :produces [{:cap 'perturb.nrepl/Connection :state :active :at [0]}]}
+```
+
+The checker's abstract domain gains exactly one composite — a **tuple** — because
+that is the shape a path can name. `first`, `second`, and `nth` with a constant
+index are its eliminators: they move nothing and consume nothing, and they are
+how a capability gets back out of a positioned `:produces`. A capability entering
+a map or a set is still an escape, because no annotation can say where it went.
+
+#### What that bought
+
+- **The real client checks.** `perturb.nrepl/clone-session`, `/eval-code` and
+  `/session` — the three E15 recorded as unannotatable — now carry positioned
+  signatures and are accepted. Nothing about their bodies changed.
+- **The accept set runs.** Every accepted corpus program is now **executed**
+  under the scripted handler as part of the gate, and 6/6 complete. E15's
+  regression class is now caught by construction rather than by someone thinking
+  to try it.
+- **`ping` / `ping-tuple` collapsed.** E15 showed the checker split them on
+  syntax. With `:at [0]` both are accepted, and `wrong-position` — the same
+  function declaring position 0 and returning position 1 — is the rejection.
+- **Two rules the old shape could not state.** `drops-the-connection` binds the
+  pair and uses only position 1, leaking the connection at position 0 with no
+  mention of a connection anywhere after the request. `loop-shape-drift` is
+  `loop-of-requests` without the `first`: same capability, same state, different
+  **shape** at the back edge. Neither was expressible before.
+
+Corpus: 22 programs, 8 accept / 14 reject, all as recorded. Both gate stages are
+demonstrated able to fail independently — flipping one verdict gives
+`21/22 … CHECK FAILED`, and an accepted program made to throw gives
+`22/22 decided as recorded` with `5/6 accepted programs ran to completion`,
+exit 1. The second is the E15 regression exactly, and the gate catches it now.
+
+#### One checker bug the client found
+
+The first positioned run rejected `clone-session` for `use-after-move`: `(first
+r)` moved position 0, and the very next line's `(second r)` was read as using
+position 0 again. **Naming a value is not using every capability inside it.** A
+consumed position now becomes a `:dead` leaf and the diagnostic is raised where a
+dead leaf is actually used — consumed, passed to an unannotated callee, or
+returned. Without positions this bug could not exist, and without the real
+client it would not have been found.
+
+#### And then the layer underneath started failing
+
+This is the part that was not designed. With the protocol layer checkable, the
+**implementation** layer under it began drawing diagnostics: `state`, `conn-id`,
+`conn`, `compact` and `read-frame` all reach into the connection's concrete map,
+and `(:perturb.nrepl/buf c)` is not a capability operation and cannot be given a
+signature. A checker that checked those bodies could only refuse them.
+
+They are axioms for the same reason a transition's body is an axiom — they work
+below the level the modes describe — but that is a **second, distinct class**,
+and §1.2 had no name for it. The artifact now carries one:
+
+```clojure
+:perturb.cap/representation
+['perturb.nrepl/conn 'perturb.nrepl/compact 'perturb.nrepl/read-frame
+ 'perturb.nrepl/state 'perturb.nrepl/conn-id]
+```
+
+**Listing operations by name is a placeholder.** What this wants to be is a
+module boundary — "inside the Connection's implementation" is a scope, not a
+list — and §1.2 has no module concept. That is now the top of its queue, in the
+place positioned specs just vacated.
+
+A related rule fell out and is correct on its own: a **borrowed** parameter is
+not the callee's to close, so it is exempt from the scope-exit leak rule. `state`
+and `conn-id` are the artifact's first `:borrows`, and they were found by the
+checker refusing them.
+
+#### The number that matters is not the one that looks good
+
+`perturb.nrepl` reports **0 rejected** — of **7 of 15** functions. The other 8
+are axioms: 3 transitions and 5 representation operations, believed and not
+checked. The gate prints it that way on purpose. The `read-frame` driver, E4's
+whole sans-io contract, is inside that unchecked set.
+
+#### E17's own nonclaims
+
+1. **Paths are one level deep and tuples only.** A capability nested two deep, or
+   in a map, is not tracked.
+2. **Only three eliminators.** Destructuring, `peek`, `last`, or a computed index
+   silently lose a capability to opaque. That is the most likely place a false
+   accept hides today, and it is silent rather than diagnosed.
+3. **The axiom set grew, and growing it is how the client was made to pass.**
+   Every operation moved into `:representation` is a body that stopped being
+   checked. That is defensible per operation and dangerous as a habit; the honest
+   reading of "the real client checks" is "the 7 functions above the abstraction
+   boundary check".
+4. Unpositioned entries still fall back to matching specs to parameters in
+   order — the checker's convention, not §1.2's, and still unremoved.
+
+---
+
 ## 4. Open questions
 
 Q1–Q5 are §4.1–§4.5; §4.6 collects open items that never carried a Q number.
@@ -2399,14 +2532,21 @@ Recorded here so they are not lost between sections. None of these is decided.
   poor. The `jolt-array` survey was wrong on scale *and* kind (E12), E3's
   central finding was sample-biased, three performance hypotheses died to
   measurement (E1, E7), and I11's `defcfn` premise was wrong (E16).
-- **Positioned capability specs.** §1.2's `:consumes` / `:produces` name a
-  capability and a state but not *where in the value* it is. E15 shows this is a
-  soundness hole, not a convenience gap, and it now blocks annotating the only
-  real client perturb has. It is the top of the §1.2 queue, ahead of E13's
-  abstract refinements.
-- **Machine primitives are axioms.** Nothing checks that a declared transition's
-  body performs its transition (E15 blind spot 1). Unbroken since
-  `mode_checker.py`; still unaddressed.
+- **~~Positioned capability specs~~ DONE** (E17). Replaced at the top of the
+  §1.2 queue by:
+- **A module boundary.** `:perturb.cap/representation` names the operations
+  inside a capability's implementation by listing them. It wants to be a scope.
+  §1.2 has no module concept, and every operation added to that list is a body
+  that stops being checked (E17).
+- **Axioms — now two classes, and the set grew.** Nothing checks that a declared
+  transition's body performs its transition, and nothing checks the five
+  representation operations either — including `read-frame`, which is E4's whole
+  sans-io driver. 8 of `perturb.nrepl`'s 15 functions. Unbroken since
+  `mode_checker.py` for the first class; the second was added by E17 to make the
+  client pass, which is defensible per operation and dangerous as a habit.
+- **Tuple eliminators are a closed set of three.** `first`, `second`, `nth` with
+  a constant. Destructuring or a computed index silently loses a capability to
+  opaque — no diagnostic. Most likely place a false accept hides today (E17).
 - **Namespace loading is not an effect.** I11 is closed by arrangement, not by
   design (E16). Nothing prevents the next namespace from doing I/O at load time.
 - **The performance items under Q1** — unboxed deftype method bodies, a

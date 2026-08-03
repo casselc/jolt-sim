@@ -521,6 +521,18 @@ this entry credits is therefore not merely unchecked at the boundary; the
 checker's current model of the boundary *disagrees with the code that actually
 runs*. See PERTURB-DESIGN E15.
 
+**CLOSED — and the boundary moved.** Capability specs are positioned:
+`:consumes`/`:borrows` carry `:arg n`, `:produces` carries `:at [i]`.
+`clone-session`, `eval-code` and `session` now carry signatures and are ACCEPTED
+by the checker, unchanged in body; the accept corpus is EXECUTED as part of the
+gate, so an acceptance that cannot run fails it. The hand-threading this entry
+describes is, at last, checked rather than conventional — **above the abstraction
+boundary**. Below it, `conn`, `compact`, `read-frame`, `state` and `conn-id` are
+now declared `:perturb.cap/representation` and their bodies are axioms, so 8 of
+this namespace's 15 functions are believed rather than checked. The convention
+this entry was logged for has not disappeared; it has retreated into the
+Connection's implementation. PERTURB-DESIGN E17.
+
 ---
 
 ## I18 — `jolt.ir`'s `:local` has no binding identity, and the compile spine has no IR hook

@@ -40,6 +40,21 @@
         :transitions [{:op 'perturb.nrepl/open    :from :created :to :active}
                       {:op 'perturb.nrepl/request :from :active  :to :active}
                       {:op 'perturb.nrepl/close!  :from :active  :to :closed}]}
+       ;; THE ABSTRACTION BOUNDARY. These operations are INSIDE the Connection:
+       ;; they construct or read its concrete map, below the level the modes
+       ;; describe. `(:perturb.nrepl/buf c)` is not a capability operation and
+       ;; cannot be given a signature, so a checker that checked these bodies
+       ;; could only refuse them.
+       ;;
+       ;; That is the same posture the transitions already have, and for the same
+       ;; reason — but it is a SEPARATE concept and it is new here: positioned
+       ;; specs made `perturb.nrepl`'s protocol layer checkable, and the moment it
+       ;; was, the implementation layer underneath it started failing. Naming the
+       ;; boundary by listing operations is a placeholder. What it wants to be is
+       ;; a module boundary, and §1.2 has no module concept (PERTURB-DESIGN E17).
+       :perturb.cap/representation
+       ['perturb.nrepl/conn 'perturb.nrepl/compact 'perturb.nrepl/read-frame
+        'perturb.nrepl/state 'perturb.nrepl/conn-id]
        ;; §1.3: obligations outside the typestate machine, for Ansatz or a
        ;; refinement checker. Hand-written; nothing discharges them.
        :perturb.cap/obligations
@@ -67,16 +82,29 @@
    :perturb.nrepl/pos      pos
    :perturb.nrepl/msg-id   msg-id})
 
-(defn state [c] (:perturb.cap/state c))
-(defn conn-id [c] (:perturb.cap/id c))
+;; Two read-only observers. They are the first `:borrows` in the artifact: they
+;; look at a connection in ANY state and give it back untouched, so they must not
+;; consume it and must be legal on a :closed connection. Without an annotation
+;; the checker is right to refuse them a capability (`no-signature`) — which is
+;; how they were found.
+(defn state
+  {:perturb.cap/op {:borrows [{:cap 'perturb.nrepl/Connection :state :any :arg 0}]}}
+  [c] (:perturb.cap/state c))
+
+(defn conn-id
+  {:perturb.cap/op {:borrows [{:cap 'perturb.nrepl/Connection :state :any :arg 0}]}}
+  [c] (:perturb.cap/id c))
 
 ;; --- operations -------------------------------------------------------------
 
 (defn open
   "Connect. Produces a Connection in state :active.
 
-  Annotation: consumes nothing, produces a unique Connection@:active."
-  {:perturb.cap/op {:consumes [] :produces [{:cap 'perturb.nrepl/Connection :state :active}]}}
+  Annotation: consumes nothing, produces a unique Connection@:active.
+  No `:at` — this operation returns the connection BARE, and the annotation
+  says so. Contrast `request` below."
+  {:perturb.cap/op {:consumes []
+                    :produces [{:cap 'perturb.nrepl/Connection :state :active}]}}
   [host port]
   (let [id  (fresh-id)
         _   (cap/transition! 'perturb.nrepl/Connection id nil :created :perturb.nrepl/open)
@@ -127,9 +155,15 @@
   "Send `msg` and read frames until one carries status \"done\".
   Returns [conn' frames], frames decoded with octet-view byte strings.
 
-  Annotation: consumes Connection@:active, produces Connection@:active."
-  {:perturb.cap/op {:consumes [{:cap 'perturb.nrepl/Connection :state :active}]
-                    :produces [{:cap 'perturb.nrepl/Connection :state :active}]}}
+  Annotation: consumes Connection@:active at argument 0, produces
+  Connection@:active AT POSITION 0 OF THE RESULT. `:at [0]` is the whole point:
+  the annotation now describes the pair this function really returns, so a
+  caller that projects position 0 keeps the capability and a caller that
+  projects position 1 does not. Before positions existed (E15) this said
+  `:produces [{… :state :active}]`, the checker believed the result WAS the
+  connection, and it accepted programs that crashed."
+  {:perturb.cap/op {:consumes [{:cap 'perturb.nrepl/Connection :state :active :arg 0}]
+                    :produces [{:cap 'perturb.nrepl/Connection :state :active :at [0]}]}}
   [c msg]
   (let [c   (assoc c :perturb.nrepl/msg-id (inc (:perturb.nrepl/msg-id c)))
         mid (str (:perturb.nrepl/msg-id c))
@@ -148,7 +182,7 @@
 
   Called exactly once per connection in every path of this artifact. Nothing
   enforces that; the annotation states it and the ledger records what happened."
-  {:perturb.cap/op {:consumes [{:cap 'perturb.nrepl/Connection :state :active}]
+  {:perturb.cap/op {:consumes [{:cap 'perturb.nrepl/Connection :state :active :arg 0}]
                     :produces [{:cap 'perturb.nrepl/Connection :state :closed}]}}
   [c]
   (w/close! (:perturb.nrepl/token c) :perturb.nrepl/close)
@@ -156,6 +190,8 @@
   (assoc c :perturb.cap/state :closed :perturb.nrepl/token nil))
 
 ;; register the annotations for a future checker
+(cap/annotate-op! (var state)   (:perturb.cap/op (meta (var state))))
+(cap/annotate-op! (var conn-id) (:perturb.cap/op (meta (var conn-id))))
 (cap/annotate-op! (var open)    (:perturb.cap/op (meta (var open))))
 (cap/annotate-op! (var request) (:perturb.cap/op (meta (var request))))
 (cap/annotate-op! (var close!)  (:perturb.cap/op (meta (var close!))))
@@ -163,7 +199,13 @@
 ;; --- protocol operations ----------------------------------------------------
 
 (defn clone-session
-  "-> [conn' session-id]"
+  "-> [conn' session-id]
+
+  E15 recorded that this function could not be annotated at all: it returns the
+  connection inside a pair, and §1.2's unpositioned `:produces` had no way to
+  say so. With `:at [0]` it can, and `perturb.check` checks the body against it."
+  {:perturb.cap/op {:consumes [{:cap 'perturb.nrepl/Connection :state :active :arg 0}]
+                    :produces [{:cap 'perturb.nrepl/Connection :state :active :at [0]}]}}
   [c]
   (let [r      (request c {"op" "clone"})
         c'     (first r)
@@ -174,7 +216,12 @@
     [c' sid]))
 
 (defn eval-code
-  "-> [conn' {:value s :out s :err s :ns s :frames [...]}]"
+  "-> [conn' {:value s :out s :err s :ns s :frames [...]}]
+
+  Same shape as `clone-session`. Note `:arg 0` — the capability is the first
+  parameter, and `session`/`code` are ordinary values."
+  {:perturb.cap/op {:consumes [{:cap 'perturb.nrepl/Connection :state :active :arg 0}]
+                    :produces [{:cap 'perturb.nrepl/Connection :state :active :at [0]}]}}
   [c session code]
   (let [r      (request c {"op" "eval" "session" session "code" code})
         c'     (first r)
@@ -185,6 +232,12 @@
          :err    (pick "err")
          :ns     (pick "ns")
          :frames (mapv b/dstrs frames)}]))
+
+;; These two are DERIVED operations, not transitions of the declared machine, so
+;; unlike open/request/close! their bodies are checked against these annotations
+;; rather than believed.
+(cap/annotate-op! (var clone-session) (:perturb.cap/op (meta (var clone-session))))
+(cap/annotate-op! (var eval-code)     (:perturb.cap/op (meta (var eval-code))))
 
 ;; --- the whole session, as one function -------------------------------------
 
