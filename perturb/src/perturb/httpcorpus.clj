@@ -475,8 +475,14 @@
   all live in the same scope. The body declares 6 octets and writes 6, and is
   finished; the connection comes back at :reading and is closed.
 
-  The checker accepts this. Note carefully WHAT it accepted: that the body
-  reached :finished. It did not check the 6."
+  WHAT THE CHECKER NOW ACCEPTS HERE, WHICH IS MORE THAN IT USED TO. It accepts
+  that the body reached :finished — the typestate half — AND it discharges
+  `wrote-exactly-content-length`, the refinement on the `:open -> :finished`
+  edge, by evaluating `6 = 0 + 3 + 3` over the integers. Both `3`s come from
+  calling the real `perturb.octet/encode-utf8` on the literal, so they are octet
+  counts and not character counts.
+
+  This is the easy side of the boundary: every number is a constant."
   [host port]
   (let [l  (h/listen host port)
         a  (h/accept l)
@@ -495,17 +501,22 @@
     :done))
 
 (defn short-body-still-type-checks
-  "ACCEPT — AND THAT IS THE FINDING. Byte for byte `stream-a-body` with one
-  `body-write` removed. It declares Content-Length: 6 and writes 3.
+  "REJECT — AND THE VERDICT USED TO BE ACCEPT. Byte for byte `stream-a-body`
+  with one `body-write` removed. It declares Content-Length: 6 and writes 3.
 
-  `perturb.check` accepts it, the gate RUNS it, and it completes: the response
-  it puts on the wire is malformed and no rule in §1.2 can say so, because
-  `:finished` is a state and `wrote exactly N` is arithmetic over a run-time
-  integer. `perturb.http/body-finish!` records the violation in the ledger
-  instead of aborting, precisely so that this stays a STATIC gap rather than
-  being papered over by a dynamic check.
+  E18 finding 3 is that this was ACCEPTED and RUN: `:finished` is a state and
+  `wrote exactly N` is arithmetic, and §1.2's four axes could not say the second.
+  The obligation is now attached to ResponseBody's `:open -> :finished`
+  transition as a §1.3 refinement and it is DECIDED here — `6 = 0 + 3` is false
+  over the integers, and the diagnostic is a counterexample rather than a
+  failure to prove.
 
-  PERTURB-DESIGN E18 finding 3. The gate prints the ledger entry."
+  THE NAME IS KEPT DELIBERATELY. It still type-checks in the §1.2 sense: every
+  mode, every state and every position in it is correct, and the typestate axis
+  has nothing to object to. What rejects it is the other tier.
+
+  `perturb.httpdemo` still RUNS it, directly rather than through the gate, so
+  that what a program of this shape puts on the wire stays visible."
   [host port]
   (let [l  (h/listen host port)
         a  (h/accept l)
@@ -580,6 +591,168 @@
         b0 (second rb)
         b1 (h/body-write b0 (o/encode-utf8 "abc"))
         c3 (h/body-finish! b1 c2)
+        c4 (h/close-conn! c3)
+        l2 (h/shutdown! l1)]
+    :done))
+
+;; ===========================================================================
+;; 3b. WHERE THE REFINEMENT STOPS DECIDING
+;; ===========================================================================
+;;
+;; The four programs above are about a body of a length known when the source
+;; was written. Nothing real is. These five are the boundary: the first two are
+;; on the decidable side and RUN, the last three are refused, and
+;; `body-written-in-a-loop` is refused where a naive implementation of this
+;; check — one that walked the loop body once and believed the answer — would
+;; ACCEPT it. See `perturb.refine` for what is decided and `perturb.check`'s
+;; report-limits for what is not.
+
+(defn stream-a-runtime-length-body
+  "ACCEPT, AND THIS IS THE INTERESTING ONE. The declared Content-Length is
+  `(o/ocount bo)` where `bo` is the request's body — an integer nobody knows
+  until the request arrives — and the same `bo` is what gets written.
+
+  The checker discharges it anyway, and WITHOUT knowing the number: `bo` is one
+  binding, so `ocount bo` is one atom, `declared = ocount bo` and
+  `written = 0 + ocount bo`, and the difference normalises to zero. No solver
+  and no constant folding is involved; linear normalisation is the whole of it.
+
+  This is the correct way to write a Content-Length response, and it is the
+  answer to `remaining is a run-time integer`: a run-time integer is not the
+  problem, an UNRELATED run-time integer is —
+  `declares-a-runtime-length-writes-a-literal` below is that, and is refused."
+  [host port]
+  (let [l   (h/listen host port)
+        a   (h/accept l)
+        l1  (first a)
+        c0  (second a)
+        r   (h/read-request c0)
+        c1  (first r)
+        req (second r)
+        bo  (:body req)
+        rb  (h/respond-begin c1 200 "OK" {"content-type" "text/plain"} (o/ocount bo))
+        c2  (first rb)
+        b0  (second rb)
+        b1  (h/body-write b0 bo)
+        c3  (h/body-finish! c2 b1)
+        c4  (h/close-conn! c3)
+        l2  (h/shutdown! l1)]
+    :done))
+
+(defn stream-a-body-per-request
+  "ACCEPT. A streamed body inside the KEEP-ALIVE LOOP — one ResponseBody minted,
+  written and finished on every pass.
+
+  A loop is where the refinement stops, so this is the program that says where
+  exactly. The rule is not `no loops`: it is that a refinement may not CROSS a
+  loop boundary. This capability is created after the boundary and discharged
+  before it, so its ghost state is never asked to survive an iteration and the
+  obligation decides. `body-written-in-a-loop` is the same shape with the
+  capability created outside, and it is refused."
+  [host port n]
+  (let [l  (h/listen host port)
+        a  (h/accept l)
+        l1 (first a)
+        c0 (second a)
+        c9 (loop [c c0 i n]
+             (let [r   (h/read-request c)
+                   c1  (first r)
+                   rb  (h/respond-begin c1 200 "OK" {"content-type" "text/plain"} 6)
+                   c2  (first rb)
+                   b0  (second rb)
+                   b1  (h/body-write b0 (o/encode-utf8 "abc"))
+                   b2  (h/body-write b1 (o/encode-utf8 "def"))
+                   c3  (h/body-finish! c2 b2)]
+               (if (<= i 1)
+                 (h/close-conn! c3)
+                 (recur c3 (dec i)))))
+        l2 (h/shutdown! l1)]
+    :done))
+
+(defn body-written-in-a-loop
+  "REJECT, `refinement-undischarged` — AND A NAIVE IMPLEMENTATION ACCEPTS IT.
+
+  The body is minted OUTSIDE the loop, written inside it, and finished outside.
+  It declares 3, and the SINGLE PASS a checker walks writes exactly 3 — the
+  write is above the `if`, so the exit path has one write on it. A checker that
+  walked the body once and believed the number it got would compute
+  `written = 0 + 3`, discharge `3 = 3`, and ACCEPT. The program writes `3 * n`
+  octets and `n` is an argument.
+
+  That is not a hypothetical: deleting the two `widen-caps` calls in
+  `perturb.check/w-loop` makes this program accepted, which is how the shape was
+  chosen. What this checker does instead is give every ghost variable live at a
+  loop boundary the value unknown, fail to decide the obligation, and REJECT
+  with that as the reason. There is no invariant syntax with which to supply the
+  missing fact — see `perturb.check`'s report-limits item 10(a), which says so
+  rather than implying the loop case is covered."
+  [host port n]
+  (let [l  (h/listen host port)
+        a  (h/accept l)
+        l1 (first a)
+        c0 (second a)
+        r  (h/read-request c0)
+        c1 (first r)
+        rb (h/respond-begin c1 200 "OK" {"content-type" "text/plain"} 3)
+        c2 (first rb)
+        b0 (second rb)
+        b9 (loop [b b0 i n]
+             (let [b1 (h/body-write b (o/encode-utf8 "abc"))]
+               (if (<= i 1)
+                 b1
+                 (recur b1 (dec i)))))
+        c3 (h/body-finish! c2 b9)
+        c4 (h/close-conn! c3)
+        l2 (h/shutdown! l1)]
+    :done))
+
+(defn declares-a-runtime-length-writes-a-literal
+  "REJECT, `refinement-undischarged`. `stream-a-runtime-length-body` with the
+  write changed: the head commits to the request body's length and the writer
+  puts three literal octets on the wire.
+
+  It is right exactly when the request body happens to be 3 octets long, which
+  is a fact about the peer. The checker cannot relate a length atom to the
+  constant 3 — that would need a hypothesis, and `perturb.refine` has no way to
+  take one — so it refuses. Refusing a program that is sometimes correct is the
+  price; accepting it silently is the alternative, and that is the false accept
+  E15 caught."
+  [host port]
+  (let [l   (h/listen host port)
+        a   (h/accept l)
+        l1  (first a)
+        c0  (second a)
+        r   (h/read-request c0)
+        c1  (first r)
+        req (second r)
+        bo  (:body req)
+        rb  (h/respond-begin c1 200 "OK" {"content-type" "text/plain"} (o/ocount bo))
+        c2  (first rb)
+        b0  (second rb)
+        b1  (h/body-write b0 (o/encode-utf8 "abc"))
+        c3  (h/body-finish! c2 b1)
+        c4  (h/close-conn! c3)
+        l2  (h/shutdown! l1)]
+    :done))
+
+(defn over-long-body
+  "REJECT, `refinement`. The other direction of the same arithmetic: it declares
+  3 and writes 6. A short body truncates a response; a long one corrupts the
+  next one on a keep-alive connection, which is response smuggling. Both are the
+  same unsatisfied equality and the checker gives the same diagnostic kind, with
+  the numbers the other way round."
+  [host port]
+  (let [l  (h/listen host port)
+        a  (h/accept l)
+        l1 (first a)
+        c0 (second a)
+        r  (h/read-request c0)
+        c1 (first r)
+        rb (h/respond-begin c1 200 "OK" {"content-type" "text/plain"} 3)
+        c2 (first rb)
+        b0 (second rb)
+        b1 (h/body-write b0 (o/encode-utf8 "abcdef"))
+        c3 (h/body-finish! c2 b1)
         c4 (h/close-conn! c3)
         l2 (h/shutdown! l1)]
     :done))
@@ -786,8 +959,10 @@
     :run ["in-memory" 0 3] :handler 'perturb.httpcorpus/net-3}
    {:var 'perturb.httpcorpus/stream-a-body :expect :accept
     :run ["in-memory" 0] :handler 'perturb.httpcorpus/net-post}
-   {:var 'perturb.httpcorpus/short-body-still-type-checks :expect :accept
+   {:var 'perturb.httpcorpus/stream-a-runtime-length-body :expect :accept
     :run ["in-memory" 0] :handler 'perturb.httpcorpus/net-post}
+   {:var 'perturb.httpcorpus/stream-a-body-per-request :expect :accept
+    :run ["in-memory" 0 2] :handler 'perturb.httpcorpus/net-2}
 
    {:var 'perturb.httpcorpus/loop-holding-both :expect :accept
     :run ["in-memory" 0 2] :handler 'perturb.httpcorpus/net-2}
@@ -820,4 +995,13 @@
    {:var 'perturb.httpcorpus/body-never-finished         :expect :reject :kind :dangling}
    {:var 'perturb.httpcorpus/write-after-finish          :expect :reject :kind :use-after-move}
    {:var 'perturb.httpcorpus/finish-with-swapped-arguments :expect :reject
-    :kind :untracked-consume}])
+    :kind :untracked-consume}
+
+   ;; the refinement, and the two sides of what it decides
+   {:var 'perturb.httpcorpus/short-body-still-type-checks :expect :reject
+    :kind :refinement}
+   {:var 'perturb.httpcorpus/over-long-body :expect :reject :kind :refinement}
+   {:var 'perturb.httpcorpus/body-written-in-a-loop :expect :reject
+    :kind :refinement-undischarged}
+   {:var 'perturb.httpcorpus/declares-a-runtime-length-writes-a-literal
+    :expect :reject :kind :refinement-undischarged}])

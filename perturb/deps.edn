@@ -18,6 +18,11 @@
   ;; Codec/octet self-tests that need no server and no socket.
   :selftest {:main-opts ["-m" "perturb.selftest"]}
 
+  ;; The refinement decision procedure, alone, with its boundary as a table:
+  ;; every case that must be decided and every case that must be REFUSED.
+  ;; `perturb.check` is the consumer; this runs the arithmetic on its own.
+  :refine {:main-opts ["-m" "perturb.refine"]}
+
   ;; The no-I/O verifier for INHERITED I11. Runs a complete scripted session
   ;; between two marker lines and reports the instrumented native-call log.
   ;; `dev/verify-noio.sh` straces it and checks the marked window is empty.
