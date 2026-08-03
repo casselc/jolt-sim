@@ -1372,3 +1372,88 @@ Rejected because:
 equality profile explicitly and an incompatible import is a build error naming
 the offending dependency. That converts a silent slowdown into a diagnosable
 failure at no cost over the inferred form.
+
+---
+
+## 16. Q2 partially resolved, and a sampling bias in E3
+
+### Q2 — the `Any` risk closes by confinement
+
+§2.2 gives ordinary values inference plus an `Any` escape hatch, and the
+standard worry is that refined-meets-unrefined needs runtime checks or leaks
+soundness. But refinements live only on the capability tier (§2.3), so the
+dangerous case is not `Any` in the value tier — it is `Any` reaching a
+*capability* position. Prohibit that: **a capability position never accepts
+`Any`.** There is then no refined/unrefined boundary to be unsound at.
+
+The cost looks nil, because capabilities are **minted by operations**
+(`Net/connect`, `acquire-native`, `cursor`) rather than parsed from data, so
+they arrive typed by construction. Deserialisation cannot produce one.
+
+The higher-order half stays open and is under test (`prototypes/`, in progress):
+whether a driver taking a refined step function as an argument types without
+dependent function types or abstract refinements.
+
+### E3's survey was biased by its sample
+
+E3 concluded: "**No obligation is about application semantics.** Every one
+concerns bounds, ownership, linearity, or commit geometry." That is the
+load-bearing finding for §2.2's tier split, and it is **true of the sample and
+not of the domain.**
+
+The sample was `jolt-bytes`, `jolt-hako`, `jolt-bencode`, and P4 — byte buffers,
+codecs, and a mailbox. Codec libraries *have* no application semantics; finding
+none is close to tautological. E3 is evidence about what a codec needs. It is
+**not** evidence about what a consensus protocol or a search tree needs, and it
+was used as though it were.
+
+This matters because four consecutive axes (bytes, sequences, hashing, `Any`)
+resolved by appeal to tier confinement. Either the split is doing real work, or
+the same move keeps succeeding because everything examined so far lives on one
+side of it. Codecs are exactly the workload that would hide the difference.
+
+### Three property classes, only one of which is covered
+
+| class | example | mechanism | status |
+| --- | --- | --- | --- |
+| **resource safety** | bounds, ownership, leases, commit geometry | modes + QF-LIA refinements | designed (§2.2/§2.3), E3's whole sample |
+| **structural / inductive** | tree balance, in-order traversal sorted, acyclicity | inductive predicates or dependent types | **not covered** — QF-LIA cannot quantify over subtrees |
+| **temporal / behavioural** | election safety, log matching, eventual commit | trace monitors, refinement relations, liveness under fairness | partly covered |
+
+Structural invariants are the clearest gap. `0 ≤ offset ≤ capacity` is QF-LIA;
+"every path from the root has equal black height" is not, and no amount of
+capability-tier refinement reaches it. That is Ansatz/CIC territory — which the
+stack already has (§ the proof survey), but which §2.3 treated as a residual for
+"obligations outside the type system" rather than as a first-class tier.
+
+Temporal properties are partly covered: safety properties fold over a trace,
+which `monitor.clj` already does. **Liveness does not** — it needs fairness
+assumptions and either bounded response (P4's seed) or a temporal logic, and
+P4's own approval explicitly is "not a SAT/UNSAT result". Refinement relations
+— showing an implementation refines a spec, which is how consensus protocols
+are actually proved — are gestured at by P3 and bounded by P5 §4.2 to
+`explore_states` alone.
+
+### What this does and does not change
+
+**Does not change:** §2.4's machinery. Effects, the kernel, the single oracle,
+and handler-level faults are, if anything, *under-exercised* by codecs — E4
+showed the codec layer needs no scheduler and no continuations at all.
+Consensus (message passing, partial failure, schedule search) and disk
+structures (crash injection at every I/O boundary) are the workloads that
+apparatus was built for. Those should fit better, not worse.
+
+**Does change:** the claim that capability-tier typing covers the proof surface.
+It covers *resource safety*. It says nothing about *algorithmic correctness*,
+and consensus and data structures are mostly the latter. perturb needs a third
+tier — inductive and temporal properties — and the components exist (Ansatz for
+inductive, `explore_states`/monitors for temporal). The open work is
+integration and, for liveness, genuine design.
+
+### Consequence for v0
+
+§2.5's ladder is entirely codec-shaped, which is how the bias got in. It should
+gain a **non-codec target** before the typing decisions harden — one that
+exercises the kernel, faults, and a liveness property, none of which bencode
+touches. P4's capacity-one mailbox is the cheapest candidate since it is already
+fully specified, with a small leader election as the more honest one.
