@@ -774,6 +774,91 @@
     (is (false? (string/includes? html "http://")))
     (is (false? (string/includes? html "https://")))))
 
+;; Case/Outcome -main entry point: the explicit --case-outcome selector routes
+;; to the Case/Outcome renderer; the default path stays trace-only.
+
+(deftest main-case-outcome-writes-a-report
+  (let [input (temp-path ".edn")
+        output (temp-path ".html")]
+    (spit input (pr-str (case-outcome-doc)))
+    (report/-main report/case-outcome-selector input output)
+    (let [html (slurp output)]
+      (is (string/includes? html "jolt-sim case report"))
+      (is (string/includes? html "exercise-with-capacities")))
+    (.delete (io/file input))
+    (.delete (io/file output))))
+
+(deftest main-case-outcome-defaults-output-path
+  (let [input (temp-path ".edn")
+        default-output (str (subs input 0 (- (count input) 4)) ".html")]
+    (spit input (pr-str (case-outcome-doc)))
+    (report/-main report/case-outcome-selector input)
+    (is (string/includes? (slurp default-output) "jolt-sim case report"))
+    (.delete (io/file input))
+    (.delete (io/file default-output))))
+
+(deftest main-case-outcome-fails-closed-on-invalid-input
+  (let [input (temp-path ".edn")
+        output (temp-path ".html")]
+    ;; temp-path reserves a unique name by creating it; remove that placeholder
+    ;; so this assertion proves -main never creates or mutates its destination.
+    (.delete (io/file output))
+    (spit input "not a case-outcome document")
+    (let [data (caught-data #(report/-main report/case-outcome-selector
+                                           input output))]
+      (is (= case-outcome/invalid-document (:type data))))
+    (is (false? (.exists (io/file output))))
+    (.delete (io/file input))
+    (.delete (io/file output))))
+
+(deftest main-case-outcome-refuses-input-output-alias
+  (let [input (temp-path ".edn")]
+    (spit input (pr-str (case-outcome-doc)))
+    (let [data (caught-data #(report/-main report/case-outcome-selector
+                                           input input))]
+      (is (= report/invalid-arguments (:type data)))
+      (is (= :input-output-alias (:reason data))))
+    ;; the input file is untouched
+    (is (= (pr-str (case-outcome-doc)) (slurp input)))
+    (.delete (io/file input))))
+
+(deftest main-case-outcome-rejects-trace-documents
+  (let [input (temp-path ".edn")
+        output (temp-path ".html")]
+    (.delete (io/file output))
+    (spit input (pr-str (sample-doc)))
+    (let [data (caught-data #(report/-main report/case-outcome-selector
+                                           input output))]
+      (is (= case-outcome/invalid-document (:type data))))
+    (is (false? (.exists (io/file output))))
+    (.delete (io/file input))
+    (.delete (io/file output))))
+
+(deftest main-trace-rejects-case-outcome-documents
+  (let [input (temp-path ".edn")
+        output (temp-path ".html")]
+    (.delete (io/file output))
+    (spit input (pr-str (case-outcome-doc)))
+    (let [data (caught-data #(report/-main input output))]
+      (is (= trace/invalid-document (:type data))))
+    (is (false? (.exists (io/file output))))
+    (.delete (io/file input))
+    (.delete (io/file output))))
+
+(deftest main-rejects-unknown-selector
+  (let [data (caught-data #(report/-main "--bogus" "a.edn"))]
+    (is (= report/invalid-arguments (:type data)))
+    (is (= :unknown-selector (:reason data)))))
+
+(deftest main-case-outcome-rejects-wrong-argument-count
+  (let [no-args (caught-data #(report/-main report/case-outcome-selector))
+        too-many (caught-data #(report/-main report/case-outcome-selector
+                                             "a.edn" "b.html" "c.html"))]
+    (is (= report/invalid-arguments (:type no-args)))
+    (is (= :wrong-argument-count (:reason no-args)))
+    (is (= report/invalid-arguments (:type too-many)))
+    (is (= :wrong-argument-count (:reason too-many)))))
+
 (defn -main [& _]
   (let [result (test/run-tests 'jolt.sim.report-test)
         failures (+ (:fail result) (:error result))]

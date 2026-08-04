@@ -29,4 +29,11 @@
   ;; Usage from this project root:
   ;;   jolt -M:trace-report INPUT.edn [OUTPUT.html]
   :trace-report
-  {:main-opts ["-m" "jolt.sim.report"]}}}
+  {:main-opts ["-m" "jolt.sim.report"]}
+
+  ;; Usage from this project root:
+  ;;   jolt -M:case-report INPUT.edn [OUTPUT.html]
+  ;; The explicit --case-outcome selector routes -main to the Case/Outcome
+  ;; renderer; the trace and Case/Outcome schemas are never guessed at.
+  :case-report
+  {:main-opts ["-m" "jolt.sim.report" "--case-outcome"]}}}
