@@ -693,3 +693,133 @@
      (assoc (:value body)
             :receiver {:requests @received
                        :server-errors @receiver-errors}))))
+
+(defn exercise-outbox-delivery-reopen
+  "Runs the ordinary HTTP -> committed SQLite outbox flow on one connection,
+   then closes that connection, reopens the same ordinary JDBC SQLite spec on
+   a fresh connection, and performs the post-COMMIT reload, framed TCP/bencode
+   delivery/ack, ack-gated durable marking, and final reload entirely on the
+   reopened connection. This witnesses that the committed pending row survives
+   a clean, sequential, single-owner close and reopen of an ordinary
+   file-backed SQLite database: the reload on the reopened connection must
+   equal the first connection's committed state before any delivery begins.
+
+   Unlike the in-memory exercise-outbox-delivery and -retry witnesses, this
+   function takes an ordinary JDBC SQLite spec (a file-backed 'sqlite:' spec,
+   not the ':memory:' sentinel) because the committed image must outlive one
+   connection closing. The receiver is started outermost. Connection 0
+   initializes the schema and runs the existing HTTP command through COMMIT
+   and HTTP-server quiescence, then closes; only after that close succeeds --
+   with-sqlite-connection closes fail-closed and returns only after a
+   successful close -- does connection 1 open the same spec, reload the
+   pending row, deliver it over the existing TCP/bencode delivery path with
+   exact correlated-ack validation, run the guarded mark-delivered!, perform
+   the final reload, and close.
+
+   This namespace has no simulator dependency: it uses public jolt-http,
+   jdbc.core, teensyp, jolt.bytes, and jolt.bencode, plus the existing
+   ordinary HTTP and framed-TCP fixture seams. It does not claim crash
+   durability, power-loss safety, multi-connection concurrency, file locking,
+   or exactly-once delivery: a crash after the remote acknowledgement but
+   before durable marking can still redeliver. The close/reopen here is a
+   clean, sequential, single-owner transition -- two opens of one filename,
+   never two live owners at once.
+
+   Returns the same canonical immutable evidence shape as
+   exercise-outbox-delivery ({:application :http :receiver}) with no native
+   handles, pointers, byte arrays, mutable values, controller objects,
+   ephemeral ports, or file/image identities. The spec string and any native
+   file path or simulator image identity are deliberately not part of the
+   application evidence so real and hermetic lanes over different spec strings
+   still compare equal."
+  ([spec]
+   (exercise-outbox-delivery-reopen spec default-command))
+  ([spec command]
+   (let [receiver-errors (atom [])
+         received (atom [])
+         receiver
+         (tcp/run-server
+          :port 0
+          :reuse-address? true
+          :handler (framed/framed-handler
+                    (receiver-reply received expected-ack))
+          :error-logger
+          #(swap! receiver-errors conj (stable-error-summary %)))
+         command-evidence* (atom nil)
+         body
+         (try
+           {:value
+            (let [;; Connection 0: schema + HTTP command through COMMIT, then
+                  ;; close. with-sqlite-connection closes the connection
+                  ;; (failing closed on any close error) before its value
+                  ;; returns, so the reopen below begins only after a
+                  ;; successful close. No reload, delivery, or marking runs
+                  ;; on this connection.
+                  first-cycle
+                  (with-sqlite-connection
+                   spec
+                   (fn [conn]
+                     (store/init-schema! conn)
+                     (let [http-cycle
+                           (http-fixture/run-request-cycle
+                            (command-handler conn command-evidence*)
+                            (fn [host port]
+                              (post-request-bytes command host port)))
+                           command-evidence @command-evidence*
+                           _ (when-not command-evidence
+                               (fail! :missing-application-evidence {}))]
+                       {:command-evidence command-evidence
+                        :http-cycle http-cycle})))
+                  command-evidence (:command-evidence first-cycle)
+                  http-cycle (:http-cycle first-cycle)
+                  ;; Connection 1: reopen the same spec. The committed
+                  ;; pending row must be visible here exactly as connection 0
+                  ;; left it, proving the clean close/reopen preserved the
+                  ;; durable image before any delivery is attempted.
+                  reopened
+                  (with-sqlite-connection
+                   spec
+                   (fn [conn]
+                     (let [pending (load-pending-delivery conn)
+                           pending-state (:state pending)
+                           _ (when-not (= (:committed-state command-evidence)
+                                          pending-state)
+                               (fail! :committed-state-mismatch
+                                      {:step-state
+                                       (:committed-state command-evidence)
+                                       :loaded-state pending-state}))
+                           delivery (deliver-messages! "127.0.0.1"
+                                                       (:port receiver)
+                                                       (:messages pending))
+                           outbox-id (:outbox-id (first (:outbox pending-state)))
+                           marked (mark-delivered-and-reload! conn outbox-id)
+                           app (-> command-evidence
+                                   (dissoc :committed-state)
+                                   (assoc :pending-state pending-state
+                                          :store-state (:state marked)
+                                          :marking (:marking marked)
+                                          :delivery delivery))
+                           parsed (:parsed http-cycle)
+                           response
+                           (decode-bencode-exact :http-response (:body parsed))]
+                       {:application app
+                        :http {:status (:status parsed)
+                               :content-type
+                               (get (:headers parsed) "content-type")
+                               :content-length
+                               (get (:headers parsed) "content-length")
+                               :response response
+                               :server-errors (:server-errors http-cycle)
+                               :close-results (:close-results http-cycle)}})))]
+              reopened)}
+           (catch :default error
+             {:error error}))
+         cleanup-errors
+         (vec
+          (keep identity
+                [(cleanup-attempt :receiver-stop #(tcp/stop-server receiver))]))]
+     (throw-with-cleanup! (:error body) cleanup-errors)
+     ;; stop-server quiesces the receiver before its final error snapshot.
+     (assoc (:value body)
+            :receiver {:requests @received
+                       :server-errors @receiver-errors}))))

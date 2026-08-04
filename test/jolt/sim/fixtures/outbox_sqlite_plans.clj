@@ -339,3 +339,47 @@
                   (subvec plans 25 28)
                   (mark-delivered-statement-plans plans)
                   (subvec plans 25 28))))))
+
+(defn reopen-delivery-statement-plans
+  "Returns the exact 25-statement close/reopen delivery plan: the schema setup
+   and first fresh req-1/entity-a command transaction on connection 0, then --
+   only after that connection closes cleanly -- a second open of the same
+   selected filename that re-runs connection initialization (the PRAGMA at
+   parity index 0), reloads the committed pending row, runs the 6-statement
+   mark-delivered! transaction after the validated acknowledgement, and closes
+   after the three explicit final reload scans.
+
+   Connection 0 runs no post-COMMIT reload and performs no delivery or
+   marking: it commits the pending row, quiesces the HTTP cycle, and closes.
+   Every delivery and durable-marking statement runs on the reopened
+   connection. The second open's first statement is the connection-init
+   PRAGMA (parity index 0) because a fresh jdbc/sqlite connection always runs
+   it before the first explicit statement, and the selected filename's image
+   -- not the in-memory connection -- is what survives the close.
+
+   This is a projection of parity-statement-plans plus the existing
+   mark-delivered transcript, so the command's SQL, binds, and row effects
+   cannot diverge between gates. It is an exact result-producing fixture for
+   this unchanged application path, not a claim that every legal SQLite
+   implementation must expose this transcript. General statement/transaction
+   legality and handle ownership belong to a separate model rather than being
+   inferred from plan count.
+
+   The zero-argument arity pins the historical req-1 payload; the one-argument
+   arity rebinds the first command's three BLOB params exactly as
+   delivery-statement-plans does."
+  ([]
+   (reopen-delivery-statement-plans default-command-payload))
+  ([command-payload]
+   (let [plans (parity-statement-plans command-payload)]
+     ;; Connection 0: PRAGMA + three creates + the command transaction
+     ;; (indices 0..11), then close. No post-COMMIT reload, no delivery, no
+     ;; marking runs on this connection.
+     ;; Connection 1: the second-open PRAGMA (index 0), the three reload
+     ;; scans (25..27), the six mark-delivered plans, and the three final
+     ;; reload scans (25..27).
+     (vec (concat (subvec plans 0 12)
+                  [(plans 0)]
+                  (subvec plans 25 28)
+                  (mark-delivered-statement-plans plans)
+                  (subvec plans 25 28))))))

@@ -14,6 +14,13 @@
 
 (def ^:dynamic *sim-only?* false)
 
+;; Bound by -main to the closed reopen config map
+;; {:case-dir :bare-filename :real-spec :hermetic-spec :command} so the
+;; close/reopen deftest can run real and hermetic lanes over the same ordinary
+;; semantics with a unique file-backed case directory. Defaults to nil; the
+;; reopen gate is run only through -main, which always binds it.
+(def ^:dynamic *reopen-config* nil)
+
 (def ^:private expected-row
   {:outbox-id 1
    :request-id "req-1"
@@ -301,6 +308,125 @@
               :open-dbs 0
               :active-stmts 0}
              (sqlite/summary sqlite-world)))
+      (is (true? (memory/clean? mem)))
+      (is (true? (sqlite/clean? sqlite-world)))
+      (is (true? (posix/clean? posix-world))))))
+
+(deftest ordinary-http-commits-then-close-reopen-delivers-over-framed-tcp
+  ;; The close/reopen witness: connection 0 commits the pending row over the
+  ;; ordinary HTTP -> SQLite path and closes; only after that clean close does
+  ;; a freshly reopened connection 1 reload the committed row, deliver it over
+  ;; the existing framed TCP/bencode path, validate the correlated ack, run
+  ;; the guarded durable marking, and reload. This proves the committed image
+  ;; survives a clean sequential close/reopen of one file-backed SQLite
+  ;; database, not crash durability, locking, multi-connection concurrency, or
+  ;; exactly-once delivery.
+  (let [{:keys [real-spec hermetic-spec bare-filename command]} *reopen-config*
+        real-result (when-not *sim-only?*
+                      (fixture/exercise-outbox-delivery-reopen real-spec command))
+        mem (memory/world)
+        sqlite-world (sqlite/world mem (plans/reopen-delivery-statement-plans)
+                                   {:persistent-filenames #{bare-filename}})
+        posix-world (posix/world mem (net/target-descriptor)
+                                 {:progress-limit 64
+                                  :stream-capacity 8
+                                  :pipe-capacity 1})
+        handlers
+        (hp/compose
+         (hp/pack :jolt.sim/memory (memory/handlers mem))
+         (hp/pack :jolt.sim/sqlite (sqlite/foreign-handlers sqlite-world))
+         (hp/pack :jolt.sim/posix (posix/foreign-handlers posix-world)))
+        controlled
+        (runtime/run-controlled
+         {:ffi-handlers handlers
+          :drain-timeout-ms 10000}
+         (fn []
+           (fixture/exercise-outbox-delivery-reopen hermetic-spec command)))
+        result (:result controlled)
+        app (:application result)
+        delivery (:delivery app)
+        sqlite-state (sqlite/state sqlite-world)
+        closed (:closed-db-evidence sqlite-state)]
+    (testing "the unchanged ordinary application has exact real/hermetic parity"
+      (when-not *sim-only?*
+        (is (= real-result result))))
+
+    (testing "the reopened connection observes the committed pending row"
+      (is (= expected-identities (:identities app)))
+      (is (= {:value fixture/default-command
+              :result expected-result
+              :emitted [expected-row]}
+             (:command app)))
+      ;; The reload ran on the reopened connection and must equal connection 0's
+      ;; committed state: the pending row survived the clean close/reopen.
+      (is (= expected-state (:pending-state app)))
+      (is (= :pending (get-in app [:pending-state :outbox 0 :status]))))
+
+    (testing "the validated ack gates one durable delivery marking on the reopen"
+      (is (= expected-marking (:marking app)))
+      (is (= expected-delivered-state (:store-state app)))
+      (is (= :delivered (get-in app [:store-state :outbox 0 :status])))
+      (is (empty? (filter #(= :pending (:status %))
+                          (get-in app [:store-state :outbox])))))
+
+    (testing "the reopened connection delivers the row in one framed bencode attempt"
+      (is (= [expected-message] (:requests delivery)))
+      (is (= [expected-ack] (:replies delivery)))
+      (is (pos? (:sent-bytes delivery)))
+      (is (pos? (:received-bytes delivery)))
+      (is (= {:connection [true false]} (:close-results delivery))))
+
+    (testing "the receiver observes the same semantic delivery and acknowledges it"
+      (is (= [expected-message] (get-in result [:receiver :requests])))
+      (is (empty? (get-in result [:receiver :server-errors]))))
+
+    (testing "the HTTP response reports the committed command result byte-exactly"
+      (is (= 200 (get-in result [:http :status])))
+      (is (= "application/x-bencode"
+             (get-in result [:http :content-type])))
+      (is (= expected-http-response (get-in result [:http :response])))
+      (is (empty? (get-in result [:http :server-errors])))
+      (is (= {:connection [true false]}
+             (get-in result [:http :close-results]))))
+
+    (testing "all 25 SQLite plans and all native effects stay inside the model"
+      (is (= {:plan-index 25
+              :plan-count 25
+              :open-dbs 0
+              :active-stmts 0}
+             (sqlite/summary sqlite-world)))
+      (is (every? #(= :handler (:route %)) (:effect-trace controlled))))
+
+    (testing "the clean close/reopen leaves two closed records and a durable image"
+      ;; Two sequential single-owner connections, closed in order 0 then 1, each
+      ;; owning the same selected filename image.
+      (is (= 2 (count closed)))
+      (is (= [0 1] (mapv :close-index closed)))
+      (is (= [0 1] (mapv :connection-id closed)))
+      (is (= [bare-filename bare-filename] (mapv :image-key closed)))
+      ;; Each close was clean: no active transaction or staging escaped.
+      (is (every? #(nil? (:staging %)) closed))
+      ;; Connection 0 published the committed pending image at its close;
+      ;; connection 1 reloaded it, marked it delivered, and published the
+      ;; delivered image at its close.
+      (is (= {:type :text :value "pending"}
+             (get-in (first closed) [:committed modeled-outbox-key "status"])))
+      (is (= {:type :text :value "delivered"}
+             (get-in (second closed) [:committed modeled-outbox-key "status"])))
+      ;; Marking changes exactly one modeled field. This catches a vacuous
+      ;; reopen whose second connection is seeded from plans or loses another
+      ;; table while still returning the expected projected application rows.
+      (is (= (:committed (first closed))
+             (assoc-in (:committed (second closed))
+                       [modeled-outbox-key "status"]
+                       {:type :text :value "pending"})))
+      ;; The final published image is the delivered state and no selected
+      ;; filename remains open.
+      (is (= (:committed (second closed))
+             (get-in sqlite-state [:images bare-filename])))
+      (is (= #{} (:open-images sqlite-state))))
+
+    (testing "the shared native worlds quiesce cleanly"
       (is (true? (memory/clean? mem)))
       (is (true? (sqlite/clean? sqlite-world)))
       (is (true? (posix/clean? posix-world))))))
