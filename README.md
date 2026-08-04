@@ -957,9 +957,9 @@ requires the first connection to cleanly close before retry, proves the row
 unchanged through the still-open SQLite connection, and observes attempts 1
 and 2 with a correlated second acknowledgement. Completed child artifacts
 survive until the parent verdict, while passing cases clean them up. The
-current slices do not prove close/reopen persistence, crash durability,
-delivery marking, exactly-once behavior, real-kernel reset parity, or extreme
-one- and two-byte HTTP fragmentation.
+current whole-application simulation slices do not prove close/reopen
+persistence, crash durability, delivery marking, exactly-once behavior,
+real-kernel reset parity, or extreme one- and two-byte HTTP fragmentation.
 
 ### Composing handler packs
 

@@ -217,6 +217,26 @@ empty after passing cleanup, one retry boundary bundle was retained, and the
 exact CI report command rendered its document to a 41,200-byte self-contained
 HTML file.
 
+Hosted workflow run `30893724229` then completed every registered lane for
+draft PR `#38`: Linux x86-64 and ARM64, macOS x86-64 and ARM64, Windows x86-64,
+and the Windows ARM64 source suite. The Linux x86-64 lane also completed the
+Hegel campaign, bounded Case/Outcome rendering, and unconditional artifact
+preservation path.
+
+The next API slice, draft PR `casselc/jolt-sim#39`, adds a pure idempotent
+pending-to-delivered transition and a durable SQLite `mark-delivered!` adapter
+operation. The adapter runs the transition inside the required outer
+transaction boundary, uses an exact guarded status update, requires an
+affected-row count of one, and rolls back after either a post-mutation failure
+or a count mismatch. With the exact v0.5.20 simulation image, the pure gate
+reported 16 tests / 181 assertions, the real-SQLite gate 22 / 187, the aggregate
+suite 554 / 4,579, SQLite parity 1 / 47, and the unchanged delivery witness
+1 / 27, all green. The whole-application fixture does not call the marking API
+yet: the next slice must validate the exact correlated acknowledgement first,
+then mark and reload the row. Until that integration lands, delivery remains
+at least once and a crash between remote acknowledgement and durable marking
+may redeliver.
+
 The simulation layer may provide boundary handlers and models. It must not
 replace the HTTP, DB, TCP, codec, or application implementation with a second
 simulator-specific implementation.
