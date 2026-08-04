@@ -135,7 +135,7 @@ only the application surfaces and modes exercised by a durable gate.
 | HTTP Hello World | `jolt-http`, `jolt-tcp`, `jolt.net`, `jolt.ffi` | Not in the durable gate | Modeled POSIX loopback | One request; public CI, no faults |
 | HTTP SQLite BLOB | `jolt-http`, `jolt-tcp`, `jolt.net`, `jdbc.core`, `db.sqlite`, `jolt.ffi`, byte arrays | Host sockets plus system SQLite | Shared FFI-memory, POSIX, and SQLite worlds | One request at one-byte capacities plus one captured first-poll `EINTR`; local gate, no generated schedule/fault search |
 | Length-framed TCP bencode echo | `teensyp.server`, `teensyp.client`, `teensyp.buffer`, `jolt.bytes`, `jolt.bencode`, `jolt.net`, `jolt.ffi` | Host loopback parity witness | Modeled POSIX loopback and native memory | Pipelined requests, finite stream/self-pipe capacities, captured `EINTR`, and Hegel-generated UTF-8; no half-close or concurrent clients |
-| HTTP SQLite outbox delivery | `jolt-http`, `jdbc.core`, `db.sqlite`, `teensyp.server/client`, `jolt.bytes`, `jolt.bencode`, `jolt.net`, `jolt.ffi` | Host HTTP/TCP sockets plus system SQLite | Shared FFI-memory, POSIX, and exact-plan SQLite worlds | Ordinary, scoped-reset retry, clean close/reopen, and deliberate post-COMMIT process-exit/recovery witnesses; Hegel varies payload bytes, capacities, poll interruption, and admission; no general scheduler, cancellation, power-loss, or exactly-once claim |
+| HTTP SQLite outbox delivery | `jolt-http`, `jdbc.core`, `db.sqlite`, `teensyp.server/client`, `jolt.bytes`, `jolt.bencode`, `jolt.net`, `jolt.ffi` | Host HTTP/TCP sockets plus system SQLite | Shared FFI-memory, POSIX, exact-plan SQLite, and one shared virtual clock | Ordinary, scoped-reset retry, clean close/reopen, post-COMMIT process-exit/recovery, cancellation-before-ack, and one-operation absolute-deadline witnesses; Hegel varies payload bytes, capacities, poll interruption, admission, and a closed terminal-action axis; no general scheduler, power-loss, or exactly-once claim |
 | Maelstrom Echo | `jolt.maelstrom` node/handler code | JSON-lines lane reviewed but not integrated | Deterministic memory transport | FIFO/history integrity only; no nemesis or liveness claim |
 
 These capabilities belong to two deliberately different execution tracks:
@@ -771,8 +771,9 @@ Each socket receive FIFO has a finite positive capacity (65,536 bytes by
 default). A full live peer clears `POLLOUT`; nonblocking `send` captures
 `EAGAIN`, and `recv` republishes write readiness after freeing room. The
 HTTP-plus-SQLite lane runs at one-byte capacity and proves both partial progress
-and an actual would-block/retry without changing application code. Whole-app
-deadline exploration over the new virtual alarm path is the next bounded lane.
+and an actual would-block/retry without changing application code. The outbox
+terminal campaign now installs this same clock underneath the ordinary app and
+advances one operation-wide absolute deadline at a named semantic boundary.
 
 Each modeled self-pipe likewise has a finite positive capacity (65,536 bytes by
 default). This bounded wake-pipe surface keeps its current short writes atomic:
@@ -1033,6 +1034,20 @@ file-survival evidence, not SIGKILL, machine-crash, fsync, power-loss,
 WAL/torn-write, exactly-once, real-kernel reset parity, or extreme one- and
 two-byte HTTP fragmentation evidence.
 
+The terminal-boundary campaign keeps that same ordinary application and fixes
+the already-covered payload/capacity/fault axes while Hegel selects one closed
+action: deadline advancement at post-COMMIT, pre-ack, or pre-mark with offset
+`-1`, `0`, or `1` nanosecond from the single absolute deadline, or the existing
+cancel-before-ack handshake. Six fixed witnesses preserve the exact important
+boundaries. Every case checks the proof-derived durable oracle, exact SQLite
+plan position and one-row image, handler-only routing, virtual-clock/alarm
+state, and full native/readiness cleanup. At pre-ack, the receiver reply and
+the deadline wake are ordinary-thread competitors; the test intentionally
+accepts either low-level winner and requires their shared semantic result:
+the committed row remains pending and unmarked. A process-supervisor timeout
+remains a distinct Case/Outcome status and is never treated as an application
+deadline.
+
 ### Composing handler packs
 
 `jolt.sim.handler-pack` is a small public helper for assembling one
@@ -1158,12 +1173,13 @@ extension boundaries rather than growing a parallel simulator architecture.
 The live implementation order and release boundary are maintained in
 [`docs/ROADMAP.md`](docs/ROADMAP.md). The ordinary HTTP -> SQLite -> TCP/bencode
 outbox application, generated workload/capacity/poll-fault lanes, clean
-close/reopen persistence, and deliberate post-COMMIT process-exit recovery are
-now executable. The immediate path is cancellation/deadline and broader
-schedule exploration around that same application, followed by stronger crash
-boundaries and hybrid-native scenarios. Causal monitors, the crash-safe
-journal, broader runtime hooks, and release hardening build on that application
-evidence.
+close/reopen persistence, deliberate post-COMMIT process-exit recovery, and
+cancel-before-ack are executable. The stacked terminal candidate adds one
+absolute-deadline/cancellation action axis around that same application; after
+hosted validation, the immediate path is broader schedule exploration,
+stronger crash boundaries, and hybrid-native scenarios. Causal monitors, the
+crash-safe journal, broader runtime hooks, and release hardening build on that
+application evidence.
 
 The original P0-P5 research packet and adversarial reviews remain preserved in
 [`casselc/jolt-sim-planning`](https://github.com/casselc/jolt-sim-planning);

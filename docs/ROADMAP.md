@@ -174,15 +174,17 @@ Build outward from the same pure core and SQLite adapter:
 - explicit real, hermetic, and hybrid providers; and
 - Linux, macOS, and Windows capability classification.
 
-The first implementation slice is intentionally narrower than Phase 3's final
+The first implementation slice was intentionally narrower than Phase 3's final
 boundary: one ordinary bencoded HTTP POST commits one SQLite outbox row, reloads
 that pending row, sends it through the existing framed TCP/bencode stack, and
 receives an outbox-id/attempt acknowledgement. It records stable request,
 transaction, outbox, delivery, and attempt identities and runs the same body in
 real and hermetic modes. The acknowledgement does not mark the row delivered;
 retry, marking, cancellation, schedule/admission search, and POSIX hybrid
-classification remain later feature slices rather than hidden claims of this
-witness.
+classification were later feature slices rather than hidden claims of that
+initial witness. Subsequent slices added ack-gated marking, retry, clean
+reopen, post-COMMIT process recovery, and cancel-before-ack without replacing
+the ordinary application.
 The first slice used one in-memory SQLite connection and therefore established
 post-COMMIT reload only. Later stacked slices now add clean file-backed
 close/reopen continuity and a separate real process-exit/recovery witness.
@@ -286,11 +288,14 @@ Status: workload/capacity/poll-fault search is implemented in draft PR
 `#30` and `#31`; scoped-reset retry is exercised in PR `#33`; the canonical
 Case/Outcome/reporter spine is stacked in PRs `#35` through `#38`; and
 ack-gated durable marking and clean reopen paths now run through generated
-campaigns. The current lanes do not yet vary cancellation, crash actions,
-deadlines, broader future admission, or one- and two-byte HTTP fragmentation;
+campaigns. Cancellation-before-ack is executable, and the current stacked
+terminal candidate generates and shrinks one closed absolute-deadline or
+cancellation action across post-COMMIT, pre-ack, and pre-mark boundaries while
+fixing axes already covered elsewhere. The current lanes do not yet vary crash
+actions, broader future admission, or one- and two-byte HTTP fragmentation;
 the real process-exit witness is one fixed boundary rather than a generated
-crash axis. Those are the next bounded slices around the same ordinary
-application, not alternate simulator implementations.
+crash axis. Those remain bounded slices around the same ordinary application,
+not alternate simulator implementations.
 
 As the complete app gains those modes:
 

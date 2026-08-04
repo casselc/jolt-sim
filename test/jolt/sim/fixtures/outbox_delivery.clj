@@ -78,15 +78,27 @@
 (defn new-operation-context
   "Creates the ordinary application's shared operation context. Its absolute
    monotonic deadline is safe to pass unchanged through every participating
-   library call and is intentionally independent of jolt-sim. Under a
-   simulation-enabled compiler, the ordinary jolt.host clock call is handled
-   by the installed clock controller."
+   library call and is intentionally independent of jolt-sim. An optional
+   boundary observer receives each stable application phase immediately before
+   its clock sample. Observability, tracing, and test harnesses may use that
+   semantic seam without replacing HTTP, SQLite, TCP, or application code.
+   Under a simulation-enabled compiler, the ordinary jolt.host clock call is
+   handled by the installed clock controller."
   ([]
    (new-operation-context default-operation-budget-nanos))
   ([budget-nanos]
-   {:deadline-nanos (+ (host/mono-nanos) budget-nanos)}))
+   (new-operation-context budget-nanos nil))
+  ([budget-nanos on-boundary]
+   (when-not (or (nil? on-boundary) (fn? on-boundary))
+     (fail! :invalid-boundary-observer {:value on-boundary}))
+   (cond-> {:deadline-nanos (+ (host/mono-nanos) budget-nanos)}
+     on-boundary (assoc :on-boundary on-boundary))))
 
 (defn- check-operation-deadline! [operation-context phase]
+  (when-let [on-boundary (:on-boundary operation-context)]
+    (when-not (fn? on-boundary)
+      (fail! :invalid-boundary-observer {:value on-boundary :phase phase}))
+    (on-boundary phase))
   (when-let [deadline-nanos (:deadline-nanos operation-context)]
     (let [observed-nanos (host/mono-nanos)]
       (when (<= deadline-nanos observed-nanos)

@@ -41,13 +41,21 @@
     admission does not order the original handler executions or claim that ack
     bytes were already queued.
 
-    The final exercise-cancel-before-ack-with-capacities scenario drives the
+    The exercise-cancel-before-ack-with-capacities scenario drives the
     UNCHANGED cancellation fixture. Its ordinary promise handshake fixes the
     cancellation point after receiver decode and before acknowledgement; the
     wrapper varies only payload, modeled capacities, and an optional captured
     poll EINTR. No admission coordinator or simulator-specific application
-    implementation is introduced."
+    implementation is introduced.
+
+    exercise-terminal-boundary adds one fixed smoke-size campaign over that
+    same ordinary application. It shares one explicit virtual clock between
+    the runtime clock controller and modeled POSIX poll alarms, then advances
+    it through the application's optional semantic boundary observer or its
+    existing reply seam. It does not replace HTTP, SQLite, TCP, cancellation,
+    acknowledgement validation, or durable marking."
   (:require [jolt.net :as net]
+            [jolt.sim.clock :as clock]
             [jolt.sim.ffi-memory :as memory]
             [jolt.sim.ffi-schedule :as ffi-schedule]
             [jolt.sim.fixtures.outbox-delivery :as fixture]
@@ -1162,3 +1170,364 @@
   ([overrides input]
    (validate-cancel-input! input)
    (cancel-evidence-for overrides input)))
+
+;; ---- Fixed whole-application terminal-boundary campaign ------------------
+;;
+;; This is the small deterministic scenario consumed by the deadline/cancel
+;; campaign. It does not implement an application, transport, store, or
+;; scheduler. One ordinary outbox fixture still owns the complete HTTP ->
+;; SQLite -> framed TCP/bencode path. The wrapper contributes only:
+;;
+;; * one explicit virtual clock, shared by the runtime clock controller and
+;;   modeled POSIX poll alarms;
+;; * one boundary observer installed in the ordinary operation context;
+;; * the fixture's existing reply-for seam at the pre-ack boundary; and
+;; * one bounded, address-free evidence projection.
+;;
+;; Deadline offsets are relative to the ONE absolute operation deadline D.
+;; -1 means D-1 (the operation remains live); 0 and 1 mean D and D+1 (expired,
+;; because the ordinary deadline contract is inclusive). Cancellation uses
+;; the fixture's existing causal decode-before-ack handshake and is therefore
+;; the single closed action {:kind :cancel :boundary :before-ack}.
+
+(def ^:private terminal-input-keys #{:terminal-action})
+(def ^:private terminal-deadline-nanos 5000000000)
+(def ^:private terminal-stream-capacity 8)
+(def ^:private terminal-pipe-capacity 1)
+(def ^:private terminal-boundaries
+  #{:after-command-commit :before-ack :before-mark})
+(def ^:private terminal-offsets #{-1 0 1})
+(def ^:private modeled-outbox-key
+  [:jolt.sim.sqlite/row
+   :outbox/rows
+   [{:type :integer :value 1}]])
+
+(defn- validate-terminal-input!
+  "Validates the exact terminal-campaign input before constructing a clock,
+   memory heap, database, or POSIX world. Deadline actions select one of the
+   three stable semantic boundaries and one of {-1,0,1}; cancellation is the
+   one existing pre-ack structural action."
+  [input]
+  (when-not (map? input)
+    (throw (invalid-scenario-input :not-a-map {:input input})))
+  (let [actual (set (keys input))
+        unknown (seq (sort-by pr-str (remove terminal-input-keys actual)))
+        missing (seq (sort-by pr-str (remove actual terminal-input-keys)))]
+    (when unknown
+      (throw (invalid-scenario-input
+              :unknown-keys {:unknown-keys (vec unknown) :input input})))
+    (when missing
+      (throw (invalid-scenario-input
+              :missing-keys {:missing-keys (vec missing) :input input}))))
+  (let [action (:terminal-action input)]
+    (when-not (map? action)
+      (throw (invalid-scenario-input
+              :invalid-terminal-action {:value action})))
+    (let [{:keys [kind boundary offset-nanos]} action
+          expected-keys (case kind
+                          :deadline #{:kind :boundary :offset-nanos}
+                          :cancel #{:kind :boundary}
+                          nil)]
+      (when-not (= expected-keys (set (keys action)))
+        (throw (invalid-scenario-input
+                :invalid-terminal-action-keys
+                {:keys (vec (sort-by pr-str (keys action))) :value action})))
+      (when-not
+       (or (and (= :deadline kind)
+                (contains? terminal-boundaries boundary)
+                (contains? terminal-offsets offset-nanos))
+           (= {:kind :cancel :boundary :before-ack} action))
+        (throw (invalid-scenario-input
+                :unsupported-terminal-action
+                {:value action
+                 :deadline-boundaries
+                 [:after-command-commit :before-ack
+                  :before-mark]
+                 :deadline-offsets [-1 0 1]
+                 :cancel-action
+                 {:kind :cancel :boundary :before-ack}})))))
+  input)
+
+(defn- terminal-error-summary
+  "Returns bounded diagnostics for an expected application deadline. Large
+   HTTP byte buffers, mutable values, native identities, and arbitrary nested
+   exception data deliberately do not cross the worker boundary."
+  [error]
+  (let [data (or (ex-data error) {})]
+    {:class (str (class error))
+     :message (or (ex-message error) (str error))
+     :type (:type data)
+     :reason (:reason data)
+     :phase (:outbox-delivery/phase data)
+     :operation (:teensyp.client/op data)
+     :kind (:teensyp.client/kind data)
+     :deadline-nanos
+     (or (:teensyp.client/deadline-nanos data)
+         (get-in data [:detail :deadline-nanos]))
+     :observed-nanos (get-in data [:detail :observed-nanos])
+     :server-errors
+     (mapv #(select-keys % [:class :message :data])
+           (take 4 (:http-sqlite/server-errors data)))}))
+
+(defn- summary-has-operation-deadline? [summary]
+  (let [data (:data summary)]
+    (or (= :operation-deadline-exceeded (:reason summary))
+        (= ":operation-deadline-exceeded" (get data ":reason")))))
+
+(defn- expected-deadline-error?
+  "Recognizes only the ordinary application's two deadline surfaces. A
+   semantic boundary check reports :operation-deadline-exceeded directly (or
+   through the HTTP server's bounded error snapshot); a pre-ack poll race may
+   instead surface the teensyp operation's own :timed-out result."
+  [error]
+  (let [data (or (ex-data error) {})]
+    (or (= :operation-deadline-exceeded (:reason data))
+        (= :timed-out (:teensyp.client/kind data))
+        (some summary-has-operation-deadline?
+              (:http-sqlite/server-errors data)))))
+
+(defn- terminal-action-time [{:keys [offset-nanos]}]
+  (+ terminal-deadline-nanos offset-nanos))
+
+(defn- terminal-observer-phase [{:keys [boundary]}]
+  ;; The public campaign vocabulary stays concise while this one adapter owns
+  ;; the mapping to the ordinary fixture's exact semantic phase name.
+  (if (= :before-mark boundary)
+    :before-mark-delivered
+    boundary))
+
+(defn- apply-deadline-action!
+  "Records and applies `action` exactly at its selected semantic boundary.
+   The observer is invoked before the application's clock sample, so an
+   advance to D or later is visible to that same ordinary deadline check."
+  [virtual-clock boundary-log applied? action phase source]
+  (let [before (clock/now-nanos virtual-clock)
+        reported-phase (if (= :before-mark-delivered phase)
+                         :before-mark
+                         phase)]
+    (if (and (= :deadline (:kind action))
+             (= (terminal-observer-phase action) phase))
+      (do
+        (when-not (compare-and-set! applied? false true)
+          (throw (invalid-scenario-input
+                  :terminal-action-repeated
+                  {:terminal-action action :phase phase})))
+        (clock/advance-to! virtual-clock (terminal-action-time action))
+        (swap! boundary-log conj
+               {:phase reported-phase :source source :action :deadline
+                :before-nanos before
+                :after-nanos (clock/now-nanos virtual-clock)}))
+      (swap! boundary-log conj
+             {:phase reported-phase :source source :action :observe
+              :before-nanos before :after-nanos before}))))
+
+(defn- terminal-outbox-image [sqlite-world]
+  (get-in (sqlite/state sqlite-world)
+          [:closed-db-evidence 0 :committed]))
+
+(defn- terminal-outbox-state [image]
+  (let [status (get-in image [modeled-outbox-key "status" :value])]
+    {:status (when status (keyword status))
+     :pending? (= "pending" status)
+     :delivered? (= "delivered" status)
+     :image image}))
+
+(defn- terminal-route-summary [effect-trace]
+  {:count (count effect-trace)
+   :all-handled? (every? #(= :handler (:route %)) effect-trace)
+   :foreign-symbols (foreign-symbols effect-trace)})
+
+(defn- deadline-terminal-evidence-for
+  [overrides action]
+  (let [virtual-clock (clock/virtual-clock 0)
+        clock-before (clock/snapshot virtual-clock)
+        boundary-log (atom [])
+        action-applied? (atom false)
+        receiver-observed (atom [])
+        mem (memory/world)
+        target (net/target-descriptor)
+        sqlite-world
+        (sqlite/world mem
+                      (plans/delivery-statement-plans
+                       (:payload fixture/default-command)))
+        posix-world
+        (posix/world mem target
+                     {:progress-limit 64
+                      :stream-capacity terminal-stream-capacity
+                      :pipe-capacity terminal-pipe-capacity}
+                     virtual-clock)
+        handlers
+        (hp/compose
+         (hp/pack :jolt.sim/memory (memory/handlers mem))
+         (hp/pack :jolt.sim/sqlite (sqlite/foreign-handlers sqlite-world))
+         (hp/pack :jolt.sim/posix (posix/foreign-handlers posix-world)))
+        observer
+        (fn [phase]
+          (apply-deadline-action! virtual-clock boundary-log action-applied?
+                                  action phase :operation-context))
+        reply-for
+        (fn [message]
+          (swap! receiver-observed conj message)
+          (apply-deadline-action! virtual-clock boundary-log action-applied?
+                                  action :before-ack :receiver-reply)
+          {"type" "outbox_delivery_ok"
+           "outbox-id" (get message "outbox-id")
+           "attempt" (get message "attempt")})
+        controlled
+        (rt/run-controlled
+         (merge overrides
+                {:ffi-handlers handlers
+                 :drain-timeout-ms 10000
+                 :clock (clock/controller virtual-clock)})
+         (fn []
+           ;; Construct the operation context INSIDE the controlled scope so
+           ;; its ordinary jolt.host/mono-nanos sample is exactly virtual zero
+           ;; and therefore establishes the one fixed deadline D.
+           (let [operation-context
+                 (fixture/new-operation-context terminal-deadline-nanos
+                                                observer)]
+             (try
+               {:terminal-status :completed
+                :result
+                (fixture/exercise-outbox-delivery
+                 fixture/default-command reply-for operation-context)}
+               (catch :default error
+                 ;; Infrastructure, cleanup, plan, and non-deadline application
+                 ;; failures remain process-explorer failures. Only a recognized
+                 ;; ordinary deadline outcome is normalized into case evidence.
+                 (if (expected-deadline-error? error)
+                   (let [data (or (ex-data error) {})]
+                     {:terminal-status :deadline-exceeded
+                      :error (terminal-error-summary error)
+                      :command-evidence
+                      (or (:outbox-delivery/command-evidence data)
+                          (get-in data [:detail :command-evidence]))})
+                   (throw error)))))))
+        body (:result controlled)
+        result (:result body)
+        effect-trace (:effect-trace controlled)
+        image (terminal-outbox-image sqlite-world)]
+    (when-not @action-applied?
+      (throw (invalid-scenario-input
+              :terminal-action-not-reached {:terminal-action action})))
+    {:terminal {:status (:terminal-status body)
+                :action action
+                :deadline-nanos terminal-deadline-nanos
+                :error (:error body)}
+     :boundary-log @boundary-log
+     :clock {:before clock-before
+             :after (clock/now-nanos virtual-clock)
+             :snapshot (clock/snapshot virtual-clock)}
+     :application
+     (or (:application result)
+         (when-let [evidence (:command-evidence body)]
+           {:command-evidence evidence}))
+     :http (:http result)
+     :receiver (or (:receiver result)
+                   (when (seq @receiver-observed)
+                     {:requests @receiver-observed}))
+     :sqlite {:summary (sqlite/summary sqlite-world)
+              :outbox (terminal-outbox-state image)}
+     :routes (terminal-route-summary effect-trace)
+     :capacity {:stream (posix/capacity-summary posix-world)
+                :pipe (posix/pipe-capacity-summary posix-world)}
+     :cleanup {:memory (memory/clean? mem)
+               :sqlite (sqlite/clean? sqlite-world)
+               :posix (posix/clean? posix-world)
+               :readiness (posix/readiness-snapshot posix-world)
+               :clock-alarms (:alarms (clock/snapshot virtual-clock))}}))
+
+(defn- cancel-terminal-evidence-for
+  [overrides action]
+  (let [virtual-clock (clock/virtual-clock 0)
+        clock-before (clock/snapshot virtual-clock)
+        mem (memory/world)
+        target (net/target-descriptor)
+        sqlite-world
+        (sqlite/world mem
+                      (plans/cancel-before-ack-statement-plans
+                       (:payload fixture/default-command)))
+        posix-world
+        (posix/world mem target
+                     {:progress-limit 64
+                      :stream-capacity terminal-stream-capacity
+                      :pipe-capacity terminal-pipe-capacity}
+                     virtual-clock)
+        handlers
+        (hp/compose
+         (hp/pack :jolt.sim/memory (memory/handlers mem))
+         (hp/pack :jolt.sim/sqlite (sqlite/foreign-handlers sqlite-world))
+         (hp/pack :jolt.sim/posix (posix/foreign-handlers posix-world)))
+        controlled
+        (rt/run-controlled
+         (merge overrides
+                {:ffi-handlers handlers
+                 :drain-timeout-ms 10000
+                 :clock (clock/controller virtual-clock)})
+         (fn []
+           (fixture/exercise-outbox-delivery-cancel-before-ack
+            fixture/default-command)))
+        result (:result controlled)
+        effect-trace (:effect-trace controlled)
+        image (terminal-outbox-image sqlite-world)]
+    {:terminal {:status :cancelled
+                :action action
+                :deadline-nanos terminal-deadline-nanos
+                :error (get-in result [:application :cancel :exchange-error])}
+     ;; The ordinary fixture's decoded-promise -> owning close -> ack-gate
+     ;; handshake is the causal boundary witness. This projection names that
+     ;; existing seam; it does not claim a simulator-invented callback.
+     :boundary-log
+     [{:phase :before-ack
+       :source :ordinary-cancellation-handshake
+       :action :cancel
+       :before-nanos (clock/now-nanos virtual-clock)
+       :after-nanos (clock/now-nanos virtual-clock)}]
+     :clock {:before clock-before
+             :after (clock/now-nanos virtual-clock)
+             :snapshot (clock/snapshot virtual-clock)}
+     :application (:application result)
+     :http (:http result)
+     :receiver (:receiver result)
+     :sqlite {:summary (sqlite/summary sqlite-world)
+              :outbox (terminal-outbox-state image)}
+     :routes (terminal-route-summary effect-trace)
+     :capacity {:stream (posix/capacity-summary posix-world)
+                :pipe (posix/pipe-capacity-summary posix-world)}
+     :cleanup {:memory (memory/clean? mem)
+               :sqlite (sqlite/clean? sqlite-world)
+               :posix (posix/clean? posix-world)
+               :readiness (posix/readiness-snapshot posix-world)
+               :clock-alarms (:alarms (clock/snapshot virtual-clock))}}))
+
+(defn ^{:jolt.sim/scenario true
+        :jolt.sim/accepts-input true} exercise-terminal-boundary
+  "Runs one fixed smoke-size ordinary outbox application under a shared
+   virtual clock and hermetic SQLite/POSIX worlds. Input is exactly
+
+     {:terminal-action
+      {:kind :deadline
+       :boundary :after-command-commit | :before-ack |
+                 :before-mark
+       :offset-nanos -1 | 0 | 1}}
+
+   or the one structural cancellation action
+
+     {:terminal-action
+      {:kind :cancel :boundary :before-ack}}
+
+   Deadline offsets are nanoseconds relative to the one fixed absolute
+   deadline D=5000000000 on a clock starting at zero. The ordinary fixture,
+   not this wrapper, performs HTTP, SQLite, TCP, acknowledgement validation,
+   durable marking, and cancellation. Expected deadline outcomes become
+   canonical terminal evidence; every unrelated error escapes so the process
+   supervisor retains the distinction between application deadline,
+   infrastructure failure, and worker timeout. Accepts the standard
+   process-explorer protocol-v2 (runtime-overrides, input) arity."
+  ([input]
+   (exercise-terminal-boundary {} input))
+  ([overrides input]
+   (let [action (:terminal-action (validate-terminal-input! input))]
+     (if (= :cancel (:kind action))
+       (cancel-terminal-evidence-for overrides action)
+       (deadline-terminal-evidence-for overrides action)))))
