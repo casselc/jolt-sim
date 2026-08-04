@@ -96,6 +96,8 @@ The complete current tally of claims this document made and then refuted:
 | 63 | jolt-bytes' `-M:test` gate demonstrates its corpus is the domain | **it does not.** Mutation A — one row swapped for a duplicate of another — reports `:verified` at the full 132,672 assertions with a domain member missing. The uniqueness/completeness checks live in the generating spike and reach the runtime lane only via `bin/verify-oracle-sync`, which the Jolt CI runtime job does not run | E39 |
 | 64 | jolt-sim's Hegel axes are `bounded-complete` — "the test already asserts exact domain coverage" — **published to `casselc/jolt-sim` #29** | the axes are `sampled-from`, **15 cases over a 90-combination product**, and the property is quantified over a tuple containing a sampled payload. Coverage is **marginal, not joint**: "every value appeared in a passing case", not "the property holds for every value" | E39. A correction is owed to that repo |
 | 65 | `schedule-plans` and `bounded-complete` | two documents in this directory say **opposite things** — the adoption audit proposes `:coverage :bounded-complete` for it, the temporal-ledger sketch says it "does not establish bounded completeness". Both are defensible under different readings: it completely enumerates **its own output domain** while establishing nothing about the system explored through it. The record must say which it means | E39 |
+| 75 | the review's evidence rule — reject nonzero strength with zero checked units unless explicitly inconclusive — is sufficient | **it permits findings with an empty denominator.** Measured: a value with `:findings 2` and `:checked 0` passes that rule and is rejected only by the converse, `:vacuity-accounting`. Both directions now reject | E42 |
+| 76 | re-expressing a B6 clause as a monitor fold is a rewrite whose agreement has to be assumed | **six of six fixtures agree on status AND exercised count, with byte-identical rendered evidence.** The incumbent is an indexed nested loop and the candidate is a left fold; the equivalence argument was written before it was measured | E42 |
 | 72 | `PROGRESSIVE-FORMALISM-DESIGN` §7.2 Merge 1: perturb's effect log and capability ledger "become event kinds in `jolt.sim.trace`, validated by `kernel/validate-trace!`" | **rejected by source.** `validate-trace!` checks every event's FIXED-POSITION shape and requires a vector beginning with exactly one `:run/initial`; `replay` compares the FULL sequence via `first-difference-index` and throws `replay-diverged` on the first difference. Widening it would break exact replay of every existing trace, and `README.md:416` already says a unified causal trace is later work. **One trace must begin as a new, separately versioned semantic projection that REFERENCES the replay trace** | external review, verified 2026-08-04; design §7.2 STRUCK and rewritten |
 | 73 | §1.1's falsification criterion: a property moves from `:sampled` to `:exhausted` to a production counter "by changing a domain declaration and nothing else" | **false.** A common predicate still needs an explicit OBSERVATION ADAPTER — for the exhaustive consumer you construct the arguments, for the monitor you must find them in a trace — and a trace lacking those observations must be `:inconclusive`, never a pass. The criterion now reads "`:holds` is unchanged; the domain declaration and a declared adapter change" | external review; design §1.1 CORRECTED |
 | 74 | §7's five merges, and the shared name implying one runtime | **conditional go for a narrow shared-assurance seam only.** No production API may depend on the simulator; Jolt core gets only minimal disabled-by-default hooks; the other four merges sit behind an acceptance gate on ONE B6 clause | external review; design §7.2a, §7.2b |
@@ -6571,6 +6573,80 @@ defs` when the capture is empty.
    claim is `perturb.check`'s ordinary linearity check on one function.
 5. **The four ServerConn edges are hand-written and unverified**, like every
    other annotation in this record.
+
+### E42 — the convergence slice, executed: one clause, two implementations, agreement on the denominator
+
+The external review's four-step slice, run. `perturb.evidence`,
+`perturb.semantic`, `perturb.b63`, `perturb.slicecheck`, `-M:slice`, plus a
+public `perturb.layer/semantic-b63-events` projection. **Three of four steps
+ran; the fourth did not and is named.**
+
+#### Step 1 — evidence-v1, and the rule the review's formulation permits
+
+A closed, versioned, fail-closed value shaped like `jolt.sim.case-outcome`.
+Three rejections measured:
+
+| construction | reason |
+| --- | --- |
+| `:strength :monitored`, `:checked 0` | `:vacuous-strength` |
+| `:findings 2`, `:checked 0` | **`:vacuity-accounting`** |
+| `:basis ""` | `:missing-basis` |
+
+**The middle one is the addition.** The review's rule — *reject nonzero
+strength with zero checked units unless explicitly inconclusive* — leaves a
+checker free to report **findings with an empty denominator**, which is the
+direction that converts a failure into a shrug. Both directions now reject.
+
+#### Steps 2+3 — B6.3, incumbent arm vs. fold over a semantic projection
+
+The kernel replay trace is untouched, per tally row 72. The projection is a new
+separately versioned document (`perturb.semantic`, 3 event kinds, closed
+grammar, arity-checked) and the runner mirrors `jolt.sim.monitor/run-monitor`'s
+spec, step-result and decision contracts.
+
+| fixture | arm | monitor | agree |
+| --- | --- | --- | :-: |
+| A known-good | `:inconclusive` 0 | `:inconclusive` 0 | yes |
+| B laundering | `:violation` 1 | `:violation` 1 | yes |
+| B′ edge declared | `:pass` 1 | `:pass` 1 | yes |
+| C call-over-call | `:inconclusive` 0 | `:inconclusive` 0 | yes |
+| D multi-shot | `:inconclusive` 0 | `:inconclusive` 0 | yes |
+| G no declared layer | `:inconclusive` 0 | `:inconclusive` 0 | yes |
+
+**Six of six agree on status AND on the exercised count, and the rendered
+evidence value is byte-identical on both sides of every fixture.** A pass, a
+violation and an inconclusive control were all exercised.
+
+**The incumbent is not a fold and the candidate is.** `check-error-mapping`
+builds an index and runs a nested loop over positions; the monitor carries open
+requests and attributes each refusal to those opened-and-not-yet-replied. The
+equivalence argument — *a refusal at `p` belongs to `r` iff `lo_r < p < hi_r`,
+and folding in position order those are exactly the open ones* — was written
+down before it was measured, and then measured.
+
+**G is the control that matters most.** No declared layer, so the projection is
+**0 events**, and the monitor returns `:inconclusive` rather than `:pass`. An
+empty document is not a clean bill of health.
+
+#### E42's nonclaims
+
+1. **Step 4 did not run.** The bounded-schedule arm needs
+   `jolt.sim.process-explorer`, which is JVM Clojure, and the `clojure` CLI is
+   not installed here — E39 nonclaim 1's wall again. **No schedule witness
+   exists**, and nothing is claimed about this property under an explored
+   schedule.
+2. **The lift is by construction and by reading, not by execution.** The same
+   monitor has not been run under both runners, for the same reason.
+3. **One contract difference, deliberate.** `:finish` here takes
+   `[state case]`, because a semantic monitor needs the declaration set and a
+   scheduler trace has none. A lift must reconcile it.
+4. **One clause, six fixtures.** B6.3 only. Nothing says the other five
+   project, and B6.1's credit fold is the one with a known ordering hazard
+   (E35 finding 3).
+5. **The projection is lossy by design.** It drops every event B6.3 does not
+   adjudicate — which is what makes it a test of the clause rather than of the
+   trace, and also means it establishes nothing about a general trace
+   projection.
 
 ## 4. Open questions
 

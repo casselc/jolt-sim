@@ -1386,6 +1386,56 @@
                     (filter (fn [a] (zero? (:perturb.layer/exercised a))) as)))))
         clauses))))
 
+(defn semantic-b63-events
+  "PROJECT one recorded run into the semantic events B6.3 adjudicates.
+
+  Step 2 of the convergence slice. This is the ONLY thing `perturb.layer`
+  contributes to the seam: it owns the index, so it owns the projection, and
+  everything downstream reads events rather than reaching into an index.
+
+  -> [case-map events], where `events` is ordered by position so a FOLD sees
+  the same causality the nested loop in `check-error-mapping` sees by
+  comparing positions.
+
+  THREE EVENT KINDS, AND THE PROJECTION IS DELIBERATELY LOSSY:
+
+    [:layer/request-opened  id pos layer op]   a DECLARED layer serves it
+    [:layer/request-replied id pos ok?]
+    [:layer/refusal         id pos abort]
+
+  Requests no declared layer served are NOT projected, because B6.3 is a rule
+  about what a declared layer claimed upward. Everything else in the trace is
+  dropped. A projection that carried the whole trace would prove nothing about
+  whether the clause can be expressed over events."
+  [decls recorded]
+  (let [events (:perturb.layer/events recorded)
+        idx    (index-events events)
+        served (filter (fn [id] (some? (layer-of decls (get (:by-id idx) id))))
+                       (sort (keys (:by-id idx))))
+        opens  (map (fn [id]
+                      (let [r (get (:by-id idx) id)
+                            l (layer-of decls r)]
+                        [:layer/request-opened id (:perturb.layer/pos r)
+                         (:perturb.layer/name l) (:perturb.effect/op r)]))
+                    served)
+        reps   (keep (fn [id]
+                       (let [r (get (:by-id idx) id)]
+                         (when (replied? r)
+                           [:layer/request-replied id (:perturb.layer/reply-pos r)
+                            (= :ok (first (:perturb.layer/reply r)))])))
+                     served)
+        refs   (map (fn [r] [:layer/refusal (:perturb.effect/id r)
+                             (:perturb.layer/pos r) (:perturb.effect/abort r)])
+                    (:refusals idx))
+        all    (vec (sort-by (fn [e] [(nth e 2) (nth e 1)])
+                             (concat opens reps refs)))
+        case-m {:layers (reduce (fn [m d]
+                                  (assoc m (:perturb.layer/name d)
+                                         (vec (map (fn [x] [(:op x) (:abort x)])
+                                                   (:perturb.layer/error-map d)))))
+                                {} decls)}]
+    [case-m all]))
+
 (defn render
   "The verdict, as lines."
   [result]

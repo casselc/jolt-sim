@@ -79,6 +79,11 @@
   ;; expectations about the verdicts.
   :region {:main-opts ["-m" "perturb.regioncheck"]}
 
+  ;; The CONVERGENCE SLICE: evidence-v1, a separately versioned semantic-event
+  ;; document, and ONE B6 clause differentially tested between perturb.layer's
+  ;; own arm and a fold over the projection. PROGRESSIVE-FORMALISM-DESIGN 7.2b.
+  :slice  {:main-opts ["-m" "perturb.slicecheck"]}
+
   ;; The LAYERING experiment: a TLS-shaped record layer whose handler satisfies
   ;; `perturb.wire/socket` by PERFORMING `perturb.wire/socket` against the rung
   ;; below, so `perturb.http` runs unmodified over handler-over-handler rather
