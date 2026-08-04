@@ -304,6 +304,31 @@ express** (§3.2).
 already exists, both drivers already run under `perturb.script` and over a real
 loopback socket, and `perturb.evtcheck` already compares the octets.
 
+> **RUN — E41.** Driver B′ is **0 of 11 rejected**; driver B is 7. Octets
+> identical on both connections; the `perturb.evtapp` containment control still
+> rejects its two escapes; every other gate still exits 0. The leak control
+> reports `exit-not-empty {:size 1 :keys [1]}`.
+>
+> **But the cost moved rather than vanished.** `perturb.region` itself is 2 of 15
+> rejected, and the reason is a notation gap this design did not name: perturb
+> can say *consumed and gone* and *consumed and returned*, and has **no notation
+> for consumed-and-held-by-something-else**. So the checker **accepts the
+> region's unsound half** (`take-*` is declared `nil -> :state`, a mint) and
+> **rejects its sound half** (`put-*`, whose implied edge is `:reading -> nil`).
+> §3.2 needs `:absorbs` / `:emits` naming the holder's argument position.
+>
+> Three costs were unpredicted: an **identity edge** (`skip`) for branches that
+> consume in one arm only; the **member's own machine must declare the region's
+> operations**, so a region is not a bolt-on; and **one operation per
+> (capability × state)**, because `:produces` is static.
+>
+> And one result nobody asked for: under `:report` the region emits two
+> `state-mismatch` violations on the `/wait` connection — **tally row 35's
+> architecture defect, caught at the moment it happens** instead of after the
+> fact in a ledger that does not join up. Under `:refuse` it stops the run.
+>
+> The original prediction, kept visible:
+
 > **Prediction, falsifiable:** under regions, driver B's `accept-into-table`,
 > `read-round`, `apply-effect`, `apply-effects` and `close-table` move from
 > *rejected* to *accepted at `:monitored`*, the emitted octets remain identical

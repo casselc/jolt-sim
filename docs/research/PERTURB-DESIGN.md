@@ -96,6 +96,9 @@ The complete current tally of claims this document made and then refuted:
 | 63 | jolt-bytes' `-M:test` gate demonstrates its corpus is the domain | **it does not.** Mutation A — one row swapped for a duplicate of another — reports `:verified` at the full 132,672 assertions with a domain member missing. The uniqueness/completeness checks live in the generating spike and reach the runtime lane only via `bin/verify-oracle-sync`, which the Jolt CI runtime job does not run | E39 |
 | 64 | jolt-sim's Hegel axes are `bounded-complete` — "the test already asserts exact domain coverage" — **published to `casselc/jolt-sim` #29** | the axes are `sampled-from`, **15 cases over a 90-combination product**, and the property is quantified over a tuple containing a sampled payload. Coverage is **marginal, not joint**: "every value appeared in a passing case", not "the property holds for every value" | E39. A correction is owed to that repo |
 | 65 | `schedule-plans` and `bounded-complete` | two documents in this directory say **opposite things** — the adoption audit proposes `:coverage :bounded-complete` for it, the temporal-ledger sketch says it "does not establish bounded completeness". Both are defensible under different readings: it completely enumerates **its own output domain** while establishing nothing about the system explored through it. The record must say which it means | E39 |
+| 69 | regions will move driver B's rejected functions to accepted, and the design's residual is the hand-drawn notation | **the cost moved into the primitive.** Driver B′ is 0 of 11 rejected; `perturb.region` is 2 of 15, both `annotation-inconsistent`, and the reason is a **missing notation for obligation transfer** — perturb can say *consumed and gone* and *consumed and returned*, not *consumed and held by something else* | E41 |
+| 70 | the region's soundness trade is a design choice recorded in prose | **the checker enforces the opposite of it.** `take-*` is declared `nil -> :state` — a MINT — and checks; `put-*` is absorption and is rejected. The unsound half is expressible and the sound half is not | E41 |
+| 71 | the design's prediction named the functions that would move | **wrong in both directions** — it named `apply-effects`, which was already accepted, and missed `accept-into-vector`, `table-grows-in-a-loop` and `honour-close-effect`. It also missed three costs: an identity edge, the member machine declaring the region's edges, and one operation per (capability × state) | E41 |
 | 66 | E35: "known-good passes every clause" | **five of six.** The trace has 0 refusals, B6.3 is a rule about refusals, so `check-error-mapping` visited nothing and its silence read as a pass. Amended in place; one word, and no other E35 result moves | E40 |
 | 67 | the vacuity is one clause on one fixture — B6.3 on the known-good, as predicted from reading | **nine clause verdicts across six fixtures**, all `pass → inconclusive`. Two were unpredicted and are consequences of the defect the fixture demonstrates: **C/B6.5** (call-over-call records 0 forwards, so finalisation's scope is empty) and **D/B6.2** (multi-shot never touches the ledger, so the projection replayed nothing) | E40 |
 | 68 | a clause reported `pass` by `-M:layer` is `monitored` on the run it passed | **B6 coverage is a union over fixtures, not a property of any run.** Only B′ exercises all six; B6.3 reaches a verdict on exactly one recorded trace (B and B′ are the same trace under two declarations); B6.6's propagation arm on exactly one fixture, while its sibling arm passes everywhere | E40 |
@@ -6442,6 +6445,129 @@ the work rather than asked of it:
    `-M:tcpcheck`, `-M:share`, `-M:octetcheck` all report by grouping findings —
    was **not** examined, and the mechanical argument in decision 1 above applies
    to every one of them.
+
+### E41 — driver B under regions: the cost moved into the primitive, and the checker accepts the unsound half
+
+`PROGRESSIVE-FORMALISM-DESIGN.md` §3.4(d) wrote a falsifiable prediction and
+this is its execution. `perturb.region` (a Region capability, 8 operations),
+`perturb.evtregion` (driver B with the table replaced and nothing else changed)
+and `perturb.regioncheck` (the harness) were built; `-M:region` runs them beside
+driver B on the same fixtures.
+
+#### The measurement
+
+| namespace | rejected |
+| --- | --- |
+| `perturb.evt` (driver B, baseline) | **7** — `accept-into-table`, `read-round`, `apply-effect`, `close-table`, `accept-into-vector`, `table-grows-in-a-loop`, `honour-close-effect` |
+| `perturb.evtregion` (driver B′) | **0** of 11 |
+| `perturb.region` (the primitive) | **2** — `put-reading!`, `put-responding!` |
+| `perturb.evtapp` (the control) | **2**, unchanged |
+
+**Octets identical on both connections**, so the two drivers are comparable.
+Every other gate — `-M:check -M:http -M:layer -M:evt -M:gatecheck -M:selftest
+-M:tcpcheck -M:share -M:octetcheck -M:streamcheck -M:oracle -M:demo` — still
+exits 0, and `-M:evt`'s nine rejections are unchanged, so the four edges added
+to `perturb.http/ServerConn` moved no existing verdict.
+
+**The prediction was right about the direction and wrong about the details, in
+both directions.** It named five functions; one of them (`apply-effects`) was
+already accepted, and it missed three (`accept-into-vector`,
+`table-grows-in-a-loop`, `honour-close-effect`). Three further costs were not
+predicted at all, and they are §7.3's subject below.
+
+#### The finding: the checker accepts the region's unsound half and rejects its sound half
+
+`take-reading` is declared `nil -> :reading` on ServerConn's machine — the same
+`:from` `accept` has — because a take **consumes no ServerConn and produces
+one**. From the checker's side a region take **mints a connection it never saw
+enter**, and the only thing standing behind the minted state is the region's
+run-time check. **It checks.**
+
+`put-reading!` consumes a ServerConn@:reading and produces none, so its implied
+edge is `:reading -> nil`. **It is rejected**, `annotation-inconsistent`, and the
+reason is exact: the annotation's edge is derived from **arguments and results**,
+and a capability held *inside another capability* is at neither.
+
+> perturb can say *consumed and gone* (a destructor, `:to` terminal) and
+> *consumed and returned*. It has no notation for **consumed and held by
+> something else** — obligation transfer — which is the one thing a region is
+> for. The missing keys are small (`:absorbs` / `:emits`, naming the holder's
+> argument position); their absence is why the honest half of the primitive
+> cannot be written down.
+
+So the two rejections are not a bug in the region. They are the **notation gap
+the region makes visible**, and they sit in one namespace instead of scattered
+across seven application functions.
+
+#### What the region caught that nothing else does
+
+Under `:report` the run emits **two `state-mismatch` violations, both on key 0** —
+```
+{:key 0 :held :responding :wanted :reading}
+{:key 0 :held :reading    :wanted :responding}
+```
+Key 0 is the `/wait` connection. **This is E24 / tally row 35's finding, caught
+at the moment it happens.** E29–E35 could only see it afterwards, as a ledger
+that does not join up; `perturb.evtcheck` prints it as a post-hoc contradiction
+and says the declared machine "was broken by the ARCHITECTURE". Under `:refuse`
+the region **stops the run** at the first mismatch. The architecture defect
+became enforceable without changing the application.
+
+The leak control closes one of two connections and then closes the region:
+`exit-not-empty {:size 1 :keys [1]}`. Driver B's map cannot say this — the
+connection became opaque inside `accept-into-table` and the checker's last word
+on it was `dangling` at a site with nothing to do with the leak.
+
+#### Three costs that were not predicted
+
+1. **An identity edge is required.** A branch that consumes the region in one arm
+   and not the other is a `join` rejection — *"may or may not have been moved" is
+   not a mode*. `perturb.region/skip` consumes and produces the region and does
+   nothing. Every affine system needs this; it was not in the design.
+2. **The member's own machine must declare the region's operations.**
+   `annotation-undeclared-transition`: an operation advancing two machines must
+   declare an edge in each. Four edges were added to `perturb.http/ServerConn`,
+   which couples a general capability to one region implementation. **A region is
+   not a bolt-on; the member opts in.**
+3. **One operation per (capability × state).** `:produces` is static, so a take
+   cannot choose its member's state at run time. Two states here meant two takes,
+   two puts, and an `apply-effect` that must ASK (`state-of`) and branch — the
+   question driver B never has to ask, and exactly the information the checker
+   was missing.
+
+#### The harness tripped `perturb.ir`'s open universe, and the failure was silent
+
+The first harness `:require`d the namespaces it was about to capture. `capture!`
+installs the tap and then `require`s, so an already-loaded namespace is analysed
+**never**, and the report read:
+
+```
+  0 of 0 functions in perturb.evtregion were CHECKED; 0 rejected.
+  driver B  rejected : []
+```
+
+**Zero rejections, and it looks like a pass.** This is `PROGRESSIVE-FORMALISM-
+DESIGN` §5.7 rule 2 arriving unbidden: an empty result and an empty fact base are
+different values. `report-ns` now prints `INCONCLUSIVE: perturb.ir captured NO
+defs` when the capture is empty.
+
+#### E41's nonclaims
+
+1. **B′ checking clean is `:monitored`, not `:proved`.** Every membership fact is
+   a run-time check in `perturb.region`, and the static verdict rests on `take-*`
+   being allowed to mint. A region hands out exactly what it was told to hold.
+2. **Two states, one capability, one fixture.** ServerConn's `:writing` state has
+   no region operation; nothing here says the shape scales to a capability with
+   more states or to two regions at once.
+3. **The `:refuse` arm refuses a WORKING application.** Driver B′ under `:refuse`
+   does not complete, because `perturb.evtapp`'s `/wait` really does break the
+   declared machine. That is the correct verdict and it is also the cost: a
+   region turns an accepted program into a refused one.
+4. **Nothing was proved about `close!` being reached.** The region's exit rule is
+   only as good as the static claim that `close!` runs on every path, and that
+   claim is `perturb.check`'s ordinary linearity check on one function.
+5. **The four ServerConn edges are hand-written and unverified**, like every
+   other annotation in this record.
 
 ## 4. Open questions
 

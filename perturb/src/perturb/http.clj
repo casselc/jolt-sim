@@ -389,7 +389,28 @@
                       {:op 'perturb.http/respond-begin :from :responding  :to :writing}
                       {:op 'perturb.http/body-finish!  :from :writing     :to :reading}
                       {:op 'perturb.http/close-conn!   :from [:reading :responding :writing]
-                                                       :to   :closed}]}
+                                                       :to   :closed}
+                      ;; --- THE REGION EDGES, AND THEY ARE A COST -------------
+                      ;; `perturb.region`'s operations move a ServerConn, and the
+                      ;; primitive table is keyed [capability operation], so an
+                      ;; operation that advances two machines must declare an edge
+                      ;; in EACH. That rule is right, and it means a capability
+                      ;; cannot be put in a region without its own machine saying
+                      ;; so. Recorded as a coupling: this general capability now
+                      ;; names a specific region implementation, which wants to be
+                      ;; a marker on the capability rather than four edges.
+                      ;;
+                      ;; READ `take-*`'s :from CAREFULLY. It is `nil` — the same
+                      ;; :from `accept` has — because a take CONSUMES no ServerConn
+                      ;; and PRODUCES one. From the checker's side a region take
+                      ;; MINTS a connection it never saw enter, and the only thing
+                      ;; standing behind the minted state is the region's run-time
+                      ;; check. That is the soundness trade, written where it is
+                      ;; made rather than in a document.
+                      {:op 'perturb.region/put-reading!    :from :reading    :to :reading}
+                      {:op 'perturb.region/put-responding! :from :responding :to :responding}
+                      {:op 'perturb.region/take-reading    :from nil         :to :reading}
+                      {:op 'perturb.region/take-responding :from nil         :to :responding}]}
        :perturb.cap/representation []
        :perturb.cap/obligations
        '[{:name one-response-per-request

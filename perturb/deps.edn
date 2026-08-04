@@ -73,6 +73,12 @@
   ;; loopback socket. NOT a gate — it records no expectations. Takes a port.
   :evt    {:main-opts ["-m" "perturb.evtcheck"]}
 
+  ;; The REGION experiment: driver B's connection table replaced by a
+  ;; perturb.region/Region, to decide the falsifiable prediction in
+  ;; PROGRESSIVE-FORMALISM-DESIGN §3.4(d). Not a gate; it records no
+  ;; expectations about the verdicts.
+  :region {:main-opts ["-m" "perturb.regioncheck"]}
+
   ;; The LAYERING experiment: a TLS-shaped record layer whose handler satisfies
   ;; `perturb.wire/socket` by PERFORMING `perturb.wire/socket` against the rung
   ;; below, so `perturb.http` runs unmodified over handler-over-handler rather
