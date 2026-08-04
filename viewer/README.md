@@ -12,9 +12,11 @@ document; worker command, working directory, deadlines, environment, and
 artifact policy come from the trusted server configuration. Scenarios must be
 explicitly allowlisted.
 
-The server uses one handler thread, so at most one replay can run at a time
-even when several tabs share the capability. Inspection requests wait behind
-an active replay rather than creating additional local process pressure.
+The server admits one body-consuming inspection or replay request at a time,
+even when several tabs share the capability. A competing request receives 429
+before its body is read. Two bounded HTTP threads let jolt-http's parser keep
+feeding that one request while its handler consumes a segmented body; this
+does not permit a second replay process.
 
 Copy [`example-config.edn`](example-config.edn), replace the absolute paths,
 and start the viewer with the sim-enabled Jolt image:

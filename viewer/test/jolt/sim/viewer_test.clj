@@ -274,6 +274,49 @@
       (is (= 200 (:status response)))
       (is (= outcome (edn/read-string (:body response)))))))
 
+(deftest body-consuming-posts-share-one-admission-lease
+  (let [handler* (atom nil)
+        busy-response* (atom nil)
+        busy-body-read? (atom false)
+        outcome {:status :completed :exit 0}
+        handler
+        (viewer/make-handler
+         (config)
+         {:render-document (fn [_] "unused")
+          :replay-document
+          (fn [_ _]
+            ;; Re-enter while the outer replay owns the lease. This avoids a
+            ;; timing-dependent concurrency test while proving that render and
+            ;; replay share the gate and that rejection precedes body reads.
+            (reset!
+             busy-response*
+             (@handler*
+              {:request-method :post
+               :uri "/api/render"
+               :headers {"content-type" "application/edn"
+                         "x-jolt-sim-capability" token}
+               :body
+               (reify http-body/RequestBody
+                 (body-recv [_]
+                   (reset! busy-body-read? true)
+                   (throw (ex-info "busy body was read" {})))
+                 (body-bytes [_]
+                   (reset! busy-body-read? true)
+                   (throw (ex-info "busy body was read" {})))
+                 (body-string [_ _]
+                   (reset! busy-body-read? true)
+                   (throw (ex-info "busy body was read" {}))))}))
+            outcome)})]
+    (reset! handler* handler)
+    (let [response (handler
+                    (request "/api/replay"
+                             (case-outcome/canonical-edn (document))))]
+      (is (= 200 (:status response)))
+      (is (= outcome (edn/read-string (:body response))))
+      (is (= 429 (:status @busy-response*)))
+      (is (= "close" (get-in @busy-response* [:headers "Connection"])))
+      (is (false? @busy-body-read?)))))
+
 (deftest unexpected-service-errors-propagate-to-the-http-error-boundary
   (let [error (ex-info "renderer defect" {:type ::renderer-defect})
         handler (viewer/make-handler

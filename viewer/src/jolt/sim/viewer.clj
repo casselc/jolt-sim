@@ -265,7 +265,7 @@
 
       :else nil)))
 
-(defn- execute-document-request [config request operation]
+(defn- execute-document-request [config document-active? request operation]
   (cond
     (not (authorized? config request))
     (error-response 403 :forbidden nil)
@@ -273,13 +273,22 @@
     (not (edn-content-type? request))
     (error-response 415 :expected-application-edn nil)
 
+    (not (compare-and-set! document-active? false true))
+    ;; Reject before touching the streaming request body. jolt-http's parser
+    ;; and Ring handlers share a bounded executor, so admitting two blocking
+    ;; body consumers into the two-thread viewer pool could starve the parser
+    ;; work required to make either body complete.
+    (error-response 429 :viewer-busy nil)
+
     :else
     (try
       (operation (request-document config request))
       (catch :default error
         (if-let [expected (expected-request-error-response error)]
           expected
-          (throw error))))))
+          (throw error)))
+      (finally
+        (reset! document-active? false)))))
 
 (defn make-handler
   "Creates a synchronous jolt-http handler.
@@ -294,7 +303,8 @@
                   :replay-document sim-repl/replay-document!}))
   ([config services]
    (let [config (validate-config! config)
-         unknown-services (into #{} (remove service-keys) (keys services))]
+         unknown-services (into #{} (remove service-keys) (keys services))
+         document-active? (atom false)]
      (when (seq unknown-services)
        (throw (config-error :unknown-service-keys unknown-services)))
      (when-not (and (fn? (:render-document services))
@@ -312,14 +322,14 @@
 
            (and (= :post method) (= "/api/render" uri))
            (execute-document-request
-            config request
+            config document-active? request
             (fn [document]
               (response 200 "text/html; charset=utf-8"
                         ((:render-document services) document))))
 
            (and (= :post method) (= "/api/replay" uri))
            (execute-document-request
-            config request
+            config document-active? request
             (fn [document]
               (allowed-replay! config document)
               (response 200 "application/edn; charset=utf-8"
@@ -344,11 +354,11 @@
    (let [config (validate-config! config)]
      (http/run-server (make-handler config services)
                       :port (:port config)
-                      ;; One handler means at most one fresh-process replay can
-                      ;; run even when several browser tabs share the token.
-                      ;; The viewer favors bounded resource use over serving an
-                      ;; inspection request concurrently with a replay.
-                      :pool-size 1
+                      ;; jolt-http's parser and blocking Ring body consumer use
+                      ;; this same executor. Two threads guarantee parser
+                      ;; progress for the one body-consuming POST admitted by
+                      ;; make-handler's shared single-flight gate.
+                      :pool-size 2
                       :reuse-address? true))))
 
 (defn stop!
