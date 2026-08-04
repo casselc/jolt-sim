@@ -111,6 +111,105 @@
         (>= (System/nanoTime) deadline) false
         :else (do (Thread/yield) (recur))))))
 
+(defn- recv-id [ordinal fd peer-port]
+  [:jolt.sim.net.posix-fault/recv ordinal fd peer-port])
+
+;; ---- helpers for establishing real modeled loopback connections ----------
+;; These build sockets through the ordinary posix-loopback handlers (not
+;; forged state) so recv fault tests exercise a genuine modeled peer-port.
+
+(defn- raw-harness
+  ([descriptor] (raw-harness descriptor nil))
+  ([descriptor config]
+   (let [mem (memory/world)
+         world (posix/world mem descriptor config)]
+     {:memory mem :world world :handlers (posix/handlers world)})))
+
+(defn- attach-frontend
+  "Wraps ``raw``'s already-live world with a fault frontend built from
+  ``plan``, without recreating any modeled socket state. Sockets established
+  through ``raw``'s ordinary handlers remain live and visible through the
+  returned harness's fault-interposed handlers."
+  [raw plan]
+  (let [frontend (posix-fault/frontend (:world raw) plan)]
+    (assoc raw
+           :frontend frontend
+           :handlers (posix-fault/handlers frontend))))
+
+(defn- unsigned [x]
+  (bit-and 255 (int x)))
+
+(defn- be16 [v]
+  (+ (bit-shift-left (unsigned (nth v 0)) 8)
+     (unsigned (nth v 1))))
+
+(defn- sockaddr-bytes [port]
+  (vec (concat [2 0]
+               [(bit-and (bit-shift-right port 8) 255) (bit-and port 255)]
+               [127 0 0 1]
+               (repeat 8 0))))
+
+(defn- alloc-sockaddr [h port]
+  (let [ptr (native h :alloc 16)]
+    (native h :write-array ptr (byte-array (sockaddr-bytes port)))
+    ptr))
+
+(defn- endpoint-port [h fd]
+  (let [address (native h :alloc 16)
+        length (native h :alloc 4)]
+    (try
+      (native h :write length :uint 0 16)
+      (is (= [0 0] (foreign h "getsockname" fd address length)))
+      (be16 (vec (native h :read-array (+ address 2) 2)))
+      (finally
+        (native h :free length)
+        (native h :free address)))))
+
+(defn- open-listener! [h]
+  (let [[fd err] (foreign h "socket" 2 1 0)
+        address (alloc-sockaddr h 0)]
+    (is (zero? err))
+    (is (= [0 0] (foreign h "bind" fd address 16)))
+    (is (= [0 0] (foreign h "listen" fd 8)))
+    (native h :free address)
+    {:fd fd :port (endpoint-port h fd)}))
+
+(defn- connect-client! [h peer-port]
+  (let [[fd err] (foreign h "socket" 2 1 0)
+        target (alloc-sockaddr h peer-port)]
+    (is (zero? err))
+    (is (= [0 0] (foreign h "connect" fd target 16)))
+    (native h :free target)
+    fd))
+
+(defn- accept-server! [h listener-fd]
+  (let [[fd err] (foreign h "accept" listener-fd 0 0)]
+    (is (zero? err))
+    fd))
+
+(defn- connected-pair! [h]
+  ;; Establishes one full listener/client/server triple through the ordinary
+  ;; posix-loopback handlers. The client's :peer-port is exactly the
+  ;; listener's bound port.
+  (let [listener (open-listener! h)
+        client (connect-client! h (:port listener))
+        server (accept-server! h (:fd listener))]
+    {:listener-fd (:fd listener) :peer-port (:port listener)
+     :client-fd client :server-fd server}))
+
+(defn- close-pair! [h pair]
+  (foreign h "close" (:client-fd pair))
+  (foreign h "close" (:server-fd pair))
+  (foreign h "close" (:listener-fd pair)))
+
+(defn- recv [h fd buf len flags]
+  ((get (:handlers h) (foreign-key (:handlers h) "recv"))
+   (foreign-descriptor (:handlers h) "recv" [fd buf len flags])))
+
+(defn- send! [h fd buf len flags]
+  ((get (:handlers h) (foreign-key (:handlers h) "send"))
+   (foreign-descriptor (:handlers h) "send" [fd buf len flags])))
+
 (deftest frontend-rejects-non-world-and-bad-plan-inputs
   (let [world (:world (frontend-harness linux-eintr-descriptor []))]
     (is (= posix-fault/invalid-frontend-input
@@ -220,6 +319,31 @@
     (is (= [{:rule-id :f/interrupt-first-poll
              :on-match 1 :times 1 :matches 2 :firings 1}]
            (:rules snap)))))
+
+(deftest legacy-poll-matchers-retain-their-poll-only-contract
+  (testing "catch-all poll matcher"
+    (let [h (frontend-harness
+             linux-eintr-descriptor
+             [{:id :f/catch-all-poll
+               :match {}
+               :activation {:on-match 1 :times 1}
+               :outcome {:kind :captured-error :errno :eintr}}])]
+      (is (= [-1 4] (poll h 0 0 0)))
+      (is (= (poll-id 1)
+             (:attempt-id
+              (first (posix-fault/evidence-history (:frontend h))))))))
+  (testing "attempt-id-qualified poll matcher"
+    (let [h (frontend-harness
+             linux-eintr-descriptor
+             [{:id :f/second-poll
+               :match {:attempt-id (poll-id 2)}
+               :activation {:on-match 1 :times 1}
+               :outcome {:kind :captured-error :errno :eintr}}])]
+      (is (= [0 0] (poll h 0 0 0)))
+      (is (= [-1 4] (poll h 0 0 0)))
+      (is (= [(poll-id 1) (poll-id 2)]
+             (mapv :attempt-id
+                   (posix-fault/evidence-history (:frontend h))))))))
 
 (deftest malformed-and-unsupported-outcomes-fail-at-frontend-construction
   (doseq [[outcome expected-reason]
@@ -441,3 +565,342 @@
            (get-in (first history) [:firing :rule-id])))
     (is (= history
            (trace/restore-value (trace/canonical-value history))))))
+
+;; ---- recv fault frontend ---------------------------------------------
+
+(deftest socket-facts-provide-bounded-resource-identity-and-retire-on-close
+  (let [h (raw-harness linux-eintr-descriptor)
+        pair (connected-pair! h)
+        fd (:client-fd pair)]
+    (try
+      (let [facts (posix/socket-facts (:world h) fd)]
+        (is (= #{:fd :state :local-port :peer-port :peer-fd}
+               (set (keys facts))))
+        (is (= fd (:fd facts)))
+        (is (= :connected (:state facts)))
+        (is (and (integer? (:local-port facts))
+                 (pos? (:local-port facts))))
+        (is (= (:peer-port pair) (:peer-port facts)))
+        (is (= (:server-fd pair) (:peer-fd facts))))
+      (finally
+        (close-pair! h pair)))
+    (is (nil? (posix/socket-facts (:world h) fd)))))
+
+(deftest recv-econnreset-fires-once-on-matching-peer-port-then-delegates
+  (let [raw (raw-harness linux-eintr-descriptor)
+        pair (connected-pair! raw)
+        plan [{:id :f/reset-client-recv
+               :match {:boundary :posix :operation :recv
+                       :peer-port (:peer-port pair)}
+               :activation {:on-match 1 :times 1}
+               :outcome {:kind :captured-error :errno :econnreset}}]
+        h (attach-frontend raw plan)
+        buf (native h :alloc 8)]
+    (try
+      ;; The first recv on the matching client fires the scoped ECONNRESET.
+      (is (= [-1 104] (recv h (:client-fd pair) buf 8 0)))
+      ;; The single firing is now exhausted: the next identical recv
+      ;; delegates to the ordinary handler. No bytes are queued, so it
+      ;; captures the ordinary EAGAIN.
+      (is (= [-1 11] (recv h (:client-fd pair) buf 8 0)))
+      (is (zero? (posix-fault/attempts (:frontend h))))
+      (is (= 2 (count (posix-fault/evidence-history (:frontend h)))))
+      (is (= 1 (:firings (posix-fault/snapshot (:frontend h)))))
+      (finally
+        (native h :free buf)
+        (close-pair! h pair)))))
+
+(deftest recv-for-another-peer-port-does-not-match-or-consume-the-scoped-rule
+  (let [raw (raw-harness linux-eintr-descriptor)
+        pair-a (connected-pair! raw)
+        pair-b (connected-pair! raw)
+        plan [{:id :f/reset-a-recv
+               :match {:boundary :posix :operation :recv
+                       :peer-port (:peer-port pair-a)}
+               :activation {:on-match 1 :times 1}
+               :outcome {:kind :captured-error :errno :econnreset}}]
+        h (attach-frontend raw plan)
+        buf (native h :alloc 8)]
+    (try
+      ;; b's peer-port differs from the scoped rule: recv on b delegates
+      ;; unchanged (ordinary EAGAIN) and never matches, let alone consumes,
+      ;; the rule.
+      (is (= [-1 11] (recv h (:client-fd pair-b) buf 8 0)))
+      (is (= 0 (:matches (first (:rules (posix-fault/snapshot (:frontend h)))))))
+      (is (zero? (:firings (posix-fault/snapshot (:frontend h)))))
+      ;; a's matching peer-port still fires the untouched rule.
+      (is (= [-1 104] (recv h (:client-fd pair-a) buf 8 0)))
+      (is (= 1 (:firings (posix-fault/snapshot (:frontend h)))))
+      (finally
+        (native h :free buf)
+        (close-pair! h pair-a)
+        (close-pair! h pair-b)))))
+
+(deftest fired-econnreset-does-not-consume-queued-bytes-or-mutate-the-recv-model
+  (let [raw (raw-harness linux-eintr-descriptor)
+        pair (connected-pair! raw)
+        plan [{:id :f/reset-client-recv
+               :match {:boundary :posix :operation :recv
+                       :peer-port (:peer-port pair)}
+               :activation {:on-match 1 :times 1}
+               :outcome {:kind :captured-error :errno :econnreset}}]
+        h (attach-frontend raw plan)
+        send-buf (native h :alloc 2)
+        recv-buf (native h :alloc 8)]
+    (try
+      (native h :write-array send-buf (byte-array [7 9]))
+      ;; The server sends two bytes to the client; progress-limit (2) lets a
+      ;; single send move both bytes in one call.
+      (is (= [2 0] (send! h (:server-fd pair) send-buf 2 0)))
+      ;; The fired rule captures ECONNRESET without invoking or mutating the
+      ;; recv model: the bytes remain queued afterward.
+      (is (= [-1 104] (recv h (:client-fd pair) recv-buf 8 0)))
+      (is (= 2 (:recv-bytes
+                (first (filter #(= (:client-fd pair) (:fd %))
+                               (posix/snapshot (:world h)))))))
+      ;; The rule is exhausted: the next recv delegates to the ordinary
+      ;; handler and obtains the original queued bytes unchanged.
+      (is (= [2 0] (recv h (:client-fd pair) recv-buf 8 0)))
+      (is (= [7 9] (mapv unsigned (vec (native h :read-array recv-buf 2)))))
+      (finally
+        (native h :free send-buf)
+        (native h :free recv-buf)
+        (close-pair! h pair)))))
+
+(deftest malformed-recv-matchers-and-unsupported-combinations-fail-at-construction
+  (doseq [[match outcome expected-type expected-reason]
+          [[{:boundary :posix :operation :recv}
+            {:kind :captured-error :errno :econnreset}
+            posix-fault/unsupported-rule-match :unsupported-rule-match]
+           [{:boundary :posix :operation :recv :peer-port 0}
+            {:kind :captured-error :errno :econnreset}
+            posix-fault/unsupported-rule-match :unsupported-rule-match]
+           [{:boundary :posix :operation :recv :peer-port -1}
+            {:kind :captured-error :errno :econnreset}
+            posix-fault/unsupported-rule-match :unsupported-rule-match]
+           [{:boundary :posix :operation :recv :peer-port "8080"}
+            {:kind :captured-error :errno :econnreset}
+            posix-fault/unsupported-rule-match :unsupported-rule-match]
+           [{:boundary :posix :operation :recv :peer-port 8080 :extra :x}
+            {:kind :captured-error :errno :econnreset}
+            posix-fault/unsupported-rule-match :unsupported-rule-match]
+           [{:boundary :posix :operation :accept :peer-port 8080}
+            {:kind :captured-error :errno :econnreset}
+            posix-fault/unsupported-rule-match :unsupported-rule-match]
+           [{:boundary :other :operation :recv :peer-port 8080}
+            {:kind :captured-error :errno :econnreset}
+            posix-fault/unsupported-rule-match :unsupported-rule-match]
+           [{:boundary :posix :operation :recv :peer-port 8080}
+            {:kind :captured-error :errno :eintr}
+            posix-fault/unsupported-fired-outcome :unsupported-captured-errno]
+           [{:boundary :posix :operation :poll}
+            {:kind :captured-error :errno :econnreset}
+            posix-fault/unsupported-fired-outcome :unsupported-captured-errno]]]
+    (let [plan [{:id :f/rule-under-test
+                 :match match
+                 :activation {:on-match 1 :times 1}
+                 :outcome outcome}]
+          mem (memory/world)
+          world (posix/world mem linux-eintr-descriptor)
+          data (ex-data-of #(posix-fault/frontend world plan))]
+      (is (= expected-type (:type data)) (pr-str [match outcome]))
+      (is (= expected-reason (:reason data)) (pr-str [match outcome]))
+      (is (true? (posix/clean? world))))))
+
+(deftest mixed-plans-require-poll-rules-to-name-their-operation
+  ;; A legacy catch-all rule remains valid in a poll-only frontend. Once recv
+  ;; is interposed, that same matcher would also match recv and could apply a
+  ;; poll-only outcome at the wrong boundary, so the newly ambiguous mixed
+  ;; form fails closed. Attempt-id-qualified mixed poll rules remain available
+  ;; when they also name {:boundary :posix :operation :poll}.
+  (let [mem (memory/world)
+        world (posix/world mem linux-eintr-descriptor)
+        plan [{:id :f/legacy-catch-all
+               :match {}
+               :activation {:on-match 1 :times 1}
+               :outcome {:kind :captured-error :errno :eintr}}
+              {:id :f/reset-recv
+               :match {:boundary :posix :operation :recv :peer-port 8080}
+               :activation {:on-match 1 :times 1}
+               :outcome {:kind :captured-error :errno :econnreset}}]
+        data (ex-data-of #(posix-fault/frontend world plan))]
+    (is (= posix-fault/unsupported-rule-match (:type data)))
+    (is (= :ambiguous-poll-matcher (:reason data)))
+    (is (= :f/legacy-catch-all (:rule-id data)))
+    (is (true? (posix/clean? world)))))
+
+(deftest mixed-plans-retain-explicit-attempt-id-qualified-poll-rules
+  (let [plan [{:id :f/second-poll
+               :match {:boundary :posix
+                       :operation :poll
+                       :attempt-id (poll-id 2)}
+               :activation {:on-match 1 :times 1}
+               :outcome {:kind :captured-error :errno :eintr}}
+              {:id :f/reset-recv
+               :match {:boundary :posix :operation :recv :peer-port 8080}
+               :activation {:on-match 1 :times 1}
+               :outcome {:kind :captured-error :errno :econnreset}}]
+        h (frontend-harness linux-eintr-descriptor plan)]
+    (is (= [0 0] (poll h 0 0 0)))
+    (is (= [-1 4] (poll h 0 0 0)))
+    (is (= [(poll-id 1) (poll-id 2)]
+           (mapv :attempt-id
+                 (posix-fault/evidence-history (:frontend h)))))))
+
+(deftest missing-target-econnreset-fails-closed-at-frontend-construction
+  ;; posix-loopback requires an integer ECONNRESET but not a positive one. A
+  ;; target carrying a non-positive value must still fail closed before the
+  ;; modeled recv is invoked.
+  (let [descriptor (assoc-in linux-eintr-descriptor [:errno :econnreset] 0)
+        mem (memory/world)
+        world (posix/world mem descriptor)
+        plan [{:id :f/reset-recv
+               :match {:boundary :posix :operation :recv :peer-port 8080}
+               :activation {:on-match 1 :times 1}
+               :outcome {:kind :captured-error :errno :econnreset}}]]
+    (doseq [_ (range 2)]
+      (let [data (ex-data-of #(posix-fault/frontend world plan))]
+        (is (= posix-fault/missing-target-errno (:type data)))
+        (is (= :missing-target-econnreset (:reason data)))
+        (is (= {:errno :econnreset} (select-keys data [:errno])))))
+    (is (true? (posix/clean? world)))))
+
+(deftest recv-is-interposed-only-when-the-plan-requests-it
+  (testing "a poll-only plan never wraps recv"
+    (let [h (frontend-harness linux-eintr-descriptor eintr-plan)
+          frontend (:frontend h)
+          pair (connected-pair! h)
+          buf (native h :alloc 8)]
+      (try
+        (let [attempts-before (posix-fault/attempts frontend)]
+          (is (= [-1 11] (recv h (:client-fd pair) buf 8 0)))
+          (is (= attempts-before (posix-fault/attempts frontend))))
+        (finally
+          (native h :free buf)
+          (close-pair! h pair)))))
+  (testing "a recv-only plan still wraps poll unconditionally"
+    (let [raw (raw-harness linux-eintr-descriptor)
+          pair (connected-pair! raw)
+          plan [{:id :f/reset-client-recv
+                 :match {:boundary :posix :operation :recv
+                         :peer-port (:peer-port pair)}
+                 :activation {:on-match 1 :times 1}
+                 :outcome {:kind :captured-error :errno :econnreset}}]
+          h (attach-frontend raw plan)]
+      (try
+        (is (= [0 0] (poll h 0 0 0)))
+        (is (= 1 (posix-fault/attempts (:frontend h))))
+        (finally
+          (close-pair! h pair))))))
+
+(deftest recv-rule-preserves-exact-handler-key-set-and-recv-signature
+  (let [raw (raw-harness linux-eintr-descriptor)
+        pair (connected-pair! raw)
+        plan [{:id :f/reset-client-recv
+               :match {:boundary :posix :operation :recv
+                       :peer-port (:peer-port pair)}
+               :activation {:on-match 1 :times 1}
+               :outcome {:kind :captured-error :errno :econnreset}}]
+        h (attach-frontend raw plan)
+        base-recv-key (foreign-key (posix/foreign-handlers (:world raw)) "recv")
+        fault-recv-key (foreign-key
+                         (posix-fault/foreign-handlers (:frontend h)) "recv")]
+    (try
+      (is (= base-recv-key fault-recv-key))
+      (is (= [:foreign-function "recv" [:int :pointer :size_t :int]
+              :ssize_t false true]
+             fault-recv-key))
+      (is (= (set (keys (posix/foreign-handlers (:world raw))))
+             (set (keys (posix-fault/foreign-handlers (:frontend h))))))
+      (is (= (set (keys (posix/handlers (:world raw))))
+             (set (keys (posix-fault/handlers (:frontend h))))))
+      (finally
+        (close-pair! h pair)))))
+
+(deftest concurrent-recv-attempts-cannot-duplicate-ordinals-or-lose-transitions
+  (let [raw (raw-harness linux-eintr-descriptor)
+        pair (connected-pair! raw)
+        plan [{:id :f/reset-client-recv
+               :match {:boundary :posix :operation :recv
+                       :peer-port (:peer-port pair)}
+               :activation {:on-match 1 :times 1}
+               :outcome {:kind :captured-error :errno :econnreset}}]
+        h (attach-frontend raw plan)
+        frontend (:frontend h)
+        concurrency 12
+        ready (java.util.concurrent.CountDownLatch. 1)
+        armed (java.util.concurrent.CountDownLatch. concurrency)
+        bufs (vec (repeatedly concurrency #(native h :alloc 8)))]
+    (try
+      (let [futures
+            (doall
+             (for [buf bufs]
+               (future
+                 (.countDown armed)
+                 (.await ready)
+                 (recv h (:client-fd pair) buf 8 0))))]
+        (.await armed)
+        (.countDown ready)
+        (let [outcomes (doall (map #(deref % 5000 ::timeout) futures))
+              history (posix-fault/evidence-history frontend)
+              attempt-ids (mapv :attempt-id history)
+              snap (posix-fault/snapshot frontend)]
+          (is (= concurrency (count outcomes)))
+          (is (every? #(not= ::timeout %) outcomes))
+          ;; Exactly one caller captured ECONNRESET; the rest delegated to
+          ;; the ordinary empty-queue EAGAIN.
+          (is (= 1 (count (filter #{[-1 104]} outcomes))))
+          (is (= (dec concurrency) (count (filter #{[-1 11]} outcomes))))
+          ;; Every recv attempt-id carries this call's exact fd/peer-port and
+          ;; a unique ordinal: no duplicates, no gaps.
+          (is (= concurrency (count (set attempt-ids))))
+          (is (every?
+               (fn [id]
+                 (and (= :jolt.sim.net.posix-fault/recv (nth id 0))
+                      (= (:client-fd pair) (nth id 2))
+                      (= (:peer-port pair) (nth id 3))))
+               attempt-ids))
+          (is (= (set (range 1 (inc concurrency)))
+                 (set (map #(nth % 1) attempt-ids))))
+          ;; The director transitioned exactly once across all concurrent
+          ;; callers: no transition was lost and none was duplicated.
+          (is (= 1 (:firings snap)))
+          ;; recv owns an independent ordinal and must not renumber poll's
+          ;; historically public next-attempt counter.
+          (is (= 1 (:next-attempt snap)))
+          (is (= 1 (count (filter :firing history))))))
+      (finally
+        (doseq [buf bufs] (native h :free buf))
+        (close-pair! h pair)))))
+
+(deftest recv-evidence-is-trace-stable-with-independent-operation-ordinals
+  (let [raw (raw-harness linux-eintr-descriptor)
+        pair (connected-pair! raw)
+        plan [{:id :f/interrupt-first-poll
+               :match {:boundary :posix :operation :poll}
+               :activation {:on-match 1 :times 1}
+               :outcome {:kind :captured-error :errno :eintr}}
+              {:id :f/reset-client-recv
+               :match {:boundary :posix :operation :recv
+                       :peer-port (:peer-port pair)}
+               :activation {:on-match 1 :times 1}
+               :outcome {:kind :captured-error :errno :econnreset}}]
+        h (attach-frontend raw plan)
+        buf (native h :alloc 8)]
+    (try
+      (is (= [-1 4] (poll h 0 0 0)))
+      (is (= [-1 104] (recv h (:client-fd pair) buf 8 0)))
+      (let [history (posix-fault/evidence-history (:frontend h))
+            e1 (nth history 0)
+            e2 (nth history 1)]
+        (is (= 2 (count history)))
+        (is (= (poll-id 1) (:attempt-id e1)))
+        (is (= (recv-id 1 (:client-fd pair) (:peer-port pair))
+               (:attempt-id e2)))
+        (is (= :f/interrupt-first-poll (get-in e1 [:firing :rule-id])))
+        (is (= :f/reset-client-recv (get-in e2 [:firing :rule-id])))
+        (is (every? map? history))
+        (is (= history (trace/restore-value (trace/canonical-value history)))))
+      (finally
+        (native h :free buf)
+        (close-pair! h pair)))))

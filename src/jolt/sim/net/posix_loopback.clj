@@ -1279,6 +1279,26 @@
   [w]
   @(:state w))
 
+(def ^:private socket-fact-keys
+  [:fd :state :local-port :peer-port :peer-fd])
+
+(defn socket-facts
+  "Returns a stable, bounded fact map for modeled socket ``fd``, or nil when
+  no such socket is live.
+
+  Facts are sampled while holding the world's ordinary POSIX transition lock.
+  That locked snapshot is the admission linearization point for boundary
+  frontends: it cannot observe the intermediate atom states used inside a
+  connect, accept, shutdown, or close transition. The lock is released before
+  this function returns; the result is evidence, not a lifecycle lease, and a
+  later operation may legitimately observe that the socket has since changed
+  or closed."
+  [w fd]
+  (let [w (validate-world w)]
+    (locking (:lock w)
+      (when-let [socket (socket-of w fd)]
+        (select-keys socket socket-fact-keys)))))
+
 (defn pipe-snapshot
   "Stable plain-data summary of every open modeled pipe endpoint, ordered by fd.
   Each entry carries its role, peer fd, nonblocking flag, the byte occupancy of
