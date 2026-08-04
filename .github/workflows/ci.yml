@@ -144,7 +144,9 @@ jobs:
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: process-explorer-${{ matrix.toolchain }}
-          path: ${{ runner.temp }}/jolt-tmp/jolt-sim-explore-*/
+          path: |
+            ${{ runner.temp }}/jolt-tmp/jolt-sim-explore-*/
+            ${{ runner.temp }}/jolt-tmp/jolt-sim-outbox-*
           if-no-files-found: ignore
           retention-days: 14
 
