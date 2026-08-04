@@ -42,6 +42,13 @@
   ;; unreachable from the documented interface; found by the -M:evt work.)
   :streamcheck {:main-opts ["-m" "perturb.streamcheck"]}
 
+  ;; PERTURB-DESIGN §1.1's SECOND IR claim (`:host`/`:host-static`/`:host-new`/
+  ;; `:host-call` should collapse into one `:extern` carrying an effect row and
+  ;; signature), measured over real Jolt IR from Jolt's stdlib and all of
+  ;; perturb. NOT a gate: it records no expectations, it reports counts and node
+  ;; shapes. No socket, no server; nothing in the corpus is called.
+  :extern {:main-opts ["-m" "perturb.externprobe"]}
+
   ;; The static capability checker. Reads perturb.cap's declarations as a
   ;; SPECIFICATION and real Jolt IR as the program, and rejects. No socket and
   ;; no server; nothing in the corpus is ever called.
@@ -52,6 +59,13 @@
   ;; socket, with the response octets compared. Takes a port; needs no server,
   ;; because it is both ends.
   :http   {:main-opts ["-m" "perturb.httpdemo"]}
+
+  ;; The enumeration check behind the fail-closed boundary: every jolt.ffi
+  ;; binding in perturb.posix must be one perturb.posix/defsys emitted (so it
+  ;; carries its gate) or be on a named allow-list of exactly one. Reads real
+  ;; Jolt IR via perturb.ir, so it matches the analyzer's :ffi-fn node rather
+  ;; than a source token. `dev/verify-noio.sh` runs it as a VERDICT line.
+  :gatecheck {:main-opts ["-m" "perturb.gatecheck"]}
 
   ;; The event-driven experiment: a driver that owns every capability and an
   ;; application that is a pure (state, event) -> [state', effects]. Checks
