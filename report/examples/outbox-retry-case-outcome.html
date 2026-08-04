@@ -69,6 +69,13 @@
   .edn { word-break: break-all; }
   .detail { word-break: break-word; }
   .muted { color: var(--muted); }
+  .section-kind {
+    color: var(--muted);
+    font-size: 0.75rem;
+    font-weight: 500;
+    margin-left: 0.4rem;
+  }
+  .journey-path { color: var(--muted); white-space: nowrap; }
   .status { font-weight: 600; }
   .status-pass, .status-completed { color: var(--pass); }
   .status-violation, .status-failed, .status-worker-error { color: var(--violation); }
@@ -138,6 +145,12 @@
   </section>
 
   <section>
+    <h2>Canonical replay coordinate</h2>
+    <p class="muted">Exact validated Case data: scenario, mode, input, and schedule.</p>
+    <pre class="canonical">{:input {:payload [], :pipe-capacity 1, :poll-eintr-ordinal nil, :stream-capacity 8}, :mode :hermetic, :scenario jolt.sim.fixtures.outbox-delivery-scenarios/exercise-retry-recv-reset, :schedule nil}</pre>
+  </section>
+
+  <section>
     <h2>Outcome</h2>
     <table class="kv">
       <tbody>
@@ -160,51 +173,104 @@
 
 
   <section>
+    <h2>Recorded outbox journey</h2>
+    <p class="muted">Receive-reset retry. Rows are direct evidence projections, not inferred causal verdicts.</p>
+
+    <table>
+      <thead>
+        <tr><th>Recorded evidence</th><th>Source path</th><th>Canonical EDN</th></tr>
+      </thead>
+      <tbody>
+
+        <tr>
+          <th>Recorded command</th>
+          <td class="journey-path"><code>[:application :command]</code></td>
+          <td class="detail"><code>{:emitted [{:entity-id &quot;entity-a&quot;, :outbox-id 1, :payload [], :request-id &quot;req-1&quot;, :status :pending, :version 1}], :result {:entity-id &quot;entity-a&quot;, :outbox-id 1, :request-id &quot;req-1&quot;, :status :committed, :version 1}, :value {:entity-id &quot;entity-a&quot;, :payload [], :request-id &quot;req-1&quot;}}</code></td>
+        </tr>
+
+        <tr>
+          <th>Recorded pending state</th>
+          <td class="journey-path"><code>[:application :pending-state]</code></td>
+          <td class="detail"><code>{:entities {&quot;entity-a&quot; {:payload [], :version 1}}, :next-outbox-id 2, :outbox [{:entity-id &quot;entity-a&quot;, :outbox-id 1, :payload [], :request-id &quot;req-1&quot;, :status :pending, :version 1}], :request-log {&quot;req-1&quot; {:command {:entity-id &quot;entity-a&quot;, :payload [], :request-id &quot;req-1&quot;}, :result {:entity-id &quot;entity-a&quot;, :outbox-id 1, :request-id &quot;req-1&quot;, :status :committed, :version 1}}}}</code></td>
+        </tr>
+
+        <tr>
+          <th>Recorded first attempt</th>
+          <td class="journey-path"><code>[:application :retry :attempt-1]</code></td>
+          <td class="detail"><code>{:cleanup-errors [], :error {:class &quot;class clojure.lang.ExceptionInfo&quot;, :data {&quot;:jolt.net/code&quot; &quot;104&quot;, &quot;:jolt.net/kind&quot; &quot;:connection-reset&quot;, &quot;:jolt.net/message&quot; &quot;\&quot;Connection reset by peer (code 104)\&quot;&quot;, &quot;:jolt.net/op&quot; &quot;:read&quot;, &quot;:jolt.net/platform&quot; &quot;:posix&quot;}, :message &quot;jolt.net read: Connection reset by peer (code 104)&quot;}}</code></td>
+        </tr>
+
+        <tr>
+          <th>Recorded retry delivery</th>
+          <td class="journey-path"><code>[:application :retry :delivery]</code></td>
+          <td class="detail"><code>{:close-results {:connection [true false]}, :received-bytes 59, :replies [{&quot;attempt&quot; 2, &quot;outbox-id&quot; 1, &quot;type&quot; &quot;outbox_delivery_ok&quot;}], :requests [{&quot;attempt&quot; 2, &quot;entity-id&quot; &quot;entity-a&quot;, &quot;outbox-id&quot; 1, &quot;payload&quot; [], &quot;request-id&quot; &quot;req-1&quot;, &quot;type&quot; &quot;outbox_delivery&quot;, &quot;version&quot; 1}], :sent-bytes 120}</code></td>
+        </tr>
+
+        <tr>
+          <th>Recorded durable marking</th>
+          <td class="journey-path"><code>[:application :marking]</code></td>
+          <td class="detail"><code>{:changed? true, :row {:entity-id &quot;entity-a&quot;, :outbox-id 1, :payload [], :request-id &quot;req-1&quot;, :status :delivered, :version 1}}</code></td>
+        </tr>
+
+        <tr>
+          <th>Recorded final store state</th>
+          <td class="journey-path"><code>[:application :store-state]</code></td>
+          <td class="detail"><code>{:entities {&quot;entity-a&quot; {:payload [], :version 1}}, :next-outbox-id 2, :outbox [{:entity-id &quot;entity-a&quot;, :outbox-id 1, :payload [], :request-id &quot;req-1&quot;, :status :delivered, :version 1}], :request-log {&quot;req-1&quot; {:command {:entity-id &quot;entity-a&quot;, :payload [], :request-id &quot;req-1&quot;}, :result {:entity-id &quot;entity-a&quot;, :outbox-id 1, :request-id &quot;req-1&quot;, :status :committed, :version 1}}}}</code></td>
+        </tr>
+
+      </tbody>
+    </table>
+
+  </section>
+
+
+
+  <section>
     <h2>Result detail</h2>
     <div class="sections-list">
 
       <details>
-        <summary>:application</summary>
+        <summary>:application<span class="section-kind">known</span></summary>
         <pre class="canonical">{:command {:emitted [{:entity-id &quot;entity-a&quot;, :outbox-id 1, :payload [], :request-id &quot;req-1&quot;, :status :pending, :version 1}], :result {:entity-id &quot;entity-a&quot;, :outbox-id 1, :request-id &quot;req-1&quot;, :status :committed, :version 1}, :value {:entity-id &quot;entity-a&quot;, :payload [], :request-id &quot;req-1&quot;}}, :identities {:attempt-id [:outbox/delivery-attempt 1 1], :delivery-id [:outbox/delivery 1], :outbox-id 1, :request-id &quot;req-1&quot;, :transaction-id [:outbox/command &quot;req-1&quot;]}, :marking {:changed? true, :row {:entity-id &quot;entity-a&quot;, :outbox-id 1, :payload [], :request-id &quot;req-1&quot;, :status :delivered, :version 1}}, :pending-state {:entities {&quot;entity-a&quot; {:payload [], :version 1}}, :next-outbox-id 2, :outbox [{:entity-id &quot;entity-a&quot;, :outbox-id 1, :payload [], :request-id &quot;req-1&quot;, :status :pending, :version 1}], :request-log {&quot;req-1&quot; {:command {:entity-id &quot;entity-a&quot;, :payload [], :request-id &quot;req-1&quot;}, :result {:entity-id &quot;entity-a&quot;, :outbox-id 1, :request-id &quot;req-1&quot;, :status :committed, :version 1}}}}, :retry {:attempt-1 {:cleanup-errors [], :error {:class &quot;class clojure.lang.ExceptionInfo&quot;, :data {&quot;:jolt.net/code&quot; &quot;104&quot;, &quot;:jolt.net/kind&quot; &quot;:connection-reset&quot;, &quot;:jolt.net/message&quot; &quot;\&quot;Connection reset by peer (code 104)\&quot;&quot;, &quot;:jolt.net/op&quot; &quot;:read&quot;, &quot;:jolt.net/platform&quot; &quot;:posix&quot;}, :message &quot;jolt.net read: Connection reset by peer (code 104)&quot;}}, :delivery {:close-results {:connection [true false]}, :received-bytes 59, :replies [{&quot;attempt&quot; 2, &quot;outbox-id&quot; 1, &quot;type&quot; &quot;outbox_delivery_ok&quot;}], :requests [{&quot;attempt&quot; 2, &quot;entity-id&quot; &quot;entity-a&quot;, &quot;outbox-id&quot; 1, &quot;payload&quot; [], &quot;request-id&quot; &quot;req-1&quot;, &quot;type&quot; &quot;outbox_delivery&quot;, &quot;version&quot; 1}], :sent-bytes 120}, :state-unchanged-after-failure? true}, :store-state {:entities {&quot;entity-a&quot; {:payload [], :version 1}}, :next-outbox-id 2, :outbox [{:entity-id &quot;entity-a&quot;, :outbox-id 1, :payload [], :request-id &quot;req-1&quot;, :status :delivered, :version 1}], :request-log {&quot;req-1&quot; {:command {:entity-id &quot;entity-a&quot;, :payload [], :request-id &quot;req-1&quot;}, :result {:entity-id &quot;entity-a&quot;, :outbox-id 1, :request-id &quot;req-1&quot;, :status :committed, :version 1}}}}}</pre>
       </details>
 
       <details>
-        <summary>:http</summary>
+        <summary>:http<span class="section-kind">known</span></summary>
         <pre class="canonical">{:close-results {:connection [true false]}, :content-length &quot;107&quot;, :content-type &quot;application/x-bencode&quot;, :response {&quot;entity-id&quot; &quot;entity-a&quot;, &quot;outbox-id&quot; 1, &quot;request-id&quot; &quot;req-1&quot;, &quot;status&quot; &quot;committed&quot;, &quot;type&quot; &quot;command_ok&quot;, &quot;version&quot; 1}, :server-errors [], :status 200}</pre>
       </details>
 
       <details>
-        <summary>:receiver</summary>
+        <summary>:receiver<span class="section-kind">known</span></summary>
         <pre class="canonical">{:requests [{&quot;attempt&quot; 1, &quot;entity-id&quot; &quot;entity-a&quot;, &quot;outbox-id&quot; 1, &quot;payload&quot; [], &quot;request-id&quot; &quot;req-1&quot;, &quot;type&quot; &quot;outbox_delivery&quot;, &quot;version&quot; 1} {&quot;attempt&quot; 2, &quot;entity-id&quot; &quot;entity-a&quot;, &quot;outbox-id&quot; 1, &quot;payload&quot; [], &quot;request-id&quot; &quot;req-1&quot;, &quot;type&quot; &quot;outbox_delivery&quot;, &quot;version&quot; 1}], :server-errors [{:class &quot;class clojure.lang.ExceptionInfo&quot;, :data {&quot;:jolt.net/code&quot; &quot;32&quot;, &quot;:jolt.net/kind&quot; &quot;:connection-reset&quot;, &quot;:jolt.net/message&quot; &quot;\&quot;Connection reset by peer (code 32)\&quot;&quot;, &quot;:jolt.net/op&quot; &quot;:write&quot;, &quot;:jolt.net/platform&quot; &quot;:posix&quot;}, :message &quot;jolt.net write: Connection reset by peer (code 32)&quot;}]}</pre>
       </details>
 
       <details>
-        <summary>:routes</summary>
+        <summary>:routes<span class="section-kind">known</span></summary>
         <pre class="canonical">{:all-handled? true, :count 5985, :foreign-symbols [&quot;accept&quot; &quot;bind&quot; &quot;close&quot; &quot;connect&quot; &quot;fcntl&quot; &quot;freeaddrinfo&quot; &quot;getaddrinfo&quot; &quot;getpeername&quot; &quot;getsockname&quot; &quot;getsockopt&quot; &quot;listen&quot; &quot;pipe&quot; &quot;poll&quot; &quot;read&quot; &quot;recv&quot; &quot;send&quot; &quot;setsockopt&quot; &quot;socket&quot; &quot;sqlite3_bind_blob64&quot; &quot;sqlite3_bind_int64&quot; &quot;sqlite3_bind_text&quot; &quot;sqlite3_changes&quot; &quot;sqlite3_close_v2&quot; &quot;sqlite3_column_blob&quot; &quot;sqlite3_column_bytes&quot; &quot;sqlite3_column_count&quot; &quot;sqlite3_column_int64&quot; &quot;sqlite3_column_name&quot; &quot;sqlite3_column_text&quot; &quot;sqlite3_column_type&quot; &quot;sqlite3_finalize&quot; &quot;sqlite3_get_autocommit&quot; &quot;sqlite3_open&quot; &quot;sqlite3_prepare_v2&quot; &quot;sqlite3_step&quot; &quot;write&quot;]}</pre>
       </details>
 
       <details>
-        <summary>:sqlite</summary>
+        <summary>:sqlite<span class="section-kind">known</span></summary>
         <pre class="canonical">{:active-stmts 0, :open-dbs 0, :plan-count 27, :plan-index 27}</pre>
       </details>
 
       <details>
-        <summary>:capacity</summary>
+        <summary>:capacity<span class="section-kind">known</span></summary>
         <pre class="canonical">{:pipe {:max-pipe-fifo-bytes 1, :pipe-capacity 1, :pipe-would-blocks 17}, :stream {:max-stream-recv-bytes 8, :stream-capacity 8, :stream-capacity-limited-writes 90, :stream-would-blocks 50}}</pre>
       </details>
 
       <details>
-        <summary>:fault</summary>
+        <summary>:fault<span class="section-kind">known</span></summary>
         <pre class="canonical">{:attempts 179, :fired-attempts [{:attempt-id [:jolt.sim.net.posix-fault/recv 82 1073741838 40000], :firing {:firing-ordinal 1, :match-ordinal 1, :outcome {:errno :econnreset, :kind :captured-error}, :rule-firing-ordinal 1, :rule-id :outbox-delivery/reset-delivery-recv}}], :firings 1, :recv-attempts 111, :recv-reset-peer-port 40000}</pre>
       </details>
 
       <details>
-        <summary>:schedule</summary>
+        <summary>:schedule<span class="section-kind">known</span></summary>
         <pre class="canonical">{:coordinator-diagnostics {:aborted? false, :arrival-order [:jolt.sim.fixtures.outbox-delivery-scenarios/delivery-client-recv :jolt.sim.fixtures.outbox-delivery-scenarios/receiver-ack-send], :arrived #{:jolt.sim.fixtures.outbox-delivery-scenarios/delivery-client-recv :jolt.sim.fixtures.outbox-delivery-scenarios/receiver-ack-send}, :completed #{:jolt.sim.fixtures.outbox-delivery-scenarios/delivery-client-recv :jolt.sim.fixtures.outbox-delivery-scenarios/receiver-ack-send}, :completion-order [:jolt.sim.fixtures.outbox-delivery-scenarios/receiver-ack-send :jolt.sim.fixtures.outbox-delivery-scenarios/delivery-client-recv], :due-index 2, :in-flight 0, :release-order [:jolt.sim.fixtures.outbox-delivery-scenarios/receiver-ack-send :jolt.sim.fixtures.outbox-delivery-scenarios/delivery-client-recv], :released #{:jolt.sim.fixtures.outbox-delivery-scenarios/delivery-client-recv :jolt.sim.fixtures.outbox-delivery-scenarios/receiver-ack-send}}, :label-counts {:role/delivery-client-recv 13, :role/receiver-ack-send 10, :unlabeled 234}, :release-evidence [[:release :jolt.sim.fixtures.outbox-delivery-scenarios/receiver-ack-send] [:release :jolt.sim.fixtures.outbox-delivery-scenarios/delivery-client-recv]], :routes {:recv {:all-handled? true, :count 111}, :send {:all-handled? true, :count 146}}}</pre>
       </details>
 
       <details>
-        <summary>:clean?</summary>
+        <summary>:clean?<span class="section-kind">known</span></summary>
         <pre class="canonical">{:memory true, :posix true, :sqlite true}</pre>
       </details>
 
@@ -243,7 +309,7 @@
 </main>
 
 <footer>
-  <p>Generated by jolt.sim.report &middot; case/outcome view-model version 1</p>
+  <p>Generated by jolt.sim.report &middot; case/outcome view-model version 2</p>
 </footer>
 
 </body>
