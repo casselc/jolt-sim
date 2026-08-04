@@ -60,8 +60,114 @@
 
 (def ^:private K :perturb.octet/octets)
 
+;; THE RECOGNIZER IS A VALIDATOR, NOT A TAG TEST. E37 / tally row 56 recorded the
+;; hole: `(and (map? x) (contains? x K))` recognised the TAG, so any hand-built
+;; `{:perturb.octet/octets <anything>}` was accepted as a window while the
+;; constructors above range-checked their inputs. That mattered because
+;; `perturb.wire/socket`'s `:recv` declares `octets?` as its `:result-pred`, and
+;; `perturb.effect/cross!` says of that predicate: "A handler that lies about its
+;; result type is stopped here, not downstream in the codec." With a tag test it
+;; was not stopped here; it was stopped downstream, in the codec, by a host
+;; ClassCastException — or not stopped at all.
+;;
+;; So the recognizer now decides the same refinement the constructors enforce.
+;; Three clauses, in increasing cost, and each one is load-bearing:
+;;
+;;   (map? x)          — O(1).
+;;   (= 1 (count x))   — O(1). Every constructor here emits a map of exactly one
+;;                       key, so an extra key means the value was not built here.
+;;                       Rejecting it also restores VALUE EQUALITY: two windows
+;;                       over the same octets that both satisfy `octets?` are
+;;                       `=`, which `perturb.bencode/dget` relies on when it
+;;                       looks a decoded dict key up by an `encode-utf8` of it.
+;;   (vector? v)       — O(1). `osub`/`subvec`, `ovec` and `oref` all assume it.
+;;   every element     — O(n), and unavoidable: the property that distinguishes a
+;;                       window from a forgery is a property of the elements, so
+;;                       nothing cheaper can decide it. See the cost note below.
+;;
+;; WHAT THIS DOES NOT DO. It does not make construction opaque, and it is not a
+;; provenance check: a map this namespace never built but whose contents satisfy
+;; the refinement is accepted, and is indistinguishable from — and `=` to — one
+;; that was. That is the intended reading. The refinement, not the constructor's
+;; signature, is the contract; §1.3 states it as a TYPE, and a type is satisfied
+;; by any value with the right shape. Opacity was considered and rejected: no
+;; unforgeable token is reachable from Jolt-level code (a namespace-private
+;; sentinel can be read straight back out of any legitimate window), so an
+;; opaque encoding would raise the bar without closing the hole, and would cost
+;; a key per view on top of E36's measured ~280 B of wrapper.
+;;
+;; COST. `octets?` is not on the per-octet hot path — no operation E36 measured
+;; calls it (`oref`, `osub`, `odrop`, `oconcat`, `ocount`, `decode-utf8` all go
+;; through `ovec`, never through the recognizer). It is called once per `recv` at
+;; the effect boundary and once per value in `perturb.bencode`'s encoder and
+;; renderers, in both cases beside work that is already O(n) over the same
+;; octets. The rejection path allocates nothing: `octets-violation` is a separate
+;; function precisely so the predicate never builds a diagnostic map for the
+;; integers, strings and keywords `perturb.bencode/enc` asks it about.
+;;
+;; WHY THE SCAN IS AN INDEXED LOOP AND NOT `every?`. `every?` is ~2.5× FASTER
+;; here — ~48 against ~121 ns/octet at 8192; `-M:octetcheck` prints both — because
+;; `clojure.core/every?` is `reduce`+`reduced` and drives the vector's tight
+;; index loop instead of walking the trie from the root per element. It was
+;; written that way first, and `dev/verify-noio.sh` rejected it: the scripted
+;; run's marker window went from 0 attributable syscalls to 2, both
+;; `mmap(MAP_ANONYMOUS)` — Chez growing its heap because the reduce path
+;; ALLOCATES and this loop does not. Reproduced twice each way. INHERITED I11's
+;; instrument is a syscall counter, so heap growth is indistinguishable from
+;; I/O in it, and a recognizer on the `recv` boundary must not push the process
+;; over a segment boundary. The ~2.5× is the price of an allocation-free scan and
+;; it is paid once per received chunk, not once per octet read.
+
 (defn octets?
-  [x] (and (map? x) (contains? x K)))
+  "Is `x` an octet view — a map of exactly the backing key, over a vector whose
+  every element satisfies `octet?`?
+
+  This DECIDES the refinement; it does not test for a tag. A forged
+  `{:perturb.octet/octets [-1 999]}` is rejected here rather than becoming a
+  host-level cast error somewhere inside the codec. `octets-violation` answers
+  the same question with a reason attached."
+  [x]
+  (and (map? x)
+       (= 1 (count x))
+       (let [v (get x K ::absent)]
+         (and (vector? v)
+              (let [n (count v)]
+                (loop [i 0]
+                  (or (>= i n)
+                      (and (octet? (nth v i))
+                           (recur (inc i))))))))))
+
+(defn octets-violation
+  "nil if `x` is an octet view, else why it is not: `{:perturb.octet/reason r}`
+  plus `:perturb.octet/index` and `:perturb.octet/value` when one element is at
+  fault. Same decision as `octets?` — the gate checks that the two agree — but
+  it allocates, so it is for diagnosis and never for dispatch."
+  [x]
+  (cond
+    (not (map? x))
+    {:perturb.octet/reason :not-a-map :perturb.octet/value x}
+
+    (not (contains? x K))
+    {:perturb.octet/reason :missing-backing-key :perturb.octet/value x}
+
+    (not= 1 (count x))
+    {:perturb.octet/reason :extra-keys
+     :perturb.octet/value  (vec (remove (fn [k] (= k K)) (keys x)))}
+
+    (not (vector? (get x K)))
+    {:perturb.octet/reason :backing-not-a-vector :perturb.octet/value (get x K)}
+
+    :else
+    (let [v (get x K)
+          n (count v)]
+      (loop [i 0]
+        (cond
+          (>= i n) nil
+          (octet? (nth v i)) (recur (inc i))
+          :else {:perturb.octet/reason     :element-not-an-octet
+                 :perturb.octet/index      i
+                 :perturb.octet/value      (nth v i)
+                 :perturb.octet/refinement refinement})))))
 
 (defn ovec
   "The backing vector. Internal seam: everything else goes through oref/ocount."
