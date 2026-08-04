@@ -131,7 +131,7 @@ only the application surfaces and modes exercised by a durable gate.
 | Scenario | Ordinary library surface | Real lane | Simulated lane | Current boundary |
 | --- | --- | --- | --- | --- |
 | SQLite BLOB round trip | `jdbc.core`, `db.sqlite`, `jolt.ffi`, byte arrays | System SQLite | Scripted SQLite over FFI memory | Sequential statements; local workspace gate |
-| POSIX loopback stream/poller | `jolt.net`, `jolt.ffi` | Not in the durable gate | Modeled sockets, pipe, and `poll(2)` | Finite stream/self-pipe capacity; one exact captured `EINTR` retry; no virtual time |
+| POSIX loopback stream/poller | `jolt.net`, `jolt.ffi` | Not in the durable gate | Modeled sockets, pipe, and `poll(2)` | Finite stream/self-pipe capacity; captured `EINTR`; optional alarm-backed virtual timeout wake |
 | HTTP Hello World | `jolt-http`, `jolt-tcp`, `jolt.net`, `jolt.ffi` | Not in the durable gate | Modeled POSIX loopback | One request; public CI, no faults |
 | HTTP SQLite BLOB | `jolt-http`, `jolt-tcp`, `jolt.net`, `jdbc.core`, `db.sqlite`, `jolt.ffi`, byte arrays | Host sockets plus system SQLite | Shared FFI-memory, POSIX, and SQLite worlds | One request at one-byte capacities plus one captured first-poll `EINTR`; local gate, no generated schedule/fault search |
 | Length-framed TCP bencode echo | `teensyp.server`, `teensyp.client`, `teensyp.buffer`, `jolt.bytes`, `jolt.bencode`, `jolt.net`, `jolt.ffi` | Host loopback parity witness | Modeled POSIX loopback and native memory | Pipelined requests, finite stream/self-pipe capacities, captured `EINTR`, and Hegel-generated UTF-8; no half-close or concurrent clients |
@@ -222,6 +222,13 @@ omitted, a pass-through clock proceeds every intercepted `:mono-nanos` so real
 OS monotonic time remains available. Drain deadlines always use the resolved
 private `supervisor-mono-nanos`, never the installed clock, so a frozen virtual
 clock still times out.
+
+`jolt.sim.clock/virtual-clock` is the reusable stateful controller for tests and
+scenarios that need explicit virtual time. Its `controller` drives both
+`System/nanoTime` and `jolt.host/mono-nanos` through the existing compiler ABI.
+It also owns exactly-once deadline alarms for modeled blocking resources. Time
+never advances automatically: an explorer or scenario examines
+`next-deadline` and advances only when its runnable-task policy permits.
 
 The current contract also exposes a scoped, owner-thread, single-use native
 `proceed` continuation. `run-controlled` selects routing with `:ffi-mode`:
@@ -751,12 +758,21 @@ installs the handler world underneath the unchanged code:
 /path/to/current-sim/target/sim/jolt -M:posix-loopback-test
 ```
 
-The wait currently uses real monotonic elapsed time, not the simulator's future
-virtual clock. Each socket receive FIFO has a finite positive capacity (65,536
-bytes by default). A full live peer clears `POLLOUT`; nonblocking `send` captures
+The default wait continues to use real monotonic elapsed time. A harness may
+instead pass a `jolt.sim.clock/virtual-clock` as the fourth `posix/world`
+argument and install that same clock's `controller` in `run-controlled`. Finite
+`poll` then registers a clock alarm on the same promise as its readiness waiter
+and parks without a host timeout. Resource readiness cancels the pending alarm;
+virtual advancement wakes an expired poll; either race recomputes live state.
+The model never auto-advances because a runnable peer may make the descriptor
+ready first.
+
+Each socket receive FIFO has a finite positive capacity (65,536 bytes by
+default). A full live peer clears `POLLOUT`; nonblocking `send` captures
 `EAGAIN`, and `recv` republishes write readiness after freeing room. The
 HTTP-plus-SQLite lane runs at one-byte capacity and proves both partial progress
-and an actual would-block/retry without changing application code.
+and an actual would-block/retry without changing application code. Whole-app
+deadline exploration over the new virtual alarm path is the next bounded lane.
 
 Each modeled self-pipe likewise has a finite positive capacity (65,536 bytes by
 default). This bounded wake-pipe surface keeps its current short writes atomic:
