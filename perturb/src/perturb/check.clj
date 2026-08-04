@@ -26,6 +26,10 @@
     LINEAR     `linearity :once` + a declared terminal state: a capability that
                is still live and non-terminal when its binding goes out of scope
                is a leak
+    UNRESOLVED one operation may declare several `:to`s — a SUM — and a
+               capability in a sum state may be used only by an operation that
+               admits EVERY member, or after a declared discriminator has
+               eliminated it at an `if` (E26 finding 7; report-limits item 14)
 
   ONE JUDGEMENT IS NOT A MODE JUDGEMENT AT ALL, AND IS THE OTHER TIER:
 
@@ -119,21 +123,43 @@
 
   The value stored is the DECLARED TRANSITION ENTRY ITSELF with `:cap` added, not
   a three-key summary of it. Any further key a declaration puts on a transition —
-  a side condition, a refinement — travels with it and needs no change here."
+  a side condition, a refinement — travels with it and needs no change here.
+
+  A SUM `:to`: THE VALUE IS A VECTOR OF ENTRIES, NOT ONE ENTRY. It used to be one
+  entry, stored with `assoc`, so a machine declaring several `:to`s for one
+  `[capability operation]` had all but the last SILENTLY overwritten — which is
+  what made `casselc/db`'s three-destination `begin` undeclarable (E26 finding
+  7). Nothing in `perturb.cap` ever rejected the shape; this table lost it.
+  Grouping by `[capability operation from]` is done where it is used, in
+  `check-annotation-consistency!`, because that is the only rule that needs the
+  group rather than the edges."
   [ci]
   (let [decls (:perturb.cap/declarations ci)
         ops   (:perturb.cap/operations ci)
         prims (reduce (fn [acc e]
                         (let [cname (first e)
                               ts    (:perturb.cap/typestate (second e))]
-                          (reduce (fn [a t] (assoc a [cname (:op t)] (assoc t :cap cname)))
+                          (reduce (fn [a t]
+                                    (update a [cname (:op t)]
+                                            (fn [v] (conj (or v []) (assoc t :cap cname)))))
                                   acc (:transitions ts))))
                       {} decls)
         ;; opsym -> every declared edge that operation is, across all machines,
         ;; in a stable order. An operation with no entry here is not a primitive.
         by-op (reduce (fn [acc k]
-                        (update acc (second k) (fn [v] (conj (or v []) (get prims k)))))
+                        (update acc (second k) (fn [v] (into (or v []) (get prims k)))))
                       {} (sort-by str (keys prims)))
+        ;; DISCRIMINATORS (E26 finding 7). opsym -> the declared predicates that
+        ;; narrow a sum state at an `if`, each carrying the capability it
+        ;; discriminates. Empty for every capability that declares none, which is
+        ;; every capability but one.
+        discr (reduce (fn [acc e]
+                        (let [cname (first e)]
+                          (reduce (fn [a d]
+                                    (update a (:op d)
+                                            (fn [v] (conj (or v []) (assoc d :cap cname)))))
+                                  acc (:perturb.cap/discriminator (second e)))))
+                      {} decls)
         ;; Operations INSIDE the capability's implementation: they construct or
         ;; read its concrete value, below the abstraction the modes describe.
         ;; Their bodies are axioms for exactly the reason a transition's body is.
@@ -145,6 +171,7 @@
                       {} decls)]
     {:declarations decls :operations ops
      :primitives prims :transitions-of by-op :representation repr
+     :discriminators discr
      ;; REFINEMENT (E18 finding 3). [capability operation] -> the refinement on
      ;; that transition. Keyed by the PAIR, which is now also how `prims` is
      ;; keyed — the two fixes met here and agreed.
@@ -157,21 +184,82 @@
 
 (defn- decl-of [sp c] (get (:declarations sp) c))
 
-(defn- terminal? [sp c st]
-  (let [ts (:perturb.cap/typestate (decl-of sp c))
-        t  (:terminal ts)]
-    (if (coll? t) (contains? (set t) st) (= t st))))
+;; --- states, and the one that is a SUM ---------------------------------------
+;;
+;; A capability's state is a single keyword, or nil, or — since E26 finding 7 —
+;; a SUM: the set of states an operation with several declared `:to`s may have
+;; left it in, not knowable until run time. The two sides of a spec entry read a
+;; collection differently, and the asymmetry is the feature:
+;;
+;;   :consumes / :borrows  `:state [:a :b]`  = ANY OF. The operation is legal
+;;                         from either, exactly as move_to's `sources` frozenset
+;;                         has meant since E5. Unchanged.
+;;   :produces             `:state [:a :b]`  = A SUM. The capability is now in
+;;                         one of these and the program does not know which.
+;;
+;; Every state below that is not a collection behaves exactly as it did before
+;; this existed, which is what makes the feature opt-in per operation.
 
-(defn- state-ok?
-  "A spec entry's :state may be a single state, a collection of states, or :any —
-  the direct analogue of move_to's `sources` frozenset in mode_checker.py."
+(defn- sum? [s] (coll? s))
+
+(defn- sum-members [s] (if (coll? s) (vec (distinct s)) [s]))
+
+(defn- norm-state
+  "Canonical form of a produced state. A single state stays itself; a collection
+  becomes a SORTED vector so that two sums with the same members are `=`; and a
+  ONE-MEMBER collection collapses to the state itself, so a machine with one
+  `:to` can never accidentally acquire a sum."
+  [s]
+  (if (coll? s)
+    (let [v (vec (sort-by str (distinct s)))]
+      (if (= 1 (count v)) (first v) v))
+    s))
+
+(defn- admits?
+  "Does a spec entry's `:state` admit ONE state? `:any`, a collection, or a
+  single state — the direct analogue of move_to's `sources` frozenset in
+  mode_checker.py."
   [want got]
   (cond
     (= :any want) true
     (coll? want)  (contains? (set want) got)
     :else         (= want got)))
 
+(defn- state-ok?
+  "Does a spec entry's `:state` admit the state a capability is ACTUALLY in?
+
+  For a single state this is `admits?` and nothing has changed. For a SUM the
+  rule is TOTAL: every member must be admitted, because the program does not
+  know which one it has. That is what makes a `:from :any` destructor consumable
+  with no case split and an `:open`-only operation not."
+  [want got]
+  (every? (fn [m] (admits? want m)) (sum-members got)))
+
+(defn- unadmitted
+  "The members of a sum the entry does NOT admit, for the diagnostic."
+  [want got]
+  (vec (remove (fn [m] (admits? want m)) (sum-members got))))
+
+(defn- terminal?
+  "A SUM IS TERMINAL ONLY IF EVERY MEMBER IS. A capability that might be in a
+  non-terminal state still owes its obligation, and the checker cannot tell
+  which member it got."
+  [sp c st]
+  (let [ts   (:perturb.cap/typestate (decl-of sp c))
+        t    (:terminal ts)
+        tset (if (coll? t) (set t) #{t})]
+    (every? (fn [m] (contains? tset m)) (sum-members st))))
+
 (defn- want-str [want] (if (coll? want) (str (vec want)) (str want)))
+
+(defn- produced-ok?
+  "The `:produces` side of a comparison, where a collection means a SUM and not
+  `any of`. Two sums agree when their members agree as a SET; a sum never
+  matches a single state, in either direction."
+  [want got]
+  (if (or (sum? want) (sum? got))
+    (= (set (sum-members want)) (set (sum-members got)))
+    (state-ok? want got)))
 
 ;; --- values -----------------------------------------------------------------
 ;;
@@ -651,6 +739,48 @@
   [entry]
   (str "argument " (:arg entry) (path-str (entry-path entry))))
 
+(defn- discriminator-lines
+  "What a reader can DO about a sum, printed from the declaration rather than
+  invented: the predicates declared for this capability and what each arm of
+  each one knows. A capability with no declared discriminator is a capability
+  whose sum cannot be eliminated at all, and the diagnostic says so."
+  [sp c]
+  (let [ds (:perturb.cap/discriminator (decl-of sp c))]
+    (if (empty? ds)
+      [(str "NO :perturb.cap/discriminator is declared for " c ": this sum cannot be")
+       (str "eliminated by a case split, so the only operations that may consume it")
+       (str "are those whose :from admits every member (a `:from :any` destructor)")]
+      (into ["the declared discriminator(s) that can eliminate this sum, at an `if`:"]
+            (map (fn [d]
+                   (str "  (" (:op d) " arg" (:arg d) ")   true -> " (want-str (:true d))
+                        "   false -> " (want-str (:false d))))
+                 ds)))))
+
+(defn- report-state-unresolved!
+  "A SUM REACHED A USE THAT DOES NOT ADMIT ALL OF IT (E26 finding 7).
+
+  Deliberately NOT `:typestate`. A typestate rejection says the program is in the
+  wrong state; this one says the program is in several states at once and has not
+  said which — the fault is a missing case split, not a wrong operation, and the
+  two want different things from the reader."
+  [st sp opsym entry lc]
+  (report! {:kind :state-unresolved :cap (:cap entry) :op opsym
+            :detail (concat
+                      [(str "operation     " opsym " requires " (:cap entry) "@"
+                            (want-str (:state entry)))
+                       (str "capability    "
+                            (if (:name lc) (str "`" (:name lc) "` ") "")
+                            "is in a SUM state " (want-str (:state lc)))
+                       (str "              — one operation declared several `:to`s and"
+                            " which one it took")
+                       (str "                is not knowable until run time")
+                       (str "not admitted  " (want-str (unadmitted (:state entry) (:state lc)))
+                            "   of " (want-str (:state lc)))
+                       (str "at            " (pir/site (:pos st)))]
+                      (discriminator-lines sp (:cap entry))
+                      [(str "in            " (:in st))])})
+  nil)
+
 (defn- report-unpositioned! [st opsym entry move?]
   (report! {:kind :annotation-unpositioned :cap (:cap entry) :op opsym
             :detail [(str "operation     " opsym (if move? " consumes " " borrows ")
@@ -714,14 +844,19 @@
           {:st st :used nil :ok false :lc nil})
 
       (not (state-ok? want-state (:state (:lc hit))))
-      (do (report! {:kind :typestate :cap want-cap :op opsym
-                    :detail [(str "operation     " opsym " requires " want-cap "@"
-                                  (want-str want-state))
-                             (str "capability    "
-                                  (if (:name (:lc hit)) (str "`" (:name (:lc hit)) "` ") "")
-                                  "is in state " (:state (:lc hit)))
-                             (str "at            " (pir/site (:pos st)))
-                             (str "in            " (:in st))]})
+      (do (if (sum? (:state (:lc hit)))
+            ;; A SUM that is not admitted in full. Its own diagnostic kind, and
+            ;; the abstract state moves exactly as a typestate rejection does —
+            ;; the difference is what the reader is told, not what is tracked.
+            (report-state-unresolved! st sp opsym entry (:lc hit))
+            (report! {:kind :typestate :cap want-cap :op opsym
+                      :detail [(str "operation     " opsym " requires " want-cap "@"
+                                    (want-str want-state))
+                               (str "capability    "
+                                    (if (:name (:lc hit)) (str "`" (:name (:lc hit)) "` ") "")
+                                    "is in state " (:state (:lc hit)))
+                               (str "at            " (pir/site (:pos st)))
+                               (str "in            " (:in st))]}))
           {:st (if move? (mark-moved st (:bid (:lc hit)) {:by opsym :pos (:pos st)}) st)
            :used (:i hit) :ok false :lc (:lc hit)})
 
@@ -745,7 +880,7 @@
 
       (every? empty? paths)
       (if (= 1 (count prod))
-        (let [p (first prod)] {:v :fresh :cap (:cap p) :state (:state p)})
+        (let [p (first prod)] {:v :fresh :cap (:cap p) :state (norm-state (:state p))})
         (do (report! {:kind :annotation-unsupported :op opsym
                       :detail [(str "operation     " opsym " declares " (count prod)
                                     " produced capabilities, none of them positioned")
@@ -775,7 +910,7 @@
             n    (inc (apply max (map first paths)))]
         (tuple (map (fn [i]
                       (let [p (get by-i i)]
-                        (if p {:v :fresh :cap (:cap p) :state (:state p)} OPAQUE)))
+                        (if p {:v :fresh :cap (:cap p) :state (norm-state (:state p))} OPAQUE)))
                     (range n)))))))
 
 (defn- w-annotated-invoke [st sp node opsym ann]
@@ -1072,11 +1207,84 @@
          (= (:cap a) (:cap b)) (= (:state a) (:state b))) a
     :else OPAQUE))
 
+;; --- the case split: eliminating a sum at an `if` (E26 finding 7) ------------
+;;
+;; A sum `:to` states that one operation has several destinations; a
+;; DISCRIMINATOR states which of them a predicate's two arms rule out. This is
+;; the only place the two meet, and it is deliberately the smallest thing that
+;; could work:
+;;
+;;   - the test must be a DIRECT invoke of a declared discriminator. `(let [ok
+;;     (autocommit? t)] (if ok …))` narrows nothing, because the checker has no
+;;     boolean domain and inventing one to carry the fact would be a second
+;;     abstract value with its own join rule;
+;;   - the discriminated argument must be a LOCAL naming the capability bare.
+;;     A capability inside a tuple at the test position is not narrowed;
+;;   - narrowing INTERSECTS. It never widens, never introduces a state the
+;;     capability was not already in, and does nothing at all to a capability
+;;     that is not in a sum — which is what keeps every pre-existing program's
+;;     verdict exactly where it was;
+;;   - an EMPTY intersection leaves the state alone. The arm is unreachable, and
+;;     saying so would need a bottom for state as well as for control flow.
+;;
+;; NOTHING VERIFIES THE DISCRIMINATOR. `autocommit?`'s body is an axiom exactly
+;; as a transition's is; the declaration is believed. See report-limits item 14.
+
+(defn- narrow-state
+  "Intersect a sum with what one arm of a discriminator knows."
+  [state arm]
+  (if (not (sum? state))
+    state
+    (let [keep (filter (fn [m] (admits? arm m)) (sum-members state))]
+      (if (empty? keep) state (norm-state keep)))))
+
+(defn- discriminator-narrowings
+  "The narrowings the test of an `if` licenses: [{:bid :then :else}]. Empty
+  unless the test is an invoke of a declared discriminator whose `:arg` position
+  is a local holding a LIVE capability of the declared type in a SUM state."
+  [st sp node]
+  (let [ds (get (:discriminators sp) (invoke-sym node))]
+    (if (empty? ds)
+      []
+      (remove
+        nil?
+        (map (fn [d]
+               (let [a (arg-node node (:arg d))]
+                 (when (and a (= :local (:op a)))
+                   (let [e  (lookup st (:name a))
+                         lc (when e (live-cap st (:val e)))]
+                     (when (and lc (:bid lc) (= (:cap lc) (:cap d)) (sum? (:state lc)))
+                       {:bid  (:bid lc)
+                        :then (narrow-state (:state lc) (:true d))
+                        :else (narrow-state (:state lc) (:false d))})))))
+             ds)))))
+
+(defn- apply-narrowings
+  "Replace the state of each narrowed capability for the walk of one arm."
+  [st narrs k]
+  (reduce (fn [s n]
+            (let [c (get (:caps s) (:bid n))]
+              (if (nil? c) s (assoc s :caps (assoc (:caps s) (:bid n)
+                                                   (assoc c :state (get n k)))))))
+          st narrs))
+
+(defn- restore-narrowings
+  "Put the FULL sum back after the join. Outside the `if` the program no longer
+  knows which arm ran, so neither may the checker."
+  [caps st1 narrs]
+  (reduce (fn [m n]
+            (let [c0 (get (:caps st1) (:bid n))
+                  c  (get m (:bid n))]
+              (if (or (nil? c0) (nil? c)) m
+                  (assoc m (:bid n) (assoc c :state (:state c0))))))
+          caps narrs))
+
 (defn- w-if [st sp node]
-  (let [rt  (w st (:test node))
-        st1 (:st rt)
-        ra  (w st1 (:then node))
-        rb  (w st1 (:else node))
+  (let [rt    (w st (:test node))
+        st1   (:st rt)
+        narrs (discriminator-narrowings st1 sp (:test node))
+        ra  (w (apply-narrowings st1 narrs :then) (:then node))
+        rb  (w (apply-narrowings st1 narrs :else) (:else node))
         sa  (:st ra)
         sb  (:st rb)]
     (cond
@@ -1114,7 +1322,19 @@
           ;; unknown. No diagnostic here — the join of the MODES is what the
           ;; `join` rule is about, and an obligation later discharged against an
           ;; unknown is refused where it is discharged, with the reason.
-          {:st (assoc st1 :caps (join-refine st1 (merge (:caps sa) (:caps sb)) sa sb)
+          ;; THE JOIN RULE IS UNCHANGED, INCLUDING WHERE A NARROWING MADE IT
+          ;; BITE. `restore-narrowings` only undoes the narrowing itself: if two
+          ;; arms resolved a sum and then left the capability in states the join
+          ;; objects to, the objection above has already been reported and this
+          ;; does not soften it.
+          ;;
+          ;; A narrowing DOES survive when the other arm ended in `throw` or
+          ;; `recur`: those cases return that arm's state above, unrestored,
+          ;; because the path that would have contradicted it does not reach
+          ;; here. Sound, and nothing in the corpus exercises it.
+          {:st (assoc st1 :caps (restore-narrowings
+                                  (join-refine st1 (merge (:caps sa) (:caps sb)) sa sb)
+                                  st1 narrs)
                           :moved (merge (:moved sa) (:moved sb)))
            :val (join-vals st1 va vb)})))))
 
@@ -1310,6 +1530,16 @@
        Nothing in perturb has this shape; the silent `first` that used to stand
        here is precisely what hid (a) for two sections.
 
+  RULE 2 HAS A SECOND HALF SINCE E26 FINDING 7. The declared edges are GROUPED by
+  `[operation capability from]`. A group with one `:to` is the rule above,
+  unchanged and unchanged in every diagnostic it prints. A group with SEVERAL
+  `:to`s is a sum, and then the `:produces` `:state` for that capability must be
+  a COLLECTION equal AS A SET to the group's destinations. Under-covering leaves
+  a caller unprepared for a state the operation can produce; over-covering forces
+  case splits on states nothing reaches. Both are `annotation-inconsistent`, and
+  the terminal exemption generalises the way the leak rule does: a sum need not
+  be produced at all when EVERY member is terminal.
+
   It does NOT establish that the operation's body performs the transition. Every
   transition body is an axiom, unchanged since `mode_checker.py`."
   [sp opsym ann]
@@ -1325,31 +1555,62 @@
                                (str "but " c "'s machine declares no edge for " opsym)
                                "an operation that advances two machines must declare an"
                                "edge in each; the primitive table is keyed [capability op]"]}))))
-      (doseq [t ts]
-        (let [c  (:cap t)
-              cs (entries-for (:consumes ann) c)
-              ps (entries-for (:produces ann) c)]
+      ;; GROUPED BY [capability from]. `opsym` is fixed here, so this is the
+      ;; [operation capability from] grouping. Every existing machine yields
+      ;; one-element groups and reaches the same comparison it always did.
+      (let [groups (reduce (fn [acc t]
+                            (update acc [(:cap t) (:from t)]
+                                    (fn [v] (conj (or v []) t))))
+                          {} ts)]
+       (doseq [g (sort-by (fn [e] (str (first e))) (seq groups))]
+        (let [c    (first (first g))
+              from-decl (second (first g))
+              tos  (vec (distinct (map :to (second g))))
+              cs   (entries-for (:consumes ann) c)
+              ps   (entries-for (:produces ann) c)]
           (if (or (> (count cs) 1) (> (count ps) 1))
             (report! {:kind :annotation-ambiguous-edge :op opsym :cap c
                       :detail [(str "operation     " opsym " declares the edge "
-                                    (:from t) " -> " (:to t) " of " c)
+                                    from-decl " -> " (want-str (norm-state tos)) " of " c)
                                (str "and its annotation names " c " " (count cs)
                                     " time(s) in :consumes and " (count ps)
                                     " time(s) in :produces")
                                "there is no single pair to compare it against"]})
             (let [from (:state (first cs))
                   to   (:state (first ps))
-                  dropped-at-terminal? (and (nil? to) (terminal? sp c (:to t)))]
-              (when (or (not= from (:from t))
-                        (and (not= to (:to t)) (not dropped-at-terminal?)))
+                  many? (> (count tos) 1)
+                  to-decl (norm-state tos)
+                  dropped-at-terminal?
+                  (and (nil? to) (every? (fn [d] (terminal? sp c d)) tos))
+                  agree? (if many?
+                           (and (not (nil? to)) (= (set tos) (set (sum-members to))))
+                           (= to (first tos)))
+                  missing (vec (remove (fn [d] (contains? (set (sum-members to)) d)) tos))
+                  extra   (vec (remove (fn [d] (contains? (set tos) d))
+                                       (if (nil? to) [] (sum-members to))))]
+              (when (or (not= from from-decl)
+                        (and (not agree?) (not dropped-at-terminal?)))
                 (report! {:kind :annotation-inconsistent :op opsym :cap c
-                          :detail [(str "operation     " opsym)
-                                   (str "declared edge     " (pr-str (:from t)) " -> "
-                                        (pr-str (:to t)))
-                                   (str "annotation says   " (pr-str from) " -> "
-                                        (pr-str to))
-                                   (str "the declaration and the annotation disagree about "
-                                        c "'s edge")]})))))))))
+                          :detail
+                          (concat
+                            [(str "operation     " opsym)
+                             (str "declared edge" (if many? "s    " "     ")
+                                  (pr-str from-decl) " -> " (pr-str to-decl)
+                                  (if many?
+                                    (str "   (" (count tos)
+                                         " destinations, chosen at run time)") ""))
+                             (str "annotation says   " (pr-str from) " -> " (pr-str to))]
+                            (if (and many? (= from from-decl))
+                              (concat
+                                [(str "a group of transitions sharing an :op and a :from must be")
+                                 (str "matched by a :produces :state that is a COLLECTION equal to")
+                                 (str "the group's :to's AS A SET")]
+                                (if (seq missing)
+                                  [(str "not covered   " (want-str missing))] [])
+                                (if (seq extra)
+                                  [(str "not declared  " (want-str extra))] []))
+                              [(str "the declaration and the annotation disagree about "
+                                    c "'s edge")]))}))))))))))
 
 (defn check-def!
   "Check one captured :def node. Returns the number of diagnostics it produced."
@@ -1397,6 +1658,14 @@
                                     ;; capability that arrived as an argument is
                                     ;; refused rather than guessed at — see
                                     ;; check-requires!.
+                                    ;; A COLLECTION HERE IS `ANY OF`, NOT A SUM.
+                                    ;; This is the `:from` side: the parameter
+                                    ;; arrives in ONE of the admitted states and
+                                    ;; the body may assume the weakest, so the
+                                    ;; first is taken exactly as before E26
+                                    ;; finding 7. A parameter that really is in a
+                                    ;; sum state cannot be declared — see
+                                    ;; report-limits item 14.
                                     s1  (bind-cap s bid
                                                   {:cap (:cap e)
                                                    :state (if (coll? (:state e))
@@ -1445,9 +1714,14 @@
                                             (pr-str (mapv (fn [e] (path-str (:path e))) got)))
                                        (str "at            " (pir/site (:pos stb)))]})
 
+                    ;; `produced-ok?` and not `state-ok?`: on the PRODUCED side a
+                    ;; collection is a sum, so a body that yields one state does
+                    ;; not satisfy an annotation promising three, and a body that
+                    ;; yields a sum does not satisfy one promising a single state.
                     (not (every? (fn [i]
                                    (and (= (:cap (nth want i)) (:cap (nth got i)))
-                                        (state-ok? (:state (nth want i)) (:state (nth got i)))))
+                                        (produced-ok? (:state (nth want i))
+                                                      (:state (nth got i)))))
                                  (range (count want))))
                     (report! {:kind :produces-mismatch :op opsym :cap (:cap (first want))
                               :detail [(str "operation     " opsym " declares "
@@ -1619,7 +1893,74 @@
    "     compare an annotation with a declared machine and nothing else. That an"
    "     operation DECLARES two edges is not evidence that it takes them: all"
    "     nine of perturb.http's transitions are still axioms (item 1), and the"
-   "     ledger is the only thing that ever observed one."])
+   "     ledger is the only thing that ever observed one."
+   ""
+   " 14. ONE OPERATION MAY NOW HAVE SEVERAL `:to`s — A SUM — AND HERE IS EXACTLY"
+   "     WHAT THAT DOES AND DOES NOT DO. `casselc/db`'s `verified-sqlite-begin!`"
+   "     has three destinations chosen at run time, and E26 finding 7 is that"
+   "     perturb could not declare it. It can now: several `:transitions` entries"
+   "     sharing an `:op` and a `:from`, a `:produces` `:state` that is a"
+   "     COLLECTION, and `perturb.dbtx` is the machine."
+   ""
+   "     WHAT IT DOES."
+   "       (a) OPT-IN, PER OPERATION. A group of declared edges with ONE `:to` is"
+   "           compared exactly as before, produces exactly the diagnostics it"
+   "           did before, and cannot acquire a sum: a one-member collection"
+   "           collapses to the state itself. No pre-existing corpus verdict"
+   "           moved, and that is checked by the two corpora that were already"
+   "           here, not asserted."
+   "       (b) USE IS TOTAL OR IT IS REFUSED. A capability in a sum state may be"
+   "           passed to an operation only if the operation's `:from` admits"
+   "           EVERY member. Otherwise `state-unresolved` — a distinct kind from"
+   "           `typestate`, because the program is not in the wrong state, it is"
+   "           in several and has not said which. The useful consequence is that"
+   "           a totally-admitting operation — a `:from :any` destructor — needs"
+   "           no case split at all."
+   "       (c) ELIMINATION IS BY A DECLARED PREDICATE."
+   "           `:perturb.cap/discriminator` names an operation, an argument"
+   "           position, and the states each arm of an `if` knows; the checker"
+   "           intersects. Two nested discriminators resolve a three-way sum."
+   "       (d) A SUM IS TERMINAL ONLY IF EVERY MEMBER IS, so the leak rule holds"
+   "           over sums with no special case."
+   ""
+   "     WHAT IT DOES NOT DO, AND THIS IS THE PART TO READ."
+   "       (e) A SUM WITH NO DECLARED DISCRIMINATOR IS UNRESOLVABLE. There is no"
+   "           inference from a program's own tests: a predicate the checker was"
+   "           not told about narrows nothing. Such a capability can ONLY be"
+   "           consumed by an operation that admits every member, and if the"
+   "           machine has no such operation the capability can never be"
+   "           consumed at all — it will leak at scope exit and the program has"
+   "           no way to be written correctly. Declaring a sum without a"
+   "           discriminator is therefore a decision to make a state"
+   "           unusable, and nothing warns about it."
+   "       (f) NOTHING CHECKS A DISCRIMINATOR. `autocommit?`'s body is an AXIOM"
+   "           exactly as a transition's is (item 1). A discriminator that lies"
+   "           narrows to the wrong state and the checker will accept a program"
+   "           that cannot run — the same class of false accept E15 found, moved"
+   "           to a new declaration key."
+   "       (g) THE TEST MUST BE A DIRECT CALL. `(if (autocommit? t) …)` narrows;"
+   "           `(let [ok (autocommit? t)] (if ok …))` does not, because the"
+   "           checker has no boolean domain to carry the fact in. Nor is the"
+   "           discriminated argument allowed to be inside a tuple. Both are"
+   "           silent: the program is simply still rejected, with (b)'s"
+   "           diagnostic and no hint that the shape was the problem."
+   "       (h) NARROWING IS LOST AT THE JOIN. After an ordinary `if` the"
+   "           capability is back in the full sum, because the program no longer"
+   "           knows which arm ran. A resolved state can only be USED inside the"
+   "           arm that resolved it. (It does survive when the other arm ends in"
+   "           `throw` or `recur`, which is sound and which nothing exercises.)"
+   "       (i) THE `:from` SIDE STILL MEANS `ANY OF`. A collection in `:consumes`"
+   "           or `:borrows` is a set of admissible sources, and a PARAMETER"
+   "           declared that way is bound in the first of them. A function"
+   "           parameter that is genuinely in a sum state cannot be declared, so"
+   "           a sum cannot cross a function boundary — it must be eliminated in"
+   "           the same function that produced it."
+   "       (j) A REFINEMENT ON A SUMMAND IS NOT ADDRESSED."
+   "           `perturb.cap/refinements` is keyed [capability operation] with"
+   "           `assoc`, so if two edges of one group each carried a"
+   "           `:perturb.cap/refine`, one would silently win — the same defect"
+   "           the primitive table had before E26 finding 7, in the one table"
+   "           that was not fixed. Nothing declares such a pair today."])
 
 (def ^:private line
   "========================================================================")
@@ -1913,22 +2254,73 @@
     (println "   ordering between two typestate machines, and §1.2 has no way to")
     (println "   relate two of them. Nothing here touched it.")))
 
+(defn report-sum-finding
+  "E26 finding 7, and what is now done about it. Printed from the DIAGNOSTICS the
+  run above actually raised, not asserted.
+
+  Not a gate — `run-corpus` over `perturb.dbtxcorpus` is. It exists so the shape
+  of the answer is visible: a declaration that could not be written at all, a
+  rejection whose remedy is a case split rather than a different operation, and
+  the one thing that stays unresolvable."
+  [sp]
+  (let [ds (filter (fn [d] (= :state-unresolved (:kind d))) (deref diagnostics))
+        tx (get (:declarations sp) 'perturb.dbtx/Tx)]
+    (println)
+    (println "== a SUM :to, and the case split that eliminates it ===================")
+    (println "   `casselc/db`'s verified-sqlite-begin! is a typestate machine written")
+    (println "   by hand in another language, and ONE of its operations has THREE")
+    (println "   destinations chosen at run time: BEGIN took effect, BEGIN provably")
+    (println "   did not, or the uncertainty is unresolvable and the handle is")
+    (println "   poisoned. perturb could not declare it — not because an edge out of")
+    (println "   any state was missing (`:from` has taken a collection since E5) but")
+    (println "   because the primitive table stored ONE entry per [capability")
+    (println "   operation] and the second silently overwrote the first.")
+    (println)
+    (println "   Declared now, as several entries sharing an :op and a :from:")
+    (println)
+    (doseq [t (:transitions (:perturb.cap/typestate tx))]
+      (println (str "     {:op " (:op t) "  :from " (pr-str (:from t))
+                    "  :to " (pr-str (:to t)) "}")))
+    (println)
+    (println "   and eliminated by a declared predicate, not by an inference:")
+    (println)
+    (doseq [d (:perturb.cap/discriminator tx)]
+      (println (str "     " (pr-str d))))
+    (println)
+    (println (str "   " (count ds) " program(s) were REFUSED for using a sum they had not"
+                  " resolved."))
+    (println "   Each names the members, the ones the operation does not admit, and")
+    (println "   the discriminators that would have eliminated them:")
+    (if (empty? ds)
+      (println "   none — the corpus changed")
+      (doseq [d ds] (println) (print (render-one d))))
+    (println)
+    (println "   WHAT IS NOT CLOSED. The discriminator is an AXIOM: nothing checks")
+    (println "   that `autocommit?` returns true exactly when the handle is :idle,")
+    (println "   any more than anything checks that `begin` takes one of the three")
+    (println "   edges it declares. And a sum with NO declared discriminator cannot")
+    (println "   be eliminated at all — it can only be consumed by an operation")
+    (println "   whose :from admits every member. See report-limits item 14.")))
+
 (defn -main [& _]
   (println line)
   (println "perturb.check — static capability checking over real Jolt IR")
   (println line)
   (println)
-  (pir/capture! ['perturb.nrepl 'perturb.corpus 'perturb.http 'perturb.httpcorpus])
+  (pir/capture! ['perturb.nrepl 'perturb.corpus 'perturb.http 'perturb.httpcorpus
+                 'perturb.dbtx 'perturb.dbtxcorpus])
   (let [sp (spec)]
     (println (str "  capabilities declared : " (vec (keys (:declarations sp)))))
     (println (str "  operations annotated  : " (vec (sort (map str (keys (:operations sp)))))))
     (println (str "  machine primitives    : "
                   (vec (sort (map (fn [k] (str (second k) " of " (first k)))
                                   (keys (:primitives sp)))))))
-    (println (str "  declared edges        : " (count (:primitives sp))
+    (println (str "  declared edges        : "
+                  (reduce (fn [n v] (+ n (count v))) 0 (vals (:primitives sp)))
                   " across " (count (:declarations sp)) " capabilities, "
                   (count (:transitions-of sp)) " distinct operations"
-                  "  (keyed [capability operation]: E18 1(a))"))
+                  "  (keyed [capability operation]: E18 1(a);"
+                  " several edges per key: E26 7)"))
     (println (str "  IR defs captured      : " (count @pir/captured)))
     (println)
     (let [dfails (run-declaration-corpus 'perturb.httpcorpus/declaration-corpus
@@ -1938,7 +2330,10 @@
           rfails (run-accepts 'perturb.corpus/expectations)
           hfails (run-corpus sp "perturb.httpcorpus" 'perturb.httpcorpus/expectations
                              "HTTP: two capabilities at once, a typestate CYCLE, an obligation")
-          hrfails (run-accepts 'perturb.httpcorpus/expectations)]
+          hrfails (run-accepts 'perturb.httpcorpus/expectations)
+          sfails (run-corpus sp "perturb.dbtxcorpus" 'perturb.dbtxcorpus/expectations
+                             "a SUM :to: one operation, three destinations, one case split")
+          srfails (run-accepts 'perturb.dbtxcorpus/expectations)]
       (run-implementation sp "perturb.nrepl"
                           ["perturb.nrepl, unmodified, checked by the same rules. This is NOT a"
                            "gate: it is the measurement §1.2 and §4.6 say has never been taken."])
@@ -1947,19 +2342,26 @@
                            "across NINE operations — three of them advance two machines at once —"
                            "and ZERO :perturb.cap/representation entries; see the note in that"
                            "namespace for why that zero is repackaging and not progress (E18)."])
+      (run-implementation sp "perturb.dbtx"
+                          ["the THIRD machine: one operation, three destinations. Read the count"
+                           "at the bottom, not the corpus above it — a machine whose every"
+                           "operation is a transition is a machine whose every body is an AXIOM,"
+                           "and that includes the two predicates the case split trusts."])
       (report-obligation-finding)
+      (report-sum-finding sp)
       (report-local-finding)
       (println)
       (doseq [l (report-limits)] (println (str "  " l)))
       (println)
       (println line)
-      (let [all (concat dfails fails rfails hfails hrfails)]
+      (let [all (concat dfails fails rfails hfails hrfails sfails srfails)]
         (if (empty? all)
-          (do (println "CHECK OK — every declaration fixture and every corpus verdict in BOTH")
-              (println "           corpora is the recorded one, and every accepted program runs")
+          (do (println "CHECK OK — every declaration fixture and every corpus verdict in ALL")
+              (println "           THREE corpora is the recorded one, and every accepted")
+              (println "           program runs")
               (System/exit 0))
           (do (println (str "CHECK FAILED — declarations " (vec dfails)
-                            "  verdicts " (vec (concat fails hfails))
-                            "  runs " (vec (concat rfails hrfails))))
+                            "  verdicts " (vec (concat fails hfails sfails))
+                            "  runs " (vec (concat rfails hrfails srfails))))
               (System/exit 1)))))))
 

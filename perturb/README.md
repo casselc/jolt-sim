@@ -52,7 +52,7 @@ $JOLT -M:selftest
 # case it must REFUSE. The boundary of the arithmetic -M:check discharges.
 $JOLT -M:refine
 
-# the static capability checker: TWO corpora + the two real protocol
+# the static capability checker: THREE corpora + the two real protocol
 # namespaces. No socket and no server; every program is checked statically,
 # and every ACCEPTED one is then executed under a scripted handler (E15).
 $JOLT -M:check
@@ -163,6 +163,13 @@ perturb.http      the SECOND protocol. Sans-io HTTP/1.1, server side: three
 perturb.httpcorpus  the HTTP acceptance corpus, 30 programs, plus
                   `declaration-corpus`: 10 hand-built machine/annotation pairs
                   that name no code, gating the DECLARATION language itself
+perturb.dbtx      the THIRD machine, and the only one with a SUM :to: one
+                  operation with three destinations chosen at run time, from
+                  `casselc/db`'s verified-sqlite-begin! (E26 finding 7), plus
+                  the `:perturb.cap/discriminator` that eliminates it
+perturb.dbtxcorpus  the sum-:to acceptance corpus, 6 entries: the case split,
+                  the total destructor that needs none, and the three ways to
+                  get it wrong
 perturb.refine    the refinement decision procedure: a ground linear fragment
                   over the integers, with everything outside it REFUSED
 perturb.httpdemo  one keep-alive driver under both handlers, octets compared
@@ -232,9 +239,10 @@ the compile spine by `perturb.ir` — as the program. The judgements are ports o
 `docs/research/prototypes/`, which were validated against artifacts perturb did
 not author (jolt-hako's `ownership.pl` and `queries.json`).
 
-Two corpora, 55 programs, all decided as recorded: `perturb.corpus` (25 — one
-capability, a straight-line typestate) and `perturb.httpcorpus` (30 — two
-capabilities live at once, a typestate cycle, an obligation), plus 10
+Three corpora, 61 programs, all decided as recorded: `perturb.corpus` (25 — one
+capability, a straight-line typestate), `perturb.httpcorpus` (30 — two
+capabilities live at once, a typestate cycle, an obligation) and
+`perturb.dbtxcorpus` (6 — one operation with three destinations), plus 10
 declaration fixtures that check an annotation against a machine and read no body
 at all. The program rejections
 include use-after-close (`INHERITED.md` I16's example, verbatim), double-close,
@@ -273,6 +281,24 @@ procedure alone, with the cases it must refuse listed beside the cases it
 decides). A body written in a **loop** is refused, and a checker that walked the
 loop body once and believed the answer would accept it.
 
+**One operation may have several `:to`s.** `casselc/db`'s
+`verified-sqlite-begin!` resolves an uncertainty no static checker can resolve —
+when `BEGIN` throws, the transaction may or may not have opened — and lands in
+one of three states chosen at run time. The gap was never the `:from` side,
+which has taken a collection since E5; it was that the primitive table stored
+one edge per `[capability operation]` and silently overwrote the rest. A machine
+may now declare several transitions sharing an `:op` and a `:from`, the
+annotation's `:produces` `:state` is then a collection equal to them **as a
+set**, and a capability in such a SUM state may be used only by an operation
+whose `:from` admits **every** member — a `:from :any` destructor needs no case
+split; anything narrower is `state-unresolved`, a rejection with its own
+diagnostic kind that names the members, the ones not admitted, and the declared
+predicates that would eliminate them. Elimination is by declaration, not by
+inference: `:perturb.cap/discriminator` says which states each arm of an `if`
+knows, and two nested discriminators resolve a three-way sum. It is OPT-IN — a
+machine with one `:to` per edge is compared exactly as before, and no verdict in
+the other two corpora moved.
+
 These two changes were built concurrently and merged, and each falsified part of
 the other's limits list: the refinement work recorded "an operation that
 advances two machines cannot be declared" and "`:borrows` and `:produces`
@@ -298,6 +324,12 @@ What follows is what neither of them fixed.
   it, so `uses-borrow-and-return` is still rejected for a leak it did not
   commit. Fixing that would be a change to a flow rule, not to the declaration
   language;
+- a sum with **no declared discriminator** cannot be eliminated at all — it can
+  only be consumed by an operation that admits every member — and a
+  discriminator is an **axiom**: nothing checks that `autocommit?` returns true
+  exactly when the handle is `:idle`, so a discriminator that lies buys a false
+  accept. A resolved state is usable only inside the arm that resolved it, and
+  a sum cannot cross a function boundary at all;
 - `:perturb.cap/representation` is **gameable**: `perturb.http` has an empty list
   for each of three capabilities and 31 unchecked concrete-map accesses, against
   `perturb.nrepl`'s 5-entry list and 12 accesses. Counting operations counts the

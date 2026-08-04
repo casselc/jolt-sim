@@ -110,6 +110,43 @@
 
 (def refine-key :perturb.cap/refine)
 
+;; --- a sum :to, and the discriminator that eliminates it ---------------------
+;;
+;; PERTURB-DESIGN E26 finding 7: `casselc/db`'s `verified-sqlite-begin!` has ONE
+;; operation with THREE destinations chosen at run time, and perturb could not
+;; declare it. Two things say it now, and NEITHER IS A NEW CONCEPT HERE:
+;;
+;;   1. SEVERAL `:transitions` ENTRIES SHARING AN :op AND A :from.
+;;
+;;        {:op 'perturb.dbtx/begin :from :idle :to :open}      ; R0
+;;        {:op 'perturb.dbtx/begin :from :idle :to :idle}      ; R1, R2
+;;        {:op 'perturb.dbtx/begin :from :idle :to :poisoned}  ; R3-R7
+;;
+;;      Nothing here ever rejected that — `:transitions` is a vector and this
+;;      namespace validates only that the four axes are present. What rejected it
+;;      was downstream: `perturb.check`'s primitive table was keyed [capability
+;;      operation] with `assoc`, so the second entry overwrote the first. The
+;;      declaration language did not need extending; the checker's index did.
+;;
+;;   2. AN OPTIONAL CAPABILITY KEY, `:perturb.cap/discriminator`:
+;;
+;;        [{:op 'perturb.dbtx/autocommit? :arg 0
+;;          :true :idle :false [:open :poisoned]}]
+;;
+;;      "this predicate, applied to that argument, narrows a sum to the `:true`
+;;      states in the then arm and the `:false` states in the else arm." It is a
+;;      property of the CAPABILITY rather than of one edge — a single predicate
+;;      partitions the whole state set and is not attached to the operation that
+;;      produced the sum — which is why it sits beside `:perturb.cap/typestate`
+;;      and not on a transition the way `:perturb.cap/refine` does.
+;;
+;; NOTHING HERE CHECKS ANYTHING, as above. In particular a discriminator is a
+;; CLAIM about a predicate's return value and `note!` will never contradict it:
+;; the ledger records the one destination a run actually took, which is evidence
+;; about the run and not about the declaration.
+
+(def discriminator-key :perturb.cap/discriminator)
+
 (defn refinements
   "[capability operation] -> the transition's `:perturb.cap/refine` map, over
   every declaration in `decls`.
@@ -117,7 +154,13 @@
   Keyed by capability AND operation on purpose: `spec`'s primitive table is
   keyed by operation alone and therefore loses one of the two machines an
   operation like `body-finish!` advances (E18 finding 1a). A refinement that
-  inherited that defect would be attached to the wrong machine."
+  inherited that defect would be attached to the wrong machine.
+
+  AND IT NOW HAS THE DEFECT THE PRIMITIVE TABLE SHED. Since E26 finding 7 a
+  group of transitions may share a [capability operation] key with different
+  `:to`s; two of them carrying a refinement each would collide here and one
+  would silently win. Nothing declares such a pair, and `perturb.check`'s
+  report-limits item 14(j) says so rather than this being a hidden hole."
   [decls]
   (reduce (fn [acc e]
             (let [cap-name (first e)
