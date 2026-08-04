@@ -1,6 +1,6 @@
 # jolt-sim implementation roadmap
 
-Updated: 2026-08-03
+Updated: 2026-08-04
 
 Status: live execution roadmap for pre-release development
 
@@ -76,6 +76,8 @@ networking, TCP, HTTP, clocks, process isolation, Hegel, replay, and monitoring.
 | SQLite table-row model and unchanged-adapter parity | Landed on the active stack | Row model `1639507` / draft PR `casselc/jolt-sim#25`; parity integration `47fc0e5`, review corrections `7772c48` / draft PR `casselc/jolt-sim#26` |
 | Framed TCP/bencode example and hosted lanes | Landed as an input to the canonical app | `6e87657`, `386b9d5`, diagnostic follow-up `51f7018` |
 | Whole HTTP -> SQLite -> TCP outbox application | Real/hermetic base and generated workload/capacity/poll-fault slice are hosted and green | Base draft PR `casselc/jolt-sim#28`; Hegel draft PR `#29`; hosted run `30861666592`; Hegel `2 tests / 5 assertions` over 2 boundaries plus 15 generated cases; aggregate `513 / 4,042`; Phase 3 below |
+| Scoped reset and ordinary retry | The unchanged DB/TCP application now closes the failed connection, reloads the pending row, and retries after one receiver-port-scoped read reset | `2d41266`; draft PR `casselc/jolt-sim#33`; exact retry boundaries plus 15 generated fresh-process cases; Phase 3 below |
+| Whole-case evidence and static reports | Versioned Case/Outcome, parent-owned monitor verdicts, stable failure/success bundles, and deterministic HTML are integrated and retained by bounded CI post-processing | Schema `f44be7a` / PR `#35`; harness `e0aa464` / PR `#36`; reporter `69e9abb` / PR `#37`; aggregate retention `8c7b270` / PR `#38`; exact aggregate outbox gate `9 tests / 48 assertions`; real retained report `41,200 bytes` |
 
 Phase 1 was last run on Linux x86-64 using the prior simulator image
 `jolt v0.5.17-13-g3af5622d`
@@ -126,7 +128,21 @@ phase.
 
 ### Phase 2 — failure preservation and stable replay coordinates
 
-Fix the current forensic and replay blockers before adding more protocols:
+Status: the first ordinary-runtime evidence spine is implemented in draft PRs
+`casselc/jolt-sim#35` through `#38`. A strict Case/Outcome document owns the
+case, terminal outcome, replay schedule, and ordered parent-owned monitor
+decisions. The outbox Hegel harness retains original request/result/stdout/
+stderr trees for parent-observed non-successes, exports a never-overwritten
+stable bundle only after the child is quiescent, and preserves one successful
+retry boundary witness. CI renders complete documents under bounded time and
+then uploads raw, partial, and rendered trees from an `always()` step.
+
+This closes the immediate parent-observed artifact-loss boundary. It does not
+provide crash-atomic record writes, machine-crash durability, or the Phase 5
+append-only journal; catastrophic runner cancellation can still prevent a CI
+artifact upload.
+
+The accepted phase boundary remains:
 
 - retain request, result, stdout, stderr, controller/fault evidence, exit
   status, and environment/capability metadata for failed and timed-out workers;
@@ -182,6 +198,25 @@ and clean worlds; the scripted statement transcript is not a general SQLite
 conformance claim. Completed worker artifacts remain available until the
 parent semantic verdict and are removed only after all assertions pass.
 
+The next feature slice, draft PR `casselc/jolt-sim#33`, injects one captured
+receiver-port-scoped read reset after the receiver reaches its acknowledgement
+boundary. The unchanged application accepts retry only for the typed read/
+connection-reset outcome, requires first-attempt cleanup, closes the first TCP
+connection, reloads the still-pending row through the same open SQLite
+connection, and observes a correlated second acknowledgement. This is retry
+evidence, not close/reopen persistence, delivery marking, exactly-once
+delivery, or real-kernel reset parity.
+
+Draft PRs `casselc/jolt-sim#35` through `#38` wrap those ordinary fresh-process
+cases in the Case/Outcome evidence spine without changing the application or
+library bodies. On 2026-08-04 the exact v0.5.20 simulation image completed both
+the ordinary-delivery and retry campaigns serially: each ran two explicit
+boundaries plus 15 generated cases; the combined runner reported 9 tests / 48
+assertions with zero failures/errors. The configured transient run root was
+empty after passing cleanup, one retry boundary bundle was retained, and the
+exact CI report command rendered its document to a 41,200-byte self-contained
+HTML file.
+
 The simulation layer may provide boundary handlers and models. It must not
 replace the HTTP, DB, TCP, codec, or application implementation with a second
 simulator-specific implementation.
@@ -192,16 +227,19 @@ embedded-zero values, durable restart/retry, and one injected native failure.
 
 ### Phase 4 — Hegel workload, fault, schedule, and replay search
 
-Status: the first workload/capacity/poll-fault slice is implemented in draft PR
-`casselc/jolt-sim#29`. It deliberately does not yet vary future admission or
-schedules, retry/cancellation/crash actions, deadlines, or one- and two-byte
-HTTP fragmentation. Those are the next bounded slices around the same ordinary
-application, not alternate simulator implementations.
+Status: workload/capacity/poll-fault search is implemented in draft PR
+`casselc/jolt-sim#29`; semantic FFI admission-order search is stacked in PRs
+`#30` and `#31`; scoped-reset retry is exercised in PR `#33`; and the canonical
+Case/Outcome/reporter spine is stacked in PRs `#35` through `#38`. The current
+lanes do not yet vary cancellation, crash actions, deadlines, broader future
+admission, or one- and two-byte HTTP fragmentation. Those are the next bounded
+slices around the same ordinary application, not alternate simulator
+implementations.
 
 As the complete app gains those modes:
 
-- define one canonical Case/Outcome schema for workload, provider choices,
-  capacities, faults, schedules, and replay coordinates;
+- extend the canonical Case/Outcome schema only when new workload, provider,
+  fault, schedule, or replay coordinates require it;
 - generate and shrink application workloads, not only scheduler integers;
 - sample schedule, fault, capacity, deadline, cancellation, and crash channels;
 - accept a shrink only when the complete trace replays and the failure remains;
@@ -326,6 +364,15 @@ and Case/Outcome contract; keep Maelstrom and the outbox as ordinary
 application examples; preserve open effect families; connect proof witnesses
 to executable schedules and Hegel shrinking; and request compiler/runtime
 seams only from demonstrated application needs.
+
+The later `claude/ocaml-effect-based-language-gsg316` research branch remains
+a non-authoritative cross-lane input. Its useful feedback is incorporated here
+as per-axis evidence labels, parent-verdict artifact retention, and the rule
+that a pure director permits O(1) live transitions plus O(N) coherence checks
+at construction/snapshot boundaries. Its proposed replacement of the exact
+SQLite result script with typestate is deferred: a lifecycle machine may
+complement the fixture, but cannot replace the query/result behavior consumed
+by unchanged application code.
 
 ## Existing branches awaiting disposition
 
