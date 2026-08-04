@@ -205,12 +205,17 @@ without threads. Neither the document nor its own §4.1 draws that asymmetry.
 
 ## Work queue
 
-1. **Give `perturb.layer` a third outcome, and measure the vacuity.** ~100–150
-   lines: each clause returns an exercised-count beside its violations, `render`
-   and `clauses-hit` gain a third state, `layercheck` gains expectations. It
-   converts E35's "passes every clause" from a possibly-vacuous statement into a
-   measured one — E35 nonclaim 5's posture applied to its own instrument.
-   **Precondition for item 3.**
+1. ~~**Give `perturb.layer` a third outcome, and measure the vacuity.**~~
+   **DONE — E40.** Built and measured: eight arms each carry a one-sentence
+   `basis` denominator, `check` returns a **total** map over all six clauses,
+   and `exercised 0` while holding violations is itself a violation
+   (`:vacuity-accounting`). **Nine clause verdicts changed, all `pass →
+   inconclusive`, no violation added or removed, no run-level verdict flipped.**
+   This brief predicted one vacuous clause on one fixture; **two more were
+   unpredicted** — C/B6.5 and D/B6.2, each a consequence of the defect its own
+   fixture demonstrates. Item 3 is unblocked: `:inconclusive` is the fourth
+   residual kind and an artifact now emits it. Residual left open: the `basis`
+   denominators are hand-drawn, and nothing derives or cross-checks them.
 2. **Does E4's `bounded-complete` verdict survive these documents' own
    definition?** Expected cardinality, equality-confirmed uniqueness, full
    consumption, decidable per member. E4 predates the definition and is perturb's

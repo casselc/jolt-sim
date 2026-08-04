@@ -96,6 +96,9 @@ The complete current tally of claims this document made and then refuted:
 | 63 | jolt-bytes' `-M:test` gate demonstrates its corpus is the domain | **it does not.** Mutation A — one row swapped for a duplicate of another — reports `:verified` at the full 132,672 assertions with a domain member missing. The uniqueness/completeness checks live in the generating spike and reach the runtime lane only via `bin/verify-oracle-sync`, which the Jolt CI runtime job does not run | E39 |
 | 64 | jolt-sim's Hegel axes are `bounded-complete` — "the test already asserts exact domain coverage" — **published to `casselc/jolt-sim` #29** | the axes are `sampled-from`, **15 cases over a 90-combination product**, and the property is quantified over a tuple containing a sampled payload. Coverage is **marginal, not joint**: "every value appeared in a passing case", not "the property holds for every value" | E39. A correction is owed to that repo |
 | 65 | `schedule-plans` and `bounded-complete` | two documents in this directory say **opposite things** — the adoption audit proposes `:coverage :bounded-complete` for it, the temporal-ledger sketch says it "does not establish bounded completeness". Both are defensible under different readings: it completely enumerates **its own output domain** while establishing nothing about the system explored through it. The record must say which it means | E39 |
+| 66 | E35: "known-good passes every clause" | **five of six.** The trace has 0 refusals, B6.3 is a rule about refusals, so `check-error-mapping` visited nothing and its silence read as a pass. Amended in place; one word, and no other E35 result moves | E40 |
+| 67 | the vacuity is one clause on one fixture — B6.3 on the known-good, as predicted from reading | **nine clause verdicts across six fixtures**, all `pass → inconclusive`. Two were unpredicted and are consequences of the defect the fixture demonstrates: **C/B6.5** (call-over-call records 0 forwards, so finalisation's scope is empty) and **D/B6.2** (multi-shot never touches the ledger, so the projection replayed nothing) | E40 |
+| 68 | a clause reported `pass` by `-M:layer` is `monitored` on the run it passed | **B6 coverage is a union over fixtures, not a property of any run.** Only B′ exercises all six; B6.3 reaches a verdict on exactly one recorded trace (B and B′ are the same trace under two declarations); B6.6's propagation arm on exactly one fixture, while its sibling arm passes everywhere | E40 |
 | 51 † | §1.4's **"no resumption"**, and every argument resting on it | a misclassification. A handler that supplies a validated result after which the caller continues is an **implicit tail resumption** — the case the handler literature singles out as efficiently compilable — and only the failure path is abortive. D4 occupies two points on the control axis rather than a point below it, and the property that actually buys the resource reasoning is **no first-class continuation** | E31 |
 | 52 † | `SOTA-POSITIONING-BRIEF` and E27 finding 3: Fowler's "linear effect handlers … left as future work" means we may be standing in an **open gap** | **partly** closed — E31 recorded "closed" from one survey and E32's second, independent reading of the full text (now in `papers/`) narrows it: control-flow linearity gives a direct theory for continuation/resource integrity, and **cancellation protocol obligations remain separate**; it proves nothing about our checker, external declarations, refined typestate, native resources or `abort!` cleanup. Tang et al. (POPL 2024) give control-flow linearity with an inference calculus and repair the Links bug; Brachthäuser & Leijen classify control flow as linear/affine/abortive/unrestricted; van Rooij & Krebbers (*Affect*, POPL 2025) track continuations through mutable references. The 2019 sentence can no longer be cited. My stated prediction — "still open but narrower" — was wrong in degree | E31 |
 | 53 † | E29: handler-over-handler layering as a result in itself | generic composition and outward forwarding are standard, and scoped-effect calculi formalise them. The narrow obligation — same-effect forwarding through several protocol layers **preserving typestate-linear obligations** — was not found, and is sharpened rather than answered. Separately, the nearest formal family for D4 is **runners** (Ahman & Bauer, ESOP 2020), not a handler calculus | E31 |
@@ -5788,8 +5791,12 @@ latched refusal. Two mechanisms, because the clause is two questions — the run
 instance answers *who*, the outward instance answers *which forward*, which is
 what Tang's zero/many-shot conditions need and no layer label can express.
 
-**Results.** Known-good passes every clause (711 events, 184 attempted
-operations, 14 `:perform` and 170 `:forward`). Abort-laundering is detected as
+**Results.** ~~Known-good passes every clause~~ — **amended by E40**: known-good
+passes every clause **it exercises, which is five of six** (711 events, 184
+attempted operations, 14 `:perform` and 170 `:forward`, **and 0 refusals, which
+is why B6.3 is `:inconclusive` there**). The original sentence was true of the
+five and vacuous on the sixth; one word changes it, and nothing else in E35
+moves. Abort-laundering is detected as
 `b6.3 unmapped-refusal` **and** the same trace passes once an error-mapping edge
 is declared — the clause is testable in both directions. Call-over-call produces
 **16 violations while emitting identical octets**. Multi-shot outward is caught
@@ -6319,6 +6326,122 @@ survives intact.
 4. **The C5/S1 fix is measured, not estimated** — 11 lines, 3 assertions,
    132,672 → 132,675, 5.76 s → 6.10 s, and mutation A then fails as it should.
    It is upstream code and was not committed.
+
+### E40 — a third outcome for B6, and the vacuous passes it was built to find
+
+The brief's work-queue item 1. `perturb.layer` was binary — `{:violations
+:advisories :summary}` — so a clause that adjudicated **nothing** was
+indistinguishable from a clause that adjudicated something and was satisfied.
+The suspected instance was named before the work started, from reading:
+`check-error-mapping` folds over refusals *inside a declared layer's extent*,
+and the known-good has none. **Confirmed by execution**, and it is the smaller
+half of what the change found.
+
+#### The shape
+
+Each of eight arms now returns its own denominator beside its violations:
+
+```clojure
+{:clause :b6.3 :arm :error-mapping
+ :basis "one refusal that occurred INSIDE the extent of a request a declared
+         layer answered [:ok ...] — the absorption B6.3 is about"
+ :exercised 0 :units {:refusals 0} :violations [] :state :inconclusive}
+```
+
+Three decisions carry the finding, and only the first is obvious.
+
+1. **`check` returns a total map over all six clauses.** The defect was
+   invisible for a *mechanical* reason, not an inattentive one: the old report
+   was assembled by **grouping violations**, and a report grouped by violations
+   **structurally cannot show an absence**. No amount of care reading that
+   output would have surfaced B6.3, because B6.3 emitted nothing to read.
+2. **`exercised 0` with violations present is itself a violation**
+   (`:vacuity-accounting`, `layer.clj:449`). A denominator that may understate
+   is a denominator that can convert a **failure** into a shrug; the arm that
+   reports `:inconclusive` must be unable to do so while holding a finding.
+3. **The `basis` is prose, one sentence, stating what one unit *is*.** An arm
+   whose denominator cannot be said in a sentence is an arm whose scope is not
+   understood.
+
+#### What it measured
+
+`-M:layer`, six trace-checked fixtures. **Nine clause verdicts changed, every
+one `pass → inconclusive`. No violation was added or removed anywhere, and no
+run-level verdict flipped.**
+
+| fixture | clauses | inconclusive | why |
+| --- | --- | --- | --- |
+| A known-good | 5 pass, 0 violation, **1 inconclusive** | B6.3 | 0 refusals |
+| B laundering | 5 pass, 1 violation | — | |
+| B′ edge declared | **6 pass** | — | the only fixture that exercises all six |
+| C call-over-call | 3 pass, 1 violation, **2 inconclusive** | B6.3, **B6.5** | 0 forwards |
+| D multi-shot | 1 pass, 3 violation, **2 inconclusive** | **B6.2**, B6.3 | 0 ledger steps |
+| G self-interception | 1 pass, 1 violation, **4 inconclusive** | B6.1, B6.2, B6.3, B6.5 | 0 declared-layer replies |
+
+**Two of them were not predicted, and both are consequences of the very defect
+the fixture demonstrates.**
+
+- **C / B6.5 finalisation.** Call-over-call records **0 forwards** — that *is*
+  the defect. Finalisation is scoped to rungs that forwarded, and its exempt
+  scope is the clause's own (a rung that handed nothing on has nothing to hand
+  on at the end). So both rungs are exempt, and the clause had no obligation to
+  check. The control that proves forwarding vanished silently also silences the
+  clause about what forwarding obliges.
+- **D / B6.2 projection.** Multi-shot drives `perturb.wire` directly, so the
+  capability ledger is **empty** and the projection replayed nothing. B6.2 was
+  reading `legal` off an empty projection.
+
+**No traffic was invented to make a clause green.** B6.3 stays `:inconclusive`
+on the known-good and reaches its verdict on the *existing* laundering control,
+where a refusal already lives. That is the whole point: the fix is to say so,
+not to manufacture a refusal.
+
+#### What the vacuity accounting says about the gate itself
+
+Recorded because it is worse than the individual clause and was volunteered by
+the work rather than asked of it:
+
+- **B6.3 reaches a verdict on exactly one recorded trace.** B and B′ are the
+  *same* trace checked against two declarations. Not two witnesses — one, read
+  twice.
+- **B6.6's propagation arm reaches a verdict on exactly one fixture** (G,
+  5 propagations of 6 records), while sitting inside a clause that passes on its
+  sibling `replay` arm everywhere else. A clause can pass with half of itself
+  never consulted; only the arm-level denominator shows it.
+- **B6 coverage is a union over fixtures, not a property of any run.** Only B′
+  exercises all six. So a clause reported `inconclusive` on a run is **not
+  `monitored` on that run** — the gate's aggregate green is a statement about
+  the fixture set, not about the composition.
+
+#### E40's corrections and findings
+
+1. **E35's "known-good passes every clause" is amended, not retracted** — five
+   of six, and the sixth had no evidence. Every other E35 result stands as
+   recorded; the arithmetic of the violations did not change.
+2. **The `basis` denominators are hand-drawn.** One sentence per arm, written by
+   the same hand that wrote the arm. Nothing derives them from the clause text
+   and nothing cross-checks them against the trace schema. This is
+   `report-limits` clause 2's error one level up: the instrument that measures
+   vacuity has an unmeasured input, and an arm whose `basis` was drawn too
+   narrowly would report `:inconclusive` where it should report a pass, or too
+   broadly and report a pass where it should abstain.
+3. **The brief's dependency was backwards and is now corrected.** Item 3
+   (routing residuals) could not collect a residual kind no artifact emits;
+   `:inconclusive` is the fourth kind, and it now exists on the wire.
+
+#### E40's nonclaims
+
+1. **This changes nothing about B6's strength.** Still `monitored`, still one
+   thread, one scripted transport, one connection. It changes what the gate is
+   *allowed to claim*, not what it observed.
+2. **`:inconclusive` is not a failure and is not treated as one.** The gate
+   exits 0 on the known-good. The claim is only that silence is now printed
+   rather than inferred.
+3. **No search was made for further vacuity.** Six fixtures were checked because
+   six exist. Whether other perturb gates carry the same defect —
+   `-M:tcpcheck`, `-M:share`, `-M:octetcheck` all report by grouping findings —
+   was **not** examined, and the mechanical argument in decision 1 above applies
+   to every one of them.
 
 ## 4. Open questions
 
@@ -7167,6 +7290,8 @@ rejected alternatives and superseded verdicts rather than deleting them (see
 | 38 | E29 finding 4: the effect boundary as a seam is "failed" | E35 — **qualified, not reversed**. Call-over-call is now *detected* (16 B6.1 violations while emitting identical octets) but still not *refused*. Using the boundary remains voluntary | E29; E35 |
 | 39 | "we have a vocabulary for constrained things and no story for the unconstrained majority" — §1.2's axes are all restrictions and perturb lacks an account of freely duplicable values | `STRUCTURAL-TIER-BRIEF.md` §"The diagnosis", point 3 | E37 — both research passes refute it. The unrestricted/cartesian fragment is standard (Linear Haskell, Granule, Alms, ATS, Rust `Copy`, Benton's adjunction), and the survey lists the brief's phrasing among claims to **avoid** | E37. The replacement is stronger: the classifier is an **interface** property, and its transitivity clause is §4.6's root cause rather than a separate tier |
 | 40 | structural properties are "finite in the way the neighbouring lanes' domains are finite", so `proved` and `bounded-complete` are attainable there | `STRUCTURAL-TIER-BRIEF.md` §"The diagnosis" and §2 of the build half | E37 — both passes: `bounded-complete` needs an explicitly finite domain, a surjective generator, sound pruning, a total independent oracle, and recorded counts. Shrinking is `sampled`; replay is reproducibility of one witness, not exploration | E37; tally row 58 |
+| 41 | E35 finding: "**Known-good passes every clause**" — reported as a result of B6 being made executable | E40 — five of six. `check-error-mapping` folds over refusals inside a declared layer's extent; the known-good has **0 refusals**, so the clause emitted nothing and its silence read as a pass. The defect was invisible mechanically: the old report was assembled by **grouping violations**, and a report grouped by violations cannot show an absence | E35, amended in place; E40; tally row 66 |
+| 42 | `ASSURANCE-DIRECTION-BRIEF` rev 1: perturb returns "I will not say" in four places, one of them `perturb.layer`'s `:inconclusive` | reading — `inconclusive` appeared nowhere in `layer.clj`; the checker was binary. The brief's own correction then predicted **one** vacuous clause on **one** fixture; E40 measured **nine clause verdicts across six**, two of them unpredicted | brief rev 2 §CORRECTED; E40; tally row 67 |
 
 ### A.2 The method notes, in order
 
