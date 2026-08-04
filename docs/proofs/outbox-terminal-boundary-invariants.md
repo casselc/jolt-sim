@@ -26,6 +26,14 @@ Within that closed domain:
 7. the one row is exactly pending or delivered, with delivered equivalent to
    one successful mark.
 
+At the pre-ack deadline action, advancing the virtual clock wakes the client
+while the receiver is about to return its reply. Either side may win that
+ordinary-thread race: the acknowledgement may or may not validate before the
+client observes expiry. The model therefore leaves that intermediate fact
+open while requiring the same durable result in both cases: zero marks and a
+pending row. Post-COMMIT expiry cannot validate an acknowledgement; pre-mark
+expiry occurs only after validation.
+
 The model has one row, one operation, one terminal action, and no retry. It
 omits arbitrary schedules, weak memory, native implementation behavior,
 multiple outbox rows, duplicate acknowledgement, process failure, cleanup,
@@ -69,6 +77,9 @@ Both required nonvacuity boundaries returned `sat`:
  :ack-validated true :mark-count 0 :delivered false :pending true}
 ```
 
+Exact pre-ack expiry was also checked with both values of the reply-race
+variable; both corrected states are pending with `mark-count = 0`.
+
 ## Source and executable mapping
 
 The ordinary fixture creates one absolute deadline and carries it unchanged
@@ -77,7 +88,9 @@ before the named clock sample; the simulator scenario may therefore advance
 virtual time at a semantic boundary without replacing the application or its
 libraries. Durable command evidence is published before the post-COMMIT clock
 check, acknowledgement validation precedes the post-ack check, and the
-pre-mark check precedes the SQLite marking transaction.
+pre-mark check precedes the SQLite marking transaction. The executable
+campaign deliberately does not assert which ordinary thread wins after the
+pre-ack clock advance; it asserts the invariant shared by both winners.
 
 The executable Hegel campaign must map the model to the unchanged ordinary
 application and additionally prove facts outside this SMT model:

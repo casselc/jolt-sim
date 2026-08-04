@@ -111,10 +111,14 @@
 (def ^:private cancel-scenario-sym
   'jolt.sim.fixtures.outbox-delivery-scenarios/exercise-cancel-before-ack-with-capacities)
 
+(def ^:private terminal-scenario-sym
+  'jolt.sim.fixtures.outbox-delivery-scenarios/exercise-terminal-boundary)
+
 (def ^:private case-outcome-filename "case-outcome.edn")
 (def ^:private delivery-monitor-id :outbox/delivery-invariants)
 (def ^:private retry-monitor-id :outbox/retry-invariants)
 (def ^:private cancel-monitor-id :outbox/cancellation-invariants)
+(def ^:private terminal-monitor-id :outbox/terminal-boundary-invariants)
 
 ;; The canonical teensyp.client/closed :receive :closed cancellation the
 ;; unchanged fixture's blocked exchange wakes with after the cross-thread
@@ -139,6 +143,10 @@
 (def ^:private pipe-capacity-domain [1 2 4])
 (def ^:private poll-eintr-domain [nil 1 2 4 8])
 (def ^:private max-payload-octets 32)
+(def ^:private terminal-deadline-nanos 5000000000)
+(def ^:private terminal-deadline-boundaries
+  [:after-command-commit :before-ack :before-mark])
+(def ^:private terminal-deadline-offsets [0 -1 1])
 ;; Exactly two discriminating first-poll admission orders, mirrored from the
 ;; scenario namespace's closed domain: the receiver reactor's first poll
 ;; released before the HTTP reactor's first poll, or the reverse. There is no
@@ -369,6 +377,69 @@
             (g/sampled-from stream-capacity-domain)
             (g/sampled-from pipe-capacity-domain)
             (g/sampled-from poll-eintr-domain))))
+
+(defn- terminal-expected-for
+  "Pure oracle for the closed one-action terminal campaign. It mirrors the
+   checked-in bounded proof, not the worker implementation: deadline equality
+   is expired, acknowledgement precedes only the pre-mark boundary, and a row
+   is delivered exactly when one successful mark occurs."
+  [input]
+  (let [{:keys [kind boundary offset-nanos] :as action}
+        (:terminal-action input)
+        cancelled? (= :cancel kind)
+        expired? (and (= :deadline kind) (not (neg? offset-nanos)))
+        live? (and (= :deadline kind) (not expired?))
+        ack-validation
+        (cond
+          live? :validated
+          (and expired? (= :before-mark boundary)) :validated
+          (and expired? (= :before-ack boundary)) :race-not-observed
+          :else :not-validated)
+        mark-count (if live? 1 0)
+        delivered? (= 1 mark-count)
+        plan-index
+        (cond
+          cancelled? 18
+          live? 24
+          (= :after-command-commit boundary) 12
+          :else 15)]
+    {:action action
+     :cancelled? cancelled?
+     :expired? expired?
+     :live? live?
+     :terminal-status (cond cancelled? :cancelled
+                            expired? :deadline-exceeded
+                            :else :completed)
+     :ack-validation ack-validation
+     :mark-count mark-count
+     :delivered? delivered?
+     :row-status (if delivered? :delivered :pending)
+     :plan-index plan-index
+     :plan-count (if cancelled? 18 24)
+     :clock-nanos (if cancelled?
+                    0
+                    (+ terminal-deadline-nanos offset-nanos))
+     :target-phase boundary
+     :target-source (if (= :before-ack boundary)
+                      :receiver-reply
+                      :operation-context)}))
+
+(defn- terminal-input-generator
+  "Returns one shrinkable generator over ONLY the closed terminal action.
+   It intentionally fixes payload, capacities, EINTR, and admission policy in
+   the worker scenario instead of recombining those already-covered axes."
+  []
+  (g/one-of
+   [(g/fmap
+     (fn [[boundary offset-nanos]]
+       {:terminal-action
+        {:kind :deadline
+         :boundary boundary
+         :offset-nanos offset-nanos}})
+     (g/tuple (g/sampled-from terminal-deadline-boundaries)
+              (g/sampled-from terminal-deadline-offsets)))
+    (g/just
+     {:terminal-action {:kind :cancel :boundary :before-ack}})]))
 
 (defn- required-environment [name]
   (let [value (System/getenv name)]
@@ -873,6 +944,290 @@
                    input
                    {:clean? clean?})))))
 
+;; ---- One absolute deadline / cancellation terminal lane ------------------
+
+(defn- terminal-deadline-error?
+  "Recognizes the two ordinary deadline surfaces retained by the worker. The
+   pre-ack race may be reported either by the application boundary or by the
+   already-blocked teensyp operation; both have the same durable oracle."
+  [error]
+  (and
+   (map? error)
+   (or (= :operation-deadline-exceeded (:reason error))
+       (= :timed-out (:kind error))
+       (some
+        (fn [summary]
+          (= ":operation-deadline-exceeded"
+             (get (:data summary) ":reason")))
+        (:server-errors error)))))
+
+(defn- terminal-row-keys [image]
+  (->> (keys image)
+       (filter
+        (fn [key]
+          (and (vector? key)
+               (= :jolt.sim.sqlite/row (nth key 0 nil))
+               (= :outbox/rows (nth key 1 nil)))))
+       vec))
+
+(defn- assert-terminal-case-outcome!
+  "Asserts the proof-derived terminal oracle plus executable evidence outside
+   the SMT model: exact SQLite progress and one-row image, handler-only routes,
+   targeted boundary/clock coordinates, and complete alarm/readiness/native
+   cleanup. Throws a stable-origin violation carrying the drawn input."
+  [input outcome]
+  (let [completed (require-completed-carrying-input! outcome input)
+        evidence (:result completed)
+        expected (terminal-expected-for input)
+        ;; The terminal scenario deliberately fixes the ordinary smoke
+        ;; command and does not recombine payload with the terminal axis.
+        base (expected-for [0 127 128 255])]
+    (when-not (map? evidence)
+      (violation
+       "jolt.sim.outbox-delivery-hegel-test/terminal-evidence-shape"
+       input {:evidence-class (str (class evidence))}))
+    (when-not
+     (exact-map-keys?
+      evidence
+      #{:terminal :boundary-log :clock :application :http :receiver
+        :sqlite :routes :capacity :cleanup})
+      (violation
+       "jolt.sim.outbox-delivery-hegel-test/terminal-evidence-keys"
+       input {:keys (vec (sort-by pr-str (keys evidence)))}))
+    (let [{:keys [terminal boundary-log clock application receiver sqlite
+                  routes capacity cleanup]} evidence
+          action (:action expected)]
+      (when-not
+       (and (exact-map-keys?
+             terminal #{:status :action :deadline-nanos :error})
+            (= (:terminal-status expected) (:status terminal))
+            (= action (:action terminal))
+            (= terminal-deadline-nanos (:deadline-nanos terminal)))
+        (violation
+         "jolt.sim.outbox-delivery-hegel-test/terminal-result"
+         input {:terminal terminal :expected expected}))
+      (cond
+        (:expired? expected)
+        (when-not (terminal-deadline-error? (:error terminal))
+          (violation
+           "jolt.sim.outbox-delivery-hegel-test/terminal-deadline-error"
+           input {:error (:error terminal)}))
+
+        (:cancelled? expected)
+        (when-not (map? (:error terminal))
+          (violation
+           "jolt.sim.outbox-delivery-hegel-test/terminal-cancel-error"
+           input {:error (:error terminal)}))
+
+        :else
+        (when-not (nil? (:error terminal))
+          (violation
+           "jolt.sim.outbox-delivery-hegel-test/terminal-live-error"
+           input {:error (:error terminal)})))
+
+      ;; Fail this central proof obligation before shape-specific assertions so
+      ;; the parent-only negative control can inject only the forbidden claim.
+      (when (and (zero? (:mark-count expected))
+                 (map? application)
+                 (or (contains? application :marking)
+                     (= :delivered
+                        (get-in application [:store-state :outbox 0 :status]))))
+        (violation
+         "jolt.sim.outbox-delivery-hegel-test/terminal-forbidden-marking"
+         input {:application application :expected expected}))
+
+      ;; The targeted action appears exactly once. Every other observer entry
+      ;; is a no-op clock observation, rejecting a second terminal transition.
+      (when-not (and (vector? boundary-log) (seq boundary-log))
+        (violation
+         "jolt.sim.outbox-delivery-hegel-test/terminal-boundary-log-shape"
+         input {:boundary-log boundary-log}))
+      (let [targeted (filter #(not= :observe (:action %)) boundary-log)]
+        (when-not (= 1 (count targeted))
+          (violation
+           "jolt.sim.outbox-delivery-hegel-test/terminal-action-count"
+           input {:boundary-log boundary-log}))
+        (let [entry (first targeted)]
+          (when-not
+           (= (if (:cancelled? expected)
+                {:phase :before-ack
+                 :source :ordinary-cancellation-handshake
+                 :action :cancel
+                 :before-nanos 0
+                 :after-nanos 0}
+                {:phase (:target-phase expected)
+                 :source (:target-source expected)
+                 :action :deadline
+                 :before-nanos 0
+                 :after-nanos (:clock-nanos expected)})
+              entry)
+            (violation
+             "jolt.sim.outbox-delivery-hegel-test/terminal-action-evidence"
+             input {:entry entry :expected expected}))))
+      (when-not
+       (every?
+        (fn [entry]
+          (or (not= :observe (:action entry))
+              (= (:before-nanos entry) (:after-nanos entry))))
+        boundary-log)
+        (violation
+         "jolt.sim.outbox-delivery-hegel-test/terminal-observer-mutated-clock"
+         input {:boundary-log boundary-log}))
+
+      ;; One absolute virtual clock is established at zero and ends exactly at
+      ;; the chosen coordinate. Alarm ids are diagnostic; retained alarms are
+      ;; forbidden.
+      (when-not
+       (and (exact-map-keys? clock #{:before :after :snapshot})
+            (= {:now-nanos 0 :next-alarm-id 0 :alarms []}
+               (:before clock))
+            (= (:clock-nanos expected) (:after clock))
+            (= (:clock-nanos expected)
+               (get-in clock [:snapshot :now-nanos]))
+            (= [] (get-in clock [:snapshot :alarms])))
+        (violation
+         "jolt.sim.outbox-delivery-hegel-test/terminal-clock"
+         input {:clock clock :expected expected}))
+
+      ;; COMMIT survival is proved from the exact one-row closed SQLite image
+      ;; on every terminal path, not inferred from an error string.
+      (when-not (exact-map-keys? sqlite #{:summary :outbox})
+        (violation
+         "jolt.sim.outbox-delivery-hegel-test/terminal-sqlite-shape"
+         input {:sqlite sqlite}))
+      (when-not
+       (= {:plan-index (:plan-index expected)
+           :plan-count (:plan-count expected)
+           :open-dbs 0
+           :active-stmts 0}
+          (:summary sqlite))
+        (violation
+         "jolt.sim.outbox-delivery-hegel-test/terminal-sqlite-plans"
+         input {:sqlite sqlite :expected expected}))
+      (let [outbox (:outbox sqlite)
+            image (:image outbox)
+            row-keys (when (map? image) (terminal-row-keys image))]
+        (when-not
+         (and (exact-map-keys?
+               outbox #{:status :pending? :delivered? :image})
+              (= (:row-status expected) (:status outbox))
+              (= (not (:delivered? expected)) (:pending? outbox))
+              (= (:delivered? expected) (:delivered? outbox))
+              (= 1 (count row-keys))
+              (= modeled-outbox-key (first row-keys))
+              (= {:type :text :value (name (:row-status expected))}
+                 (get-in image [modeled-outbox-key "status"])))
+          (violation
+           "jolt.sim.outbox-delivery-hegel-test/terminal-outbox-state"
+           input {:outbox outbox :row-keys row-keys :expected expected})))
+
+      ;; A successful live action is the only path that commits marking.
+      ;; Expired pre-mark reaches its named boundary only after ordinary
+      ;; acknowledgement validation, but has no marking state.
+      (if (:live? expected)
+        (do
+          (when-not (= (:identities base) (:identities application))
+            (violation
+             "jolt.sim.outbox-delivery-hegel-test/terminal-live-identities"
+             input {:application application}))
+          (when-not (= (:command-evidence base) (:command application))
+            (violation
+             "jolt.sim.outbox-delivery-hegel-test/terminal-live-command"
+             input {:application application}))
+          (when-not (= (:pending-state base) (:pending-state application))
+            (violation
+             "jolt.sim.outbox-delivery-hegel-test/terminal-live-pending"
+             input {:application application}))
+          (when-not (= (:marking base) (:marking application))
+            (violation
+             "jolt.sim.outbox-delivery-hegel-test/terminal-live-marking"
+             input {:application application}))
+          (when-not (= (:store-state base) (:store-state application))
+            (violation
+             "jolt.sim.outbox-delivery-hegel-test/terminal-live-store"
+             input {:application application}))
+          (when-not (= [(:ack base)]
+                       (get-in application [:delivery :replies]))
+            (violation
+             "jolt.sim.outbox-delivery-hegel-test/terminal-live-ack"
+             input {:application application})))
+        (when (or (contains? (or application {}) :delivery)
+                  (contains? (or application {}) :marking))
+          (violation
+           "jolt.sim.outbox-delivery-hegel-test/terminal-nonlive-delivery"
+           input {:application application :expected expected})))
+      (when (:cancelled? expected)
+        (when-not
+         (and (= (:command-evidence base) (:command application))
+              (= (:pending-state base) (:pending-state application))
+              (= (:pending-state base) (:store-state application))
+              (= true (get-in application [:cancel :close-result]))
+              (= false (get-in application [:cancel :cleanup-close]))
+              (= {:status :closed :close-result true}
+                 (get-in application [:cancel :helper])))
+          (violation
+           "jolt.sim.outbox-delivery-hegel-test/terminal-cancel-state"
+           input {:application application})))
+      (when (and (:expired? expected)
+                 (= :after-command-commit (:target-phase expected)))
+        (when-not
+         (= {:identities (:identities base)
+             :command (:command-evidence base)
+             :committed-state (:pending-state base)}
+            (:command-evidence application))
+          (violation
+           "jolt.sim.outbox-delivery-hegel-test/terminal-postcommit-evidence"
+           input {:application application})))
+      (when (or (:live? expected)
+                (not= :after-command-commit (:target-phase expected)))
+        (when-not (= [(:message base)] (:requests receiver))
+          (violation
+           "jolt.sim.outbox-delivery-hegel-test/terminal-receiver-request"
+           input {:receiver receiver :expected [(:message base)]})))
+
+      ;; Routes stay entirely inside the existing handler packs. The post-
+      ;; COMMIT stop precedes the BLOB reload; every later path must also prove
+      ;; the length-aware column BLOB read route.
+      (when-not
+       (and (exact-map-keys?
+             routes #{:count :all-handled? :foreign-symbols})
+            (positive-integer? (:count routes))
+            (true? (:all-handled? routes))
+            (vector? (:foreign-symbols routes)))
+        (violation
+         "jolt.sim.outbox-delivery-hegel-test/terminal-routes-shape"
+         input {:routes routes}))
+      (let [symbols (set (:foreign-symbols routes))
+            required
+            (cond->
+             #{"socket" "connect" "accept" "poll" "send" "recv" "close"
+               "sqlite3_open" "sqlite3_close_v2" "sqlite3_bind_blob64"}
+              (not= :after-command-commit (:target-phase expected))
+              (conj "sqlite3_column_blob"))]
+        (when-not (every? symbols required)
+          (violation
+           "jolt.sim.outbox-delivery-hegel-test/terminal-required-routes"
+           input {:missing (vec (sort (remove symbols required)))})))
+      (when-not
+       (and (exact-map-keys? capacity #{:stream :pipe})
+            (= 8 (get-in capacity [:stream :stream-capacity]))
+            (= 1 (get-in capacity [:pipe :pipe-capacity])))
+        (violation
+         "jolt.sim.outbox-delivery-hegel-test/terminal-capacity"
+         input {:capacity capacity}))
+      (when-not
+       (and (exact-map-keys?
+             cleanup #{:memory :sqlite :posix :readiness :clock-alarms})
+            (true? (:memory cleanup))
+            (true? (:sqlite cleanup))
+            (true? (:posix cleanup))
+            (exact-map-keys? (:readiness cleanup) #{:epoch :waiter-count})
+            (zero? (get-in cleanup [:readiness :waiter-count]))
+            (= [] (:clock-alarms cleanup)))
+        (violation
+         "jolt.sim.outbox-delivery-hegel-test/terminal-cleanup"
+         input {:cleanup cleanup})))))
+
 (def ^:private diagnostic-depth-limit 4)
 (def ^:private diagnostic-collection-limit 16)
 
@@ -951,6 +1306,7 @@
     (= scenario scenario-sym) delivery-monitor-id
     (= scenario retry-scenario-sym) retry-monitor-id
     (= scenario cancel-scenario-sym) cancel-monitor-id
+    (= scenario terminal-scenario-sym) terminal-monitor-id
     :else
     (throw
      (ex-info
@@ -992,6 +1348,7 @@
   (str (cond
          (= scenario retry-scenario-sym) "outbox-retry-"
          (= scenario cancel-scenario-sym) "outbox-cancel-"
+         (= scenario terminal-scenario-sym) "outbox-terminal-"
          :else "outbox-delivery-")
        (name lane) "-" ordinal "-"))
 
@@ -1125,7 +1482,9 @@
                      (= 1 ordinal))
                 (and (= scenario cancel-scenario-sym)
                      (= :boundary lane)
-                     (= 1 ordinal)))
+                     (= 1 ordinal))
+                (and (= scenario terminal-scenario-sym)
+                     (= :boundary lane)))
             persisted
             (try
               (persist-case-artifacts!
@@ -2474,6 +2833,142 @@
         (str "Hegel did not exercise the full poll-EINTR domain: "
              (pr-str @seen-poll-ordinals)))))
 
+;; ---- One absolute deadline / cancellation terminal campaign --------------
+
+(def ^:private terminal-boundary-witness-inputs
+  ;; Six exact, non-generated witnesses preserve the semantic boundaries even
+  ;; if a later generator or seed changes: one live completion, inclusive
+  ;; expiry at all three phases, one overdue case, and structural cancellation.
+  [{:terminal-action
+    {:kind :deadline :boundary :before-mark :offset-nanos -1}}
+   {:terminal-action
+    {:kind :deadline :boundary :after-command-commit :offset-nanos 0}}
+   {:terminal-action
+    {:kind :deadline :boundary :before-ack :offset-nanos 0}}
+   {:terminal-action
+    {:kind :deadline :boundary :before-mark :offset-nanos 0}}
+   {:terminal-action
+    {:kind :deadline :boundary :before-ack :offset-nanos 1}}
+   {:terminal-action
+    {:kind :cancel :boundary :before-ack}}])
+
+(deftest outbox-delivery-terminal-boundary-witness
+  (doseq [[index input]
+          (map-indexed vector terminal-boundary-witness-inputs)]
+    (check-case-with-progress!
+     terminal-scenario-sym assert-terminal-case-outcome!
+     :boundary (inc index) input boundary-case-timeout-ms)))
+
+(deftest hegel-outbox-delivery-terminal-actions-preserve-durable-oracle
+  (let [case-ordinal (atom 0)
+        result
+        (h/run-test!
+         {:test-cases 12
+          :suppress-health-checks [:too-slow]
+          :seed 3
+          :database ""
+          :report-multiple-failures? false
+          :verbosity :quiet}
+         (fn [_]
+           (let [input
+                 (h/draw! (terminal-input-generator)
+                          "terminal-action-input")]
+             ;; The stable input label plus typed assertion origins make the
+             ;; final shrunk Case/Outcome replay coordinate self-contained.
+             (h/fprn :terminal-action-input input)
+             (check-case-with-progress!
+              terminal-scenario-sym assert-terminal-case-outcome!
+              :generated (swap! case-ordinal inc) input case-timeout-ms)
+             nil)))]
+    (is (true? (:passed? result))
+        (pr-str {:status (:status result)
+                 :seed (:seed result)
+                 :n-failures (:n-failures result)
+                 :flaky? (:flaky? result)
+                 :failures (:failures result)
+                 :final (:final result)}))
+    (is (false? (:flaky? result))
+        (pr-str {:seed (:seed result)
+                 :flaky? (:flaky? result)
+                 :observed-failures (:observed-failures result)}))))
+
+(deftest expired-premark-spurious-delivery-records-monitor-violation
+  ;; Parent-only buggy control corresponding to the checked-in
+  ;; mark-before-check SAT model. It injects a completed/delivered claim at
+  ;; exact pre-mark expiry. The proof-derived assertion must reject it before
+  ;; accepting any downstream shape, and the canonical terminal monitor plus
+  ;; both forensic trees must retain that decision.
+  (let [input
+        {:terminal-action
+         {:kind :deadline :boundary :before-mark :offset-nanos 0}}
+        artifact-dir
+        (str (fs/create-temp-dir
+              {:prefix "jolt-sim-terminal-violation-"}))
+        export-root
+        (str (fs/create-temp-dir
+              {:prefix "jolt-sim-terminal-violation-export-"}))
+        outcome
+        {:status :completed
+         :schedule nil
+         :result
+         {:terminal
+          {:status :deadline-exceeded
+           :action (:terminal-action input)
+           :deadline-nanos terminal-deadline-nanos
+           :error {:reason :operation-deadline-exceeded}}
+          :boundary-log []
+          :clock nil
+          :application
+          {:marking {:row {:status :delivered} :changed? true}
+           :store-state {:outbox [{:status :delivered}]}}
+          :http nil
+          :receiver nil
+          :sqlite nil
+          :routes nil
+          :capacity nil
+          :cleanup nil}
+         :exit 0
+         :artifact-dir artifact-dir}
+        caught (atom nil)]
+    (spit (str (fs/path artifact-dir "request.edn")) "request")
+    (try
+      (binding [*process-config* {}
+                *case-artifact-export-dir* export-root]
+        (with-redefs
+          [process-explorer/run-case (fn [_] outcome)]
+          (try
+            (check-case!
+             terminal-scenario-sym assert-terminal-case-outcome!
+             :negative 1 input 1000)
+            (catch :default error
+              (reset! caught error)))))
+      (is (some? @caught))
+      (is (= artifact-dir (:artifact-dir (ex-data @caught))))
+      (is (fs/exists? artifact-dir))
+      (let [exported (:export-dir (ex-data @caught))
+            document
+            (case-outcome/read-edn
+             (slurp (case-outcome-path artifact-dir)))
+            exported-document
+            (case-outcome/read-edn
+             (slurp (str (fs/path exported case-outcome-filename))))
+            monitor (first (case-outcome/restore-monitors document))]
+        (is (and (string? exported) (seq exported)))
+        (is (fs/exists? exported))
+        (is (= document exported-document))
+        (is (fs/exists? (str (fs/path exported "request.edn"))))
+        (is (= :completed (:status (case-outcome/restore-outcome document))))
+        (is (= terminal-monitor-id (:id monitor)))
+        (is (= :violation (:status monitor)))
+        (is (=
+             "jolt.sim.outbox-delivery-hegel-test/terminal-forbidden-marking"
+             (get-in monitor [:detail :data :hegel/origin]))))
+      (finally
+        (when (fs/exists? artifact-dir)
+          (fs/delete-tree artifact-dir))
+        (when (fs/exists? export-root)
+          (fs/delete-tree export-root))))))
+
 (deftest cancellation-claim-with-marking-records-monitor-violation
   ;; Parent-only negative control for the slice's central fail-closed claim.
   ;; A completed cancellation result is mutated to claim a spurious durable
@@ -2601,6 +3096,9 @@
    #'hegel-outbox-delivery-retry-holds-across-payload-capacities-and-eintr
    #'outbox-delivery-cancel-boundary-witness
    #'hegel-outbox-delivery-cancel-holds-across-payload-capacities-and-eintr
+   #'outbox-delivery-terminal-boundary-witness
+   #'hegel-outbox-delivery-terminal-actions-preserve-durable-oracle
+   #'expired-premark-spurious-delivery-records-monitor-violation
    #'cancellation-claim-with-marking-records-monitor-violation])
 
 (defn- counter-snapshot []

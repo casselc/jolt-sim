@@ -6,6 +6,7 @@
 (declare-const offset Int)
 (declare-const expired Bool)
 (declare-const committed Bool)
+(declare-const pre_ack_reply_wins Bool)
 (declare-const ack_validated Bool)
 (declare-const mark_count Int)
 (declare-const pending Bool)
@@ -25,7 +26,8 @@
   (= ack_validated
      (and (= kind deadline)
           (or (= offset (- 1))
-              (and expired (= boundary pre_mark)))))
+              (and expired (= boundary pre_mark))
+              (and expired (= boundary pre_ack) pre_ack_reply_wins))))
   :named acknowledgement_semantics))
 (assert (!
   (= mark_count
@@ -53,7 +55,7 @@
             (and ack_validated (= mark_count 1) delivered))
         (=> (and expired (= boundary pre_mark))
             (and ack_validated (= mark_count 0) pending))
-        (=> (and expired (not (= boundary pre_mark)))
+        (=> (and expired (= boundary post_commit))
             (and (not ack_validated) (= mark_count 0) pending)))))
   :named invariant_definition))
 (assert (! violation :named violation_query))
