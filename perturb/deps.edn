@@ -43,4 +43,10 @@
   ;; the scripted network (one octet per recv) and under a real POSIX listening
   ;; socket, with the response octets compared. Takes a port; needs no server,
   ;; because it is both ends.
-  :http   {:main-opts ["-m" "perturb.httpdemo"]}}}
+  :http   {:main-opts ["-m" "perturb.httpdemo"]}
+
+  ;; The event-driven experiment: a driver that owns every capability and an
+  ;; application that is a pure (state, event) -> [state', effects]. Checks
+  ;; both namespaces and then RUNS both drivers, scripted and over a real
+  ;; loopback socket. NOT a gate — it records no expectations. Takes a port.
+  :evt    {:main-opts ["-m" "perturb.evtcheck"]}}}
