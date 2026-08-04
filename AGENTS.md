@@ -25,3 +25,8 @@ The runner performs dependency preflight before generation, installs the
 pinned Hegel native library once, and prints the retained gate root. A
 dependency or worker bootstrap error is infrastructure evidence, not a Hegel
 counterexample.
+
+In CI, keep unrelated optional gates failure-independent from Hegel: record
+their outcome with `continue-on-error`, preserve their artifacts, run Hegel,
+then enforce the deferred outcome at the end of the job. Do not place a normal
+failing step before Hegel and accept a skipped Hegel step as test evidence.
