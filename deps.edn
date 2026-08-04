@@ -76,7 +76,7 @@
      :git/sha "96bd0fc93f1a2c77128d06f74802dd2a4631c0d4"}
     io.github.casselc/jolt-tcp
     {:git/url "https://github.com/casselc/jolt-tcp.git"
-     :git/sha "c4db4c1431d04efcc035b9457f3bc0bff6a2df22"}
+     :git/sha "0ceaa900bfca11933d35831d7697c7e2c5b22f04"}
     io.github.casselc/jolt-net
     {:git/url "https://github.com/casselc/jolt-net.git"
      :git/sha "699b908ffb4eb79ad35055cdc20866bb504e6932"}}
@@ -108,7 +108,7 @@
    :extra-deps
    {io.github.casselc/jolt-tcp
     {:git/url "https://github.com/casselc/jolt-tcp.git"
-     :git/sha "c4db4c1431d04efcc035b9457f3bc0bff6a2df22"}
+     :git/sha "0ceaa900bfca11933d35831d7697c7e2c5b22f04"}
     io.github.casselc/jolt-net
     {:git/url "https://github.com/casselc/jolt-net.git"
      :git/sha "699b908ffb4eb79ad35055cdc20866bb504e6932"}
@@ -132,7 +132,7 @@
    :extra-deps
    {io.github.casselc/jolt-tcp
     {:git/url "https://github.com/casselc/jolt-tcp.git"
-     :git/sha "c4db4c1431d04efcc035b9457f3bc0bff6a2df22"}
+     :git/sha "0ceaa900bfca11933d35831d7697c7e2c5b22f04"}
     io.github.casselc/jolt-net
     {:git/url "https://github.com/casselc/jolt-net.git"
      :git/sha "699b908ffb4eb79ad35055cdc20866bb504e6932"}
@@ -180,7 +180,7 @@
      :git/sha "96bd0fc93f1a2c77128d06f74802dd2a4631c0d4"}
     io.github.casselc/jolt-tcp
     {:git/url "https://github.com/casselc/jolt-tcp.git"
-     :git/sha "c4db4c1431d04efcc035b9457f3bc0bff6a2df22"}
+     :git/sha "0ceaa900bfca11933d35831d7697c7e2c5b22f04"}
     io.github.casselc/jolt-net
     {:git/url "https://github.com/casselc/jolt-net.git"
      :git/sha "699b908ffb4eb79ad35055cdc20866bb504e6932"}}
@@ -200,7 +200,7 @@
      :git/sha "96bd0fc93f1a2c77128d06f74802dd2a4631c0d4"}
     io.github.casselc/jolt-tcp
     {:git/url "https://github.com/casselc/jolt-tcp.git"
-     :git/sha "c4db4c1431d04efcc035b9457f3bc0bff6a2df22"}
+     :git/sha "0ceaa900bfca11933d35831d7697c7e2c5b22f04"}
     io.github.casselc/jolt-net
     {:git/url "https://github.com/casselc/jolt-net.git"
      :git/sha "699b908ffb4eb79ad35055cdc20866bb504e6932"}}
@@ -220,7 +220,7 @@
      :git/sha "96bd0fc93f1a2c77128d06f74802dd2a4631c0d4"}
     io.github.casselc/jolt-tcp
     {:git/url "https://github.com/casselc/jolt-tcp.git"
-     :git/sha "c4db4c1431d04efcc035b9457f3bc0bff6a2df22"}
+     :git/sha "0ceaa900bfca11933d35831d7697c7e2c5b22f04"}
     io.github.casselc/jolt-net
     {:git/url "https://github.com/casselc/jolt-net.git"
      :git/sha "699b908ffb4eb79ad35055cdc20866bb504e6932"}}
@@ -278,7 +278,7 @@
      :git/sha "96bd0fc93f1a2c77128d06f74802dd2a4631c0d4"}
     io.github.casselc/jolt-tcp
     {:git/url "https://github.com/casselc/jolt-tcp.git"
-     :git/sha "c4db4c1431d04efcc035b9457f3bc0bff6a2df22"}
+     :git/sha "0ceaa900bfca11933d35831d7697c7e2c5b22f04"}
     io.github.casselc/jolt-net
     {:git/url "https://github.com/casselc/jolt-net.git"
      :git/sha "699b908ffb4eb79ad35055cdc20866bb504e6932"}
@@ -305,7 +305,7 @@
      :git/sha "96bd0fc93f1a2c77128d06f74802dd2a4631c0d4"}
     io.github.casselc/jolt-tcp
     {:git/url "https://github.com/casselc/jolt-tcp.git"
-     :git/sha "c4db4c1431d04efcc035b9457f3bc0bff6a2df22"}
+     :git/sha "0ceaa900bfca11933d35831d7697c7e2c5b22f04"}
     io.github.casselc/jolt-net
     {:git/url "https://github.com/casselc/jolt-net.git"
      :git/sha "699b908ffb4eb79ad35055cdc20866bb504e6932"}
@@ -338,7 +338,7 @@
      :git/sha "96bd0fc93f1a2c77128d06f74802dd2a4631c0d4"}
     io.github.casselc/jolt-tcp
     {:git/url "https://github.com/casselc/jolt-tcp.git"
-     :git/sha "c4db4c1431d04efcc035b9457f3bc0bff6a2df22"}
+     :git/sha "0ceaa900bfca11933d35831d7697c7e2c5b22f04"}
     io.github.casselc/jolt-net
     {:git/url "https://github.com/casselc/jolt-net.git"
      :git/sha "699b908ffb4eb79ad35055cdc20866bb504e6932"}
@@ -366,7 +366,7 @@
      :git/sha "96bd0fc93f1a2c77128d06f74802dd2a4631c0d4"}
     io.github.casselc/jolt-tcp
     {:git/url "https://github.com/casselc/jolt-tcp.git"
-     :git/sha "c4db4c1431d04efcc035b9457f3bc0bff6a2df22"}
+     :git/sha "0ceaa900bfca11933d35831d7697c7e2c5b22f04"}
     io.github.casselc/jolt-net
     {:git/url "https://github.com/casselc/jolt-net.git"
      :git/sha "699b908ffb4eb79ad35055cdc20866bb504e6932"}

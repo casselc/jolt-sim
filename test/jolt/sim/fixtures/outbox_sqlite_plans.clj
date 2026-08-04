@@ -340,6 +340,22 @@
                   (mark-delivered-statement-plans plans)
                   (subvec plans 25 28))))))
 
+(defn cancel-before-ack-statement-plans
+  "Returns the exact 18-statement cancellation-before-ack plan: schema setup,
+   the first command transaction and COMMIT (parity indices 0..11), then the
+   same three-statement pending-state reload twice (indices 25..27). It has no
+   mark-delivered transaction; any unexpected mark or missing reload fails
+   exact FIFO consumption. This is a result-producing application fixture,
+   not a general SQLite lifecycle model. The optional payload rebinds the
+   command BLOB params exactly as the other delivery plans do."
+  ([]
+   (cancel-before-ack-statement-plans default-command-payload))
+  ([command-payload]
+   (let [plans (parity-statement-plans command-payload)]
+     (vec (concat (subvec plans 0 12)
+                  (subvec plans 25 28)
+                  (subvec plans 25 28))))))
+
 (defn reopen-delivery-statement-plans
   "Returns the exact 25-statement close/reopen delivery plan: the schema setup
    and first fresh req-1/entity-a command transaction on connection 0, then --

@@ -10,7 +10,8 @@
             [jolt.sim.handler-pack :as hp]
             [jolt.sim.net.posix-loopback :as posix]
             [jolt.sim.runtime :as runtime]
-            [jolt.sim.sqlite :as sqlite]))
+            [jolt.sim.sqlite :as sqlite]
+            [teensyp.client :as client]))
 
 (def ^:dynamic *sim-only?* false)
 
@@ -186,6 +187,92 @@
         (is (= 1 (:max-pipe-fifo-bytes pipe)))))
 
     (testing "the shared native worlds quiesce cleanly"
+      (is (true? (memory/clean? mem)))
+      (is (true? (sqlite/clean? sqlite-world)))
+      (is (true? (posix/clean? posix-world))))))
+
+(deftest cancellation-after-receiver-decode-cannot-mark-delivered
+  (let [real-result (when-not *sim-only?*
+                      (fixture/exercise-outbox-delivery-cancel-before-ack))
+        mem (memory/world)
+        sqlite-world
+        (sqlite/world mem (plans/cancel-before-ack-statement-plans))
+        posix-world (posix/world mem (net/target-descriptor)
+                                 {:progress-limit 64
+                                  :stream-capacity 8
+                                  :pipe-capacity 1})
+        handlers
+        (hp/compose
+         (hp/pack :jolt.sim/memory (memory/handlers mem))
+         (hp/pack :jolt.sim/sqlite (sqlite/foreign-handlers sqlite-world))
+         (hp/pack :jolt.sim/posix (posix/foreign-handlers posix-world)))
+        controlled
+        (runtime/run-controlled
+         {:ffi-handlers handlers
+          :drain-timeout-ms 10000}
+         fixture/exercise-outbox-delivery-cancel-before-ack)
+        result (:result controlled)
+        app (:application result)
+        cancel (:cancel app)
+        cancel-error (:exchange-error cancel)
+        sqlite-state (sqlite/state sqlite-world)
+        closed-db (first (:closed-db-evidence sqlite-state))
+        row (get-in closed-db [:committed modeled-outbox-key])]
+    (testing "the same ordinary application has exact real/hermetic parity"
+      (when-not *sim-only?*
+        (is (= real-result result))))
+
+    (testing "the HTTP command commits exactly one retryable pending row"
+      (is (= expected-identities (:identities app)))
+      (is (= {:value fixture/default-command
+              :result expected-result
+              :emitted [expected-row]}
+             (:command app)))
+      (is (= expected-state (:pending-state app)))
+      (is (= expected-state (:store-state app)))
+      (is (= :pending (get-in app [:store-state :outbox 0 :status])))
+      (is (not (contains? app :marking)))
+      (is (not (contains? app :delivery)))
+      (is (empty? (filter #(= :delivered (:status %))
+                          (get-in app [:store-state :outbox])))))
+
+    (testing "cross-thread close wakes the blocked receive canonically"
+      (is (= ::client/closed (:err cancel-error)))
+      (is (= :receive (:operation cancel-error)))
+      (is (= :closed (:kind cancel-error)))
+      (is (= "teensyp.client receive: connection is closed"
+             (:message cancel-error)))
+      (is (true? (:close-result cancel)))
+      (is (false? (:cleanup-close cancel)))
+      (is (= {:status :closed :close-result true}
+             (:helper cancel))))
+
+    (testing "the receiver decoded attempt 1 before cancellation"
+      (is (= [expected-message] (get-in result [:receiver :requests])))
+      (is (= [{:status :withheld}]
+             (get-in result [:receiver :ack-outcomes])))
+      (is (empty? (get-in result [:receiver :server-errors]))))
+
+    (testing "the HTTP response remains the committed command result"
+      (is (= 200 (get-in result [:http :status])))
+      (is (= "application/x-bencode"
+             (get-in result [:http :content-type])))
+      (is (= expected-http-response (get-in result [:http :response])))
+      (is (empty? (get-in result [:http :server-errors])))
+      (is (= {:connection [true false]}
+             (get-in result [:http :close-results]))))
+
+    (testing "the exact SQLite plan contains two reloads and no mark"
+      (is (= {:plan-index 18
+              :plan-count 18
+              :open-dbs 0
+              :active-stmts 0}
+             (sqlite/summary sqlite-world)))
+      (is (= {:type :text :value "pending"} (get row "status")))
+      (is (not-any? #(= :update-row (:op %)) (:row-evidence closed-db)))
+      (is (every? #(= :handler (:route %)) (:effect-trace controlled))))
+
+    (testing "all modeled resources quiesce after cancellation"
       (is (true? (memory/clean? mem)))
       (is (true? (sqlite/clean? sqlite-world)))
       (is (true? (posix/clean? posix-world))))))
