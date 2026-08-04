@@ -7,6 +7,7 @@
             [hegel.core :as h]
             [jolt.sim.explore :as explore]
             [jolt.sim.hegel :as sim-hegel]
+            [jolt.sim.ffi-admission-hegel-test :as ffi-admission]
             [jolt.sim.hegel-adapter-test]))
 
 (def ^:dynamic *process-config* nil)
@@ -145,12 +146,15 @@
 (defn -main [& _]
   (let [bin (required-environment "JOLT_SIM_BIN")
         project-dir (required-environment "JOLT_SIM_PROJECT_DIR")
+        process-config
+        {:worker-command [bin "-M:explore-worker-test"]
+         :dir project-dir}
         result
-        (binding [*process-config*
-                  {:worker-command [bin "-M:explore-worker-test"]
-                   :dir project-dir}]
+        (binding [*process-config* process-config
+                  ffi-admission/*process-config* process-config]
           (test/run-tests 'jolt.sim.hegel-adapter-test
-                          'jolt.sim.hegel-explore-test))
+                          'jolt.sim.hegel-explore-test
+                          'jolt.sim.ffi-admission-hegel-test))
         failures (+ (:fail result) (:error result))]
     (println (str (:test result) " tests, "
                   (:pass result) " assertions passed"))

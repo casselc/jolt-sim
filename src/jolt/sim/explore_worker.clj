@@ -1,27 +1,38 @@
 (ns jolt.sim.explore-worker
-  "Single-run child-process protocol for supervised future-schedule exploration.
+  "Single-run child-process protocol for supervised fresh-process exploration.
 
   A parent writes one versioned EDN request, launches a fresh Jolt process whose
   main is this namespace, and supplies request/result paths. The worker resolves
-  only a `defsim`-marked var, invokes it once with a `:future-schedule` runtime
-  override, writes one canonical result document, and exits. Reusing a worker
-  across schedules is deliberately unsupported: deadlock and poisoned global
-  controller state are reclaimed by terminating the whole child process."
+  only a `defsim`-marked var and invokes it once with a runtime-overrides map
+  plus a scenario input value, writes one canonical result document, and exits.
+  Reusing a worker across cases is deliberately unsupported: deadlock and
+  poisoned global controller state are reclaimed by terminating the whole
+  child process.
+
+  Protocol v2. The request's `:jolt.sim.explore/schedule` is optional: nil
+  means the run drives no `:future-schedule` override at all, letting a
+  no-schedule case run under the scenario's declared configuration untouched.
+  A nonnil schedule is an exact permutation, same as before. The request's
+  `:jolt.sim.explore/input` is always present and is a `jolt.sim.trace`
+  canonical projection of the caller's scenario input value (nil by default),
+  restored before the scenario is invoked. There is no v1 compatibility; a v1
+  request is rejected as an ordinary protocol-version mismatch."
   (:require [clojure.edn :as edn]
             [jolt.sim.future-schedule :as future-schedule]
             [jolt.sim.trace :as trace]))
 
-(def protocol-version 1)
+(def protocol-version 2)
 
 (def ^:private protocol-key :jolt.sim.explore/protocol)
 (def ^:private scenario-key :jolt.sim.explore/scenario)
 (def ^:private schedule-key :jolt.sim.explore/schedule)
+(def ^:private input-key :jolt.sim.explore/input)
 (def ^:private status-key :jolt.sim.explore/status)
 (def ^:private value-key :jolt.sim.explore/value)
 (def ^:private error-key :jolt.sim.explore/error)
 
 (def ^:private request-keys
-  #{protocol-key scenario-key schedule-key})
+  #{protocol-key scenario-key schedule-key input-key})
 
 (def ^:private completed-result-keys
   #{protocol-key status-key schedule-key value-key})
@@ -39,35 +50,49 @@
 (defn- namespaced-symbol? [value]
   (and (symbol? value) (some? (namespace value))))
 
+(defn- valid-request-schedule? [schedule]
+  (or (nil? schedule) (future-schedule/valid-schedule? schedule)))
+
 (defn request-document
-  "Builds the exact protocol-v1 request for one marked scenario and schedule."
-  [scenario schedule]
-  (when-not (namespaced-symbol? scenario)
-    (throw (protocol-error :invalid-scenario {:scenario scenario})))
-  (when-not (future-schedule/valid-schedule? schedule)
-    (throw (protocol-error :invalid-schedule {:schedule schedule})))
-  {protocol-key protocol-version
-   scenario-key scenario
-   schedule-key schedule})
+  "Builds the exact protocol-v2 request for one marked scenario, an optional
+  future schedule, and a scenario input value.
+
+  A nil schedule means the run drives no `:future-schedule` override at all;
+  a nonnil schedule must be an exact permutation. input defaults to nil and is
+  stored as its `jolt.sim.trace` canonical projection."
+  ([scenario schedule]
+   (request-document scenario schedule nil))
+  ([scenario schedule input]
+   (when-not (namespaced-symbol? scenario)
+     (throw (protocol-error :invalid-scenario {:scenario scenario})))
+   (when-not (valid-request-schedule? schedule)
+     (throw (protocol-error :invalid-schedule {:schedule schedule})))
+   {protocol-key protocol-version
+    scenario-key scenario
+    schedule-key schedule
+    input-key (trace/canonical-value input)}))
 
 (defn- validate-request! [request]
   (when-not (map? request)
     (throw (protocol-error :request-not-a-map
                            {:request-class (str (class request))})))
-  (when-not (= request-keys (set (keys request)))
-    (throw (protocol-error :request-keys
-                           {:expected request-keys
-                            :actual (set (keys request))})))
   (when-not (= protocol-version (get request protocol-key))
     (throw (protocol-error :protocol-version
                            {:expected protocol-version
                             :actual (get request protocol-key)})))
+  (when-not (= request-keys (set (keys request)))
+    (throw (protocol-error :request-keys
+                           {:expected request-keys
+                           :actual (set (keys request))})))
   (let [scenario (get request scenario-key)
-        schedule (get request schedule-key)]
+        schedule (get request schedule-key)
+        input (get request input-key)]
     (when-not (namespaced-symbol? scenario)
       (throw (protocol-error :invalid-scenario {:scenario scenario})))
-    (when-not (future-schedule/valid-schedule? schedule)
+    (when-not (valid-request-schedule? schedule)
       (throw (protocol-error :invalid-schedule {:schedule schedule})))
+    (when-not (trace/canonical-form? input)
+      (throw (protocol-error :invalid-input {:input input})))
     request))
 
 (defn- resolve-scenario! [scenario]
@@ -77,9 +102,20 @@
       (throw (protocol-error :scenario-not-found {:scenario scenario})))
     (when-not (:jolt.sim/scenario (meta scenario-var))
       (throw (protocol-error :scenario-not-marked {:scenario scenario})))
+    (when-not (contains? #{true false}
+                         (:jolt.sim/accepts-input (meta scenario-var)))
+      (throw (protocol-error :scenario-input-contract
+                             {:scenario scenario})))
     (when-not (fn? @scenario-var)
       (throw (protocol-error :scenario-not-callable {:scenario scenario})))
     scenario-var))
+
+(defn- rejects-input-error [scenario input]
+  (ex-info
+   "defsim scenario does not declare an input binding and rejects non-nil input"
+   {:type :jolt.sim.runtime/scenario-rejects-input
+    :scenario scenario
+    :input input}))
 
 (defn- safe-error
   "Returns intentionally narrow canonical diagnostics for worker machinery.
@@ -111,10 +147,13 @@
 (defn execute-request
   "Executes one already-materialized request and returns a result document.
 
-  Exceptions from invoking the marked scenario are valid `:failed`
-  exploration outcomes. Request validation, resolution, and result/error
-  serialization failures are `:worker-error`. The function itself does no file
-  I/O."
+  Application-body exceptions are valid `:failed` exploration outcomes. A
+  marked scenario declared without an input binding rejecting nonnil input is
+  a `:worker-error` in phase `:scenario-input`, because that is an invalid case
+  contract rather than a discovered application counterexample. Request
+  validation, resolution, and result/error/input serialization failures are
+  likewise `:worker-error`. A nil request schedule drives no
+  `:future-schedule` override. The function itself does no file I/O."
   [request]
   (let [validation
         (try
@@ -130,22 +169,28 @@
             scenario (get request scenario-key)
             schedule (get request schedule-key)]
         (try
-          (let [scenario-var (resolve-scenario! scenario)
-                outcome
-                (try
-                  {:ok? true
-                   :value (@scenario-var {:future-schedule schedule})}
-                  (catch :default error
-                    {:ok? false :error error}))]
-            (if (:ok? outcome)
-              (try
-                (completed-document schedule (:value outcome))
-                (catch :default error
-                  (worker-error-document schedule :result-encoding error)))
-              (try
-                (failed-document schedule (:error outcome))
-                (catch :default error
-                  (worker-error-document schedule :error-encoding error)))))
+          (let [input (trace/restore-value (get request input-key))
+                scenario-var (resolve-scenario! scenario)
+                accepts-input? (:jolt.sim/accepts-input (meta scenario-var))]
+            (if (and (some? input) (not accepts-input?))
+              (worker-error-document
+               schedule :scenario-input (rejects-input-error scenario input))
+              (let [overrides (if schedule {:future-schedule schedule} {})
+                    outcome
+                    (try
+                      {:ok? true
+                       :value (@scenario-var overrides input)}
+                      (catch :default error
+                        {:ok? false :error error}))]
+                (if (:ok? outcome)
+                  (try
+                    (completed-document schedule (:value outcome))
+                    (catch :default error
+                      (worker-error-document schedule :result-encoding error)))
+                  (try
+                    (failed-document schedule (:error outcome))
+                    (catch :default error
+                      (worker-error-document schedule :error-encoding error)))))))
           (catch :default error
             (worker-error-document schedule :scenario-resolution error)))))))
 
@@ -156,7 +201,7 @@
   `:result` or `:error`. Byte arrays and collection containers are freshly
   restored from the canonical payload."
   [expected-schedule document]
-  (when-not (future-schedule/valid-schedule? expected-schedule)
+  (when-not (valid-request-schedule? expected-schedule)
     (throw (protocol-error :invalid-expected-schedule
                            {:schedule expected-schedule})))
   (when-not (map? document)

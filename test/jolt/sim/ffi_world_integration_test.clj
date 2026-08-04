@@ -6,7 +6,9 @@
 
 (defn- assert-roundtrip [result]
   (is (= -1234567 (:integer result)))
-  (is (= [0 127 128 255 10] (:bytes result)))
+  ;; Jolt byte arrays expose signed byte elements; the corresponding native
+  ;; octets are 0, 127, 128, 255, and 10.
+  (is (= [0 127 -128 -1 10] (:bytes result)))
   (is (= "native \u00e9" (:text result)))
   (is (= 5 (:written result)))
   (is (= 4 (:int-size result)))
@@ -17,7 +19,7 @@
 
 (deftest unchanged-ffi-namespace-runs-against-the-simulated-world
   (when (runtime/available?)
-    (is (= 5 (:abi-version (runtime/capabilities))))
+    (is (= 6 (:abi-version (runtime/capabilities))))
     (let [real-result (fixture/exercise-memory)
           world
           (memory/world {:pointer-size (:pointer-size real-result)})

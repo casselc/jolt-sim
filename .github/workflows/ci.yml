@@ -13,14 +13,16 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  JOLT_CORE_SHA: 757389df094fa9afb7fa1f1eba5ba83ab297f1a4
+  JOLT_CORE_SHA: 9fc64f93eba8b56a319f91bb1a322e2efced9c70
   CHEZ_RELEASE_TAG: chez-ci-10.4.1.1
 
 jobs:
   sim-posix:
     name: sim image (${{ matrix.name }})
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 45
+    # The Linux x86_64 lane reserves time after bounded Hegel execution for
+    # report rendering and unconditional raw-artifact upload.
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -69,7 +71,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential liblz4-dev zlib1g-dev libncurses-dev uuid-dev zstd
+          sudo apt-get install -y build-essential liblz4-dev zlib1g-dev libncurses-dev libsqlite3-dev uuid-dev zstd
 
       - name: Install build dependencies (macOS)
         if: runner.os == 'macOS'
@@ -117,17 +119,38 @@ jobs:
           sim="$GITHUB_WORKSPACE/jolt-core/target/sim/jolt"
           cd "$GITHUB_WORKSPACE/jolt-sim"
           "$sim" -M:test
+          "$sim" -M:outbox-sqlite-test
           "$sim" -M:runtime-poison-test
           "$sim" -M:ffi-pointer-loan-test
           # The portable loopback model runs in -M:test on every host; this
           # unchanged jolt.net integration lane is intentionally POSIX-only.
           "$sim" -M:posix-loopback-test
+          "$sim" -M:http-hello-test
+          "$sim" -M:tcp-bencode-framing-test
+          # Every POSIX host runs the hermetic ordinary-app witness. Linux
+          # x86_64 additionally runs the same body against host sockets and
+          # system SQLite as an independent control.
+          if [ "${{ matrix.name }}" = "Linux x86_64" ]; then
+            "$sim" -M:outbox-delivery-test
+          else
+            "$sim" -M:outbox-delivery-sim-test
+          fi
           "$sim" -M:future-schedule-poison-test
           JOLT_SIM_BIN="$sim" JOLT_SIM_PROJECT_DIR="$PWD" \
             "$sim" -M:explore-process-test
 
-      - name: Run Hegel schedule exploration
-        if: matrix.hegel
+      - name: Preserve retained process-explorer artifacts
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: process-explorer-${{ matrix.toolchain }}
+          path: ${{ runner.temp }}/jolt-tmp/jolt-sim-explore-*/
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Run real SQLite post-COMMIT crash recovery
+        if: matrix.name == 'Linux x86_64'
+        timeout-minutes: 10
         shell: bash
         env:
           JOLT_AOT_CACHE: "0"
@@ -139,9 +162,110 @@ jobs:
           mkdir -p "$HOME" "$JOLT_CACHE_DIR" "$TMPDIR"
           sim="$GITHUB_WORKSPACE/jolt-core/target/sim/jolt"
           cd "$GITHUB_WORKSPACE/jolt-sim"
+          export JOLT_SIM_CRASH_ARTIFACT_DIR="$PWD/target/outbox-crash-artifacts"
+          JOLT_SIM_BIN="$sim" JOLT_SIM_PROJECT_DIR="$PWD" \
+            "$sim" -M:outbox-crash-recovery-test
+
+      - name: Preserve real SQLite crash-recovery artifacts
+        if: always() && matrix.name == 'Linux x86_64'
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: outbox-crash-recovery-${{ matrix.toolchain }}
+          path: jolt-sim/target/outbox-crash-artifacts/
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Run optional static-report package gates
+        if: matrix.name == 'Linux x86_64'
+        shell: bash
+        env:
+          JOLT_AOT_CACHE: "0"
+        run: |
+          set -euo pipefail
+          export HOME="$RUNNER_TEMP/jolt-home"
+          export JOLT_CACHE_DIR="$RUNNER_TEMP/jolt-cache"
+          export TMPDIR="$RUNNER_TEMP/jolt-tmp"
+          mkdir -p "$HOME" "$JOLT_CACHE_DIR" "$TMPDIR"
+          sim="$GITHUB_WORKSPACE/jolt-core/target/sim/jolt"
+          cd "$GITHUB_WORKSPACE/jolt-sim/report"
+          "$sim" -M:test
+          JOLT_BIN="$sim" test/downstream-build-smoke.sh
+
+      - name: Preserve static-report smoke artifacts
+        if: always() && matrix.name == 'Linux x86_64'
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: static-report-smoke-${{ matrix.toolchain }}
+          path: jolt-sim/target/report-consumer-smoke/
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Run Hegel schedule exploration
+        if: matrix.hegel
+        # A hung worker must not consume the job-level deadline before the two
+        # always() forensic-retention steps can start.
+        timeout-minutes: 25
+        shell: bash
+        env:
+          JOLT_AOT_CACHE: "0"
+        run: |
+          set -euo pipefail
+          export HOME="$RUNNER_TEMP/jolt-home"
+          export JOLT_CACHE_DIR="$RUNNER_TEMP/jolt-cache"
+          export TMPDIR="$RUNNER_TEMP/jolt-tmp"
+          mkdir -p "$HOME" "$JOLT_CACHE_DIR" "$TMPDIR"
+          sim="$GITHUB_WORKSPACE/jolt-core/target/sim/jolt"
+          cd "$GITHUB_WORKSPACE/jolt-sim"
+          export JOLT_SIM_CASE_ARTIFACT_DIR="$PWD/target/outbox-case-artifacts"
+          export JOLT_SIM_CASE_TEMP_DIR="$PWD/target/outbox-case-runs"
+          mkdir -p "$JOLT_SIM_CASE_ARTIFACT_DIR" "$JOLT_SIM_CASE_TEMP_DIR"
           "$sim" -A:hegel-explore-test -m hegel.install
           JOLT_SIM_BIN="$sim" JOLT_SIM_PROJECT_DIR="$PWD" \
             "$sim" -M:hegel-explore-test
+          # All Hegel aliases pin the same exact jolt-hegel commit, so the
+          # verified native library installed above is reused here.
+          JOLT_SIM_BIN="$sim" JOLT_SIM_PROJECT_DIR="$PWD" \
+            "$sim" -M:tcp-bencode-hegel-test
+          JOLT_SIM_BIN="$sim" JOLT_SIM_PROJECT_DIR="$PWD" \
+            "$sim" -M:outbox-delivery-hegel-test
+
+      - name: Render retained whole-application case reports
+        if: always() && matrix.hegel
+        timeout-minutes: 10
+        shell: bash
+        env:
+          JOLT_AOT_CACHE: "0"
+        run: |
+          set -uo pipefail
+          export HOME="$RUNNER_TEMP/jolt-home"
+          export JOLT_CACHE_DIR="$RUNNER_TEMP/jolt-cache"
+          export TMPDIR="$RUNNER_TEMP/jolt-tmp"
+          sim="$GITHUB_WORKSPACE/jolt-core/target/sim/jolt"
+          repo="$GITHUB_WORKSPACE/jolt-sim"
+          render_failures=0
+          while IFS= read -r -d '' document; do
+            output="${document%/*}/report.html"
+            if ! (cd "$repo/report" &&
+                  timeout --signal=TERM --kill-after=10s 120s \
+                    "$sim" -M:case-report "$document" "$output"); then
+              echo "failed to render retained Case/Outcome: $document" >&2
+              render_failures=$((render_failures + 1))
+            fi
+          done < <(find "$repo/target/outbox-case-artifacts" \
+                         "$repo/target/outbox-case-runs" \
+                         -type f -name case-outcome.edn -print0 2>/dev/null)
+          test "$render_failures" -eq 0
+
+      - name: Preserve whole-application case artifacts
+        if: always() && matrix.hegel
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: whole-app-case-outcomes-${{ matrix.toolchain }}
+          path: |
+            jolt-sim/target/outbox-case-artifacts/
+            jolt-sim/target/outbox-case-runs/
+          if-no-files-found: ignore
+          retention-days: 14
 
   sim-windows-x86-64:
     name: sim image (Windows x86_64)

@@ -35,7 +35,7 @@
               #(monitor/read-edn
                 (pr-str {:jolt.sim.trace/version 2
                          :jolt.sim.trace/events events})))]
-    (is (= ::monitor/invalid-document (:type data)))
+    (is (= trace/invalid-document (:type data)))
     (is (= :unsupported-version (:reason data)))))
 
 (deftest document-rejects-wrong-keys
@@ -45,14 +45,53 @@
                 (pr-str {:jolt.sim.trace/version monitor/trace-version
                          :jolt.sim.trace/events events
                          :extra :nope})))]
-    (is (= ::monitor/invalid-document (:type data)))
+    (is (= trace/invalid-document (:type data)))
     (is (= :wrong-keys (:reason data)))))
 
 (deftest document-rejects-trailing-edn
   (let [printed (pr-str (monitor/document (sample-events)))
         data (caught-data #(monitor/read-edn (str printed " :trailing")))]
-    (is (= ::monitor/invalid-document (:type data)))
+    (is (= trace/invalid-document (:type data)))
     (is (= :trailing-edn (:reason data)))))
+
+(deftest trace-read-edn-rejects-wrong-keys-version-and-trailing-edn
+  ;; jolt.sim.trace owns document reading directly; monitor/read-edn above is
+  ;; only a thin facade over it.
+  (let [events (sample-events)
+        wrong-keys
+        (caught-data
+         #(trace/read-edn
+           (pr-str {:jolt.sim.trace/version trace/trace-version
+                    :jolt.sim.trace/events events
+                    :extra :nope})))
+        wrong-version
+        (caught-data
+         #(trace/read-edn
+           (pr-str {:jolt.sim.trace/version 2
+                    :jolt.sim.trace/events events})))
+        trailing
+        (caught-data
+         #(trace/read-edn
+           (str (pr-str (trace/document events)) " :trailing")))
+        forged-old-eof-sentinel
+        (caught-data
+         #(trace/read-edn
+           (str (pr-str (trace/document events))
+                " :jolt.sim.trace/end-of-input")))]
+    (doseq [data [wrong-keys wrong-version trailing forged-old-eof-sentinel]]
+      (is (= trace/invalid-document (:type data))))
+    (is (= :wrong-keys (:reason wrong-keys)))
+    (is (= :unsupported-version (:reason wrong-version)))
+    (is (= :trailing-edn (:reason trailing)))
+    (is (= :trailing-edn (:reason forged-old-eof-sentinel)))))
+
+(deftest monitor-document-and-read-edn-facades-match-trace-directly
+  ;; Confirms monitor/document and monitor/read-edn do not duplicate schema
+  ;; validation: they must produce exactly what jolt.sim.trace itself does.
+  (let [events (sample-events)]
+    (is (= (trace/document events) (monitor/document events)))
+    (let [printed (trace/canonical-edn (trace/document events))]
+      (is (= (trace/read-edn printed) (monitor/read-edn printed))))))
 
 (deftest malformed-events-are-rejected-before-monitor-callbacks
   (let [events (sample-events)
@@ -68,6 +107,8 @@
               :finish (fn [_] {:status :pass})}
         data (caught-data #(monitor/run-monitor spec bad-doc))]
     (is (= kernel/replay-diverged (:type data)))
+    (is (= trace/replay-diverged (:type data)))
+    (is (= :malformed-trace (:reason data)))
     (is (false? @called?))))
 
 (deftest monitor-validates-id-and-initial-state-before-callbacks

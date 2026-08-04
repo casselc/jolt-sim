@@ -1,12 +1,13 @@
 (ns jolt.sim.process-explorer
-  "Sequential process supervisor for ordinary-future schedule exploration.
+  "Sequential process supervisor for ordinary-runtime controlled cases.
 
   Each candidate schedule runs in a fresh Jolt child through the versioned
   `jolt.sim.explore-worker` file protocol. A child that does not exit before its
   deadline is terminated and reaped; it is reported as `:timeout`, not
   mislabeled as a proven deadlock. Poisoned controller state, blocked future
   gates, raw threads, and other process-global damage therefore cannot leak
-  into the next schedule.
+  into the next case. It enumerates supplied top-level future-admission plans;
+  it is not an explicit-state explorer or model checker.
 
   This is harness code and must run outside `run-controlled`. It launches real
   operating-system processes through `jolt.process`; it is not a simulated
@@ -19,11 +20,15 @@
 
 (def ^:private run-keys
   #{:worker-command :scenario :schedule :timeout-ms :kill-grace-ms
-    :dir :extra-env :temp-dir})
+    :dir :extra-env :temp-dir :retain-completed-artifacts?})
+
+(def ^:private case-keys
+  #{:worker-command :scenario :schedule :input :timeout-ms :kill-grace-ms
+    :dir :extra-env :temp-dir :retain-completed-artifacts?})
 
 (def ^:private explore-keys
   #{:worker-command :scenario :schedules :timeout-ms :kill-grace-ms
-    :dir :extra-env :temp-dir})
+    :dir :extra-env :temp-dir :retain-completed-artifacts?})
 
 (def ^:private diagnostic-byte-limit 65536)
 (def ^:private wait-poll-ms 10)
@@ -77,6 +82,13 @@
     (let [temp-dir (:temp-dir config)]
       (when-not (and (string? temp-dir) (seq temp-dir))
         (throw (invalid-config :invalid-temp-dir {:value temp-dir})))))
+  ;; Fail closed before any run directory is created or child spawned: the
+  ;; option must be a boolean when present, and defaults to false when absent.
+  (let [retain-completed? (get config :retain-completed-artifacts? false)]
+    (when-not (boolean? retain-completed?)
+      (throw
+       (invalid-config :invalid-retain-completed-artifacts
+                       {:value (:retain-completed-artifacts? config)}))))
   config)
 
 (defn- validate-run-config! [config]
@@ -84,6 +96,26 @@
   (when-not (future-schedule/valid-schedule? (:schedule config))
     (throw
      (invalid-config :invalid-schedule {:value (:schedule config)})))
+  (assoc config :kill-grace-ms (get config :kill-grace-ms 250)))
+
+(defn- validate-case-config! [config]
+  (validate-common! config case-keys)
+  (let [schedule (:schedule config)]
+    (when-not (or (nil? schedule)
+                  (future-schedule/valid-schedule? schedule))
+      (throw
+       (invalid-config :invalid-schedule {:value schedule}))))
+  ;; A case must fail before creating its temporary directory or launching a
+  ;; child when its input cannot cross the canonical worker boundary.
+  (when (contains? config :input)
+    (try
+      (trace/canonical-value (:input config))
+      (catch :default error
+        (throw
+         (invalid-config
+          :invalid-input
+          {:error (select-keys (ex-data error)
+                               [:type :reason :path :value-class])})))))
   (assoc config :kill-grace-ms (get config :kill-grace-ms 250)))
 
 (defn- validate-schedules! [schedules]
@@ -269,9 +301,15 @@
            schedule :result-protocol error diagnostics exit))))))
 
 (defn- supervise-child
-  [config child result-path stdout-path stderr-path]
-  (let [schedule (:schedule config)
-        worker-pid (child-pid child)
+  [config schedule child result-path stdout-path stderr-path]
+  ;; PID is diagnostic-only. Failure to read it must never abandon an already
+  ;; spawned child before the bounded wait/termination/reap path owns it.
+  (let [pid-diagnostic
+        (try
+          {:worker-pid (child-pid child)}
+          (catch :default error
+            {:worker-pid nil
+             :worker-pid-error (error-summary :worker-pid error)}))
         wait-result
         (try
           {:finished? (boolean (timed-wait! child (:timeout-ms config)))}
@@ -304,7 +342,7 @@
           :reason :deadline
           :exit exit
           :diagnostics (diagnostics stdout-path stderr-path)}))
-     :diagnostics assoc :worker-pid worker-pid)))
+     :diagnostics merge pid-diagnostic)))
 
 (defn- captured [thunk]
   (try
@@ -317,6 +355,80 @@
    #{:jolt.sim.process-explorer/worker-survived-kill
      :jolt.sim.process-explorer/worker-exit-unobserved}
    (:type (ex-data error))))
+
+(defn- retain-outcome-artifacts? [outcome]
+  (not= :completed (:status outcome)))
+
+(defn- retained-exception [error run-dir]
+  (ex-info
+   (or (ex-message error) (str error))
+   (assoc (or (ex-data error) {}) :artifact-dir run-dir)
+   error))
+
+(defn- run-worker!
+  "Shared spawn/supervise/cleanup machinery for one fresh worker process,
+  driven by an already-validated config plus the exact schedule (nil for a
+  no-schedule case) and scenario input to place in the request."
+  [config schedule input]
+  (let [run-dir (create-run-dir (:temp-dir config))
+        request-path (path-in run-dir "request.edn")
+        result-path (path-in run-dir "result.edn")
+        stdout-path (path-in run-dir "stdout.log")
+        stderr-path (path-in run-dir "stderr.log")
+        keep-temp? (volatile! false)]
+    (try
+      (let [outcome
+            (try
+              (let [request-write
+                    (captured
+                     #(spit
+                       request-path
+                       (trace/canonical-edn
+                        (worker/request-document
+                         (:scenario config) schedule input))))]
+                (if-let [error (:error request-write)]
+                  (worker-error-outcome
+                   schedule :request-writing error
+                   (diagnostics stdout-path stderr-path))
+                  (let [command
+                        (into (:worker-command config)
+                              [request-path result-path])
+                        spawn
+                        (captured
+                         #(process/process
+                           command
+                           (process-options config stdout-path stderr-path)))]
+                    (if-let [error (:error spawn)]
+                      (worker-error-outcome
+                       schedule :process-spawn error
+                       (diagnostics stdout-path stderr-path))
+                      (supervise-child
+                       config schedule (:value spawn)
+                       result-path stdout-path stderr-path)))))
+              (catch :default error
+                ;; `supervise-child` converts every ordinary post-spawn
+                ;; failure into an outcome. Only the two explicit "exit not
+                ;; observed" conditions may escape. Any future escaping path
+                ;; must first prove the child reaped or be added to
+                ;; retain-run-directory?.
+                (if (retain-run-directory? error)
+                  (do
+                    ;; A child whose death was not observed may still retain
+                    ;; or mutate its artifacts. Keep them, expose the exact
+                    ;; directory on the escaping error, and do not claim an
+                    ;; ordinary exploration outcome.
+                    (vreset! keep-temp? true)
+                    (throw (retained-exception error run-dir)))
+                  (throw error))))]
+        (if (or (get config :retain-completed-artifacts? false)
+                (retain-outcome-artifacts? outcome))
+          (do
+            (vreset! keep-temp? true)
+            (assoc outcome :artifact-dir run-dir))
+          outcome))
+      (finally
+        (when-not @keep-temp?
+          (fs/delete-tree run-dir))))))
 
 (defn run-schedule
   "Runs one exact future schedule in a fresh worker process.
@@ -332,62 +444,39 @@
     :timeout-ms      positive child deadline
     :dir             explicit child working directory
 
-  Optional `:extra-env` is a string map, `:kill-grace-ms` defaults to 250, and
-  `:temp-dir` selects an existing parent for per-run artifacts.
+  Optional `:extra-env` is a string map, `:kill-grace-ms` defaults to 250,
+  `:temp-dir` selects an existing parent for per-run artifacts, and
+  `:retain-completed-artifacts?` defaults to false.
 
   Returns one `:completed`, `:failed`, `:timeout`, or `:worker-error` map.
   Timeout means only that the child did not exit by the deadline; it is not a
-  proof of deadlock."
+  proof of deadlock. Every non-completed outcome retains its per-run directory
+  as `:artifact-dir`; the directory contains the observed `request.edn`,
+  `result.edn`, `stdout.log`, and `stderr.log` files, with absent files left
+  honestly absent. Completed runs remove their directory unless
+  `:retain-completed-artifacts?` is true, in which case they retain it and
+  return `:artifact-dir` exactly like non-completed outcomes so a caller can
+  evaluate parent-side semantic invariants before deleting it."
   [config]
-  (let [config (validate-run-config! config)
-        schedule (:schedule config)
-        run-dir (create-run-dir (:temp-dir config))
-        request-path (path-in run-dir "request.edn")
-        result-path (path-in run-dir "result.edn")
-        stdout-path (path-in run-dir "stdout.log")
-        stderr-path (path-in run-dir "stderr.log")
-        keep-temp? (volatile! false)]
-    (try
-      (try
-        (let [request-write
-              (captured
-               #(spit
-                 request-path
-                 (trace/canonical-edn
-                  (worker/request-document (:scenario config) schedule))))]
-          (if-let [error (:error request-write)]
-            (worker-error-outcome
-             schedule :request-writing error
-             (diagnostics stdout-path stderr-path))
-            (let [command
-                  (into (:worker-command config)
-                        [request-path result-path])
-                  spawn
-                  (captured
-                   #(process/process
-                     command
-                     (process-options config stdout-path stderr-path)))]
-              (if-let [error (:error spawn)]
-                (worker-error-outcome
-                 schedule :process-spawn error
-                 (diagnostics stdout-path stderr-path))
-                (supervise-child
-                 config (:value spawn)
-                 result-path stdout-path stderr-path)))))
-        (catch :default error
-          ;; `supervise-child` converts every ordinary post-spawn failure into
-          ;; an outcome. Only the two explicit "exit not observed" conditions
-          ;; may escape. Any future escaping path must first prove the child
-          ;; reaped or be added to retain-run-directory?.
-          (when (retain-run-directory? error)
-            ;; A child whose death was not observed may still retain or mutate
-            ;; its artifacts; keep them for diagnosis and do not claim an
-            ;; ordinary exploration outcome.
-            (vreset! keep-temp? true))
-          (throw error)))
-      (finally
-        (when-not @keep-temp?
-          (fs/delete-tree run-dir))))))
+  (let [config (validate-run-config! config)]
+    (run-worker! config (:schedule config) nil)))
+
+(defn run-case
+  "Runs one general controlled-execution case in a fresh worker process,
+  carrying an optional canonical `:input` value and optional exact `:schedule`.
+
+  Required config is the same as `run-schedule` except `:schedule` is optional;
+  nil or absence drives no `:future-schedule` override. `:input` is optional and
+  defaults to nil. Supplying both is the common workload/fault/schedule path for
+  generated and replayed cases.
+
+  Returns the same `:completed`/`:failed`/`:timeout`/`:worker-error` shape and
+  artifact-retention contract as `run-schedule`, including the opt-in
+  `:retain-completed-artifacts?` option, echoing the effective schedule
+  (including nil)."
+  [config]
+  (let [config (validate-case-config! config)]
+    (run-worker! config (:schedule config) (:input config))))
 
 (defn explore
   "Runs each exact schedule sequentially in input order and returns its ordered
@@ -397,7 +486,11 @@
 
   The order may come from `jolt.sim.explore/schedule-plans`, a permanent replay
   witness, or a later Hegel/high-utility sampler; this supervisor does not
-  claim its own search strategy."
+  claim its own search strategy. Every non-completed element inherits
+  `run-schedule`'s `:artifact-dir` retention contract; with
+  `:retain-completed-artifacts?` true, completed elements retain their
+  directories too. Callers that intentionally consume expected failures are
+  responsible for deleting those directories."
   [config]
   (validate-common! config explore-keys)
   (let [schedules (validate-schedules! (:schedules config))

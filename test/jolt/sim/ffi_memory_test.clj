@@ -4,7 +4,7 @@
 
 (def ^:private all-ops
   [:load-library :loaded? :alloc :free :read :write :sizeof
-   :read-bytes :write-bytes :read-array :write-array
+   :read-bytes :write-bytes :read-array :read-array! :write-array
    :borrow-byte-array :release-byte-array
    :ptr->string :string->ptr])
 
@@ -29,7 +29,7 @@
 
 ;; ---- handler shape ------------------------------------------------------
 
-(deftest handlers-cover-all-fifteen-native-operations
+(deftest handlers-cover-all-sixteen-native-operations
   (let [w (fm/world)
         h (fm/handlers w)]
     (is (= expected-handler-keys (set (keys h))))
@@ -191,6 +191,17 @@
     (call h :write p :int 0 -1)
     (is (= 0xFFFFFFFF (call h :read p :uint)))))
 
+(deftest explicit-32-bit-signed-and-unsigned-alias-the-same-storage
+  (let [h (fm/handlers (fm/world))
+        p (call h :alloc 4)]
+    (is (= 4 (call h :sizeof :int32)))
+    (is (= 4 (call h :sizeof :uint32)))
+    (call h :write p :int32 0 -1)
+    (is (= -1 (call h :read p :int32)))
+    (is (= 0xFFFFFFFF (call h :read p :uint32)))
+    (call h :write p :uint32 0 0xFFFFFFFF)
+    (is (= -1 (call h :read p :int32)))))
+
 (deftest full-64-bit-combined-range-round-trips
   (let [h (fm/handlers (fm/world))
         p (call h :alloc 16)
@@ -344,6 +355,50 @@
     (aset src 0 99) ; mutate the caller's array after the call
     (is (= [10 20 30 40] (vec (call h :read-array p 4))))))
 
+(deftest ranged-write-array-copies-the-exact-signed-byte-window
+  (let [h (fm/handlers (fm/world))
+        p (call h :alloc 6)
+        src (byte-array [9 -128 -1 0 127 8])]
+    (call h :write-array p (byte-array [1 1 1 1 1 1]))
+    (is (= 4 (call h :write-array p src 1 4)))
+    (is (= [-128 -1 0 127 1 1]
+           (vec (call h :read-array p 6))))
+    (is (= [9 -128 -1 0 127 8] (vec src))
+        "the source is only snapshotted, never mutated")))
+
+(deftest ranged-write-array-admits-an-exact-empty-tail-without-dereference
+  (let [h (fm/handlers (fm/world))
+        src (byte-array [1 2 3])]
+    (is (= 0 (call h :write-array 0 src 3 0)))
+    (is (= [1 2 3] (vec src)))))
+
+(deftest ranged-write-array-rejects-before-any-modeled-memory-mutation
+  (let [h (fm/handlers (fm/world))
+        p (call h :alloc 4)
+        src (byte-array [10 20 30 40])]
+    (call h :write-array p (byte-array [7 7 7 7]))
+    (doseq [[arguments expected-type]
+            [[[p "not-bytes" 0 1]
+              :jolt.sim.ffi-memory/invalid-argument]
+             [[p src 1.5 1]
+              :jolt.sim.ffi-memory/invalid-argument]
+             [[p src 0 1.5]
+              :jolt.sim.ffi-memory/invalid-argument]
+             [[p src -1 1]
+              :jolt.sim.ffi-memory/out-of-bounds]
+             [[p src 3 2]
+              :jolt.sim.ffi-memory/out-of-bounds]
+             [[(+ p 3) src 0 2]
+              :jolt.sim.ffi-memory/out-of-bounds]]]
+      (is (= expected-type
+             (:type (ex-data-of
+                     #(apply call h :write-array arguments))))
+          (pr-str arguments))
+      (is (= [7 7 7 7] (vec (call h :read-array p 4)))
+          "a rejected call must not partially write modeled memory")
+      (is (= [10 20 30 40] (vec src))
+          "a rejected call must not mutate the source"))))
+
 (deftest read-array-returns-a-fresh-byte-array
   (let [h (fm/handlers (fm/world))
         p (call h :alloc 4)]
@@ -353,6 +408,63 @@
       (is (not (identical? a b)))
       (aset a 0 99)
       (is (= 1 (first (vec b)))))))
+
+(deftest read-array!-copies-modeled-bytes-into-the-live-destination
+  (let [h (fm/handlers (fm/world))
+        p (call h :alloc 8)]
+    (call h :write-array p (byte-array [10 -56 -1 40 50 60 70 80]))
+    (let [dest (byte-array 16)
+          copied (call h :read-array! p 3 dest 4)]
+      (is (= 3 copied))
+      (is (= [0 0 0 0 10 -56 -1 0 0 0 0 0 0 0 0 0] (vec dest))
+          "the requested bytes are written at the destination offset and the
+          rest of the live array is untouched"))
+    ;; A zero-length read-array! is a no-op return that dereferences nothing
+    ;; and leaves the destination unchanged.
+    (let [dest (byte-array [99 99 99 99])]
+      (is (= 0 (call h :read-array! p 0 dest 0)))
+      (is (= [99 99 99 99] (vec dest))))))
+
+(deftest read-array!-uses-the-same-fail-closed-validation-as-read-array
+  (let [h (fm/handlers (fm/world))
+        p (call h :alloc 4)]
+    (call h :write-array p (byte-array [1 2 3 4]))
+    ;; destination must be a byte array
+    (is (= :jolt.sim.ffi-memory/invalid-argument
+           (:type (ex-data-of #(call h :read-array! p 1 "not-bytes" 0)))))
+    ;; destination range exceeds the live array
+    (let [small (byte-array 2)]
+      (is (= :jolt.sim.ffi-memory/out-of-bounds
+             (:type (ex-data-of #(call h :read-array! p 3 small 0)))))
+      (is (= :jolt.sim.ffi-memory/out-of-bounds
+             (:type (ex-data-of #(call h :read-array! p 2 small 1)))))
+      (is (= [0 0] (vec small))
+          "a failed read-array! must not mutate the destination"))
+    ;; source bounds are enforced with the same provenance as read-array.
+    (let [dest (byte-array [9 9 9 9 9 9 9 9])]
+      (is (= :jolt.sim.ffi-memory/out-of-bounds
+             (:type (ex-data-of #(call h :read-array! (+ p 1) 4 dest 0)))))
+      (is (= [9 9 9 9 9 9 9 9] (vec dest))))
+    ;; pointer must address a live allocation
+    (let [dest (byte-array [8 8 8 8])]
+      (is (= :jolt.sim.ffi-memory/unknown-pointer
+             (:type (ex-data-of #(call h :read-array! 0xdeadbeef 1 dest 0)))))
+      (is (= [8 8 8 8] (vec dest))))))
+
+(deftest read-array!-writes-through-a-live-byte-array-loan-window
+  (let [w (fm/world)
+        h (fm/handlers w)
+        arr (byte-array [0 0 0 0 0 0 0 0])
+        p (call h :borrow-byte-array arr 0 4)
+        src (call h :alloc 4)]
+    (call h :write-array src (byte-array [11 22 33 44]))
+    ;; The modeled write goes into the live borrowed window, aliasing arr.
+    (is (= 4 (call h :read-array! src 4 arr 0)))
+    (is (= [11 22 33 44 0 0 0 0] (vec arr)))
+    (is (= [11 22 33 44] (vec (call h :read-array p 4))))
+    (call h :release-byte-array p)
+    (call h :free src)
+    (is (true? (fm/clean? w)))))
 
 ;; ---- scoped live byte-array loans --------------------------------------
 
@@ -584,3 +696,109 @@
            (:type (ex-data-of #(call h :sizeof :void)))))
     (is (= :jolt.sim.ffi-memory/invalid-argument
            (:type (ex-data-of #(call h :sizeof :nope)))))))
+
+;; ---- hybrid handlers ------------------------------------------------------
+
+;; Both are private in jolt.sim.runtime; resolved the same way
+;; record-uvec-range-var is above, matching this file's own precedent for
+;; reaching one namespace's internals from a test in another.
+(def ^:private decode-handler-result-var
+  (resolve 'jolt.sim.runtime/decode-handler-result!))
+
+(def ^:private validate-hybrid-classification-var
+  (resolve 'jolt.sim.runtime/validate-hybrid-classification!))
+
+(defn- classify
+  "Invokes one hybrid handler and decodes+validates its classified result
+  exactly as jolt.sim.runtime's :hybrid routing would, returning a plain
+  {:kind :value :span?} map."
+  [handlers op & args]
+  (let [descriptor {:kind :native-operation :task 0
+                     :arguments (vec args) :operation op}
+        result ((get handlers [:native-operation op]) descriptor)]
+    (validate-hybrid-classification-var
+     descriptor
+     (decode-handler-result-var :hybrid descriptor (fn [_]) result))))
+
+(deftest hybrid-handlers-cover-all-sixteen-native-operations
+  (let [w (fm/world)
+        h (fm/hybrid-handlers w)]
+    (is (= expected-handler-keys (set (keys h))))
+    (doseq [k (keys h)]
+      (is (ifn? (get h k))))))
+
+(deftest hybrid-handlers-classify-scalar-nil-string-and-byte-array-results-as-substitute
+  (let [w (fm/world)
+        h (fm/hybrid-handlers w)
+        p (:value (classify h :alloc 8))]
+    (is (= {:kind :substitute :value nil} (classify h :load-library "libfoo")))
+    (is (= {:kind :substitute :value true} (classify h :loaded? "libfoo")))
+    (is (= {:kind :substitute :value false} (classify h :loaded? "libbar")))
+    (is (= {:kind :substitute :value 8} (classify h :sizeof :long)))
+    (is (= {:kind :substitute :value nil} (classify h :write p :int 0 42)))
+    (is (= {:kind :substitute :value 42} (classify h :read p :int)))
+    (is (= {:kind :substitute :value 5} (classify h :write-bytes p "café")))
+    (is (= {:kind :substitute :value "café"} (classify h :read-bytes p 5)))
+    (let [ra (classify h :read-array p 5)]
+      (is (= :substitute (:kind ra)))
+      (is (= [99 97 102 -61 -87] (vec (:value ra)))))
+    (let [dest (byte-array 5)]
+      (is (= {:kind :substitute :value 5}
+             (classify h :read-array! p 5 dest 0)))
+      (is (= [99 97 102 -61 -87] (vec dest))))
+    (is (= {:kind :substitute :value 5}
+           (classify h :write-array p (byte-array [1 2 3 4 5]))))
+    (is (= {:kind :substitute :value nil} (classify h :free p)))))
+
+(deftest hybrid-handlers-null-pointer-results-remain-substitute
+  (let [w (fm/world)
+        h (fm/hybrid-handlers w)]
+    (is (= {:kind :substitute :value nil} (classify h :free 0)))
+    (is (= {:kind :substitute :value nil} (classify h :ptr->string 0)))
+    (let [p (:value (classify h :alloc 8))]
+      (classify h :write p :pointer 0 0)
+      (is (= {:kind :substitute :value 0} (classify h :read p :pointer)))
+      (classify h :free p))))
+
+(deftest hybrid-handlers-classify-positive-fake-pointers-as-modeled-resource-with-exact-span
+  (let [w (fm/world)
+        h (fm/hybrid-handlers w)
+        alloc-result (classify h :alloc 12)]
+    (is (= :modeled-resource (:kind alloc-result)))
+    (is (pos? (:value alloc-result)))
+    (is (= 12 (:span alloc-result)))
+    (let [arr (byte-array [1 2 3 4])
+          borrow-result (classify h :borrow-byte-array arr 0 4)]
+      (is (= :modeled-resource (:kind borrow-result)))
+      (is (pos? (:value borrow-result)))
+      (is (= 4 (:span borrow-result)))
+      (classify h :release-byte-array (:value borrow-result)))
+    ;; A zero-length loan still reserves one live fake address.
+    (let [empty-borrow (classify h :borrow-byte-array (byte-array 0) 0 0)]
+      (is (= :modeled-resource (:kind empty-borrow)))
+      (is (pos? (:value empty-borrow)))
+      (is (= 1 (:span empty-borrow)))
+      (classify h :release-byte-array (:value empty-borrow)))
+    (let [str-result (classify h :string->ptr "hello é")]
+      (is (= :modeled-resource (:kind str-result)))
+      (is (pos? (:value str-result)))
+      (is (= 9 (:span str-result)))
+      (classify h :free (:value str-result)))
+    (let [p (:value alloc-result)]
+      (classify h :write p :pointer 0 p)
+      (let [read-back (classify h :read p :pointer)]
+        (is (= :modeled-resource (:kind read-back)))
+        (is (= p (:value read-back))))
+      (classify h :free p))))
+
+(deftest hybrid-handlers-reuse-the-model-exactly-once-per-call
+  (let [w (fm/world)
+        h (fm/hybrid-handlers w)]
+    (classify h :alloc 8)
+    (is (= 1 (count (fm/snapshot w)))
+        "one hybrid :alloc call must record exactly one allocation")
+    (let [arr (byte-array [1 2 3 4])
+          borrowed (classify h :borrow-byte-array arr 0 4)]
+      (is (= 2 (count (fm/snapshot w)))
+          "one hybrid :borrow-byte-array call must record exactly one more allocation")
+      (classify h :release-byte-array (:value borrowed)))))

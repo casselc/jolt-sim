@@ -1,7 +1,7 @@
 (ns jolt.sim.ffi-memory
   "Deterministic simulated native memory exposed as jolt.sim.runtime
-  :ffi-handlers for the 15 native operations in the current descriptor-version
-  3 contract.
+  :ffi-handlers for the 16 native operations in the current descriptor-version
+  6 contract.
 
   Owned allocations use concurrency-safe immutable byte-vector records.
   Scoped byte-array loans instead alias the caller's live array window between
@@ -16,7 +16,18 @@
   No OS access of any kind happens here.
 
   Default config is LP64 little endian: pointer-size 8, long-size 8,
-  base-address 0x10000 (aligned), alignment 8, available-libraries :any.")
+  base-address 0x10000 (aligned), alignment 8, available-libraries :any.
+
+  hybrid-handlers returns the same 16 keys classified for jolt.sim.runtime
+  :hybrid routing: each handler reuses handlers' corresponding hermetic
+  transition exactly once per call and classifies its raw result with
+  runtime/substitute or runtime/modeled-resource. alloc, borrow-byte-array,
+  and string->ptr always return a positive fake pointer, so each becomes a
+  modeled-resource spanning exactly its live allocation; a :read of
+  :pointer/:void* is a modeled-resource only when its decoded value is a
+  positive fake pointer. Every other result -- including a decoded null
+  pointer -- is a substitute."
+  (:require [jolt.sim.runtime :as runtime]))
 
 ;; ---- config -------------------------------------------------------------
 
@@ -115,6 +126,7 @@
 (def ^:private fixed-type-sizes
   {:int 4 :uint 4
    :int16 2 :short 2 :uint16 2 :ushort 2
+   :int32 4 :uint32 4
    :int64 8 :uint64 8
    :uint8 1 :u8 1 :byte 1
    :int8 1 :i8 1
@@ -127,7 +139,7 @@
   #{:size_t :ssize_t :iptr :uptr :pointer :void*})
 
 (def ^:private signed-types
-  #{:int :int16 :short :int8 :i8 :long :int64 :ssize_t :iptr})
+  #{:int :int16 :short :int32 :int8 :i8 :long :int64 :ssize_t :iptr})
 
 (def ^:private unsupported-read-write-types #{:float :double})
 
@@ -188,12 +200,23 @@
         (recur (inc i)
                (conj! out (bit-and 0xFF (int (aget arr i)))))))))
 
+(defn- byte-array-range->uvec [arr offset length]
+  (loop [i 0 out (transient [])]
+    (if (== i length)
+      (persistent! out)
+      (recur (inc i)
+             (conj! out
+                    (bit-and 0xFF (int (aget arr (+ offset i)))))))))
+
+(defn- u8->signed-byte [n]
+  (if (< n 128) n (- n 256)))
+
 (defn- uvec->byte-array [v]
   (let [n (count v)
         arr (byte-array n)]
     (loop [i 0]
       (when (< i n)
-        (aset arr i (nth v i))
+        (aset arr i (u8->signed-byte (nth v i)))
         (recur (inc i))))
     arr))
 
@@ -662,16 +685,78 @@
             uvec (record-uvec-range record offset len)]
         (uvec->byte-array uvec)))))
 
-(defn- op-write-array [world descriptor]
-  (let [[ptr arr] (validate-arity! :write-array (:arguments descriptor) 2)]
+(defn- op-read-array!
+  "Copies the requested modeled bytes into the caller's live destination byte
+  array at dest-offset and returns the number of bytes copied. The source
+  pointer resolves with the same fail-closed lifetime/provenance rules as
+  read-array and write-array: the pointer must address a live allocation, the
+  half-open source range [ptr, ptr+len) and destination range
+  [dest-offset, dest-offset+len) must each lie inside their allocation/array,
+  and zero length is a no-op return that dereferences nothing."
+  [world descriptor]
+  (let [[ptr len dest dest-offset]
+        (validate-arity! :read-array! (:arguments descriptor) 4)]
+    (validate-pointer! :read-array! ptr)
+    (when-not (bytes? dest)
+      (fail! :jolt.sim.ffi-memory/invalid-argument
+             "read-array! requires a byte array"
+             {:value dest}))
+    (when-not (and (integer? dest-offset) (integer? len))
+      (fail! :jolt.sim.ffi-memory/invalid-argument
+             "read-array! offset and length must be integers"
+             {:offset dest-offset :length len}))
+    (let [n (alength dest)]
+      (when (or (neg? dest-offset) (neg? len)
+                (> dest-offset n) (> len (- n dest-offset)))
+        (fail! :jolt.sim.ffi-memory/out-of-bounds
+               "read-array! destination range exceeds the live array"
+               {:offset dest-offset :length len :array-length n}))
+      (if (zero? len)
+        0
+        (let [s @(:state world)
+              {:keys [record offset]} (resolve-live! (:heap s) ptr len)
+              uvec (record-uvec-range record offset len)]
+          (doseq [i (range len)]
+            (aset dest (+ dest-offset i)
+                  (u8->signed-byte (nth uvec i))))
+          len)))))
+
+(defn- op-write-array
+  "Copies either a complete byte array or its validated half-open source range
+  into modeled memory. The ranged form snapshots the selected bytes before the
+  first modeled-memory mutation. Source-range and destination/provenance
+  failures therefore leave both source and modeled memory unchanged."
+  [world descriptor]
+  (let [arguments
+        (validate-arity! :write-array (:arguments descriptor) #{2 4})
+        [ptr arr] arguments]
     (validate-pointer! :write-array ptr)
     (when-not (bytes? arr)
       (fail! :jolt.sim.ffi-memory/invalid-argument
              "write-array requires a byte array"
              {:value arr}))
-    (let [uvec (byte-array->uvec arr)]
-      (write-uvec-at! world ptr uvec)
-      (count uvec))))
+    (let [array-length (alength arr)
+          [source-offset length]
+          (if (= 2 (count arguments))
+            [0 array-length]
+            [(nth arguments 2) (nth arguments 3)])]
+      (when-not (and (integer? source-offset) (integer? length))
+        (fail! :jolt.sim.ffi-memory/invalid-argument
+               "write-array offset and length must be integers"
+               {:offset source-offset :length length}))
+      ;; Subtraction-form bounds admit the exact empty tail without constructing
+      ;; source-offset+length, which may overflow on narrower hosts.
+      (when (or (neg? source-offset) (neg? length)
+                (> source-offset array-length)
+                (> length (- array-length source-offset)))
+        (fail! :jolt.sim.ffi-memory/out-of-bounds
+               "write-array source range exceeds the live array"
+               {:offset source-offset
+                :length length
+                :array-length array-length}))
+      (let [selected (byte-array-range->uvec arr source-offset length)]
+        (write-uvec-at! world ptr selected)
+        length))))
 
 (defn- op-borrow-byte-array [world descriptor]
   (let [[arr off len]
@@ -787,6 +872,7 @@
    :read-bytes op-read-bytes
    :write-bytes op-write-bytes
    :read-array op-read-array
+   :read-array! op-read-array!
    :write-array op-write-array
    :borrow-byte-array op-borrow-byte-array
    :release-byte-array op-release-byte-array
@@ -812,8 +898,8 @@
       :type ::world})))
 
 (defn handlers
-  "Returns a map keyed by [:native-operation op] over all 15 native operations
-  in the current descriptor-version 4 contract, compatible with
+  "Returns a map keyed by [:native-operation op] over all 16 native operations
+  in the current descriptor-version 6 contract, compatible with
   jolt.sim.runtime :ffi-handlers. Each handler fn
   receives the exact descriptor and dispatches on its :arguments vector. One
   operation holds the world monitor at a time; a byte-array loan does not hold
@@ -826,6 +912,57 @@
                   (locking (:lock w)
                     (f w descriptor)))]))
         native-ops))
+
+(def ^:private pointer-read-types #{:pointer :void*})
+
+(defn- utf8-byte-count [^String s]
+  (alength (.getBytes s "UTF-8")))
+
+(defn- classify-hybrid-result
+  "Classifies one raw native-operation result for jolt.sim.runtime :hybrid
+  routing. alloc, borrow-byte-array, and string->ptr always return a positive
+  fake pointer, so each becomes a runtime/modeled-resource spanning exactly its
+  live allocation. A :read of :pointer/:void* is a modeled-resource only when
+  its decoded value is a positive fake pointer; a decoded null (zero) pointer,
+  and every other operation's scalar/nil/string/byte-array result, becomes a
+  runtime/substitute."
+  [op descriptor result]
+  (case op
+    :alloc
+    (runtime/modeled-resource result (first (:arguments descriptor)))
+
+    :borrow-byte-array
+    (runtime/modeled-resource
+     result (max 1 (get (:arguments descriptor) 2)))
+
+    :string->ptr
+    (runtime/modeled-resource
+     result (inc (utf8-byte-count (first (:arguments descriptor)))))
+
+    :read
+    (if (and (contains? pointer-read-types (get (:arguments descriptor) 1))
+             (pos? result))
+      (runtime/modeled-resource result)
+      (runtime/substitute result))
+
+    (runtime/substitute result)))
+
+(defn hybrid-handlers
+  "Returns a map keyed by [:native-operation op] over all 16 native operations,
+  compatible with jolt.sim.runtime :hybrid :ffi-handlers. Each handler reuses
+  the corresponding handlers result exactly once per call and classifies it
+  with classify-hybrid-result; it never returns runtime/proceed, so a caller
+  must override a returned handler explicitly to select native routing for
+  that key."
+  [w]
+  (let [base (handlers w)]
+    (into {}
+          (map (fn [[key f]]
+                 (let [op (second key)]
+                   [key
+                    (fn native-hybrid-handler [descriptor]
+                      (classify-hybrid-result op descriptor (f descriptor)))])))
+          base)))
 
 (defn snapshot
   "Returns stable plain data for every allocation, ordered by base address.

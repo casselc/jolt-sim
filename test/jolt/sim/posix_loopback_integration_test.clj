@@ -28,11 +28,11 @@
         server-peer (get-in result [:server :peer])]
     (is (true? (:pre-accept-would-block? result)))
     (is (= [2 2 1] (:sent-chunks result)))
-    (is (= {:bytes [0 1 2 3 255] :chunks [2 2 1]}
+    (is (= {:bytes [0 1 2 3 -1] :chunks [2 2 1]}
            (:received result)))
     (is (true? (:server-eof? result)))
     (is (= [2 1] (:reply-chunks result)))
-    (is (= {:bytes [42 0 254] :chunks [2 1]}
+    (is (= {:bytes [42 0 -2] :chunks [2 1]}
            (:reply result)))
     (is (= {:client [true false]
             :server [true false]
