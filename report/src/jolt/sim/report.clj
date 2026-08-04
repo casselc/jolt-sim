@@ -262,14 +262,23 @@
 (defn- template-source []
   report-template)
 
+(defn- strip-render-line-end-whitespace
+  "Removes indentation left behind when Selmer erases control-tag lines.
+  Generated reports remain readable, deterministic, and diff-check clean."
+  [html]
+  (-> html
+      (string/replace #"[ \t]+\n" "\n")
+      (string/replace #"[ \t]+\z" "")))
+
 (defn- render-report
   "Internal renderer for the validated view model produced by
   `trace->view-model`. Keeping this private prevents callers from supplying
   Selmer's deliberate `[:safe ...]` escape-bypass sentinel as arbitrary view
   data."
   [view-model]
-  (selmer-util/with-escaping
-    (selmer/render (template-source) view-model)))
+  (strip-render-line-end-whitespace
+   (selmer-util/with-escaping
+     (selmer/render (template-source) view-model))))
 
 (defn trace->html
   "Validates `doc`, builds its view model, and renders the self-contained HTML
@@ -439,8 +448,9 @@
   supplying Selmer's deliberate `[:safe ...]` escape-bypass sentinel as
   arbitrary view data."
   [view-model]
-  (selmer-util/with-escaping
-    (selmer/render case-outcome-template view-model)))
+  (strip-render-line-end-whitespace
+   (selmer-util/with-escaping
+     (selmer/render case-outcome-template view-model))))
 
 (defn case-outcome->html
   "Validates `doc` as a Case/Outcome document, builds its view model, and

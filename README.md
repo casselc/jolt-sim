@@ -106,6 +106,23 @@ jolt -M:trace-report TRACE.edn [OUTPUT.html]
 jolt -M:case-report CASE-OUTCOME.edn [OUTPUT.html]
 ```
 
+Committed examples make both views inspectable without first running a test
+campaign:
+
+- [cooperative scheduler trace](report/examples/cooperative-countdown-trace.html)
+  ([source EDN](report/examples/cooperative-countdown-trace.edn));
+- [whole-application HTTP/SQLite/outbox retry Case/Outcome](report/examples/outbox-retry-case-outcome.html)
+  ([source EDN](report/examples/outbox-retry-case-outcome.edn)).
+
+[![Cooperative trace report preview](report/examples/cooperative-countdown-trace.png)](report/examples/cooperative-countdown-trace.html)
+
+[![Whole-application Case/Outcome report preview](report/examples/outbox-retry-case-outcome.png)](report/examples/outbox-retry-case-outcome.html)
+
+The HTML is generated through `trace->view-model` or
+`case-outcome->view-model`, never hand-mocked. See the
+[example regeneration guide](report/examples/) for exact commands and the
+boundary between a retained witness and the owning campaign's evidence claim.
+
 ### Executed scenario coverage
 
 This is an execution manifest, not a namespace-import checklist. A row records

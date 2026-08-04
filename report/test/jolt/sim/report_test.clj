@@ -859,6 +859,66 @@
     (is (= report/invalid-arguments (:type too-many)))
     (is (= :wrong-argument-count (:reason too-many)))))
 
+(deftest committed-example-reports-are-current
+  (let [trace-doc
+        (trace/read-edn
+         (slurp "examples/cooperative-countdown-trace.edn"))
+        case-doc
+        (case-outcome/read-edn
+         (slurp "examples/outbox-retry-case-outcome.edn"))]
+    (is (= (report/trace->html trace-doc)
+           (slurp "examples/cooperative-countdown-trace.html")))
+    (is (= (report/case-outcome->html case-doc)
+           (slurp "examples/outbox-retry-case-outcome.html")))))
+
+(deftest generated-reports-have-no-line-end-whitespace
+  (doseq [html [(report/trace->html (sample-doc))
+                (report/case-outcome->html
+                 (case-outcome/read-edn
+                  (slurp "examples/outbox-retry-case-outcome.edn")))]]
+    (is (= html (string/replace html #"[ \t]+\n" "\n")))
+    (is (= html (string/replace html #"[ \t]+\z" "")))))
+
+(deftest committed-outbox-example-is-current-ack-gated-witness
+  (let [doc
+        (case-outcome/read-edn
+         (slurp "examples/outbox-retry-case-outcome.edn"))
+        outcome (case-outcome/restore-outcome doc)
+        result (:result outcome)
+        application (:application result)
+        pending-row (first (get-in application [:pending-state :outbox]))
+        delivered-row (first (get-in application [:store-state :outbox]))]
+    (is (= :completed (:status outcome)))
+    (is (= 0 (:exit outcome)))
+    (is (= #{:identities :command :pending-state :store-state :marking :retry}
+           (set (keys application))))
+    (is (= #{:attempt-1 :state-unchanged-after-failure? :delivery}
+           (set (keys (:retry application)))))
+    (is (= :pending (:status pending-row)))
+    (is (true? (get-in application
+                       [:retry :state-unchanged-after-failure?])))
+    (is (= [{"attempt" 2
+             "outbox-id" 1
+             "type" "outbox_delivery_ok"}]
+           (get-in application [:retry :delivery :replies])))
+    (is (= (assoc pending-row :status :delivered) delivered-row))
+    (is (= (assoc-in (:pending-state application)
+                     [:outbox 0 :status]
+                     :delivered)
+           (:store-state application)))
+    (is (= {:row delivered-row :changed? true}
+           (:marking application)))
+    (is (= {:plan-index 27
+            :plan-count 27
+            :open-dbs 0
+            :active-stmts 0}
+           (:sqlite result)))
+    (is (= [{:id :outbox/retry-invariants
+             :status :pass
+             :detail nil
+             :index nil}]
+           (case-outcome/restore-monitors doc)))))
+
 (defn -main [& _]
   (let [result (test/run-tests 'jolt.sim.report-test)
         failures (+ (:fail result) (:error result))]
