@@ -717,8 +717,8 @@
              (mapv :label (:steps journey))))
       (is (= "nil" (:evidence-edn (nth (:steps journey) 1))))
       (is (= "nil" (:evidence-edn (nth (:steps journey) 3))))
-      (is (false? (some #(= "Recorded cleanup evidence" (:label %))
-                        (:steps journey)))))))
+      (is (not (some #(= "Recorded cleanup evidence" (:label %))
+                     (:steps journey)))))))
 
 (deftest outbox-journey-and-replay-coordinate-ignore-map-insertion-order
   (let [reverse-map (fn [value] (into {} (reverse (seq value))))
@@ -1023,7 +1023,7 @@
     (report/-main report/case-outcome-selector input output)
     (let [html (slurp output)]
       (is (string/includes? html "jolt-sim case report"))
-      (is (string/includes? html "exercise-with-capacities")))
+      (is (string/includes? html "exercise-reopen-with-capacities")))
     (.delete (io/file input))
     (.delete (io/file output))))
 
