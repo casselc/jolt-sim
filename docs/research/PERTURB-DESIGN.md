@@ -86,6 +86,9 @@ The complete current tally of claims this document made and then refuted:
 | 53 | the sans-io `:need-more` contract's cost is **retention** — "arbitrary backtracking retains all prior input" (SOTA round 2) | false for this representation. One-octet delivery retains **32 bytes more** than whole delivery against a 48-byte floor, because Jolt's `subvec` copies. The cost is CPU and garbage: 1220× and 800× at 4 KB | E36 |
 | 54 | replacing the trichotomy with a resumable continuation would remove the one-octet-delivery cost | it removes **45%** of it. The refill arithmetic with the parse deleted is 55% and is quadratic on its own, because `:need-more` resets `pos` to 0 and `odrop` copies the whole buffer every refill | E36 |
 | 55 | §1.5's "unsigned bytes, bytevector-backed" describes the window perturb has | the reachable representation is a tagged **map** over a **persistent vector** of exact integers, at **8.84 B/octet** — worse than the 8.03 B/element byte array E11 criticised — plus ~280 B of wrapper per view and ~16 B of allocation per `oref` | E36 |
+| 56 | `octets?` recognises a `perturb.octet` window | it is a **tag recognizer** — it accepts a forged tagged map, while the constructors range-check their inputs. Found by reading, not by a gate, in the namespace E36 had just benchmarked | E37 |
+| 57 | `perturb.refine` can support a `proved` verdict on arithmetic obligations | it is **not an SMT solver**: a sound-but-incomplete syntactic normalizer that may refuse unknown results. This limits the structural brief's nominated first strong-end verdict | E37 |
+| 58 | perturb's evidence lattice is one ordered scale | it conflates **strength** with **scope**. `bounded-complete` is a completeness statement relative to a finite domain and an oracle, not a weaker flavour of `proved`. Three independent documents now ask for the split | E37; adoption audit B2 |
 | 51 † | §1.4's **"no resumption"**, and every argument resting on it | a misclassification. A handler that supplies a validated result after which the caller continues is an **implicit tail resumption** — the case the handler literature singles out as efficiently compilable — and only the failure path is abortive. D4 occupies two points on the control axis rather than a point below it, and the property that actually buys the resource reasoning is **no first-class continuation** | E31 |
 | 52 † | `SOTA-POSITIONING-BRIEF` and E27 finding 3: Fowler's "linear effect handlers … left as future work" means we may be standing in an **open gap** | **partly** closed — E31 recorded "closed" from one survey and E32's second, independent reading of the full text (now in `papers/`) narrows it: control-flow linearity gives a direct theory for continuation/resource integrity, and **cancellation protocol obligations remain separate**; it proves nothing about our checker, external declarations, refined typestate, native resources or `abort!` cleanup. Tang et al. (POPL 2024) give control-flow linearity with an inference calculus and repair the Links bug; Brachthäuser & Leijen classify control flow as linear/affine/abortive/unrestricted; van Rooij & Krebbers (*Affect*, POPL 2025) track continuations through mutable references. The 2019 sentence can no longer be cited. My stated prediction — "still open but narrower" — was wrong in degree | E31 |
 | 53 † | E29: handler-over-handler layering as a result in itself | generic composition and outward forwarding are standard, and scoped-effect calculi formalise them. The narrow obligation — same-effect forwarding through several protocol layers **preserving typestate-linear obligations** — was not found, and is sharpened rather than answered. Separately, the nearest formal family for D4 is **runners** (Ahman & Bauer, ESOP 2020), not a handler calculus | E31 |
@@ -5877,6 +5880,149 @@ the process; take a difference around the work under test". It is not —
 `rt.ss:505` has it right, it is the live heap. A difference across a collecting
 workload came out **−1,180,160 bytes**.
 
+### E37 — the structural-tier brief, answered twice: two corrections to it, and one reframe that puts it back on the capability tier's critical path
+
+`STRUCTURAL-TIER-BRIEF.md` was answered by two independent research passes — a
+SOTA survey and a findings/reframe synthesis. Neither executed anything. They
+converge on correcting the brief in the same two places, and the corrections are
+to claims **this record made three commits earlier**.
+
+#### Correction 1 — the brief's central rhetorical move is false
+
+The brief said: *"we have a vocabulary for constrained things and no story for
+the unconstrained majority."* **Both passes refute it.** Persistent immutable
+values have a standard account as an unrestricted/cartesian fragment: Linear
+Haskell's multiplicities on binders, Granule's graded modalities, Alms's
+unlimited-vs-affine kinds, ATS's ordinary types against linear views, Rust's
+`Copy` excluding `Drop`, and Benton's linear–nonlinear adjunction as the
+principled bridge. The survey lists "substructural systems have no account of
+freely duplicable values" among the claims to **avoid**.
+
+What replaces it is stronger than what the brief asked for. **The classifier is
+an interface property, not an allocation property:**
+
+> contraction and weakening are sound when aliases cannot observe mutation,
+> copying cannot duplicate a unique finalization obligation, discarding cannot
+> leak a program-owned obligation, and **every transitively reachable exposed
+> component is itself unrestricted** — or safely sealed behind an
+> observationally immutable interface.
+
+#### The reframe: that last clause is §4.6's root cause, not a new tier
+
+A persistent vector can hold a live socket; a closure can capture one. The shell
+is immutable, and duplicating it duplicates *routes to the capability*. Both
+passes name this independently — the survey as the condition that "matters for
+perturb", the reframe as **mixed/authority-bearing values**, which "do not become
+structural merely because a payload is immutable" (and it names `StreamConn` as
+mixed while an octet payload may be value-semantic).
+
+That is exactly what E34 left standing: **4 `capture` diagnostics, the connection
+entering `#(…)` thunks and a `future` — 57% of everything `-M:tcpcheck` still
+rejects.** So the unrestricted fragment is not a second tier at all. It is the
+**transitivity rule the capability tier needs**, and it is on the critical path
+this project is already on. The brief's framing had it as the complement of
+capabilities; it is a precondition of them.
+
+The minimal rule both passes state: primitives shareable; immutable products,
+sums, collections and closures shareable **only if** every field, element,
+alternative and capture is; opaque/FFI values denied promotion unless a trusted
+declaration justifies it. The survey adds the qualification that hidden mutation
+does *not* automatically defeat unrestricted use — cached hashes, refcounts and
+path-copying internals are fine if they cannot change public value semantics.
+
+#### Correction 2 — the brief oversold what verdicts are available
+
+The brief claimed structural properties are "finite in the way the neighbouring
+lanes' domains are finite", so `proved` and `bounded-complete` are attainable
+there. **Both passes puncture this.** `bounded-complete` requires an explicitly
+finite domain, a generator surjective over every valid modeled input, sound
+pruning, a total and independent oracle, enumerated or excluded exceptional
+paths, termination, and recorded generated/valid/pruned/checked counts. The
+reframe adds cardinality, uniqueness and full-consumption evidence. Random
+generation with shrinking is `sampled` however many cases run, and **replay
+establishes reproducibility of one witness, not exploration**.
+
+Both then propose the same repair, which makes this the **third** independent
+document to ask for it (after the adoption audit's B2): **separate evidence
+strength from evidence scope.**
+
+```text
+strength:  proved | checked-by-independent-oracle | tested | trusted | unknown | failed
+scope:     all-modeled-inputs | finite-domain-exhaustive(bound) | sampled(distribution, seed, count)
+```
+
+perturb's single lattice makes `bounded-complete` read as a weaker flavour of
+proof, when it is a *completeness* statement relative to a finite search space
+and an oracle. `checked-by-oracle × finite-domain-exhaustive(depth=6)` says both.
+
+#### Two claims about perturb's own code, from the reframe only
+
+1. **`octets?` is a tag recognizer.** It accepts a forged tagged map, while the
+   constructors range-check their inputs. A live soundness hole in the namespace
+   E36 had just benchmarked, found by reading rather than by any gate.
+2. **`perturb.refine` is not an SMT solver.** Its sound-but-incomplete syntactic
+   normalizer may refuse unknown results, so it cannot by itself support a
+   `proved` claim — which directly limits the brief's item 2, the one nominated
+   to produce this project's first strong-end verdict.
+
+#### Where they diverge
+
+- **Verified persistent structures — same verdict, different corpora, neither
+  transferable.** The survey cites certified functional data structures and
+  verified B+-trees in Isabelle/HOL; the reframe cites CFML snapshotable trees,
+  a verified transient stack, and `hs-to-coq` over `containers` — adding that
+  `hs-to-coq`'s bridge back to executable GHC **was reported not working**,
+  which is precisely the gap a Jolt equivalent would face. Neither found a proof
+  of a production 32-way vector trie or HAMT.
+- **Index safety.** The survey is cautiously positive ("yes for a deliberately
+  small logic and modeled APIs") and notes Flux used about half the specification
+  lines and verified ~10× faster than the compared Prusti setup. The reframe is
+  more pessimistic and more specific: no independently adjudicated
+  false-reject rate exists in either Flux or LRT, and the Checker Framework Index
+  Checker — the closest operational baseline — supplied no annotation, time or
+  false-reject denominators either.
+- **Transients, from the survey only.** They are the one place the two tiers
+  genuinely meet: a transient shares structure with a persistent value, uses
+  edit/owner tokens for controlled in-place update, and is invalid after
+  `persistent!`. That is a **unique/affine builder whose legal endpoint is an
+  unrestricted persistent value** — a linear→unrestricted `freeze` boundary, a
+  shape perturb already has machinery for.
+- **Hash conformance.** Both quantify over a declared domain and separate
+  `hasheq` from `.hashCode`. The reframe adds the operational sharpener that
+  SMHasher measures hash *quality*, not agreement, and that mutants must flip a
+  Murmur constant or rotation, omit a zero special case, or alter the ordered
+  combination.
+
+#### Q6, the decision-relevant negative — not found, by both
+
+Neither pass located a published study that ran a substructural or typestate
+checker over ordinary persistent immutable collections and concluded it was
+useless. Both give the same reason, and it is architectural rather than
+bibliographic: mature mixed systems assign such values an unrestricted kind
+*before* typestate analysis, so the experiment is never run. The survey's
+framing for doing it internally is a **three-way** control — capability typestate
+should produce nothing on a corpus of unrestricted values; a capability placed
+*inside* a persistent container must remain visible rather than laundered by the
+immutable shell; and an out-of-bounds access must be caught by the structural
+analysis and **not** by capability typestate.
+
+#### E37's nonclaims
+
+1. **Nothing was executed.** Two research passes, no gate, no corpus.
+2. **Both absence results are bounded by their own search protocols**, and both
+   say so. "No one has tried typestate on persistent collections" is listed by
+   the survey as a claim to avoid.
+3. **Two agreeing passes are not verification** — the standing rule from E32 and
+   E33. Where they agree they may share a source's error.
+4. **The recommendations are not decisions.** The revised work queue, the
+   manifest sketch and the strength/scope split are proposals; only the two
+   corrections to the brief are findings.
+5. **Three of the survey's own caveats are retained**: capability-bearing
+   payloads may force deeper integration than "separate analysers" suggests; a
+   small refinement domain may fail sooner on real Jolt IR than the typed-language
+   literature predicts; and a JVM oracle can reproduce JVM behaviour without
+   establishing the intended language semantics.
+
 ## 4. Open questions
 
 Q1–Q5 are §4.1–§4.5; §4.6 collects open items that never carried a Q number.
@@ -6722,6 +6868,8 @@ rejected alternatives and superseded verdicts rather than deleting them (see
 | 36 | `nth` on a deftype is ~24× a persistent vector (2,061 vs 86 ns/byte), a gap that "survived three rounds of fixes" | E36 — re-measures at **3.6×** (184 vs 51 ns/octet). Different host and commit, so absolutes are not comparable by E10's own rule; the **ratio**, which E10 presented as the surviving finding, moved ~7×. The arm is a reconstruction of E10's shape, not `jolt.bytes/Window` | E36; E10 left standing as recorded, with this amendment |
 | 37 | E11's `aget → jolt-nth` lowering means generic dispatch is the slow path | E36 — upheld statically, and 8.03 B/element confirmed exactly; but the byte array is **2.5× faster** per access than a persistent vector (20.7 vs 51.1 ns/octet), so the slow thing is the **trie walk**. `(aget ^doubles a i)` lowers to `jolt-flaget` and runs at 10.8 ns even under `jolt run` | E36; §1.1 |
 | 38 | E29 finding 4: the effect boundary as a seam is "failed" | E35 — **qualified, not reversed**. Call-over-call is now *detected* (16 B6.1 violations while emitting identical octets) but still not *refused*. Using the boundary remains voluntary | E29; E35 |
+| 39 | "we have a vocabulary for constrained things and no story for the unconstrained majority" — §1.2's axes are all restrictions and perturb lacks an account of freely duplicable values | `STRUCTURAL-TIER-BRIEF.md` §"The diagnosis", point 3 | E37 — both research passes refute it. The unrestricted/cartesian fragment is standard (Linear Haskell, Granule, Alms, ATS, Rust `Copy`, Benton's adjunction), and the survey lists the brief's phrasing among claims to **avoid** | E37. The replacement is stronger: the classifier is an **interface** property, and its transitivity clause is §4.6's root cause rather than a separate tier |
+| 40 | structural properties are "finite in the way the neighbouring lanes' domains are finite", so `proved` and `bounded-complete` are attainable there | `STRUCTURAL-TIER-BRIEF.md` §"The diagnosis" and §2 of the build half | E37 — both passes: `bounded-complete` needs an explicitly finite domain, a surjective generator, sound pruning, a total independent oracle, and recorded counts. Shrinking is `sampled`; replay is reproducibility of one witness, not exploration | E37; tally row 58 |
 
 ### A.2 The method notes, in order
 
