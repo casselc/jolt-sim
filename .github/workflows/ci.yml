@@ -213,7 +213,12 @@ jobs:
           retention-days: 14
 
       - name: Run optional retained-case viewer gates
+        id: viewer_gate
         if: matrix.name == 'Linux x86_64'
+        # Preserve the failure, but do not let an unrelated viewer defect skip
+        # the expensive Hegel campaign and its forensic artifacts below. The
+        # terminal step turns this outcome back into a failing job.
+        continue-on-error: true
         timeout-minutes: 10
         shell: bash
         env:
@@ -312,6 +317,15 @@ jobs:
             jolt-sim/target/hegel-gates/
           if-no-files-found: ignore
           retention-days: 14
+
+      - name: Enforce deferred viewer result
+        if: always() && matrix.name == 'Linux x86_64'
+        shell: bash
+        run: |
+          if [[ "${{ steps.viewer_gate.outcome }}" != "success" ]]; then
+            echo "retained-case viewer gate outcome: ${{ steps.viewer_gate.outcome }}" >&2
+            exit 1
+          fi
 
   sim-windows-x86-64:
     name: sim image (Windows x86_64)
