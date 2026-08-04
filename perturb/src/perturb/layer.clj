@@ -21,12 +21,67 @@
   design hypothesis, not a theorem.` Nothing here proves anything about a layer.
   It reads ONE RECORDED RUN and reports what that run did. A path not taken is
   not checked; a layer nobody ran is not checked; a clause nothing exercised is
-  reported as such rather than as a pass. It is also EMPHATICALLY NOT A STATIC
+  reported as such rather than as a pass — SEE THE NEXT SECTION, because that
+  last sentence was FALSE in this file until the third outcome was added. It is
+  also EMPHATICALLY NOT A STATIC
   CHECKER: `perturb.check` reads Jolt IR and this reads
   `perturb.effect/*events*` and `perturb.cap/ledger`, and the two share no code.
   E29 finding 3 is the reason there is no static option — installing a handler
   is `binding`, `binding` is try/finally, and the composition point of a layered
   program is outside `perturb.check` by construction.
+
+  =========================================================================
+  THE THIRD OUTCOME, AND THE DEFECT THAT REQUIRED IT
+  =========================================================================
+
+  THIS CHECKER USED TO BE BINARY, AND THAT WAS A DEFECT IN IT. It returned
+  `{:violations :advisories :summary}` and nothing else, so a clause that
+  emitted no violation was indistinguishable from a clause that was never
+  handed anything to look at. `inconclusive` appeared nowhere in this file.
+
+  The concrete instance, found by reading rather than by running:
+  `check-error-mapping` folds over `[request a declared layer answered :ok] ×
+  [refusal inside that request's extent]`. THE KNOWN-GOOD TRACE CONTAINS ZERO
+  REFUSALS. So the fold visited nothing, emitted nothing, and the gate reported
+  `known-good passes every clause`. B6.3 was not passing on that trace; it was
+  ABSENT from it. A checker that cannot tell those apart is measuring the
+  wrong thing in exactly the way E35 finding 3 describes.
+
+  The rule applied is not new here — `jolt.sim.monitor` has carried
+  `#{:pass :violation :inconclusive}` all along, and PROGRESSIVE-ASSURANCE
+  states it: A MISSING REQUIRED OPERATION IS NORMALLY INCONCLUSIVE, NOT
+  SUCCESS. What is new is applying it to our own instrument.
+
+  HOW IT IS MECHANISED. Each clause is one or more ARMS. Every arm returns its
+  violations, an EXERCISED COUNT, and a `basis` sentence saying what one unit
+  of evidence is — the denominator, without which a count of zero is not
+  interpretable. An arm's state is `:violation` if it found anything,
+  `:inconclusive` if it found nothing AND weighed nothing, `:pass` otherwise. A
+  clause rolls its arms up the same way. The eight arms and their units:
+
+    B6.1 :correlation   one request a DECLARED layer answered with a reply
+    B6.1 :credit        one upward answer on a credit-checked operation
+    B6.2 :projection    one ledger step of a DECLARED capability
+    B6.3 :error-mapping one refusal inside the extent of an :ok reply
+    B6.4 :outward       one admissibility decision (four kinds, counted apart)
+    B6.5 :finalisation  one rung instance that forwarded
+    B6.6 :replay        one canonical record
+    B6.6 :propagation   one attempt whose outcome is :propagated
+
+  WHAT `:inconclusive` MAY NOT BE USED FOR. It means `the evidence for this
+  clause was not present in this trace` and nothing else. It is not a softened
+  violation and it is not reachable by a clause that decided something: a
+  violation dominates unconditionally, and an arm that reports a violation
+  while counting zero units fails the run with `:vacuity-accounting`, because
+  a denominator that can understate is a denominator that could quietly
+  convert a failure into a shrug.
+
+  AND THE FIX IS NOT TO MANUFACTURE TRAFFIC. If B6.3 is unexercised on the
+  known-good because that trace refuses nothing, the correct report is
+  `:inconclusive` THERE, and the abort-laundering control — which does produce
+  a refusal — is where B6.3 says `pass` or `violation`. Adding a refusal to the
+  known-good to make the clause look covered would restore precisely the
+  vacuous pass this replaces.
 
   =========================================================================
   THE LINE B6 HAS TO DRAW, WHICH IS THE SURVEY'S OWN SHARPEST OBJECTION
@@ -354,6 +409,70 @@
    :perturb.layer/site    (:perturb.effect/site req)
    :perturb.layer/message msg})
 
+;; --- the third outcome ------------------------------------------------------
+
+(def states
+  "The three outcomes an arm or a clause may have, and the ONLY reading each
+  carries. Named here rather than left implicit because the whole value of the
+  third one is that it does not mean either of the other two.
+
+  `:violation`  the arm adjudicated evidence and the evidence was bad.
+  `:pass`       the arm adjudicated evidence and the evidence was good.
+  `:inconclusive`
+                THE EVIDENCE FOR THIS ARM WAS NOT PRESENT IN THIS TRACE, and
+                nothing else. It is not a weaker violation, it is not a
+                qualified pass, and it is not available to an arm that decided
+                something. It is reachable only when the arm produced zero
+                violations AND adjudicated zero units of evidence, and a
+                violation dominates it unconditionally."
+  #{:pass :violation :inconclusive})
+
+(defn- arm
+  "One clause-arm's verdict: its violations, the number of UNITS OF EVIDENCE it
+  actually adjudicated, and the three-state outcome that follows from the pair.
+
+  `basis` is the sentence that says what one unit is — the denominator of the
+  vacuity question. Every arm carries one because `exercised 0` is only
+  meaningful next to a statement of what was being counted; `0` on its own is
+  the shape of a checker that has stopped looking."
+  [clause nm basis n units vs]
+  {:perturb.layer/clause     clause
+   :perturb.layer/arm        nm
+   :perturb.layer/basis      basis
+   :perturb.layer/exercised  n
+   :perturb.layer/units      (or units {})
+   :perturb.layer/violations (vec vs)
+   :perturb.layer/state      (cond (seq vs)  :violation
+                                   (zero? n) :inconclusive
+                                   :else     :pass)})
+
+(defn- vacuity-accounting
+  "The guard that keeps the third state from becoming an escape hatch, in the
+  one direction it could become one.
+
+  An arm that reported a violation while claiming it adjudicated nothing has a
+  broken denominator, and a broken denominator is exactly how `:inconclusive`
+  would start absorbing failures — the count would drift to zero on some trace
+  where the arm did decide something, and the verdict would read `not
+  exercised` instead of `wrong`. So the inconsistency is itself a VIOLATION of
+  the clause it appears in, not a note beside it. It is also what a negative
+  control on the counting mechanism trips."
+  [a]
+  (if (and (seq (:perturb.layer/violations a))
+           (zero? (:perturb.layer/exercised a)))
+    [{:perturb.layer/clause  (:perturb.layer/clause a)
+      :perturb.layer/rule    :vacuity-accounting
+      :perturb.layer/id      nil
+      :perturb.layer/op      (:perturb.layer/arm a)
+      :perturb.layer/site    :perturb.layer/exercised
+      :perturb.layer/message (str "arm " (:perturb.layer/arm a) " reported "
+                                  (count (:perturb.layer/violations a))
+                                  " violation(s) while counting 0 exercised unit(s)"
+                                  " — one unit is: " (:perturb.layer/basis a)
+                                  ". An arm whose count can understate is an arm"
+                                  " whose :inconclusive cannot be believed")}]
+    []))
+
 ;; --- B6.1 correlated forwarding ---------------------------------------------
 
 (defn- local-transitions
@@ -390,26 +509,35 @@
 
 (defn- check-correlation
   [idx ledger decls]
+  (let [st
   (reduce
-    (fn [acc id]
-      (let [req (get (:by-id idx) id)
+    (fn [st id]
+      (let [acc (first st)
+            n   (second st)
+            byc (nth st 2)
+            req (get (:by-id idx) id)
             lyr (layer-of decls req)]
         (if (or (nil? lyr) (not (replied? req)))
           ;; A refused request made no claim upward, and an undeclared handler
           ;; is not a layer under test. Both are silently out of scope, and the
-          ;; summary counts them so the exemption is visible.
-          acc
+          ;; summary counts them so the exemption is visible. They are NOT
+          ;; counted as exercised: this arm is about what a layer claimed
+          ;; upward, and neither of these made a claim.
+          st
           (let [op   (:perturb.effect/op req)
                 spec (get (:perturb.layer/ops lyr) op)
                 cs   (mapv (fn [k] (get (:by-id idx) k)) (kids idx id))
                 fwd  (filter (fn [c] (= (:lower spec) (:perturb.effect/op c))) cs)
                 anc  (filter (fn [c] (not= (:lower spec) (:perturb.effect/op c))) cs)
-                locs (local-transitions idx ledger decls req lyr)]
+                locs (local-transitions idx ledger decls req lyr)
+                bump (fn [k] (update byc k (fn [v] (+ (or v 0) 1))))]
             (if (nil? spec)
-              (conj acc (v-> :b6.1 :undeclared-operation req
+              [(conj acc (v-> :b6.1 :undeclared-operation req
                              (str "operation " op " has no declared class in layer "
                                   (:perturb.layer/name lyr)
                                   " — B6 cannot say whether it may be answered locally")))
+               (+ n 1)
+               (bump :undeclared-class)]
               (let [acc1 (reduce (fn [a c]
                                    (if (contains? (or (:ancillary spec) #{})
                                                   (:perturb.effect/op c))
@@ -451,9 +579,15 @@
                                                 " declared local transition of "
                                                 (:perturb.layer/capability lyr))))
                            acc2)]
-                acc3))))))
-    []
-    (sort (keys (:by-id idx)))))
+                [acc3 (+ n 1) (bump (:class spec))]))))))
+    [[] 0 {}]
+    (sort (keys (:by-id idx))))]
+    (arm :b6.1 :correlation
+         (str "one request that a DECLARED layer answered with a reply — the"
+              " clause is a disjunction about what a layer claimed upward, so a"
+              " refused request and a request no declared layer served are out"
+              " of its scope rather than passes within it")
+         (second st) (nth st 2) (first st))))
 
 (defn- check-credit
   "The :demand-driven class's side condition, folded over the run IN REPLY ORDER.
@@ -469,12 +603,14 @@
   (let [ids (mapv :perturb.effect/id
                   (filter (fn [e] (and (= :reply (ev-kind e))
                                        (contains? (:by-id idx) (:perturb.effect/id e))))
-                          events))]
-    (first
+                          events))
+        st
       (reduce
         (fn [st id]
           (let [acc (first st)
                 bal (second st)
+                n   (nth st 2)
+                cin (nth st 3)
                 req (get (:by-id idx) id)
                 lyr (layer-of decls req)
                 par (if (:perturb.effect/parent req)
@@ -490,28 +626,37 @@
               (and plyr
                    (let [s (get (:perturb.layer/ops plyr) (:perturb.effect/op par))]
                      (and s (:credit s) (= (:lower s) (:perturb.effect/op req)))))
-              (let [n (sz plyr req)]
+              (let [got (sz plyr req)]
                 [acc (update bal (:perturb.layer/name plyr)
-                             (fn [v] (+ (or v 0) (or n 0))))])
+                             (fn [v] (+ (or v 0) (or got 0))))
+                 n (+ cin 1)])
 
               ;; an answer this layer gave upward: octets OUT, paid from credit
               (and lyr
                    (let [s (get (:perturb.layer/ops lyr) (:perturb.effect/op req))]
                      (and s (:credit s))))
-              (let [n (or (sz lyr req) 0)
+              (let [paid (or (sz lyr req) 0)
                     have (or (get bal (:perturb.layer/name lyr)) 0)]
-                (if (> n have)
+                (if (> paid have)
                   [(conj acc (v-> :b6.1 :credit req
-                                  (str "answered " n
+                                  (str "answered " paid
                                        " octet(s) locally with only " have
                                        " received from below — a :demand-driven local answer"
                                        " must be backed by octets this layer forwarded for")))
-                   (assoc bal (:perturb.layer/name lyr) 0)]
-                  [acc (assoc bal (:perturb.layer/name lyr) (- have n))]))
+                   (assoc bal (:perturb.layer/name lyr) 0)
+                   (+ n 1) cin]
+                  [acc (assoc bal (:perturb.layer/name lyr) (- have paid))
+                   (+ n 1) cin]))
 
-              :else [acc bal])))
-        [[] {}]
-        ids))))
+              :else [acc bal n cin])))
+        [[] {} 0 0]
+        ids)]
+    (arm :b6.1 :credit
+         (str "one upward answer on a credit-checked operation (:demand-driven,"
+              " :credit true) by a declared layer, weighed against that layer's"
+              " running balance — a run in which no layer answered such an"
+              " operation puts nothing on the scale")
+         (nth st 2) {:credits-in (nth st 3)} (first st))))
 
 ;; --- B6.2 protocol-trace projection -----------------------------------------
 
@@ -531,13 +676,14 @@
   against the declared machine."
   [ledger]
   (let [decls (:perturb.cap/capabilities @cap/registry)
-        steps (filter (fn [e] (contains? e :perturb.cap/to)) ledger)]
-    (first
+        steps (filter (fn [e] (contains? e :perturb.cap/to)) ledger)
+        st
       (reduce
         (fn [st e]
           (let [acc  (first st)
                 adv  (second st)
                 seen (nth st 2)
+                n    (nth st 3)
                 cp   (:perturb.cap/capability e)
                 id   (:perturb.cap/id e)
                 d    (get decls cp)
@@ -552,11 +698,15 @@
                         :perturb.layer/site (:perturb.cap/site e)
                         :perturb.layer/message msg})]
             (cond
+              ;; A step whose capability is not declared cannot be replayed
+              ;; against a machine, so it is an advisory AND it is not counted:
+              ;; a ledger made entirely of undeclared capabilities exercised
+              ;; nothing, and saying so is the point of the third state.
               (nil? d)
               [acc (conj adv (mk :undeclared-capability
                                  (str "the ledger moved " cp
                                       " but no capability of that name is declared")))
-               seen]
+               seen n]
 
               :else
               (let [acc1 (if (and (contains? seen [cp id])
@@ -599,9 +749,15 @@
                                               " — the projection is legal, the LABEL is not"
                                               " the operation's declared name")))
                            adv)]
-                [acc4 adv1 (assoc seen [cp id] (:perturb.cap/to e))]))))
-        [[] [] {}]
-        steps))))
+                [acc4 adv1 (assoc seen [cp id] (:perturb.cap/to e)) (+ n 1)]))))
+        [[] [] {} 0]
+        steps)]
+    (arm :b6.2 :projection
+         (str "one ledger step, of a DECLARED capability, replayed against that"
+              " capability's typestate machine — a run whose code noted no"
+              " transition projects onto nothing, and B6.2 reading `legal` off"
+              " an empty projection is the vacuous case this state exists for")
+         (nth st 3) {:ledger-steps (count steps)} (first st))))
 
 (defn- projection-advisories
   [ledger]
@@ -654,19 +810,30 @@
                (:perturb.layer/error-map lyr))))
 
 (defn- check-error-mapping
+  "B6.3, AND THE CLAUSE THAT MADE THE THIRD STATE NECESSARY.
+
+  This fold has always been over `[request that replied :ok] × [refusal inside
+  that request's extent]`, so on a trace with NO REFUSALS it emits nothing —
+  and a binary checker reads `emitted nothing` as `passed`. It is not a pass:
+  a lower refusal cannot have become an upper success in a run where nothing
+  was refused. That is the vacuity this arm now names, and it is why the
+  exercised count is the PAIR count and not the request count."
   [idx decls]
+  (let [st
   (reduce
-    (fn [acc id]
-      (let [req (get (:by-id idx) id)
+    (fn [st id]
+      (let [acc (first st)
+            n   (second st)
+            req (get (:by-id idx) id)
             lyr (layer-of decls req)]
         (if (or (nil? lyr) (not (replied? req)))
-          acc
+          st
           (let [lo (:perturb.layer/pos req)
                 hi (:perturb.layer/reply-pos req)
                 inside (filter (fn [r] (and (> (:perturb.layer/pos r) lo)
                                             (< (:perturb.layer/pos r) hi)))
                                (:refusals idx))]
-            (reduce
+            [(reduce
               (fn [a r]
                 (let [k (:perturb.effect/abort r)]
                   (if (mapped? lyr (:perturb.effect/op req) k)
@@ -679,9 +846,16 @@
                                       " declares no error-mapping edge for {"
                                       (pr-str (:perturb.effect/op req)) " "
                                       (pr-str k) "}"))))))
-              acc inside)))))
-    []
-    (sort (keys (:by-id idx)))))
+              acc inside)
+             (+ n (count inside))]))))
+    [[] 0]
+    (sort (keys (:by-id idx))))]
+    (arm :b6.3 :error-mapping
+         (str "one refusal that occurred INSIDE the extent of a request a"
+              " declared layer answered [:ok ...] — the absorption B6.3 is"
+              " about. A trace with no refusal inside any declared layer's"
+              " extent contains no instance of the thing this clause forbids")
+         (second st) {:refusals (count (:refusals idx))} (first st))))
 
 (defn- mapped-edges-used
   "The B6.3 absorptions that WERE declared, so a passing run shows its edges
@@ -809,8 +983,34 @@
                                                  ") rather than forwarding to a named outer"
                                                  " instance — `perform` does not pop the"
                                                  " executing handler, so nothing refused it"))))))
-                       [] ids)]
-    (vec (concat self multi zero escaped uncorrelated))))
+                       [] ids)
+        ;; The four sub-facts have four different denominators and a request
+        ;; can supply more than one of them, so the units are counted per
+        ;; DECISION rather than per request, and reported separately as well
+        ;; as summed. A sum alone would let one busy sub-fact carry three
+        ;; unexercised ones — which is what an escape hatch looks like.
+        u-self (count (filter (fn [id] (some? (:perturb.effect/handler
+                                                (get (:by-id idx) id)))) ids))
+        u-inst (count (set (concat (map :perturb.effect/instance (:mints idx))
+                                   (map :perturb.effect/instance cons-ev))))
+        u-cons (count consumed)
+        u-perf (count (filter (fn [id]
+                                (let [r (get (:by-id idx) id)
+                                      p (if (:perturb.effect/parent r)
+                                          (get (:by-id idx) (:perturb.effect/parent r))
+                                          nil)]
+                                  (and (some? p) (some? (layer-of decls p)))))
+                              ids))]
+    (arm :b6.4 :outward
+         (str "one admissibility DECISION: a handler identity compared against"
+              " its own ancestor chain, an outward-operation instance weighed"
+              " for zero/multi use, a consumption weighed against the extent"
+              " that minted it, or a crossing under a declared layer weighed"
+              " for route. A request can supply more than one")
+         (+ u-self u-inst u-cons u-perf)
+         {:handler-identities u-self :outward-instances u-inst
+          :consumptions u-cons :crossings-under-declared-layer u-perf}
+         (concat self multi zero escaped uncorrelated))))
 
 ;; --- B6.5 finalisation (§A3) -------------------------------------------------
 
@@ -829,7 +1029,9 @@
                         (filter (fn [id] (= :forward (:perturb.effect/route
                                                        (get (:by-id idx) id))))
                                 (keys (:by-id idx)))))
-        n-of  (fn [rid] (count (filter (fn [f] (= rid (:perturb.effect/rung f))) fins)))]
+        n-of  (fn [rid] (count (filter (fn [f] (= rid (:perturb.effect/rung f))) fins)))
+        in-scope (filter (fn [r] (contains? used (:perturb.effect/rung r))) rungs)
+        vs
     (reduce
       (fn [acc r]
         (let [rid (:perturb.effect/rung r)]
@@ -856,7 +1058,17 @@
                                  :perturb.layer/message
                                  (str "rung " (:perturb.effect/name r) " (instance " rid
                                       ") was finalised " n " times")}))))))
-      [] rungs)))
+      [] rungs)]
+    (arm :b6.5 :finalisation
+         (str "one rung instance that FORWARDED during this run — the exempt"
+              " scope is already the clause's own (a rung that forwarded"
+              " nothing has nothing to hand on), so a run in which no rung"
+              " forwarded leaves the clause with no obligation to check")
+         (count in-scope)
+         {:rungs-recorded (count rungs)
+          :rungs-exempt (- (count rungs) (count in-scope))
+          :finalizations (count fins)}
+         vs)))
 
 ;; --- B6.6 route integrity and replay coherence (§A3) -------------------------
 
@@ -915,9 +1127,14 @@
   This is the check a FORGED or REORDERED trace has to survive, and it is
   deliberately structural: it asks nothing about what the operations meant, only
   whether the record could have been produced by a run. E26's `replay-history!`
-  draws the same line one rung down."
+  draws the same line one rung down.
+
+  Returns an ARM — `{:perturb.layer/violations … :perturb.layer/exercised …
+  :perturb.layer/state …}` — because an empty projection has nothing to be
+  incoherent about, and a forgery detector reporting `no violation` over zero
+  records is the vacuous case in its purest form."
   [canon]
-  (first
+  (let [st
     (reduce
       (fn [st rec]
         (let [acc  (first st)
@@ -988,7 +1205,13 @@
                      :else acc5)]
           [acc6 rec (assoc seen (:perturb.layer/id rec) rec)]))
       [[] nil {}]
-      canon)))
+      canon)]
+    (arm :b6.6 :replay
+         (str "one canonical record — one attempted operation, carrying"
+              " sequence, attempt ordinal, parent, depth, route and mark. The"
+              " coherence relations are between records, so a projection with"
+              " no records cannot be shown to hang together")
+         (count canon) {} (first st))))
 
 (defn- check-propagation
   "A record whose outcome is :propagated must have a descendant that was
@@ -998,7 +1221,9 @@
                                             (fn [v] (conj (or v []) r))))
                           {} canon)
         refused?  (fn [r] (or (= :refused (:perturb.layer/outcome r))
-                              (= :propagated (:perturb.layer/outcome r))))]
+                              (= :propagated (:perturb.layer/outcome r))))
+        prop      (filter (fn [r] (= :propagated (:perturb.layer/outcome r))) canon)
+        vs
     (reduce (fn [acc r]
               (if (not= :propagated (:perturb.layer/outcome r))
                 acc
@@ -1008,12 +1233,50 @@
                                  (str "attempt " (:perturb.layer/id r)
                                       " has no outcome and no refused descendant to have"
                                       " propagated one — the record is incomplete"))))))
-            [] canon)))
+            [] canon)]
+    (arm :b6.6 :propagation
+         (str "one attempted operation whose outcome is :propagated — the only"
+              " records this arm adjudicates. A run in which nothing propagated"
+              " a refusal upward (which is every run that was not refused)"
+              " gives it nothing to decide")
+         (count prop) {:records (count canon)} vs)))
 
 ;; --- the check ---------------------------------------------------------------
 
+(def clauses
+  "The six clauses, in order. Stated as data so a report can list a clause that
+  produced NOTHING — which a report built by grouping violations cannot do, and
+  which is the whole mechanical reason a vacuous pass was invisible."
+  [:b6.1 :b6.2 :b6.3 :b6.4 :b6.5 :b6.6])
+
+(defn- arms-of [arms c]
+  (filter (fn [a] (= c (:perturb.layer/clause a))) arms))
+
+(defn- clause-state
+  "A clause's outcome from its arms' outcomes.
+
+  `:violation` if any arm found something. `:inconclusive` if no arm found
+  anything AND the arms adjudicated nothing between them. `:pass` otherwise —
+  and note that a passing clause may still contain an unexercised arm, which
+  `render` prints rather than absorbing, because `B6.1 passed` while its credit
+  arm weighed nothing is exactly the sentence this work exists to stop."
+  [arms c]
+  (let [as (arms-of arms c)]
+    (cond
+      (some (fn [a] (seq (:perturb.layer/violations a))) as) :violation
+      (zero? (reduce (fn [n a] (+ n (:perturb.layer/exercised a))) 0 as)) :inconclusive
+      :else :pass)))
+
 (defn check
-  "B6 over one recorded run. -> {:violations [...] :advisories [...] :summary {}}"
+  "B6 over one recorded run.
+
+  -> {:violations [...] :advisories [...] :arms [...] :clauses {c -> state}
+      :summary {...}}
+
+  `:clauses` is TOTAL over `clauses` — every clause appears with one of
+  `:pass`, `:violation`, `:inconclusive`, whether or not it had anything to
+  say. A clause that emitted no violation because it was handed no evidence is
+  `:inconclusive`, not `:pass`."
   [decls recorded]
   (let [events (:perturb.layer/events recorded)
         ledger (:perturb.layer/ledger recorded)
@@ -1021,20 +1284,31 @@
         ids    (keys (:by-id idx))
         served (filter (fn [id] (some? (layer-of decls (get (:by-id idx) id)))) ids)
         canon  (canonical events)
-        vs     (vec (concat (check-correlation idx ledger decls)
-                            (check-credit events idx decls)
-                            (check-projection ledger)
-                            (check-error-mapping idx decls)
-                            (check-outward events idx decls)
-                            (check-finalisation events idx)
-                            (replay-coherence canon)
-                            (check-propagation canon)))]
+        arms   [(check-correlation idx ledger decls)
+                (check-credit events idx decls)
+                (check-projection ledger)
+                (check-error-mapping idx decls)
+                (check-outward events idx decls)
+                (check-finalisation events idx)
+                (replay-coherence canon)
+                (check-propagation canon)]
+        cls    (reduce (fn [m c] (assoc m c (clause-state arms c))) {} clauses)
+        vs     (vec (concat (mapcat :perturb.layer/violations arms)
+                            (mapcat vacuity-accounting arms)))]
     {:perturb.layer/violations vs
+     :perturb.layer/arms       arms
+     :perturb.layer/clauses    cls
      :perturb.layer/advisories (projection-advisories ledger)
      :perturb.layer/mapped     (mapped-edges-used idx decls)
      :perturb.layer/canonical  canon
      :perturb.layer/summary
-     {:requests      (count ids)
+     {:clauses-pass         (count (filter (fn [c] (= :pass (get cls c))) clauses))
+      :clauses-violation    (count (filter (fn [c] (= :violation (get cls c))) clauses))
+      :clauses-inconclusive (count (filter (fn [c] (= :inconclusive (get cls c))) clauses))
+      :arms                 (count arms)
+      :arms-inconclusive    (count (filter (fn [a] (= :inconclusive
+                                                      (:perturb.layer/state a))) arms))
+      :requests      (count ids)
       :forwards      (count (filter (fn [id] (= :forward (:perturb.effect/route
                                                            (get (:by-id idx) id)))) ids))
       :performs      (count (filter (fn [id] (= :perform (:perturb.effect/route
@@ -1059,6 +1333,59 @@
     (= :b6.6 c) "B6.6 route integrity / replay coherence (A3)"
     :else (str c)))
 
+(defn- pad [s n]
+  (if (>= (count s) n) s (recur (str s " ") n)))
+
+(defn- state-word [st]
+  (cond (= :violation st)    "VIOLATION"
+        (= :inconclusive st) "INCONCLUSIVE"
+        :else                "pass"))
+
+(defn- clause-lines
+  "The per-clause block: every clause, its state, and what it weighed.
+
+  It lists ALL SIX whatever they did, which is the mechanical point. A report
+  assembled by grouping violations can only mention a clause that fired, so a
+  clause handed no evidence at all was previously indistinguishable from a
+  clause that passed — it appeared in neither list."
+  [result]
+  (let [arms (:perturb.layer/arms result)
+        cls  (:perturb.layer/clauses result)
+        s    (:perturb.layer/summary result)]
+    (concat
+      [(str "    clauses: " (:clauses-pass s) " pass, "
+            (:clauses-violation s) " violation, "
+            (:clauses-inconclusive s) " INCONCLUSIVE   (of 6; "
+            (:arms-inconclusive s) " of " (:arms s) " arms unexercised)")]
+      (mapcat
+        (fn [c]
+          (let [as (arms-of arms c)
+                st (get cls c)
+                n  (reduce (fn [n a] (+ n (:perturb.layer/exercised a))) 0 as)]
+            (concat
+              [(str "      " (pad (clause-name c) 46) (pad (state-word st) 14)
+                    (pad (str "exercised " n) 16)
+                    "[" (reduce (fn [t a]
+                                  (str t (if (= t "") "" ", ")
+                                       (name (:perturb.layer/arm a)) " "
+                                       (:perturb.layer/exercised a)
+                                       ;; The per-arm SUB-COUNTS, printed where
+                                       ;; an arm has them, because an arm that
+                                       ;; sums four denominators can be busy on
+                                       ;; one and empty on three.
+                                       (if (seq (:perturb.layer/units a))
+                                         (str " " (pr-str (:perturb.layer/units a)))
+                                         "")))
+                                "" as)
+                    "]")]
+              ;; The reason, printed for every arm that weighed nothing —
+              ;; including arms inside a clause that PASSED on another arm.
+              (mapv (fn [a]
+                      (str "           NOT EXERCISED (" (name (:perturb.layer/arm a))
+                           "): " (:perturb.layer/basis a)))
+                    (filter (fn [a] (zero? (:perturb.layer/exercised a))) as)))))
+        clauses))))
+
 (defn render
   "The verdict, as lines."
   [result]
@@ -1072,8 +1399,13 @@
        (str "           " (:rungs s) " rung instances, " (:finalizations s)
             " finalisations; " (:served-by-declared-layers s)
             " requests were served by a DECLARED layer and are the ones B6 is about")]
+      (clause-lines result)
       (if (empty? vs)
-        ["    B6: no violation on this trace"]
+        (if (zero? (:clauses-inconclusive s))
+          ["    B6: no violation on this trace, and every clause was exercised"]
+          [(str "    B6: no violation on this trace, but " (:clauses-inconclusive s)
+                " clause(s) INCONCLUSIVE — this trace carried no evidence for"
+                " them, so their silence is not a pass")])
         (concat
           [(str "    B6: " (count vs) " VIOLATION(S)")]
           (mapv (fn [v]
@@ -1086,10 +1418,29 @@
                 vs))))))
 
 (defn clauses-hit
-  "The set of clauses a result has violations for — what a negative control is
-  asserted against."
+  "EVERY clause and the state it reached — `:pass`, `:violation` or
+  `:inconclusive` — which is what a negative control, and a KNOWN-GOOD, are
+  asserted against.
+
+  This used to be the set of clauses with violations, and that shape is the
+  reason a vacuous pass could not be asserted about: a clause absent from the
+  set was `did not fire`, and `did not fire` conflated `held` with `was never
+  asked`. A total map cannot conflate them."
   [result]
-  (set (map :perturb.layer/clause (:perturb.layer/violations result))))
+  (:perturb.layer/clauses result))
+
+(defn clauses-with
+  "The set of clauses in `state`."
+  [result state]
+  (set (filter (fn [c] (= state (get (:perturb.layer/clauses result) c))) clauses)))
+
+(defn arms-with
+  "The set of ARM names in `state`, which is finer than the clause roll-up: an
+  arm may be unexercised inside a clause that passed on a different arm."
+  [result state]
+  (set (map :perturb.layer/arm
+            (filter (fn [a] (= state (:perturb.layer/state a)))
+                    (:perturb.layer/arms result)))))
 
 (defn rules-hit
   [result]
@@ -1105,6 +1456,25 @@
    "    on one recorded run. A path not taken is not checked, and `no violation`"
    "    is not `no violation is possible`. On the evidence lattice this is"
    "    `monitored` for the runs it is wired to, never `proved`."
+   "1a. AND `no violation` IS NOT EVEN `pass` UNTIL THE CLAUSE WAS EXERCISED."
+   "    Each clause carries the number of units of evidence it adjudicated and"
+   "    reports :inconclusive at zero. This was added because it was WRONG"
+   "    before: B6.3 folds over refusals inside a request's extent, so on a"
+   "    trace with no refusals it emitted nothing and read as a pass. The count"
+   "    is the denominator that makes the difference sayable."
+   "1b. THE THIRD STATE IS NOT A THIRD VERDICT ABOUT THE LAYER. :inconclusive"
+   "    says `this trace carried no evidence for this clause` and says nothing"
+   "    at all about whether the layer satisfies it. It is unavailable to a"
+   "    clause that decided something — a violation dominates unconditionally,"
+   "    and an arm reporting a violation with a zero count fails the run with"
+   "    :vacuity-accounting rather than reporting :inconclusive."
+   "1c. THE DENOMINATORS ARE HAND-DRAWN TOO. Each arm's `basis` line states"
+   "    what one unit of evidence is, and nothing derives those choices or"
+   "    checks them against each other. A denominator that counted the wrong"
+   "    thing would make a vacuous clause look exercised — the same class of"
+   "    error as clause 2's, one level up. The clause roll-up is coarser still:"
+   "    a clause PASSES on one exercised arm even when a sibling arm weighed"
+   "    nothing, which is why every unexercised arm is printed by name."
    "2.  THE OPERATION CLASSES ARE HAND-DRAWN, FOR ONE EFFECT. `wire-socket-classes`"
    "    is a judgement about what perturb.wire/socket's six operations mean."
    "    Nothing derives it and nothing checks that a layer's declaration of its"

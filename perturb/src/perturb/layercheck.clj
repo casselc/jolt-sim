@@ -11,9 +11,16 @@
   WHAT IT ASSERTS, IN THE ORDER IT RUNS THEM:
 
     A  KNOWN-GOOD. perturb.http over perturb.tlsish over perturb.script, one
-       octet per transport recv, two pipelined requests. Every clause must pass.
+       octet per transport recv, two pipelined requests. Every clause THE TRACE
+       EXERCISES must pass, and the clauses it does not exercise must SAY SO.
        Without this the gate would be a machine for proving that broken things
        are broken.
+       THIS ARM'S CLAIM WAS OVERSTATED UNTIL THE THIRD OUTCOME LANDED. It used
+       to read `every clause must pass`, and E35 recorded that it did. FIVE of
+       six do, on evidence. The sixth, B6.3, is not exercised by this trace at
+       all — it has zero refusals, and error mapping is a rule about refusals —
+       so its silence was a vacuous pass. It now reports :inconclusive here and
+       reaches a verdict in B and B', which is where the refusal is.
     B  NEGATIVE CONTROL 1 — ABORT LAUNDERING (E29 control 2). The transport
        REFUSES a read and the record layer answers `[:ok empty]`. B6.3 must fire.
     B' THE SAME PROGRAM WITH A DECLARED ERROR-MAPPING EDGE must PASS. Without
@@ -33,9 +40,18 @@
        by PERFORMING, which `forward!` cannot refuse; the trace clause must see
        it.
 
+  AND ONE ASSERTION THAT CUTS ACROSS ALL OF THEM: THE VACUITY. Every run also
+  asserts, BY EQUALITY, the exact set of clauses and arms it carries no
+  evidence for. `perturb.layer` reports three outcomes now — `:pass`,
+  `:violation`, `:inconclusive` — and the third one is a MEASUREMENT this file
+  pins, so a clause that quietly stops being exercised fails the build instead
+  of continuing to read as a pass. The numbers are in the `-inconclusive-`
+  defs below, each with the reason beside it.
+
   WHAT A PASS MEANS AND DOES NOT MEAN is in the closing section, and it is short
   because the honest answer is short: two rungs, one thread, one scripted
-  transport, one recorded run per control."
+  transport, one recorded run per control — and, on the known-good, five of six
+  clauses."
   (:require [perturb.effect :as fx]
             [perturb.layer :as lay]
             [perturb.octet :as o]
@@ -192,33 +208,109 @@
 
 ;; --- assertions --------------------------------------------------------------
 
+(def ^:private tally
+  "Every checked run, in the order the gate ran it, so the closing block can
+  print the vacuity ACROSS fixtures. A clause's state on one trace is a local
+  fact; `which clause reaches a verdict on which fixture, and which reaches one
+  nowhere` is the fact the record needs, and it cannot be read off any single
+  run's report."
+  (atom []))
+
 (defn- show [label result]
+  (swap! tally conj [label result])
   (println (str "  " label))
   (doseq [l (lay/render result)] (println l)))
 
+(defn- vacuity-table
+  "The cross-fixture table: six clauses down, every checked run across, and the
+  count of runs in which each clause reached a verdict at all."
+  []
+  (let [runs @tally]
+    (println "  clause                                        exercised on")
+    (doseq [c lay/clauses]
+      (let [hit (filter (fn [r] (not= :inconclusive
+                                      (get (lay/clauses-hit (second r)) c)))
+                        runs)]
+        (println (str "    " (subs (str c "                    ") 0 8)
+                      (subs (str (count hit) " of " (count runs) " run(s)            ") 0 18)
+                      (reduce (fn [t r] (str t (if (= t "") "" ", ") (first r)))
+                              "" hit)))))
+    (println)
+    (println "  arm (finer: a clause passes on ONE exercised arm)")
+    (doseq [a [:correlation :credit :projection :error-mapping :outward
+               :finalisation :replay :propagation]]
+      (let [hit (filter (fn [r] (not (contains? (lay/arms-with (second r) :inconclusive) a)))
+                        runs)]
+        (println (str "    " (subs (str (name a) "                    ") 0 16)
+                      (subs (str (count hit) " of " (count runs) " run(s)            ") 0 18)
+                      (reduce (fn [t r] (str t (if (= t "") "" ", ") (first r)))
+                              "" hit)))))))
+
+(defn- kws [s] (vec (sort (map str s))))
+
+(defn- expect-vacuity
+  "THE EXPECTATION THAT PINS THE VACUITY, and it is an EQUALITY on both sides.
+
+  Not `at most these are inconclusive` and not `at least these are exercised`:
+  the set of clauses this trace carries no evidence for is a MEASUREMENT, and
+  a measurement that drifts in either direction is a changed fact about the
+  gate. A clause that quietly stops being exercised must fail here — that is
+  the negative control this file could not previously express — and a clause
+  that starts being exercised must fail here too, because the honest reason
+  for that is usually that a fixture grew traffic to cover a clause rather
+  than a layer being tested on new evidence.
+
+  Arm-level as well as clause-level, because a clause PASSES on one exercised
+  arm while a sibling arm weighs nothing, and that is the residual vacuity the
+  roll-up hides."
+  [label result want-clauses want-arms fails]
+  (let [got-c (lay/clauses-with result :inconclusive)
+        got-a (lay/arms-with result :inconclusive)]
+    (if (and (= (set want-clauses) got-c) (= (set want-arms) got-a))
+      (do (println (str "    VACUITY: as measured — inconclusive clause(s) "
+                        (pr-str (kws got-c)) ", unexercised arm(s) "
+                        (pr-str (kws got-a))))
+          fails)
+      (do (println (str "    VACUITY: CHANGED — wanted inconclusive clauses "
+                        (pr-str (kws want-clauses)) " arms " (pr-str (kws want-arms))
+                        ", got clauses " (pr-str (kws got-c))
+                        " arms " (pr-str (kws got-a))))
+          (conj fails (str label " [vacuity]"))))))
+
 (defn- expect-clean
-  [label result fails]
+  "`clean` now means TWO things, and it did not before: no clause found a
+  violation, AND every clause reported as exercised was genuinely exercised.
+  The inconclusive set is passed in rather than tolerated, so `this run was
+  clean` can no longer be satisfied by a clause that was never asked."
+  [label result inconclusive-clauses inconclusive-arms fails]
   (show label result)
-  (if (empty? (:perturb.layer/violations result))
-    (do (println "    VERDICT: PASS — every clause held") fails)
-    (do (println "    VERDICT: FAIL — this run was supposed to be clean")
-        (conj fails label))))
+  (let [f (if (empty? (:perturb.layer/violations result))
+            (do (println (str "    VERDICT: PASS — no clause violated; "
+                              (:clauses-pass (:perturb.layer/summary result))
+                              " of 6 clauses were EXERCISED and held, "
+                              (:clauses-inconclusive (:perturb.layer/summary result))
+                              " were not exercised at all"))
+                fails)
+            (do (println "    VERDICT: FAIL — this run was supposed to be clean")
+                (conj fails label)))]
+    (expect-vacuity label result inconclusive-clauses inconclusive-arms f)))
 
 (defn- expect-clause
-  [label result want-clause want-rules fails]
+  [label result want-clause want-rules inconclusive-clauses inconclusive-arms fails]
   (show label result)
   (let [cs (lay/clauses-hit result)
         rs (lay/rules-hit result)
-        missing-rules (vec (remove rs want-rules))]
-    (if (and (contains? cs want-clause) (empty? missing-rules))
-      (do (println (str "    VERDICT: PASS — detected " (name want-clause)
-                        " with rule(s) " (pr-str (vec want-rules))))
-          fails)
-      (do (println (str "    VERDICT: FAIL — wanted " (name want-clause)
-                        " rules " (pr-str (vec want-rules))
-                        ", got clauses " (pr-str (vec (sort (map str cs))))
-                        " rules " (pr-str (vec (sort (map str rs))))))
-          (conj fails label)))))
+        missing-rules (vec (remove rs want-rules))
+        f (if (and (= :violation (get cs want-clause)) (empty? missing-rules))
+            (do (println (str "    VERDICT: PASS — detected " (name want-clause)
+                              " with rule(s) " (pr-str (vec want-rules))))
+                fails)
+            (do (println (str "    VERDICT: FAIL — wanted " (name want-clause)
+                              " rules " (pr-str (vec want-rules))
+                              ", got clause states " (pr-str cs)
+                              " rules " (pr-str (kws rs))))
+                (conj fails label)))]
+    (expect-vacuity label result inconclusive-clauses inconclusive-arms f)))
 
 (defn- aborts-with
   "Run `thunk` and report the abort kind it raised, plus whether it LATCHED."
@@ -250,7 +342,7 @@
 (defn- forge
   [label canon mutate fails]
   (let [bad (mutate canon)
-        vs  (lay/replay-coherence bad)]
+        vs  (:perturb.layer/violations (lay/replay-coherence bad))]
     (println (str "  " label))
     (if (seq vs)
       (do (doseq [v (take 2 vs)]
@@ -260,6 +352,85 @@
           fails)
       (do (println "      VERDICT: FAIL — the forged projection was accepted")
           (conj fails label)))))
+
+;; --- the vacuity, as measured -------------------------------------------------
+;;
+;; EVERY LINE BELOW IS A MEASUREMENT, NOT A TARGET. Each pair records which
+;; clauses and which arms the named fixture carries NO EVIDENCE for. They are
+;; asserted by equality, so a clause that stops being exercised fails the gate
+;; — and so does a clause that starts being exercised, because the usual reason
+;; for that is a fixture grown to cover a clause rather than a layer tested on
+;; new evidence.
+;;
+;; The one number the record cares about is the first pair: on the known-good,
+;; how much of B6 is actually being checked and how much was reading as a pass
+;; because it was handed nothing.
+
+(def kg-inconclusive-clauses
+  "A — KNOWN-GOOD, AND THE NUMBER THIS WORK WAS FOR.
+
+  FIVE of the six clauses are exercised on the known-good trace and hold. ONE
+  — B6.3, error mapping — is NOT, and its previous `pass` was vacuous by
+  construction: the trace contains 0 refusals, `check-error-mapping` folds over
+  refusals inside a request's extent, so the fold visited nothing and emitted
+  nothing, and a binary checker read that as success.
+
+  E35's sentence `known-good passes every clause` was therefore 5/6 true. It is
+  corrected, not deleted: the trace is real, 711 events and 184 attempted
+  operations are real, and the five clauses that hold on it hold on evidence.
+
+  THE FIX IS NOT TO GIVE THE KNOWN-GOOD A REFUSAL. B6.3's evidence lives in
+  control B, which refuses a transport read on purpose; that is where the
+  clause reaches `violation` (B) and `pass` (B'). Adding a refusal here to
+  make the clause look covered would rebuild the vacuous pass with extra
+  steps."
+  [:b6.3])
+(def kg-inconclusive-arms
+  "Also `:propagation` — B6.6's second arm — inside a clause that PASSES on its
+  replay arm over 184 records. The known-good is not refused, so no attempt
+  ends `:propagated` and the arm weighs nothing. This is the residual vacuity
+  the clause roll-up hides and the arm set exposes."
+  [:error-mapping :propagation])
+
+(def ld-inconclusive-clauses
+  "B — ABORT LAUNDERING. All six clauses exercised: this is the ONLY fixture in
+  the gate that puts evidence in front of B6.3."
+  [])
+(def ld-inconclusive-arms [:propagation])
+
+(def ld2-inconclusive-clauses
+  "B' — THE SAME TRACE WITH THE EDGE DECLARED. 6 of 6 clauses exercised and
+  holding — the only run in this gate of which that is true, and the only place
+  `every clause passed` can be said without qualification."
+  [])
+(def ld2-inconclusive-arms [:propagation])
+
+(def cc-inconclusive-clauses
+  "C — CALL-OVER-CALL. B6.5 joins B6.3: a run in which NOTHING FORWARDED has no
+  rung in finalisation's scope, so the clause has no obligation to check. That
+  is a second vacuous pass this control was previously reporting, and it is a
+  direct consequence of the defect the control exists to demonstrate."
+  [:b6.3 :b6.5])
+(def cc-inconclusive-arms [:error-mapping :finalisation :propagation])
+
+(def ms-inconclusive-clauses
+  "D — MULTI-SHOT OUTWARD OPERATION. The fixture drives `perturb.wire` directly
+  rather than through `perturb.http`, so no capability transition is ever noted
+  and B6.2 projects onto an empty ledger."
+  [:b6.2 :b6.3])
+(def ms-inconclusive-arms [:projection :error-mapping :propagation])
+
+(def probe-inconclusive-clauses
+  "G — SELF-INTERCEPTION BACKSTOP. Checked with NO declared layers at all
+  (`(lay/check [] probe)`), which is the honest shape for a probe that declares
+  none — and four of the six clauses have nothing to read as a result. Only
+  B6.4, the clause the control is for, and B6.6 reach a verdict."
+  [:b6.1 :b6.2 :b6.3 :b6.5])
+(def probe-inconclusive-arms
+  "`:propagation` is absent from this list, and it is the only fixture for which
+  that is true: the probe is refused, so five of its attempts end `:propagated`
+  and B6.6's second arm has records to adjudicate."
+  [:correlation :credit :projection :error-mapping :finalisation])
 
 ;; --- main --------------------------------------------------------------------
 
@@ -310,8 +481,11 @@
                                      ", " (o/ocount ((:sent kg))) " octets on the wire in "
                                      (count (tls/unframe ((:sent kg)))) " records"))
                        (println "  Two pipelined HTTP requests, one octet per transport recv, no")
-                       (println "  record boundary aligned with an HTTP one. Every clause must hold.")
-                       (expect-clean "A known-good" kgr []))
+                       (println "  record boundary aligned with an HTTP one. Every clause THIS")
+                       (println "  TRACE EXERCISES must hold, and the clauses it does not exercise")
+                       (println "  must say so — see the vacuity line.")
+                       (expect-clean "A known-good" kgr
+                                     kg-inconclusive-clauses kg-inconclusive-arms []))
               f0   (do (when (seq (:perturb.layer/mapped kgr))
                          (println (str "    error-mapping edges exercised: "
                                        (pr-str (:perturb.layer/mapped kgr)))))
@@ -340,7 +514,8 @@
                        (println (str "  the run ended: "
                                      (pr-str (or (:perturb.layer/threw (:recorded ld))
                                                  (:perturb.layer/value (:recorded ld))))))
-                       (expect-clause "B laundering" ldr :b6.3 [:unmapped-refusal] f0))
+                       (expect-clause "B laundering" ldr :b6.3 [:unmapped-refusal]
+                                      ld-inconclusive-clauses ld-inconclusive-arms f0))
 
               ;; ============================================================
               ;; B' — the same program with the edge declared
@@ -350,7 +525,10 @@
                        (println "  Same run, same trace, same checker. The only difference is that")
                        (println "  the layer now DECLARES {:op :recv :abort :handler-abort}. If")
                        (println "  this did not pass, B6.3 would be a rule nothing can satisfy.")
-                       (let [r (expect-clean "B' error-mapping edge declared" ldr2 f1)]
+                       (println "  This is also the ONE ARM in the gate where B6.3 reaches a")
+                       (println "  verdict rather than reporting :inconclusive.")
+                       (let [r (expect-clean "B' error-mapping edge declared" ldr2
+                                             ld2-inconclusive-clauses ld2-inconclusive-arms f1)]
                          (println (str "    edges exercised: " (pr-str (:perturb.layer/mapped ldr2))))
                          r))
 
@@ -371,7 +549,8 @@
                                      "   (known-good: "
                                      (:forwards (:perturb.layer/summary kgr)) ")"))
                        (expect-clause "C call-over-call" ccr :b6.1
-                                      [:mandatory-forward :fan-out] f2))
+                                      [:mandatory-forward :fan-out]
+                                      cc-inconclusive-clauses cc-inconclusive-arms f2))
 
               ;; ============================================================
               ;; D — multi-shot outward operation
@@ -389,7 +568,8 @@
                                                  (:perturb.layer/value (:recorded ms))))))
                        (expect-clause "D multi-shot" msr :b6.4
                                       [:zero-shot-outward :multi-shot-outward
-                                       :escaped-outward] f3))
+                                       :escaped-outward]
+                                      ms-inconclusive-clauses ms-inconclusive-arms f3))
 
               ;; ============================================================
               ;; E — the runtime refusals (PRACTICAL-ADOPTION §A3)
@@ -500,19 +680,53 @@
                         (println "  refusal in `forward!` cannot see it — only the trace clause can.")
                         (println (str "    probe returned " (pr-str (:perturb.layer/value probe))))
                         (expect-clause "G self-interception" pr-r :b6.4
-                                       [:self-interception] f6))]
+                                       [:self-interception]
+                                       probe-inconclusive-clauses probe-inconclusive-arms f6))]
           f7)]
 
     ;; ==================================================================
     ;; what this is worth
     ;; ==================================================================
+    (banner "HOW MUCH OF B6 IS ACTUALLY EXERCISED — the measurement, per fixture")
+    (println "  A clause is `exercised` on a run when at least one of its arms")
+    (println "  adjudicated at least one unit of evidence. A clause that adjudicated")
+    (println "  NOTHING reports :inconclusive and is counted here as not exercised,")
+    (println "  because its silence carries no information about the layer.")
+    (println)
+    (vacuity-table)
+    (println)
+    (println "  READ IT THIS WAY, AND DISCOUNT IT TWICE.")
+    (println "  1. The denominator is 6 CHECKED RUNS, not 6 independent traces. B")
+    (println "     and B' are THE SAME RECORDED TRACE checked against two layer")
+    (println "     declarations, so B6.3's `2 of 6` is really ONE trace — the only")
+    (println "     one in the gate that refuses anything inside a layer's extent.")
+    (println "  2. No single fixture exercises all six clauses except B', so the")
+    (println "     gate's coverage of B6 is a UNION over fixtures and not a property")
+    (println "     of the known-good. The known-good is 5 of 6.")
+    (println "  Nothing here is a coverage denominator in E18 finding 4's sense: the")
+    (println "  fixtures were not enumerated from anything, and `6 of 6` for B6.4")
+    (println "  means `every fixture happened to contain one`, not `complete`.")
+
     (banner "WHAT WAS SHOWN, ON THE EVIDENCE LATTICE")
     (println "  proved              nothing")
     (println "  bounded-complete    nothing")
-    (println "  monitored           B6, over the runs this gate executes. Every")
-    (println "                      clause is a fact about ONE RECORDED TRACE:")
-    (println "                      the known-good passes all six, and each")
-    (println "                      negative control fails the one named clause.")
+    (println "  monitored           B6, over the runs this gate executes, AND ONLY")
+    (println "                      WHERE A RUN CARRIED EVIDENCE. Every clause is a")
+    (println "                      fact about ONE RECORDED TRACE. The known-good")
+    (println "                      exercises FIVE of six and holds on all five;")
+    (println "                      B6.3 is :inconclusive there because that trace")
+    (println "                      refuses nothing, and it reaches a verdict in")
+    (println "                      controls B and B'. Each negative control fails")
+    (println "                      the one named clause.")
+    (println "  NOT MONITORED, and this line is new: a clause reported")
+    (println "                      :inconclusive on a run is not monitored ON THAT")
+    (println "                      RUN. Across the whole gate every clause reaches")
+    (println "                      a verdict SOMEWHERE — B6.3 only in B/B', B6.5")
+    (println "                      not in C, B6.2 not in D — so the union covers")
+    (println "                      six of six and no single fixture does. B6.6's")
+    (println "                      :propagation arm reaches a verdict in exactly")
+    (println "                      ONE place, the G probe, because it is the only")
+    (println "                      run here that propagates a refusal.")
     (println "  sampled             TWO rungs, ONE thread, ONE scripted transport,")
     (println "                      TWO pipelined requests, ONE connection. E29's")
     (println "                      real-socket rung is NOT run here — perturb.tlsdemo")
@@ -541,11 +755,14 @@
     (println)
     (println line)
     (if (empty? fails)
-      (do (println "LAYER GATE OK — the known-good composition passed every clause, each")
-          (println "                negative control failed the clause it was built for, every")
-          (println "                §A3 refusal fired and latched, and five forged projections")
-          (println "                were rejected. E33's label stands: a testable design")
-          (println "                hypothesis, not a theorem.")
+      (do (println "LAYER GATE OK — the known-good composition passed every clause IT")
+          (println "                EXERCISES (five of six; B6.3 is :inconclusive there and")
+          (println "                reaches its verdict in controls B and B'), each negative")
+          (println "                control failed the clause it was built for, the vacuity of")
+          (println "                every fixture matched its recorded measurement, every §A3")
+          (println "                refusal fired and latched, and five forged projections were")
+          (println "                rejected. E33's label stands: a testable design hypothesis,")
+          (println "                not a theorem.")
           (System/exit 0))
       (do (println (str "LAYER GATE FAILED — " (pr-str (vec fails))))
           (System/exit 1)))))
