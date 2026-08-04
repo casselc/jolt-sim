@@ -1,10 +1,10 @@
 (ns jolt.sim.report
-  "Static, self-contained HTML reports for validated jolt-sim trace documents.
+  "Static, self-contained HTML reports for validated jolt-sim documents.
 
   This is the first shared view-model/rendering slice for a later live web or
-  GTK viewer: it consumes the existing trace document and monitor-result
-  contracts unchanged and creates no new trace schema, simulator, server, or
-  controller.
+  GTK viewer: it consumes the existing trace document, Case/Outcome document,
+  and monitor-result contracts unchanged and creates no new trace schema,
+  simulator, server, or controller.
 
   API:
     trace->view-model  pure public trace-to-view-model function. Validates the
@@ -13,31 +13,49 @@
                        already-computed monitor decisions as data, and never
                        runs a monitor function.
     trace->html        validate + view model + render in one call.
+    case-outcome->view-model
+                       pure public Case/Outcome-to-view-model function.
+                       Validates the document fail-closed through
+                       jolt.sim.case-outcome/validate-document! and projects
+                       the case, the discriminated outcome, the known
+                       whole-application result sections, and the ordered
+                       monitor decisions to data.
+    case-outcome->html validate + view model + render in one call.
     -main              ordinary-use entry point: jolt -M:trace-report
                        INPUT.edn [OUTPUT.html]. Reads exactly one trace
                        document via jolt.sim.trace/read-edn, fails closed, and
                        refuses to overwrite the input file.
 
-  Determinism: the view model contains only ordered data (event vectors, a
-  sorted tag-count map, caller-ordered monitor decisions) and the rendered HTML
-  embeds no wall-clock time, random ids, unordered map iteration, absolute host
-  paths, environment data, or machine identity. Rendering the same document and
-  options twice produces byte-identical HTML.
+  The trace and Case/Outcome paths are deliberately separate: the two
+  documents are distinct versioned contracts, and each renderer rejects the
+  other's document shape rather than guessing a shared schema.
 
-  Escaping: every value derived from the validated trace and options is
+  Determinism: the view models contain only ordered data (event vectors, a
+  sorted tag-count map, caller- or document-ordered monitor decisions, a fixed
+  result-section order) and the rendered HTML embeds no wall-clock time,
+  random ids, unordered map iteration, absolute host paths, environment data,
+  or machine identity. Rendering the same document and options twice produces
+  byte-identical HTML.
+
+  Escaping: every value derived from a validated document and options is
   rendered inside an explicit Selmer escaping scope, so hostile strings stay
   inert even when some other library has changed Selmer's process-wide
   default."
   (:require [clojure.java.io :as io]
             [clojure.string :as string]
             [jolt.fs :as fs]
+            [jolt.sim.case-outcome :as case-outcome]
             [jolt.sim.report-template :refer [embedded-html]]
             [jolt.sim.trace :as trace]
             [selmer.parser :as selmer]
             [selmer.util :as selmer-util]))
 
 (def view-model-version
-  "Version of the view-model shape this namespace emits."
+  "Version of the trace view-model shape this namespace emits."
+  1)
+
+(def case-outcome-view-model-version
+  "Version of the Case/Outcome view-model shape this namespace emits."
   1)
 
 (def invalid-monitor-result
@@ -256,6 +274,175 @@
    (trace->html doc nil))
   ([doc options]
    (render-report (trace->view-model doc options))))
+
+;; Case/Outcome reports. This path consumes the versioned jolt.sim.case-outcome
+;; v1 contract only; cooperative trace documents are rejected here, and
+;; Case/Outcome documents are rejected by the trace renderer above.
+
+(def ^:private result-section-keys
+  ;; Fixed display order for the known whole-application result sections of a
+  ;; completed Case/Outcome value. Absent sections are simply absent from the
+  ;; view model; unknown keys remain visible only in the value and document
+  ;; EDN projections.
+  [:application :http :receiver :routes :sqlite :capacity :fault :admission
+   :schedule :clean?])
+
+(defn- result-sections
+  "Projects the known whole-application sections present in an ordinary
+  completed result, in the fixed `result-section-keys` order. Each row is
+  {:name .. :edn ..} with byte-stable ordinary-value EDN; absent sections are
+  simply absent while a present nil section is still shown."
+  [result]
+  (if (map? result)
+    (into []
+          (keep (fn [k]
+                  (when (contains? result k)
+                    {:name (name k)
+                     :edn (trace/canonical-edn (get result k))})))
+          result-section-keys)
+    []))
+
+(defn- monitor-decision-row
+  "Projects one restored Case/Outcome monitor decision to its rendering row.
+  The ordinary :id and :detail become byte-stable EDN text; the raw :status
+  keyword and :index are retained. Caller order is preserved by the enclosing
+  mapv."
+  [decision]
+  {:id-edn (trace/canonical-edn (:id decision))
+   :status (:status decision)
+   :status-name (name (:status decision))
+   :detail-edn (trace/canonical-edn (:detail decision))
+   :index (:index decision)})
+
+(defn- outcome-view-model
+  "Projects a validated ordinary outcome map. Every status renders its
+  discriminated :status and :exit; :completed adds canonical :value EDN and
+  the known result sections, :failed and :worker-error add canonical :error
+  EDN, and :timeout adds its :reason. Flags and EDN text are explicit for
+  absent fields so the template never guesses."
+  [outcome]
+  (let [status (:status outcome)
+        exit (:exit outcome)
+        base {:outcome-status status
+              :outcome-status-name (name status)
+              :outcome-exit exit
+              :exit-edn (pr-str exit)
+              :has-reason false
+              :reason nil
+              :reason-name nil
+              :has-value false
+              :value-edn nil
+              :has-error false
+              :error-edn nil
+              :sections []
+              :has-sections false}]
+    (case status
+      :completed
+      (let [sections (result-sections (:result outcome))]
+        (assoc base
+               :has-value true
+               :value-edn (trace/canonical-edn (:result outcome))
+               :sections sections
+               :has-sections (pos? (count sections))))
+
+      :failed
+      (assoc base
+             :has-error true
+             :error-edn (trace/canonical-edn (:error outcome)))
+
+      :timeout
+      (assoc base
+             :has-reason true
+             :reason (:reason outcome)
+             :reason-name (name (:reason outcome)))
+
+      :worker-error
+      (assoc base
+             :has-error true
+             :error-edn (trace/canonical-edn (:error outcome))))))
+
+(defn case-outcome->view-model
+  "Builds a deterministic, data-only view model for a Case/Outcome document.
+
+  `doc` must be an already formed versioned Case/Outcome document; it is
+  validated fail-closed through `jolt.sim.case-outcome/validate-document!`
+  before anything is read from it. This path is deliberately separate from
+  `trace->view-model`: the two documents are distinct versioned contracts and
+  each renderer rejects the other's shape.
+
+  The returned map is ordered, host-independent data. The Case/Outcome codec's
+  public restoration helpers provide the ordinary case, outcome, and monitor
+  values; this renderer does not inspect their private stored tags. The case
+  projection carries the scenario symbol's name, the mode, byte-stable EDN of
+  the ordinary input, and the exact future schedule (`nil` when the case ran
+  unscheduled). The outcome projection carries the discriminated status, the
+  exit, and -- as applicable -- byte-stable ordinary-value EDN of a `:completed`
+  result, error EDN of a `:failed`/`:worker-error` outcome, or
+  the `:deadline` reason of a `:timeout`. For a completed whole-application
+  result, the known sections named by `result-section-keys` are projected in
+  that fixed order when present; absent sections are simply absent, and
+  unknown keys remain visible only in the value and document EDN. The ordered
+  monitor decisions keep document order and gain `:status-name`, `:id-edn`,
+  and `:detail-edn` rendering projections. `:canonical-edn` is the
+  byte-stable EDN of the complete validated document."
+  [doc]
+  (case-outcome/validate-document! doc)
+  (let [ordinary-case (case-outcome/restore-case doc)
+        ordinary-outcome (case-outcome/restore-outcome doc)
+        schedule (:schedule ordinary-case)
+        monitor-rows (mapv monitor-decision-row
+                           (case-outcome/restore-monitors doc))]
+    (merge
+     {:view-model-version case-outcome-view-model-version
+      :document-version (:jolt.sim.case-outcome/version doc)
+      :scenario-name (str (:scenario ordinary-case))
+      :mode (:mode ordinary-case)
+      :mode-name (name (:mode ordinary-case))
+      :input-edn (trace/canonical-edn (:input ordinary-case))
+      :schedule schedule
+      :schedule-edn (trace/canonical-edn schedule)
+      :has-schedule (some? schedule)
+      :monitors monitor-rows
+      :has-monitors (pos? (count monitor-rows))
+      :monitor-count (count monitor-rows)
+      :canonical-edn (case-outcome/canonical-edn doc)}
+     (outcome-view-model ordinary-outcome))))
+
+(defmacro ^:private embedded-template
+  "Expands to the complete contents of the named template resource as a
+  string literal, failing closed when the resource is missing during
+  analysis. As with jolt.sim.report-template/embedded-html, reading during
+  analysis keeps a standalone image free of runtime resource or
+  dependency-source lookups."
+  [resource]
+  (let [found (io/resource resource)]
+    (when-not found
+      (throw
+       (ex-info
+        "Case/Outcome report template is missing during analysis"
+        {:type ::missing-template
+         :resource resource})))
+    (slurp found)))
+
+(def ^:private case-outcome-template
+  ;; The Case/Outcome template resource is read while this namespace is
+  ;; analyzed and compiled into this var, mirroring `report-template`.
+  (embedded-template "jolt/sim/case_outcome.html"))
+
+(defn- render-case-outcome-report
+  "Internal renderer for the validated view model produced by
+  `case-outcome->view-model`. Keeping this private prevents callers from
+  supplying Selmer's deliberate `[:safe ...]` escape-bypass sentinel as
+  arbitrary view data."
+  [view-model]
+  (selmer-util/with-escaping
+    (selmer/render case-outcome-template view-model)))
+
+(defn case-outcome->html
+  "Validates `doc` as a Case/Outcome document, builds its view model, and
+  renders the deterministic, self-contained HTML case report."
+  [doc]
+  (render-case-outcome-report (case-outcome->view-model doc)))
 
 (defn- absolute-path [path]
   (.getAbsolutePath (io/file path)))

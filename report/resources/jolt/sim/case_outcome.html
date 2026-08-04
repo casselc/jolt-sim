@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<!-- Compiled into jolt.sim.report during namespace analysis. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>jolt-sim case report</title>
+<style>
+  :root {
+    --bg: #f6f7f9;
+    --panel: #ffffff;
+    --ink: #1c2733;
+    --muted: #5b6b7b;
+    --line: #d8dee6;
+    --accent: #2456a6;
+    --pass: #1e7d3c;
+    --violation: #b3261e;
+    --inconclusive: #8a6d00;
+    --code-bg: #eef1f5;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    line-height: 1.45;
+  }
+  header {
+    background: var(--panel);
+    border-bottom: 1px solid var(--line);
+    padding: 1.25rem 1.5rem;
+  }
+  header h1 { margin: 0 0 0.25rem; font-size: 1.35rem; }
+  header .subtitle { margin: 0; color: var(--muted); font-size: 0.95rem; }
+  main { padding: 1.25rem 1.5rem 2rem; max-width: 1100px; margin: 0 auto; }
+  section { margin-bottom: 1.75rem; }
+  h2 {
+    font-size: 1.05rem;
+    margin: 0 0 0.6rem;
+    padding-bottom: 0.3rem;
+    border-bottom: 1px solid var(--line);
+  }
+  .cards { display: flex; gap: 0.75rem; flex-wrap: wrap; }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 0.7rem 1rem;
+    min-width: 9rem;
+  }
+  .card-label { display: block; color: var(--muted); font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.04em; }
+  .card-value { display: block; font-size: 1.15rem; font-weight: 600; margin-top: 0.15rem; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    overflow: hidden;
+    font-size: 0.9rem;
+  }
+  th, td { padding: 0.45rem 0.6rem; text-align: left; vertical-align: top; border-bottom: 1px solid var(--line); }
+  thead th { background: var(--code-bg); font-weight: 600; white-space: nowrap; }
+  tbody tr:last-child td, tbody tr:last-child th { border-bottom: none; }
+  table.kv th { white-space: nowrap; width: 1%; padding-right: 1rem; }
+  .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.85em; }
+  .edn { word-break: break-all; }
+  .detail { word-break: break-word; }
+  .muted { color: var(--muted); }
+  .status { font-weight: 600; }
+  .status-pass, .status-completed { color: var(--pass); }
+  .status-violation, .status-failed, .status-worker-error { color: var(--violation); }
+  .status-inconclusive, .status-timeout { color: var(--inconclusive); }
+  details { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; }
+  summary { cursor: pointer; padding: 0.6rem 0.8rem; font-weight: 600; }
+  .sections-list details { margin-bottom: 0.5rem; }
+  pre.canonical {
+    margin: 0;
+    padding: 0.8rem;
+    background: var(--code-bg);
+    overflow-x: auto;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.82rem;
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+  section > pre.canonical { border: 1px solid var(--line); border-radius: 6px; }
+  footer { padding: 0 1.5rem 1.5rem; color: var(--muted); font-size: 0.8rem; text-align: center; }
+</style>
+</head>
+<body>
+<header>
+  <h1>jolt-sim case report</h1>
+  <p class="subtitle"><code>{{scenario-name}}</code> &middot; {{mode-name}} &middot; {{outcome-status-name}}</p>
+</header>
+
+<main>
+  <section class="cards">
+    <div class="card">
+      <span class="card-label">Document version</span>
+      <span class="card-value">{{document-version}}</span>
+    </div>
+    <div class="card">
+      <span class="card-label">Mode</span>
+      <span class="card-value">{{mode-name}}</span>
+    </div>
+    <div class="card">
+      <span class="card-label">Outcome</span>
+      <span class="card-value status status-{{outcome-status-name}}">{{outcome-status-name}}</span>
+    </div>
+    <div class="card">
+      <span class="card-label">Exit</span>
+      <span class="card-value">{{exit-edn}}</span>
+    </div>
+    {% if has-reason %}
+    <div class="card">
+      <span class="card-label">Reason</span>
+      <span class="card-value">{{reason-name}}</span>
+    </div>
+    {% endif %}
+    <div class="card">
+      <span class="card-label">Monitors</span>
+      <span class="card-value">{{monitor-count}}</span>
+    </div>
+  </section>
+
+  <section>
+    <h2>Case</h2>
+    <table class="kv">
+      <tbody>
+        <tr><th>Scenario</th><td><code>{{scenario-name}}</code></td></tr>
+        <tr><th>Mode</th><td><code>{{mode-name}}</code></td></tr>
+        <tr><th>Schedule</th><td class="edn"><code>{{schedule-edn}}</code></td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Canonical input (EDN)</h2>
+    <pre class="canonical">{{input-edn}}</pre>
+  </section>
+
+  <section>
+    <h2>Outcome</h2>
+    <table class="kv">
+      <tbody>
+        <tr>
+          <th>Status</th>
+          <td class="status status-{{outcome-status-name}}">{{outcome-status-name}}</td>
+        </tr>
+        <tr><th>Exit</th><td class="num">{{exit-edn}}</td></tr>
+        {% if has-reason %}
+        <tr><th>Reason</th><td><code>{{reason-name}}</code></td></tr>
+        {% endif %}
+      </tbody>
+    </table>
+    {% if has-value %}
+    <details>
+      <summary>Result value (canonical EDN)</summary>
+      <pre class="canonical">{{value-edn}}</pre>
+    </details>
+    {% endif %}
+    {% if has-error %}
+    <details>
+      <summary>Error (canonical EDN)</summary>
+      <pre class="canonical">{{error-edn}}</pre>
+    </details>
+    {% endif %}
+  </section>
+
+  {% if has-sections %}
+  <section>
+    <h2>Result detail</h2>
+    <div class="sections-list">
+    {% for s in sections %}
+      <details>
+        <summary>:{{s.name}}</summary>
+        <pre class="canonical">{{s.edn}}</pre>
+      </details>
+    {% endfor %}
+    </div>
+  </section>
+  {% endif %}
+
+  <section>
+    <h2>Monitor outcomes</h2>
+    {% if has-monitors %}
+    <table>
+      <thead>
+        <tr><th>Monitor</th><th>Status</th><th>Index</th><th>Detail</th></tr>
+      </thead>
+      <tbody>
+      {% for m in monitors %}
+        <tr>
+          <td><code>{{m.id-edn}}</code></td>
+          <td class="status status-{{m.status-name}}">{{m.status}}</td>
+          <td class="num">{{m.index}}</td>
+          <td class="detail"><code>{{m.detail-edn}}</code></td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="muted">No monitor decisions recorded.</p>
+    {% endif %}
+  </section>
+
+  <section>
+    <h2>Canonical document (EDN)</h2>
+    <details>
+      <summary>Complete validated Case/Outcome document (version {{document-version}})</summary>
+      <pre class="canonical">{{canonical-edn}}</pre>
+    </details>
+  </section>
+</main>
+
+<footer>
+  <p>Generated by jolt.sim.report &middot; case/outcome view-model version {{view-model-version}}</p>
+</footer>
+
+</body>
+</html>
