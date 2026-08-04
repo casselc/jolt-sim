@@ -62,6 +62,27 @@
     behavior, receiver idempotence, process restart, close/reopen durability,
     real-kernel ECONNRESET parity, or unbounded liveness.
 
+    The cancel-before-ack lane at the bottom of this namespace is the
+    pre-acknowledgement cancellation witness: the unchanged
+    jolt.sim.fixtures.outbox-delivery/exercise-outbox-delivery-cancel-before-ack
+    application runs in a fresh worker per case under the shared hermetic
+    packs and an optional captured poll EINTR. The cancellation point (after
+    the receiver decodes attempt 1, before it acknowledges) is structural and
+    fixed in the unchanged fixture by ordinary promise handshakes -- never
+    randomized and never driven by ffi-schedule or any compiler ABI, so there
+    is no admission/schedule projection on this lane. Its assertions
+    discriminate the committed command surviving, the pre- and post-
+    cancellation reloaded rows being identical pending rows with no marking or
+    delivery evidence and no SQL update, the canonical teensyp.client/closed
+    :receive :closed cancellation of the blocked receive, exactly one owning
+    close (true) and one idempotent cleanup close (false), the helper future
+    completing normally owning the cancellation, the receiver decoding attempt
+    1 and withholding its ack with no server errors, exact 18-statement SQLite
+    plan consumption, handler-only routing, coherent capacity/fault evidence,
+    and complete cleanup. This lane witnesses at-least-once retryability after
+    a pre-ack cancellation; it does not claim exactly-once delivery, every
+    ack/close race, process restart, or real-kernel cancellation parity.
+
    Process-isolated like :tcp-bencode-hegel-test: each case spawns a fresh
    worker, and the parent supplies the worker command through JOLT_SIM_BIN and
    JOLT_SIM_PROJECT_DIR."
@@ -87,9 +108,22 @@
 (def ^:private retry-scenario-sym
   'jolt.sim.fixtures.outbox-delivery-scenarios/exercise-retry-recv-reset)
 
+(def ^:private cancel-scenario-sym
+  'jolt.sim.fixtures.outbox-delivery-scenarios/exercise-cancel-before-ack-with-capacities)
+
 (def ^:private case-outcome-filename "case-outcome.edn")
 (def ^:private delivery-monitor-id :outbox/delivery-invariants)
 (def ^:private retry-monitor-id :outbox/retry-invariants)
+(def ^:private cancel-monitor-id :outbox/cancellation-invariants)
+
+;; The canonical teensyp.client/closed :receive :closed cancellation the
+;; unchanged fixture's blocked exchange wakes with after the cross-thread
+;; owning close, mirrored as literal keywords/strings because this parent
+;; cannot load the teensyp.client namespace. These are part of the
+;; cancellation witness contract; any drift surfaces as an exact mismatch.
+(def ^:private client-closed-keyword :teensyp.client/closed)
+(def ^:private cancellation-receive-message
+  "teensyp.client receive: connection is closed")
 
 ;; Ordered, discriminating boundaries rather than every integer in a range.
 ;; Hegel owns selection and shrinks sampled indexes toward the smoke-capacity/
@@ -252,6 +286,25 @@
            :message-2 (assoc (:message base) "attempt" 2)
            :ack-2 {"type" "outbox_delivery_ok" "outbox-id" 1 "attempt" 2})))
 
+(defn- expected-cancel-for
+  "Derives the exact cancel-before-ack expectations from the drawn payload:
+   the unchanged committed command/store semantics up to the post-COMMIT
+   reload and the receiver's decoded attempt-1 delivery message. No marking
+   or delivered store state exists on this path -- the post-cancellation
+   reload through the same still-open connection must equal the committed
+   pending state -- so :store-state is :pending-state and there is no
+   :marking or :delivery expectation. The withheld ack outcome and the
+   canonical cancellation error are constants of the unchanged fixture, not
+   functions of the payload."
+  [payload]
+  (let [base (expected-for payload)]
+    {:command-evidence (:command-evidence base)
+     :identities (:identities base)
+     :pending-state (:pending-state base)
+     :store-state (:pending-state base)
+     :message (:message base)
+     :http-response (:http-response base)}))
+
 (defn- input-generator
   "Returns a Hegel generator over the scenario input domain. The five draws
    are composed with g/tuple and g/fmap so the whole input shrinks as one
@@ -283,6 +336,27 @@
    schedule/fault distribution discriminating rather than unbounded noise.
    The payload vector shrinks toward empty; the finite capacity/ordinal
    domains shrink toward their smoke values."
+  []
+  (g/fmap
+   (fn [[payload stream-capacity pipe-capacity ordinal]]
+     {:payload payload
+      :stream-capacity stream-capacity
+      :pipe-capacity pipe-capacity
+      :poll-eintr-ordinal ordinal})
+   (g/tuple (g/vector {:max-size max-payload-octets} (g/octet))
+            (g/sampled-from stream-capacity-domain)
+            (g/sampled-from pipe-capacity-domain)
+            (g/sampled-from poll-eintr-domain))))
+
+(defn- cancel-input-generator
+  "Returns a Hegel generator over the cancel-before-ack scenario input
+   domain: payload, stream capacity, pipe capacity, and an optional captured
+   poll EINTR ordinal. The structural cancellation point (after receiver
+   decode, before ack) is fixed in the unchanged fixture and deliberately NOT
+   drawn; the only fault dimension that varies is the independent poll EINTR
+   beside that structural cancellation. The payload vector shrinks toward
+   empty; the finite capacity/ordinal domains shrink toward their smoke
+   values."
   []
   (g/fmap
    (fn [[payload stream-capacity pipe-capacity ordinal]]
@@ -875,6 +949,7 @@
   (cond
     (= scenario scenario-sym) delivery-monitor-id
     (= scenario retry-scenario-sym) retry-monitor-id
+    (= scenario cancel-scenario-sym) cancel-monitor-id
     :else
     (throw
      (ex-info
@@ -913,9 +988,10 @@
   (str (fs/path artifact-dir case-outcome-filename)))
 
 (defn- export-prefix [scenario lane ordinal]
-  (str (if (= scenario retry-scenario-sym)
-         "outbox-retry-"
-         "outbox-delivery-")
+  (str (cond
+         (= scenario retry-scenario-sym) "outbox-retry-"
+         (= scenario cancel-scenario-sym) "outbox-cancel-"
+         :else "outbox-delivery-")
        (name lane) "-" ordinal "-"))
 
 (defn- export-artifact-directory!
@@ -995,7 +1071,8 @@
    directory, and asserts the full invariant set with `assert-fn` (called as
    (assert-fn input outcome)). Every non-success keeps its original directory;
    when a stable export root is configured it is copied there before rethrow.
-   One successful retry boundary witness is also exported for CI and humans.
+   One successful retry boundary witness and one successful cancellation
+   boundary witness are also exported for CI and humans.
    The exceptional supervisor paths where child exit was not observed retain
    and report their original directory without reading or copying it while the
    child might still be alive. Throws on the first violation and returns
@@ -1043,6 +1120,9 @@
             export?
             (or assertion-error
                 (and (= scenario retry-scenario-sym)
+                     (= :boundary lane)
+                     (= 1 ordinal))
+                (and (= scenario cancel-scenario-sym)
                      (= :boundary lane)
                      (= 1 ordinal)))
             persisted
@@ -1964,6 +2044,550 @@
         (str "Hegel did not exercise the full poll-EINTR domain: "
              (pr-str @seen-poll-ordinals)))))
 
+;; ---- Cancel-before-ack lane (structural pre-ack cancellation) --------------
+
+(defn- assert-cancel-case-outcome!
+  "Asserts the full cancel-before-ack invariant set for one completed worker
+   outcome: the committed command survives, the pre- and post-cancellation
+   reloaded rows are identical pending rows (no marking or delivery evidence
+   and no SQL update), the blocked receive wakes with the canonical
+   teensyp.client/closed :receive :closed cancellation, exactly one owning
+   close (true) and one idempotent cleanup close (false), the helper future
+   completed normally owning the cancellation, the receiver decoded attempt 1
+   and withheld its ack with no server errors, exact 18-statement SQLite plan
+   consumption with all routes handled, coherent capacity/fault evidence, and
+   exact HTTP/receiver/world cleanup. Throws on the first violation."
+  [input outcome]
+  (let [completed (require-completed-carrying-input! outcome input)
+        evidence (:result completed)
+        payload (:payload input)
+        expected (expected-cancel-for payload)]
+    (when-not (map? evidence)
+      (violation "jolt.sim.outbox-delivery-hegel-test/cancel-evidence-shape"
+                 input
+                 {:evidence-class (str (class evidence))}))
+    (let [{:keys [application http receiver routes sqlite capacity fault
+                  clean?]} evidence]
+      ;; Evidence is the versioned boundary between the fresh worker and this
+      ;; parent property. The cancel lane carries no persistence projection
+      ;; (the connection stays open in-memory) and no admission/schedule
+      ;; projection (the cancellation point is structural in the fixture).
+      (when-not (exact-map-keys?
+                 evidence
+                 #{:application :http :receiver :routes :sqlite :capacity
+                   :fault :clean?})
+        (violation "jolt.sim.outbox-delivery-hegel-test/cancel-evidence-keys"
+                   input
+                   {:keys (when (map? evidence)
+                            (vec (sort-by pr-str (keys evidence))))}))
+      ;; Application: the committed command evidence and the post-COMMIT
+      ;; pending state are byte-identical to the non-retry lane. The
+      ;; cancel-specific witness is :cancel; :store-state equals
+      ;; :pending-state because no ack was validated and no marking ran.
+      ;; There is deliberately no :marking and no :delivery key.
+      (when (or (contains? application :marking)
+                (contains? application :delivery))
+        (violation
+         "jolt.sim.outbox-delivery-hegel-test/cancel-forbidden-delivery-evidence"
+         input
+         {:forbidden-keys
+          (vec (filter #(contains? application %)
+                       [:marking :delivery]))}))
+      (when-not (exact-map-keys?
+                 application
+                 #{:identities :command :pending-state :store-state :cancel})
+        (violation
+         "jolt.sim.outbox-delivery-hegel-test/cancel-application-shape"
+         input
+         {:application application}))
+      (when-not (exact-map-keys?
+                 (:command application)
+                 #{:value :result :emitted})
+        (violation "jolt.sim.outbox-delivery-hegel-test/cancel-command-shape"
+                   input
+                   {:command (:command application)}))
+      (when-not (= (:command-evidence expected) (:command application))
+        (violation "jolt.sim.outbox-delivery-hegel-test/cancel-command"
+                   input
+                   {:command (:command application)
+                    :expected (:command-evidence expected)}))
+      (when-not (= (:identities expected) (:identities application))
+        (violation "jolt.sim.outbox-delivery-hegel-test/cancel-identities"
+                   input
+                   {:identities (:identities application)}))
+      (when-not (= (:pending-state expected) (:pending-state application))
+        (violation "jolt.sim.outbox-delivery-hegel-test/cancel-pending-state"
+                   input
+                   {:pending-state (:pending-state application)
+                    :expected (:pending-state expected)}))
+      ;; The post-cancellation reload through the same still-open connection
+      ;; must observe the exact committed state: no ack was validated, so no
+      ;; marking ran and the row is still :pending here. A spurious :marking
+      ;; or delivered row on this path is the central fail-closed violation.
+      (when-not (= (:pending-state expected) (:store-state application))
+        (violation
+         "jolt.sim.outbox-delivery-hegel-test/cancel-store-state-unchanged"
+         input
+         {:store-state (:store-state application)
+          :expected (:pending-state expected)}))
+      (when-not (= :pending
+                   (get-in application [:store-state :outbox 0 :status]))
+        (violation
+         "jolt.sim.outbox-delivery-hegel-test/cancel-store-state-pending"
+         input
+         {:store-state (:store-state application)}))
+      (when-not (empty?
+                 (filter #(= :delivered (:status %))
+                         (get-in application [:store-state :outbox])))
+        (violation
+         "jolt.sim.outbox-delivery-hegel-test/cancel-no-delivered-row"
+         input
+         {:store-state (:store-state application)}))
+      ;; The cancellation exchange evidence: the blocked receive woke with the
+      ;; canonical teensyp closed/receive/closed cancellation, the helper
+      ;; future owned the one owning close (true), and the second close from
+      ;; the exchange thread was idempotent (false). The helper completed
+      ;; normally owning the cancellation.
+      (let [cancel (:cancel application)]
+        (when-not (exact-map-keys?
+                   cancel
+                   #{:exchange-error :close-result :cleanup-close :helper})
+          (violation "jolt.sim.outbox-delivery-hegel-test/cancel-cancel-shape"
+                     input
+                     {:cancel cancel}))
+        (let [exchange-error (:exchange-error cancel)]
+          (when-not (and (exact-map-keys?
+                          exchange-error
+                          #{:class :message :data :err :operation :kind})
+                         (string? (:class exchange-error))
+                         (string? (:message exchange-error))
+                         (map? (:data exchange-error)))
+            (violation
+             "jolt.sim.outbox-delivery-hegel-test/cancel-exchange-error-shape"
+             input
+             {:cancel cancel}))
+          (when-not (= client-closed-keyword (:err exchange-error))
+            (violation
+             "jolt.sim.outbox-delivery-hegel-test/cancel-exchange-error-err"
+             input
+             {:cancel cancel}))
+          (when-not (= :receive (:operation exchange-error))
+            (violation
+             "jolt.sim.outbox-delivery-hegel-test/cancel-exchange-error-operation"
+             input
+             {:cancel cancel}))
+          (when-not (= :closed (:kind exchange-error))
+            (violation
+             "jolt.sim.outbox-delivery-hegel-test/cancel-exchange-error-kind"
+             input
+             {:cancel cancel}))
+          (when-not (= cancellation-receive-message (:message exchange-error))
+            (violation
+             "jolt.sim.outbox-delivery-hegel-test/cancel-exchange-error-message"
+             input
+             {:cancel cancel})))
+        (when-not (true? (:close-result cancel))
+          (violation
+           "jolt.sim.outbox-delivery-hegel-test/cancel-owning-close"
+           input
+           {:cancel cancel}))
+        (when-not (false? (:cleanup-close cancel))
+          (violation
+           "jolt.sim.outbox-delivery-hegel-test/cancel-cleanup-close"
+           input
+           {:cancel cancel}))
+        (when-not (= {:status :closed :close-result true}
+                     (:helper cancel))
+          (violation "jolt.sim.outbox-delivery-hegel-test/cancel-helper"
+                     input
+                     {:cancel cancel})))
+      ;; The receiver decoded attempt 1, withheld its ack, and recorded no
+      ;; server error (the withheld-ack sentinel is filtered by the fixture).
+      (when-not (exact-map-keys?
+                 receiver
+                 #{:requests :ack-outcomes :server-errors})
+        (violation
+         "jolt.sim.outbox-delivery-hegel-test/cancel-receiver-shape"
+         input
+         {:receiver receiver}))
+      (when-not (= [(:message expected)] (:requests receiver))
+        (violation
+         "jolt.sim.outbox-delivery-hegel-test/cancel-receiver-requests"
+         input
+         {:receiver receiver
+          :expected [(:message expected)]}))
+      (when-not (= [{:status :withheld}] (:ack-outcomes receiver))
+        (violation
+         "jolt.sim.outbox-delivery-hegel-test/cancel-receiver-ack-outcomes"
+         input
+         {:receiver receiver}))
+      (when-not (= [] (:server-errors receiver))
+        (violation
+         "jolt.sim.outbox-delivery-hegel-test/cancel-receiver-server-errors"
+         input
+         {:receiver receiver}))
+      ;; The HTTP response reports the committed command result byte-exactly.
+      (when-not (exact-map-keys?
+                 http
+                 #{:status :content-type :content-length :response
+                   :server-errors :close-results})
+        (violation "jolt.sim.outbox-delivery-hegel-test/cancel-http-shape"
+                   input
+                   {:http http}))
+      (when-not (= 200 (:status http))
+        (violation "jolt.sim.outbox-delivery-hegel-test/cancel-http-status"
+                   input
+                   {:http http}))
+      (when-not (= "application/x-bencode" (:content-type http))
+        (violation "jolt.sim.outbox-delivery-hegel-test/cancel-http-content-type"
+                   input
+                   {:http http}))
+      (when-not (= (:http-response expected) (:response http))
+        (violation "jolt.sim.outbox-delivery-hegel-test/cancel-http-response"
+                   input
+                   {:http http
+                    :expected (:http-response expected)}))
+      (when-not (= [] (:server-errors http))
+        (violation "jolt.sim.outbox-delivery-hegel-test/cancel-http-server-errors"
+                   input
+                   {:http http}))
+      (when-not (= {:connection [true false]} (:close-results http))
+        (violation "jolt.sim.outbox-delivery-hegel-test/cancel-http-close-results"
+                   input
+                   {:http http}))
+      ;; Effect/route evidence: every intercepted POSIX and SQLite call was
+      ;; served by a registered handler; nothing routed to a real socket or
+      ;; the real SQLite library, and the fixture actually made native calls
+      ;; through the expected symbols.
+      (when-not (exact-map-keys?
+                 routes #{:count :all-handled? :foreign-symbols})
+        (violation "jolt.sim.outbox-delivery-hegel-test/cancel-routes-shape"
+                   input
+                   {:routes routes}))
+      (when-not (positive-integer? (:count routes))
+        (violation "jolt.sim.outbox-delivery-hegel-test/cancel-route-count"
+                   input
+                   {:routes routes}))
+      (when-not (true? (:all-handled? routes))
+        (violation "jolt.sim.outbox-delivery-hegel-test/cancel-all-handled"
+                   input
+                   {:routes routes}))
+      (let [symbols (:foreign-symbols routes)]
+        (when-not (and (vector? symbols) (every? string? symbols))
+          (violation
+           "jolt.sim.outbox-delivery-hegel-test/cancel-foreign-symbols-shape"
+           input
+           {:foreign-symbols symbols}))
+        (when-not (every? (set symbols) required-foreign-symbols)
+          (violation "jolt.sim.outbox-delivery-hegel-test/cancel-required-routes"
+                     input
+                     {:missing (vec (sort (remove (set symbols)
+                                                  required-foreign-symbols)))})))
+      ;; Exact SQLite plan consumption: all 18 cancel-before-ack plans
+      ;; consumed (schema + command transaction + COMMIT, then two three-scan
+      ;; pending-state reloads over the same still-open connection); no mark
+      ;; transaction and no live connections or statements leaked.
+      (when-not (= {:plan-index 18 :plan-count 18 :open-dbs 0 :active-stmts 0}
+                   sqlite)
+        (violation "jolt.sim.outbox-delivery-hegel-test/cancel-sqlite-plans"
+                   input
+                   {:sqlite sqlite}))
+      ;; Bounded capacity participation under the drawn bounds; mirrors the
+      ;; non-retry lane exactly.
+      (when-not (and (exact-map-keys? capacity #{:stream :pipe})
+                     (exact-map-keys?
+                      (:stream capacity)
+                      #{:stream-capacity :stream-would-blocks
+                        :stream-capacity-limited-writes
+                        :max-stream-recv-bytes})
+                     (exact-map-keys?
+                      (:pipe capacity)
+                      #{:pipe-capacity :pipe-would-blocks
+                        :max-pipe-fifo-bytes}))
+        (violation "jolt.sim.outbox-delivery-hegel-test/cancel-capacity-shape"
+                   input
+                   {:capacity capacity}))
+      (when-not (= (:stream-capacity input)
+                   (:stream-capacity (:stream capacity)))
+        (violation "jolt.sim.outbox-delivery-hegel-test/cancel-stream-capacity"
+                   input
+                   {:capacity capacity}))
+      (when-not (= (:pipe-capacity input)
+                   (:pipe-capacity (:pipe capacity)))
+        (violation "jolt.sim.outbox-delivery-hegel-test/cancel-pipe-capacity"
+                   input
+                   {:capacity capacity}))
+      (when-not (<= 1
+                    (:max-stream-recv-bytes (:stream capacity))
+                    (:stream-capacity input))
+        (violation "jolt.sim.outbox-delivery-hegel-test/cancel-stream-occupancy"
+                   input
+                   {:capacity capacity}))
+      (when-not (<= 1
+                    (:max-pipe-fifo-bytes (:pipe capacity))
+                    (:pipe-capacity input))
+        (violation "jolt.sim.outbox-delivery-hegel-test/cancel-pipe-occupancy"
+                   input
+                   {:capacity capacity}))
+      (when-not (and
+                 (nonnegative-integer?
+                  (:stream-capacity-limited-writes (:stream capacity)))
+                 (nonnegative-integer?
+                  (:stream-would-blocks (:stream capacity)))
+                 (nonnegative-integer?
+                  (:pipe-would-blocks (:pipe capacity))))
+        (violation "jolt.sim.outbox-delivery-hegel-test/cancel-capacity-counters"
+                   input
+                   {:capacity capacity}))
+      (when (= 8 (:stream-capacity input))
+        (when-not (positive-integer?
+                   (:stream-capacity-limited-writes (:stream capacity)))
+          (violation
+           "jolt.sim.outbox-delivery-hegel-test/cancel-stream-partial-write"
+           input
+           {:capacity capacity})))
+      ;; Fault evidence: every generated non-nil ordinal must be reachable and
+      ;; fire exactly once. A nil ordinal installs no frontend, so both counts
+      ;; are zero. The structural cancellation is unaffected by the poll fault.
+      (when-not (exact-map-keys?
+                 fault #{:attempts :firings :fired-attempts})
+        (violation "jolt.sim.outbox-delivery-hegel-test/cancel-fault-shape"
+                   input
+                   {:fault fault}))
+      (when-not (and (nonnegative-integer? (:attempts fault))
+                     (nonnegative-integer? (:firings fault))
+                     (vector? (:fired-attempts fault)))
+        (violation "jolt.sim.outbox-delivery-hegel-test/cancel-fault-fields"
+                   input
+                   {:fault fault}))
+      (when-not (#{0 1} (:firings fault))
+        (violation "jolt.sim.outbox-delivery-hegel-test/cancel-fault-firings"
+                   input
+                   {:fault fault}))
+      (when (and (some? (:poll-eintr-ordinal input))
+                 (< (:attempts fault) (:poll-eintr-ordinal input)))
+        (violation
+         "jolt.sim.outbox-delivery-hegel-test/cancel-fault-ordinal-unreachable"
+         input
+         {:fault fault}))
+      (let [requested-ordinal (:poll-eintr-ordinal input)
+            expected-firings (if (some? requested-ordinal) 1 0)
+            expected-fired-attempts
+            (if (= 1 expected-firings)
+              [{:attempt-id
+                [:jolt.sim.net.posix-fault/poll requested-ordinal]
+                :firing
+                {:rule-id :outbox-delivery/interrupt-poll
+                 :firing-ordinal 1
+                 :rule-firing-ordinal 1
+                 :match-ordinal requested-ordinal
+                 :outcome {:kind :captured-error :errno :eintr}}}]
+              [])]
+        (when-not (= expected-firings (:firings fault))
+          (violation
+           "jolt.sim.outbox-delivery-hegel-test/cancel-fault-activation"
+           input
+           {:fault fault :expected-firings expected-firings}))
+        (when-not (= expected-fired-attempts (:fired-attempts fault))
+          (violation
+           "jolt.sim.outbox-delivery-hegel-test/cancel-fault-attempt-identity"
+           input
+           {:fault fault
+            :expected-fired-attempts expected-fired-attempts})))
+      ;; Cleanup: the shared worlds retired every resource; a leaked socket,
+      ;; pipe, SQLite handle, or native allocation is a bypass.
+      (when-not (= {:memory true :sqlite true :posix true} clean?)
+        (violation "jolt.sim.outbox-delivery-hegel-test/cancel-world-cleanup"
+                   input
+                   {:clean? clean?})))))
+
+;; The deterministic cancel-before-ack boundary witness: the empty payload and
+;; the [0 127 128 255] payload (embedded zero, 0x7f, 0x80, 0xff) at the fixed
+;; smoke capacities, the second with one captured first-poll EINTR beside the
+;; structural cancellation as the smoke-capacity mixed-fault control. Both run
+;; outside Hegel generation so the cancel-before-ack boundary semantics hold
+;; even if a future generator edit stops drawing them.
+(def ^:private cancel-boundary-witness-inputs
+  [{:payload []
+    :stream-capacity 8
+    :pipe-capacity 1
+    :poll-eintr-ordinal nil}
+   {:payload [0 127 128 255]
+    :stream-capacity 8
+    :pipe-capacity 1
+    :poll-eintr-ordinal 1}])
+
+(deftest outbox-delivery-cancel-boundary-witness
+  (doseq [[index input] (map-indexed vector cancel-boundary-witness-inputs)]
+    (check-case-with-progress!
+     cancel-scenario-sym assert-cancel-case-outcome!
+     :boundary (inc index) input boundary-case-timeout-ms)))
+
+(deftest hegel-outbox-delivery-cancel-holds-across-payload-capacities-and-eintr
+  (let [seen-stream-capacities (atom #{})
+        seen-pipe-capacities (atom #{})
+        seen-poll-ordinals (atom #{})
+        case-ordinal (atom 0)
+        result
+        (h/run-test!
+         {:test-cases 15
+          ;; Each case launches a fresh isolated Jolt worker so generation is
+          ;; intentionally slower than Hegel's unit-test health threshold.
+          :suppress-health-checks [:too-slow]
+          ;; Parent-only sampling verified that this fixed seed exercises every
+          ;; declared finite capacity and EINTR ordinal in 15 cases. The
+          ;; assertions below keep that coverage from silently drifting.
+          :seed 3
+          :database ""
+          :report-multiple-failures? false
+          :verbosity :quiet}
+         (fn [_]
+           (let [input (h/draw! (cancel-input-generator)
+                                "cancel-scenario-input")]
+             (check-case-with-progress!
+              cancel-scenario-sym assert-cancel-case-outcome!
+              :generated (swap! case-ordinal inc) input
+              case-timeout-ms)
+             (swap! seen-stream-capacities conj (:stream-capacity input))
+             (swap! seen-pipe-capacities conj (:pipe-capacity input))
+             (swap! seen-poll-ordinals conj (:poll-eintr-ordinal input))
+             nil)))]
+    (is (true? (:passed? result))
+        (pr-str {:status (:status result)
+                 :seed (:seed result)
+                 :n-failures (:n-failures result)
+                 :flaky? (:flaky? result)
+                 :failures (:failures result)
+                 :final (:final result)}))
+    (is (false? (:flaky? result))
+        (pr-str {:seed (:seed result)
+                 :flaky? (:flaky? result)
+                 :observed-failures (:observed-failures result)}))
+    (is (= (set stream-capacity-domain) @seen-stream-capacities)
+        (str "Hegel did not exercise the full stream-capacity domain: "
+             (pr-str @seen-stream-capacities)))
+    (is (= (set pipe-capacity-domain) @seen-pipe-capacities)
+        (str "Hegel did not exercise the full pipe-capacity domain: "
+             (pr-str @seen-pipe-capacities)))
+    (is (= (set poll-eintr-domain) @seen-poll-ordinals)
+        (str "Hegel did not exercise the full poll-EINTR domain: "
+             (pr-str @seen-poll-ordinals)))))
+
+(deftest cancellation-claim-with-marking-records-monitor-violation
+  ;; Parent-only negative control for the slice's central fail-closed claim.
+  ;; A completed cancellation result is mutated to claim a spurious durable
+  ;; marking (:marking in :application) that the cancel lane must never
+  ;; produce, because no acknowledgement was validated. The full
+  ;; assert-cancel-case-outcome! must reject this as a typed violation, and
+  ;; the cancellation monitor must record :violation. This mirrors
+  ;; semantic-violation-retains-canonical-case-outcome for the cancel lane and
+  ;; retains the canonical Case/Outcome artifact behavior (failed document,
+  ;; exported copy, preserved transient directory).
+  (let [input {:payload []
+               :stream-capacity 8
+               :pipe-capacity 1
+               :poll-eintr-ordinal nil}
+        expected (expected-cancel-for [])
+        valid-evidence
+        {:application
+         {:identities (:identities expected)
+          :command (:command-evidence expected)
+          :pending-state (:pending-state expected)
+          :store-state (:store-state expected)
+          :cancel
+          {:exchange-error
+           {:class "clojure.lang.ExceptionInfo"
+            :message cancellation-receive-message
+            :data {}
+            :err client-closed-keyword
+            :operation :receive
+            :kind :closed}
+           :close-result true
+           :cleanup-close false
+           :helper {:status :closed :close-result true}}}
+         :http
+         {:status 200
+          :content-type "application/x-bencode"
+          :content-length "0"
+          :response (:http-response expected)
+          :server-errors []
+          :close-results {:connection [true false]}}
+         :receiver
+         {:requests [(:message expected)]
+          :ack-outcomes [{:status :withheld}]
+          :server-errors []}
+         :routes
+         {:count 1
+          :all-handled? true
+          :foreign-symbols (vec (sort required-foreign-symbols))}
+         :sqlite
+         {:plan-index 18 :plan-count 18 :open-dbs 0 :active-stmts 0}
+         :capacity
+         {:stream {:stream-capacity 8
+                   :stream-would-blocks 0
+                   :stream-capacity-limited-writes 1
+                   :max-stream-recv-bytes 1}
+          :pipe {:pipe-capacity 1
+                 :pipe-would-blocks 0
+                 :max-pipe-fifo-bytes 1}}
+         :fault {:attempts 0 :firings 0 :fired-attempts []}
+         :clean? {:memory true :sqlite true :posix true}}
+        mutated-evidence
+        (assoc-in valid-evidence
+                  [:application :marking]
+                  {:row {} :changed? true})
+        artifact-dir
+        (str (fs/create-temp-dir
+              {:prefix "jolt-sim-cancel-violation-"}))
+        export-root
+        (str (fs/create-temp-dir
+              {:prefix "jolt-sim-cancel-violation-export-"}))
+        outcome {:status :completed
+                 :schedule nil
+                 :result mutated-evidence
+                 :exit 0
+                 :artifact-dir artifact-dir}
+        caught (atom nil)]
+    (spit (str (fs/path artifact-dir "request.edn")) "request")
+    (try
+      (binding [*process-config* {}
+                *case-artifact-export-dir* export-root]
+        (with-redefs
+          [process-explorer/run-case (fn [_] outcome)]
+          (try
+            (check-case!
+             cancel-scenario-sym
+             assert-cancel-case-outcome!
+             :negative 1 input 1000)
+            (catch :default error
+              (reset! caught error)))))
+      (is (some? @caught))
+      (is (= artifact-dir (:artifact-dir (ex-data @caught))))
+      (is (fs/exists? artifact-dir))
+      (let [exported (:export-dir (ex-data @caught))
+            document
+            (case-outcome/read-edn
+             (slurp (case-outcome-path artifact-dir)))
+            exported-document
+            (case-outcome/read-edn
+             (slurp (str (fs/path exported case-outcome-filename))))
+            monitor (first (case-outcome/restore-monitors document))]
+        (is (and (string? exported) (seq exported)))
+        (is (fs/exists? exported))
+        (is (= document exported-document))
+        (is (fs/exists? (str (fs/path exported "request.edn"))))
+        (is (= :completed (:status (case-outcome/restore-outcome document))))
+        (is (= cancel-monitor-id (:id monitor)))
+        (is (= :violation (:status monitor)))
+        (is (=
+             "jolt.sim.outbox-delivery-hegel-test/cancel-forbidden-delivery-evidence"
+             (get-in monitor [:detail :data :hegel/origin]))))
+      (finally
+        (when (fs/exists? artifact-dir)
+          (fs/delete-tree artifact-dir))
+        (when (fs/exists? export-root)
+          (fs/delete-tree export-root))))))
+
 (def ^:private serial-test-vars
   [#'case-outcome-adapter-covers-supervisor-outcomes
    #'semantic-violation-retains-canonical-case-outcome
@@ -1973,7 +2597,10 @@
    #'outbox-delivery-payload-boundary-witness
    #'hegel-outbox-delivery-holds-across-payload-capacities-eintr-and-plans
    #'outbox-delivery-retry-boundary-witness
-   #'hegel-outbox-delivery-retry-holds-across-payload-capacities-and-eintr])
+   #'hegel-outbox-delivery-retry-holds-across-payload-capacities-and-eintr
+   #'outbox-delivery-cancel-boundary-witness
+   #'hegel-outbox-delivery-cancel-holds-across-payload-capacities-and-eintr
+   #'cancellation-claim-with-marking-records-monitor-violation])
 
 (defn- counter-snapshot []
   {:test (:test @test/counters)

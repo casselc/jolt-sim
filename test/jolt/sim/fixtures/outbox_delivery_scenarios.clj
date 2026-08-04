@@ -30,7 +30,7 @@
     and the two discriminating first-poll admission orders are the feature
     boundary.
 
-    The exercise-retry-recv-reset scenario at the bottom of this namespace is
+    The exercise-retry-recv-reset scenario later in this namespace is
     the two-attempt at-least-once companion: it drives the UNCHANGED
     jolt.sim.fixtures.outbox-delivery/exercise-outbox-delivery-retry
     application under the same hermetic packs, a posix-fault plan whose scoped
@@ -39,7 +39,14 @@
     first ack-send boundary before the delivery client's first recv boundary.
     This proves receiver processing reached its reply boundary before reset;
     admission does not order the original handler executions or claim that ack
-    bytes were already queued."
+    bytes were already queued.
+
+    The final exercise-cancel-before-ack-with-capacities scenario drives the
+    UNCHANGED cancellation fixture. Its ordinary promise handshake fixes the
+    cancellation point after receiver decode and before acknowledgement; the
+    wrapper varies only payload, modeled capacities, and an optional captured
+    poll EINTR. No admission coordinator or simulator-specific application
+    implementation is introduced."
   (:require [jolt.net :as net]
             [jolt.sim.ffi-memory :as memory]
             [jolt.sim.ffi-schedule :as ffi-schedule]
@@ -941,3 +948,217 @@
   ([overrides input]
    (validate-retry-input! input)
    (retry-evidence-for overrides input)))
+
+;; ---- Cancel-before-ack under an optional captured poll EINTR ---------------
+;;
+;; This lane drives the unchanged
+;; jolt.sim.fixtures.outbox-delivery/exercise-outbox-delivery-cancel-before-ack
+;; application: one committed outbox row, an ordinary delivery attempt whose
+;; receiver withholds its acknowledgement at a causal handshake after decoding
+;; attempt 1, a separate ordinary future that calls public
+;; teensyp.client/close! on the delivery connection (the one cancellation
+;; owner) before any ack is sent, a blocked client receive that wakes with the
+;; canonical teensyp.client/closed :receive :closed cancellation, an
+;; idempotent second close, and a post-cancellation reload through the same
+;; still-open SQLite connection that proves the committed pending row is
+;; unchanged. No mark-delivered! call or delivered claim exists on this path.
+;;
+;; The structural cancellation point (after receiver decode, before ack) is
+;; fixed in the unchanged fixture by ordinary Clojure promise handshakes --
+;; never randomized, never driven by jolt.sim.ffi-schedule, and never coupled
+;; to a compiler ABI. This scenario wrapper builds only the shared hermetic
+;; worlds (memory, exact SQLite, modeled POSIX loopback) and an optional
+;; captured poll EINTR frontend, composes the unchanged handler packs, and
+;; runs the fixture once under run-controlled. It introduces no
+;; scheduler/controller/socket/HTTP implementation and no admission gate: the
+;; cancellation semantics are the fixture's own. An optional drawn poll EINTR
+;; is an independent modeled fault beside the structural cancellation; it never
+;; perturbs the decode/ack handshake, which lives in ordinary application code.
+
+(def ^:private cancel-input-keys
+  #{:payload :stream-capacity :pipe-capacity :poll-eintr-ordinal})
+
+(defn- validate-cancel-input!
+  "Validates the closed cancel-before-ack scenario schema before any real
+   socket, SQLite handle, or simulated world is created. The payload,
+   capacity, and EINTR domains are deliberately the same bounded domains as
+   the other lanes; the cancellation structure itself (the fixed
+   decode/ack handshake and cross-thread owning close) lives in the unchanged
+   fixture and is never drawn."
+  [input]
+  (when-not (map? input)
+    (throw (invalid-scenario-input :not-a-map {:input input})))
+  (let [actual-keys (set (keys input))
+        unknown (seq (sort-by pr-str
+                              (remove cancel-input-keys actual-keys)))
+        missing (seq (sort-by pr-str
+                              (remove actual-keys cancel-input-keys)))]
+    (when unknown
+      (throw (invalid-scenario-input
+              :unknown-keys
+              {:unknown-keys (vec unknown) :input input})))
+    (when missing
+      (throw (invalid-scenario-input
+              :missing-keys
+              {:missing-keys (vec missing) :input input}))))
+  (let [payload (:payload input)]
+    (when-not (vector? payload)
+      (throw (invalid-scenario-input
+              :invalid-payload
+              {:value payload})))
+    (when (> (count payload) max-payload-octets)
+      (throw (invalid-scenario-input
+              :payload-too-long
+              {:length (count payload)
+               :max-length max-payload-octets})))
+    (when-not (every? octet? payload)
+      (throw (invalid-scenario-input
+              :invalid-payload-octet
+              {:value payload}))))
+  (when-not (contains? supported-stream-capacities (:stream-capacity input))
+    (throw (invalid-scenario-input
+            :invalid-stream-capacity
+            {:value (:stream-capacity input)
+             :supported (vec (sort supported-stream-capacities))})))
+  (when-not (contains? supported-pipe-capacities (:pipe-capacity input))
+    (throw (invalid-scenario-input
+            :invalid-pipe-capacity
+            {:value (:pipe-capacity input)
+             :supported (vec (sort supported-pipe-capacities))})))
+  (when-not (contains? supported-poll-eintr-ordinals
+                        (:poll-eintr-ordinal input))
+    (throw (invalid-scenario-input
+            :invalid-poll-eintr-ordinal
+            {:value (:poll-eintr-ordinal input)
+             :supported [nil 1 2 4 8]})))
+  input)
+
+(defn- cancel-evidence-for
+  "Builds the hermetic SQLite and POSIX handler packs from `input`, optionally
+   interposes one captured poll EINTR frontend, composes the unchanged handler
+   packs, runs the unchanged
+   exercise-outbox-delivery-cancel-before-ack fixture once under
+   run-controlled, and returns one canonical constant-size evidence map. The
+   fixture owns the fixed decode/ack handshake and the cross-thread owning
+   close; this wrapper introduces no admission gate, no scheduler, and no
+   controller. The in-memory SQLite plan (no mark transaction) and the modeled
+   POSIX loopback are reused unchanged; only the deterministic world-building
+   glue and the optional poll EINTR frontend are parameterized here. The
+   evidence map carries the ordinary application/HTTP/receiver projections
+   (receiver includes the withheld ack outcomes), route and exact 18-statement
+   SQLite plan consumption, capacity summaries, per-operation fault evidence
+   with the exact scoped firing identities, and all-world cleanup. No
+   persistence projection exists on this lane: the connection stays open
+   in-memory and the committed pending row is reloaded unchanged after
+   cancellation. `overrides` retains the worker protocol's runtime-override
+   path."
+  [overrides input]
+  (let [{:keys [payload stream-capacity pipe-capacity poll-eintr-ordinal]}
+        input
+        command (assoc fixture/default-command :payload payload)
+        mem (memory/world)
+        target (net/target-descriptor)
+        sqlite-world
+        (sqlite/world mem (plans/cancel-before-ack-statement-plans payload))
+        posix-world
+        (posix/world mem target
+                     {:progress-limit 64
+                      :stream-capacity stream-capacity
+                      :pipe-capacity pipe-capacity})
+        fault? (some? poll-eintr-ordinal)
+        fault-frontend
+        (when fault?
+          (posix-fault/frontend posix-world
+                                (interrupt-poll-plan poll-eintr-ordinal)))
+        ;; Three named packs over one shared memory world: memory handlers,
+        ;; the exact-plan SQLite foreign set, and the POSIX foreign set
+        ;; (fault-interposed at poll when an EINTR ordinal was drawn, plain
+        ;; otherwise). No plain merge across packs, no admission coordinator.
+        posix-foreign
+        (if fault?
+          (posix-fault/foreign-handlers fault-frontend)
+          (posix/foreign-handlers posix-world))
+        handlers
+        (hp/compose
+         (hp/pack :jolt.sim/memory (memory/handlers mem))
+         (hp/pack :jolt.sim/sqlite (sqlite/foreign-handlers sqlite-world))
+         (hp/pack :jolt.sim/posix posix-foreign))
+        controlled
+        (rt/run-controlled
+         (merge {:ffi-handlers handlers :drain-timeout-ms 10000}
+                overrides)
+         (fn []
+           (fixture/exercise-outbox-delivery-cancel-before-ack command)))
+        result (:result controlled)
+        effect-trace (:effect-trace controlled)]
+    {:application (:application result)
+     :http (:http result)
+     :receiver (:receiver result)
+     :routes
+     {:count (count effect-trace)
+      :all-handled?
+      (every? #(= :handler (:route %)) effect-trace)
+      :foreign-symbols (foreign-symbols effect-trace)}
+     :sqlite (sqlite/summary sqlite-world)
+     :capacity {:stream (posix/capacity-summary posix-world)
+                :pipe (posix/pipe-capacity-summary posix-world)}
+     :fault
+     (if fault?
+       (let [history
+             (posix-fault/evidence-history fault-frontend)]
+         {:attempts (posix-fault/attempts fault-frontend)
+          :firings
+          (:firings (posix-fault/snapshot fault-frontend))
+          :fired-attempts
+          (mapv #(select-keys % [:attempt-id :firing])
+                (filter :firing history))})
+       {:attempts 0
+        :firings 0
+        :fired-attempts []})
+     :clean? {:memory (memory/clean? mem)
+              :sqlite (sqlite/clean? sqlite-world)
+              :posix (posix/clean? posix-world)}}))
+
+(defn ^{:jolt.sim/scenario true
+        :jolt.sim/accepts-input true} exercise-cancel-before-ack-with-capacities
+  "Runs the unchanged
+   jolt.sim.fixtures.outbox-delivery-cancel-before-ack application once under
+   the shared hermetic SQLite plus POSIX loopback handler packs, parameterized
+   by one canonical input map:
+
+     {:payload           vector of at most 32 unsigned octets
+      :stream-capacity   8 | 16 | 32
+      :pipe-capacity     1 | 2 | 4
+      :poll-eintr-ordinal nil | 1 | 2 | 4 | 8}
+
+   The ordinary application commits the pending outbox row over one HTTP ->
+   SQLite connection that stays open, reloads it, begins one framed TCP/bencode
+   delivery, and then -- at a fixed structural point after the receiver decodes
+   attempt 1 and before it acknowledges -- a separate ordinary future calls
+   public teensyp.client/close! on the delivery connection. The blocked client
+   receive wakes with the canonical teensyp.client/closed :receive :closed
+   cancellation, a second ordinary close proves idempotent ownership, and the
+   same still-open SQLite connection reloads the unchanged committed pending
+   row. No mark-delivered! call or delivered claim exists on this path. This
+   witnesses at-least-once retryability after a pre-ack cancellation; it does
+   not claim exactly-once delivery, every ack/close race, process restart, or
+   real-kernel cancellation parity.
+
+   The cancellation point is structural and fixed in the unchanged fixture by
+   ordinary Clojure promise handshakes; it is never randomized and never driven
+   by jolt.sim.ffi-schedule or any compiler ABI. A nil :poll-eintr-ordinal
+   drives no fault frontend; a positive ordinal fires one captured EINTR on
+   that per-poll attempt ordinal beside the structural cancellation. The
+   evidence map carries the ordinary application/HTTP/receiver projections
+   (receiver includes the withheld ack outcomes), route and exact 18-statement
+   SQLite plan consumption evidence, capacity summaries, per-operation fault
+   evidence with the exact scoped firing identities, and all-world cleanup.
+   Request and entity IDs stay fixed at the fixture's default-command values.
+   Accepts the standard jolt.sim.explore-worker protocol-v2
+   (runtime-overrides, input) arity used by
+   jolt.sim.process-explorer/run-case."
+  ([input]
+   (exercise-cancel-before-ack-with-capacities {} input))
+  ([overrides input]
+   (validate-cancel-input! input)
+   (cancel-evidence-for overrides input)))
