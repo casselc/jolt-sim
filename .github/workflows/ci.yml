@@ -190,6 +190,14 @@ jobs:
           mkdir -p "$HOME" "$JOLT_CACHE_DIR" "$TMPDIR"
           sim="$GITHUB_WORKSPACE/jolt-core/target/sim/jolt"
           cd "$GITHUB_WORKSPACE/jolt-sim/report"
+          generated="$GITHUB_WORKSPACE/jolt-sim/target/report-generated-examples"
+          mkdir -p "$generated"
+          "$sim" -M:trace-report \
+            examples/cooperative-countdown-trace.edn \
+            "$generated/cooperative-countdown-trace.html"
+          "$sim" -M:case-report \
+            examples/outbox-retry-case-outcome.edn \
+            "$generated/outbox-retry-case-outcome.html"
           "$sim" -M:test
           JOLT_BIN="$sim" test/downstream-build-smoke.sh
 
@@ -198,7 +206,9 @@ jobs:
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: static-report-smoke-${{ matrix.toolchain }}
-          path: jolt-sim/target/report-consumer-smoke/
+          path: |
+            jolt-sim/target/report-consumer-smoke/
+            jolt-sim/target/report-generated-examples/
           if-no-files-found: ignore
           retention-days: 14
 
