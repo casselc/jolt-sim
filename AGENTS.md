@@ -1,7 +1,8 @@
 # Jolt development gates
 
 Use the `jolt-runtime` skill before running or changing Jolt code in this
-repository.
+repository. Use the `jolt-hegel` skill before writing or running Hegel
+properties.
 
 Run at most one local Jolt compiler, test process, or nested-worker campaign at
 a time. Preserve every failure directory and transcript; do not delete a gate
