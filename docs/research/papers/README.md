@@ -3,8 +3,10 @@
 **The rule.** A paper is committed here **only if there is an explicit licence
 grant permitting redistribution** — in every case below, Creative Commons
 Attribution 4.0, except Das & Pfenning (LIPIcs CC-BY). Each file is the
-**verbatim published PDF** from the source given; none has been modified, and
-the attribution CC-BY requires is the citation in the table.
+**verbatim published PDF** from the source given; **no PDF here has been
+modified**, and the attribution CC-BY requires is the citation in the table.
+(The Markdown renderings under `markdown/` *are* modified derivatives, and are
+labelled as such — see below.)
 
 **A correction to how that rule was first applied.** The first eight files here
 were selected by reading the licence line **printed on the PDF**. That test is
@@ -19,6 +21,13 @@ first pass had listed as "not redistributable". They are now included. The
 authority for a licence is the publisher's machine-readable metadata, cross-checked
 against Unpaywall's OA-location records; the printed line is corroboration, not
 the test.
+
+**Markdown conversions.** `markdown/` holds a machine-generated Markdown
+rendering of every PDF here, so the corpus can be grepped. They are **lossy** —
+mathematics and figures do not survive — and they are *derivative works*, which
+CC-BY permits provided the modification is indicated; that is done in each
+file's header, in `markdown/README.md`, and by committing the converter itself.
+**Quote from the PDFs, not from the conversions.**
 
 ## Contents
 

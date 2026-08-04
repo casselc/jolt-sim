@@ -5040,7 +5040,11 @@ not a grant; papers whose Crossref record points at ACM's copyright policy —
 repository copy states "All rights reserved" explicitly, and Vasconcelos's I&C
 paper is open at Elsevier with no licence. Das & Pfenning is committed in its
 **LIPIcs** form rather than the arXiv one, because only the former is CC-BY.
-`docs/research/papers/README.md` carries the per-paper evidence.
+`docs/research/papers/README.md` carries the per-paper evidence, and
+`papers/markdown/` holds a greppable Markdown conversion of each one — lossy on
+mathematics and figures, flagged as a modified derivative work as CC-BY
+requires, and **not** the thing to quote from. Every quotation in E21 and E25
+was taken from the PDF.
 
 ### D.1 Typestate
 
