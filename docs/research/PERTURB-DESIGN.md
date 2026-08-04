@@ -60,6 +60,9 @@ The complete current tally of claims this document made and then refuted:
 | 27 ‡ | internal/external choice dissolves the join rule | the linear conditional rule types **both branches in the same context** — perturb's join rule *is* the linear rule; ⊕/& are additive | E20 |
 | 28 ‡ | graded/quantitative types decide the Content-Length obligation without a solver | Granule requires Z3; grades are parameterized *over* a decision procedure; and grades count **uses of a binder**, not octets | E20 |
 | 29 ‡ | sealing gives a principled account of "these bodies are axioms" | it **relocates** trust from a list to a scope; representation independence constrains clients, not implementations | E20 |
+| 30 | `report-limits` item 8: destructuring / `peek` / `last` / a computed index lose a capability **silently**, the likeliest false accept | probing all four: nothing is silent, every case draws two diagnostics. The real defect was a **false reject on idiomatic Clojure**, caused by an arity check | E22 |
+| 31 | E15/E17/E18's blind-spot lists are the checker's limits | they omit **higher-order capability passing** entirely — `(f c)` has no annotation, which is `with-open` and every reactor callback | E23, E24 |
+| 32 | a pure `(state, event) -> [state', effects]` shape collapses the capability cost into one component | it **relocates** the obligations rather than removing them: 2 of 4 wrong applications accepted, and the working app's `/wait` route breaks the declared machine and reaches the wire | E24 |
 
 ‡ Five rows are the exception the sentence above does not cover: 17 and 18
 arrived from re-examining the argument and from the literature, and 27–29 came
@@ -73,7 +76,7 @@ designed to attack it, which is the pattern the commitment exists to name. Rows
 they are flagged accordingly: nothing in E20 was executed.
 
 **How to read this document.** §1 is the settled design, stated once in final
-corrected form. §2 is the divergence register. §3 is the findings E1–E20, each
+corrected form. §2 is the divergence register. §3 is the findings E1–E24, each
 stated as currently believed rather than as first written. §4 is the open
 questions. §5 is the v0 ladder. §6 is the nonclaims. Appendix A is the
 correction history, Appendix B holds the superseded ladders in full,
@@ -469,6 +472,9 @@ at `1dd068b`):
 | --- | --- | --- |
 | `-M:selftest` | codec/octet self-tests, no socket | the run |
 | `-M:refine` | the refinement decision procedure alone, 18 cases, with the ones it must REFUSE recorded as first-class expectations | the run (E19) |
+| `-M:stream` | a port of `teensyp.stream` by an agent forbidden to read the rules; frames lines under one-octet-per-`recv`, all 91 chunk boundaries, and a real loopback socket | the run (E23) |
+| `-M:streamcheck` | that port, checked against a declaration written from outside. **Not a gate** — no recorded expectations, because the point was to learn the verdicts | the run (E23) |
+| `-M:evt` | an event-driven driver holding two live connections, a pure application, both under a scripted network and a real socket; prints the checker's verdicts on both. **Not a gate** | the run (E24) |
 | `-M:check` | 10 declaration fixtures + 55 corpus programs across TWO corpora (nREPL 25, HTTP 30) get their recorded verdicts, AND every accepted one is executed under a scripted handler; `perturb.nrepl` and `perturb.http` are checked and reported, not gated | `report-limits`, 13 items (E15, E17, E18, E19) |
 | `-M:oracle` | perturb's bencode against `jolt.nrepl`'s over their shared profile | the run |
 | `-M:demo` | one session var under a real socket and two in-memory handlers; sent octets identical | the transcript |
@@ -730,12 +736,15 @@ Each should get its register row when decided, not retrospectively.
 
 ## 3. Findings
 
-E1–E20, each stated as currently believed. What each said first, and what
+E1–E24, each stated as currently believed. What each said first, and what
 corrected it, is in Appendix A. E1–E13 are measurements and prototypes; E14 is
 a source-and-history survey of the v0.5.17 branch lane and is `assumed`
 throughout — it qualifies §1.4 and §2 row 3 without settling either. E15–E19 are
 the running artifact: a checker that rejects real programs, and the four rounds
-of failure and repair it went through. **E20 is different in kind from every
+of failure and repair it went through. E22–E24 are the first measurements taken
+against code **not written by someone who knew the rules** — a probe of a claim
+nobody had tested, an unbiased port, and an architecture experiment whose
+positive controls it failed. **E20 is different in kind from every
 other finding here** — a literature survey, `assumed` throughout, in which
 nothing was executed and no paper was read in full text. It refutes four claims
 this document made and is itself the weakest evidence in it; Appendix D exists
@@ -2997,6 +3006,209 @@ claims, for which no base rate exists.
 
 ---
 
+> **E21 is reserved** for the verification of E20 against the actual papers,
+> commissioned in `docs/research/E20-VERIFICATION-BRIEF.md` and running
+> elsewhere. E22–E24 were recorded while it was outstanding.
+
+---
+
+### E22 — `report-limits` item 8 was wrong in both halves
+
+Item 8 said: *"Destructuring, `peek`, `last`, or a computed index lose the
+capability to OPAQUE — which is silent, not a diagnostic. This is the most
+likely place for a FALSE ACCEPT to hide today."* Never tested. One probe program
+per eliminator, with a correct-disposal and a drop variant of each.
+
+**Nothing was silent.** Every case drew `no-signature` at the callee — the tuple
+holding a live capability was passed to a function with no capability signature —
+and `dangling` at scope exit. Five rejections, zero acceptances, four diagnostics
+on the destructuring case alone. There was no false accept to find.
+
+**The real defect was the opposite one, and worse in practice: a false reject on
+idiomatic Clojure.** `(let [[c frames] r] …)` lowers to `(nth G__287 0 nil)` —
+three arguments, the third a not-found default — and `projection-index` demanded
+exactly two. Every destructuring bind of a capability was refused on arity, not
+analysis. One-line fix; the not-found default is sound to ignore because an index
+past the end of the abstract tuple already yields OPAQUE.
+
+`perturb.corpus` gains `destructure-and-close` and `uses-destructuring-in-a-loop`
+(both accept, both run) and the drop variant as a rejection.
+
+**Why item 8 was wrong in this particular direction matters.** A self-authored
+corpus cannot contain this bug, because the author knew destructuring would not
+check and therefore never wrote it. The claim was not merely unverified — it was
+*unfalsifiable from inside the corpus*.
+
+---
+
+### E23 — checking code perturb did not write
+
+Every artifact checked through E19 was authored by someone who already knew the
+rules. E15 nonclaim 3 says why that is dangerous and E22 shows it concretely.
+This is the first artifact without that defect.
+
+An agent ported `teensyp.stream` — a blocking line-oriented connection adapter
+from `casselc/jolt-tcp` — into perturb, **forbidden to read** `cap.clj`,
+`check.clj`, either corpus, `refine.clj`, the README, or this document. The
+capability declaration was then written **from outside**, in `perturb.streamcap`,
+leaving the port unmodified. The port runs: `-M:stream` exits 0, including
+against a real loopback socket. Every rejection below is the checker refusing a
+program that works. `-M:streamcheck` reproduces it.
+
+**Round 1** — capability and lifecycle annotated: **7 of 8 rejected**, almost all
+`untracked-borrow` / `untracked-consume` on ordinary helpers taking a connection.
+Interprocedural flow is by annotation only, so an unannotated function's
+parameters are opaque.
+
+**Round 2** — four helper annotations added: **5 of 8 pass**, including
+`line-client`, the whole client lifecycle. So the rule set's cost on real code is
+**measurable, not fatal**: eight annotations for eight functions in a 250-line
+namespace. That distinction is the reason for running two rounds.
+
+#### Three survive, and one of them is new
+
+**`with-conn` is `with-open`, and it cannot be expressed.** It takes `[c f]` and
+calls `(f c)`. A higher-order function handing a capability to a function-valued
+**parameter** has no signature to check against, so no annotation describes it;
+its teardown is in a `finally`, which is `unsupported-construct` on top. This
+appears in **none** of E15's blind spots, E17's or E18's nonclaims, or E20's
+survey. E24 shows it is not merely an idiom: it is the shape of every reactor
+callback.
+
+**`read-lines` draws `join`** — the third data point for E6 probe 1, with the
+finest cause yet. Not "conditional close": it **borrows** on the complete-reply
+path and **consumes** on the truncated one. *"Borrows, except on the branch that
+aborts"* is unsayable. §4.6's count is now zero on `perturb.nrepl`, fires on the
+first HTTP keep-alive driver anyone would write, fires here.
+
+**`serve-lines`** — `try`/`catch` again.
+
+#### What the port cost, in the porter's own words
+
+Recorded because it is independent evidence about perturb rather than about the
+checker: `perturb.wire` has **no half-close**, so the very regression
+`teensyp.stream`'s reactor arity exists to fix can be neither expressed nor
+reproduced; `perturb.script` has no client-side handler taking arbitrary octets,
+so the demo fabricates a posix transcript of a session that never happened;
+`w/recv`'s empty view means both "end of stream" and "nothing queued", which the
+original distinguished; `close!` is idempotent and unchecked in both directions,
+so a double close and a missing close are equally silent; and `oconcat`/`osub`
+make buffer compaction O(n) per chunk, quadratic in line length.
+
+---
+
+### E24 — the event-driven boundary: the guarantees moved, they did not survive
+
+The hypothesis, from E23's fallout and from `echo-response` checking because it
+is pure: *if every capability stays in a driver and application code is a pure
+`(state, event) -> [state', effects]`, then user code checks clean with no
+annotations and the whole cost of the capability discipline collapses into one
+component.* Built as `perturb.evt` (driver, holding **two live connections at
+once**), `perturb.evtapp` (pure application), `perturb.evtcheck`. `-M:evt` runs
+both drivers under the scripted handler and over a real loopback socket, octets
+identical. No rule was weakened; `check.clj` and `cap.clj` untouched; **zero
+axioms and zero `:perturb.cap/representation` entries in either namespace.**
+
+#### The hypothesis half-held, and the half that held is nearly vacuous
+
+The pure application functions check clean with no annotations, as predicted. But
+of four deliberately-wrong applications the checker **rejects two and accepts
+two**:
+
+| control | verdict |
+| --- | --- |
+| stashes the connection in app state | rejected — `escape`, `dangling` |
+| returns the connection in an effect | rejected — `escape` at `ServerConn@:reading[1][0][1]`, followed through two nested vector literals |
+| **two responses for one request** | **ACCEPTED** — and the run puts **139 octets, two complete responses, on the wire for one request** |
+| **responds after closing** | **ACCEPTED** — the analogue of `write-after-move`, except the thing reused is an integer id |
+
+And the two that *are* rejected have to **mint their own connection**, because an
+unannotated function's parameters are opaque. There is no way to write "an
+application that was handed a connection and misused it" — only "an application
+that opened a socket." **The boundary is enforced by absence, not by a rule.**
+
+#### The strongest result was not a control
+
+`perturb.evtapp`'s `/wait` route defers a response by one round — the most
+ordinary event-driven move there is, in the **working** application. Underneath,
+it makes the driver read a second request from a connection that still owes a
+response: `perturb.httpcorpus/read-twice-without-responding`, a recorded
+`:typestate` rejection. Here it is accepted, it runs, and the only trace is that
+the ledger stops joining up:
+
+```
+{:id "perturb-sconn-8", :was :responding, :claims :reading, :site :perturb.http/read-request}
+{:id "perturb-sconn-8", :was :reading, :claims :responding, :site :perturb.http/respond}
+```
+
+**The capability discipline collapsed into one component and the protocol
+obligations leaked into the other one, unguarded.** The pure-handler shape does
+not remove typestate obligations; it relocates them somewhere nothing enforces
+them — and where `perturb.http`'s own ledger cannot see them either, because
+`respond!` records its `:from` as the literal `:responding`, so a violated edge
+still reports the state it was supposed to start in. The contradiction is visible
+only *between* consecutive entries.
+
+#### What a connection table costs, measured
+
+**A fixed-arity register file checks.** Two `ServerConn`s at `:arg 0`/`:arg 1`,
+returned at `:at [0]`/`:at [1]`, carried through a loop at every back edge, live
+alongside a `Listener`. **Two instances of the same capability alive at once had
+never been checked before.** 47 lines, all clean.
+
+**A map keyed by connection id — what a server actually needs — is rejected
+function by function**, 38 lines across four functions (`no-signature`,
+`untracked-consume` ×4, `dangling`). And the diagnostics say something worse than
+"wrong state": once the capability enters the map the typestate axis is not
+violated, it is **absent**. The checker does not know a connection is there.
+
+Three isolation programs pin down the rules:
+
+- **`accept-into-vector` draws the same diagnostics as the map version,
+  character for character.** Choosing the composite the abstract domain models
+  buys nothing: what it models is the vector **literal node**, not the vector.
+  `conj` is an ordinary function and draws `no-signature`. The sharpest single
+  fact in the experiment.
+- **`table-grows-in-a-loop`** — `loop-not-preserving`. **A capability table
+  cannot grow**; its arity must be a source constant, because the only way to add
+  a slot is to write a wider literal.
+- **`honour-close-effect`** — `join` ×2 plus `produces-mismatch`. **A value
+  cannot select a capability.** Every effect is a decision made in data about a
+  capability held elsewhere, so a checked driver structurally cannot honour
+  `[:close id]`.
+
+**Two clean verdicts that should be read as failures.** `serve-table-with-listener`
+and `serve-table` check — *because every `ServerConn` became opaque inside
+`accept-into-table` before control reached them*. A clean verdict on the function
+that composes a driver is exactly what a hidden boundary looks like from above.
+
+#### One root cause behind E23 and E24 both
+
+A capability may only live in a `let`/`loop` binding **whose shape is known at
+compile time**. Passing it to a function-valued parameter, storing it in a
+collection, growing a collection of them, or selecting one with a runtime value
+are all outside that, and an event-driven application needs all four.
+
+#### E24's own nonclaims
+
+1. **Nothing here says the architecture is wrong**, only that it does not
+   preserve the guarantees it appears to. An instrumented driver (see
+   `RUNTIME-OBLIGATION-BRIEF.md`) is a coherent answer; this measures the size of
+   what would need instrumenting.
+2. **No escape hatch was used, and one would have hidden everything.** A
+   `ConnTable` capability with two `:perturb.cap/representation` entries makes all
+   seven rejections vanish by making the bodies unread — the move
+   `report-limits` item 1 calls gameable, producing a clean report about nothing.
+3. **Single-threaded throughout.** Two connections held at once is not
+   concurrency; the contention axis remains untested (I20).
+4. The driver carries one hand-written runtime guard (`(nil? c)`) that makes
+   `responds-after-closing` a no-op instead of a write to a closed socket. It is
+   the only reason that accepted-wrong control does not reach the wire, and it is
+   a use-after-close check implemented by hand because the static one stops at
+   the map.
+
+---
+
 ## 4. Open questions
 
 Q1–Q5 are §4.1–§4.5; §4.6 collects open items that never carried a Q number.
@@ -3202,11 +3414,28 @@ Recorded here so they are not lost between sections. None of these is decided.
 - **Agreement/consensus.** Multi-node safety, refinement against a spec, and
   liveness under partition remain untested by the current ladder. Still only a
   ladder entry (§5, step 5).
+- **A capability may only live in a binding of statically-known shape.** The
+  single root cause behind E23 and E24, measured from four directions: it cannot
+  be passed to a **function-valued parameter** (`with-conn`, and every reactor
+  callback), stored in a **collection** (map and vector are identical here — the
+  abstract domain models the vector *literal node*, not the vector), held in a
+  collection that **grows** (arity must be a source constant), or **selected by a
+  runtime value** (`join`). An event-driven application needs all four, so this
+  now sits above the module boundary in the queue. Whether the answer is a
+  language feature (handle table, existentials, capability regions) or a
+  permanently instrumented trusted core is **undecided** and is the live fork.
+- **Higher-order capability passing has no notation at all.** Not in E15's blind
+  spots, not in E17's or E18's nonclaims, not in E20's survey — found only by
+  checking code perturb did not write (E23). `(f c)` cannot be annotated because
+  the callee is a parameter.
 - **The join-rule usability risk.** E6 probe 1's rejection of
   `if (c) { b = detach_result(b) }; use(b)` is a real usability risk for §1.2,
   and how often it fires on real programs is argued rather than measured. Two
   data points now exist and they disagree: zero times on `perturb.nrepl` (E15),
-  and on the first driver anyone would write for HTTP keep-alive (E18). The
+  on the first driver anyone would write for HTTP keep-alive (E18), on
+  `read-lines` in code perturb did not write (E23, cause: borrows on one path and
+  consumes on the other), and on `honour-close-effect` in an event-driven driver
+  (E24, cause: a value selecting a capability). The
   accepted rewrite — close inside the branch, `recur` in the other, so one arm
   is bottom — works and is not discoverable from the diagnostic.
   **E20 corrects the framing and confirms the rule.** Session types do NOT
