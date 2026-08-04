@@ -214,6 +214,7 @@ jobs:
 
       - name: Run optional retained-case viewer gates
         if: matrix.name == 'Linux x86_64'
+        timeout-minutes: 10
         shell: bash
         env:
           JOLT_AOT_CACHE: "0"
@@ -224,8 +225,25 @@ jobs:
           export TMPDIR="$RUNNER_TEMP/jolt-tmp"
           mkdir -p "$HOME" "$JOLT_CACHE_DIR" "$TMPDIR"
           sim="$GITHUB_WORKSPACE/jolt-core/target/sim/jolt"
+          repo="$GITHUB_WORKSPACE/jolt-sim"
+          viewer_artifacts="$repo/target/viewer-replay-artifacts"
+          mkdir -p "$viewer_artifacts"
           cd "$GITHUB_WORKSPACE/jolt-sim/viewer"
           "$sim" -M:test
+          JOLT_SIM_BIN="$sim" \
+          JOLT_SIM_PROJECT_DIR="$repo" \
+          JOLT_SIM_VIEWER_ARTIFACT_DIR="$viewer_artifacts" \
+          JOLT_SIM_VIEWER_DOCUMENT="$repo/report/examples/outbox-retry-case-outcome.edn" \
+            "$sim" -M:e2e-test
+
+      - name: Preserve retained-case viewer replay artifacts
+        if: always() && matrix.name == 'Linux x86_64'
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: viewer-replay-${{ matrix.toolchain }}
+          path: jolt-sim/target/viewer-replay-artifacts/
+          if-no-files-found: ignore
+          retention-days: 14
 
       - name: Run Hegel schedule exploration
         if: matrix.hegel

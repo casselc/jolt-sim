@@ -36,6 +36,10 @@ which the process explorer creates one isolated run directory; it is not an
 output directory chosen by the uploaded document.
 
 Current boundary: inspection is a real report render, and replay delegates to
-one real fresh worker. The UI does not yet stream a running trace, compare two
-outcomes, evaluate post-hoc invariants, or expose a general scenario catalog.
-Those are later viewer slices over the same evidence and replay APIs.
+one real fresh worker. Hosted CI drives the checked-in canonical outbox
+Case/Outcome through the live viewer HTTP API, executes its unchanged
+HTTP/SQLite/TCP/bencode scenario in that worker, and retains the complete
+worker directory plus an append-only phase log. The UI does not yet stream a
+running trace, compare two outcomes, evaluate post-hoc invariants, or expose a
+general scenario catalog. Those are later viewer slices over the same evidence
+and replay APIs.

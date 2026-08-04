@@ -144,8 +144,11 @@ the browser cannot supply those settings. A per-process capability token is
 required even on loopback.
 
 The first slice includes a real host-loopback HTTP test for the browser shell
-and retained-document render path. It is deliberately not a second simulator
-or report implementation, and it does not yet provide live event streaming,
+and retained-document render path. Its hosted E2E then POSTs the checked-in
+canonical outbox document to the live replay endpoint, which runs the unchanged
+HTTP/SQLite/TCP/bencode scenario in one fresh worker and retains that worker's
+complete artifact directory. It is deliberately not a second simulator or
+report implementation, and it does not yet provide live event streaming,
 trace comparison, or a GTK frontend. See the [viewer guide](viewer/README.md)
 and its closed [example configuration](viewer/example-config.edn).
 

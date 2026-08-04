@@ -25,5 +25,9 @@
   {:extra-paths ["test"]
    :main-opts ["-m" "jolt.sim.viewer-test"]}
 
+  :e2e-test
+  {:extra-paths ["test"]
+   :main-opts ["-m" "jolt.sim.viewer-replay-e2e-test"]}
+
   :viewer
   {:main-opts ["-m" "jolt.sim.viewer"]}}}

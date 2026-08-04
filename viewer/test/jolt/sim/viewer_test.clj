@@ -88,36 +88,39 @@
           (recur (rest remaining) (+ offset length)))
         output))))
 
-(defn- read-response! [connection]
-  (let [scratch (byte-array 4096)]
-    (loop [chunks []]
-      (if-let [length (client/receive-into!
-                       connection scratch 0 (alength scratch)
-                       {:timeout-ms 5000})]
-        (recur (conj chunks (copy-of-length scratch length)))
-        (String. (concat-byte-arrays chunks) "UTF-8")))))
-
-(defn- request-over-loopback! [port method uri headers body-text]
-  (let [body-bytes (.getBytes ^String body-text "UTF-8")
-        request-text
-        (str method " " uri " HTTP/1.1\r\n"
-             "Host: 127.0.0.1:" port "\r\n"
-             "Connection: close\r\n"
-             (apply str (map (fn [[name value]]
-                               (str name ": " value "\r\n"))
-                             headers))
-             (when (pos? (alength body-bytes))
-               (str "Content-Length: " (alength body-bytes) "\r\n"))
-             "\r\n"
-             body-text)
-        connection (client/connect "127.0.0.1" port
-                                   {:connect-timeout-ms 5000})]
-    (try
-      (client/send-all! connection (.getBytes request-text "UTF-8")
-                        {:timeout-ms 5000})
-      (read-response! connection)
-      (finally
-        (client/close! connection)))))
+(defn request-over-loopback!
+  "Test-only real-loopback HTTP request helper. The timeout bounds connect,
+  send, and receive independently; callers still need a process-level CI
+  timeout around a complete scenario."
+  ([port method uri headers body-text]
+   (request-over-loopback! port method uri headers body-text 5000))
+  ([port method uri headers body-text timeout-ms]
+   (let [body-bytes (.getBytes ^String body-text "UTF-8")
+         request-text
+         (str method " " uri " HTTP/1.1\r\n"
+              "Host: 127.0.0.1:" port "\r\n"
+              "Connection: close\r\n"
+              (apply str (map (fn [[name value]]
+                                (str name ": " value "\r\n"))
+                              headers))
+              (when (pos? (alength body-bytes))
+                (str "Content-Length: " (alength body-bytes) "\r\n"))
+              "\r\n"
+              body-text)
+         connection (client/connect "127.0.0.1" port
+                                    {:connect-timeout-ms timeout-ms})]
+     (try
+       (client/send-all! connection (.getBytes request-text "UTF-8")
+                         {:timeout-ms timeout-ms})
+       (let [scratch (byte-array 4096)]
+         (loop [chunks []]
+           (if-let [length (client/receive-into!
+                            connection scratch 0 (alength scratch)
+                            {:timeout-ms timeout-ms})]
+             (recur (conj chunks (copy-of-length scratch length)))
+             (String. (concat-byte-arrays chunks) "UTF-8"))))
+       (finally
+         (client/close! connection))))))
 
 (deftest startup-config-is-closed-and-fail-closed
   (is (= 8788 (:port (viewer/validate-config! (config)))))
