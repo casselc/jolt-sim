@@ -576,7 +576,7 @@ at `1dd068b`):
 | `-M:oracle` | perturb's bencode against `jolt.nrepl`'s over their shared profile | the run |
 | `-M:demo` | one session var under a real socket and two in-memory handlers; sent octets identical | the transcript |
 | `-M:http` | one keep-alive driver under a scripted network (121 one-octet `recv`s) and a real loopback listener (1 `recv`, two pipelined requests); response octets identical; exhibits the unstatable Content-Length obligation | the run, and E18 nonclaims (E18) |
-| `-M:noio` + `verify-noio.sh` | no syscall attributable to perturb in a scripted window, with a positive control; **and, since E26**, a per-run boundary invariant — every effect and every native crossing refused unless a handler is in dynamic extent, the refusal latched so a caught exception cannot restore a passing report, with a latch control and an anti-vacuity required-symbol check | the verdict block (E16, E26) |
+| `-M:noio` + `verify-noio.sh` + `-M:gatecheck` | no syscall attributable to perturb in a scripted window, with a positive control; **and, since E26**, a per-run boundary invariant, plus a binding-enumeration check that every `jolt.ffi` binding in `perturb.posix` is `defsys`-emitted (hence gated) or on a one-entry allow-list — every effect and every native crossing refused unless a handler is in dynamic extent, the refusal latched so a caught exception cannot restore a passing report, with a latch control and an anti-vacuity required-symbol check | the verdict block (E16, E26) |
 
 The last two follow the rule literally: each states what its instrument *cannot*
 see (`-M:noio` because `dlopen(NULL)` is invisible to strace; `-M:check` because
@@ -4239,15 +4239,52 @@ ignore every clean run".
 **perturb paid two costs, and they are not jolt-sim's two.** No controller ABI
 was needed. Instead: (i) jolt-sim intercepts at the runtime's FFI *descriptor*
 layer, so every descriptor is gated by construction, whereas perturb gates at
-its own wrapper — a `defcfn` called without `gate!` is still invisible, and the
-honest residual is "a binding added without a wrapper", which a `defsys` macro
-emitting both together would close; and (ii) `*run*` and `*handling*` are
+its own wrapper — **half of this is now closed, see below**; and (ii) `*run*`
+and `*handling*` are
 dynamic vars, hence thread-local. A thread that does not inherit them fails
 closed, which is the safe direction, but its latch lands in a process-global
 orphan list, and **a thread outliving the run and latching afterwards is charged
 to nobody**. perturb has no threads today, so this is latent — but perturb
 cannot make the complete-route claim for threads outliving handler scope, which
 is precisely the carve-out jolt-sim withholds.
+
+**The wrapper residual, split in two — one half closed, one half still the
+difference from jolt-sim.**
+
+*Closed, for `perturb.posix`.* `perturb.posix/defsys` emits the `__cfn` and its
+`gate!` in one `def`, with the raw callable a `let`-local read exactly once in
+the wrapper's result position. **No var names it** — this is not a convention
+that an ungated call is discouraged; there is no name to spell. The gate op is
+*derived from the C symbol*, so what `latch!` records and what actually resolved
+cannot drift apart. `perturb.gatecheck` then walks the namespace's real
+post-passes IR and requires every `:op :ffi-fn` node to have that shape or be on
+`perturb.posix/ungated-bindings` — exactly one entry, the absent-symbol canary,
+which **must** stay ungated to remain evidence, since a gated canary would be
+refused by `gate!` before reaching the resolver. It is a VERDICT line in
+`dev/verify-noio.sh`.
+
+An IR scan rather than a source scan or a macro-time registry, for reasons that
+were tested rather than assumed: a source scan sees a *spelling*, and
+`foreign-fn`, a bare `__cfn`, or any macro expanding to one binds native code
+with no `defcfn` token; a registry is circular, since it can only report bindings
+that went through `defsys` and "did not go through `defsys`" is the hypothesis.
+Falsified three ways — a bare `defcfn`, a `foreign-fn` nested in a `defn` body
+with no `defcfn` token in the file, and growing the allow-list to excuse it — each
+inserted, run, removed and re-verified, with the other five VERDICT lines staying
+`PASS` in every probe.
+
+*Open, and still the difference.* The check enumerates **one namespace**. It is
+not interception at a descriptor layer, where a binding nobody registered is
+refused anyway. Outside it: a `defcfn` in any other namespace, a non-FFI host
+escape, a `__cfn` in a top-level form that defines nothing, and anything about
+what the gate *does*. `-M:gatecheck` prints all four on every run, so the limit
+cannot be read off a commit message alone. The check also inherits I17 — it rests
+on `perturb.ir`'s tap of a private pass-pipeline detail, the same cost
+`perturb.check` already pays.
+
+This item is coupled to E28's: a declaration language for host effects is what
+would make an unwrapped binding unrepresentable *everywhere*, rather than
+enumerable in one namespace.
 
 #### 4. §5 is stale, and its first rung was never reachable (row 41)
 
@@ -5332,11 +5369,14 @@ claims, `:local` is confirmed on real IR and **`:extern` remains untested**;
    would enlarge. E26 adds a fifth candidate mechanism to §4.6's four —
    `MUST_CLOSE` as a *state* rather than a `cancel` *term* — and the POPL 2019
    text needed to judge it is now in `docs/research/papers/`.
-2. ~~**Fail closed at the effect boundary**~~ — **done** (E26 finding 3). What
-   remains is its residual, and it is two specific things: a `defsys` macro that
-   emits a `defcfn` together with its gate, so a binding cannot be added without
-   one; and extending `with-run` past `-M:noio` to the other four gates, which
-   today get the fail-closed *gate* but do not assert a *report*.
+2. ~~**Fail closed at the effect boundary**~~ and ~~**the `defsys` half of its
+   residual**~~ — both **done** (E26 finding 3). What remains of the residual is
+   two things, and the first is now the larger: **the check enumerates one
+   namespace**, so closing it properly means either a declaration language for
+   host effects (E28's open item — the same question one layer down) or
+   descriptor-layer interception as `jolt.sim` has; and extending `with-run` past
+   `-M:noio` to the other four gates, which today get the fail-closed *gate* but
+   do not assert a *report*.
 3. **A sum `:to` with a call-site case-split** (E26 finding 7), wanted
    independently by the join-rule item and by any attempt to declare a real
    recovery protocol.
