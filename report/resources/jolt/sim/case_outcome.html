@@ -69,6 +69,13 @@
   .edn { word-break: break-all; }
   .detail { word-break: break-word; }
   .muted { color: var(--muted); }
+  .section-kind {
+    color: var(--muted);
+    font-size: 0.75rem;
+    font-weight: 500;
+    margin-left: 0.4rem;
+  }
+  .journey-path { color: var(--muted); white-space: nowrap; }
   .status { font-weight: 600; }
   .status-pass, .status-completed { color: var(--pass); }
   .status-violation, .status-failed, .status-worker-error { color: var(--violation); }
@@ -143,6 +150,12 @@
   </section>
 
   <section>
+    <h2>Canonical replay coordinate</h2>
+    <p class="muted">Exact validated Case data: scenario, mode, input, and schedule.</p>
+    <pre class="canonical">{{replay-coordinate-edn}}</pre>
+  </section>
+
+  <section>
     <h2>Outcome</h2>
     <table class="kv">
       <tbody>
@@ -170,13 +183,38 @@
     {% endif %}
   </section>
 
+  {% if has-outbox-journey %}
+  <section>
+    <h2>Recorded outbox journey</h2>
+    <p class="muted">{{outbox-journey.title}}. Rows are direct evidence projections, not inferred causal verdicts.</p>
+    {% if outbox-journey.has-steps %}
+    <table>
+      <thead>
+        <tr><th>Recorded evidence</th><th>Source path</th><th>Canonical EDN</th></tr>
+      </thead>
+      <tbody>
+      {% for step in outbox-journey.steps %}
+        <tr>
+          <th>{{step.label}}</th>
+          <td class="journey-path"><code>{{step.path-edn}}</code></td>
+          <td class="detail"><code>{{step.evidence-edn}}</code></td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="muted">No journey evidence was recorded in this completed result.</p>
+    {% endif %}
+  </section>
+  {% endif %}
+
   {% if has-sections %}
   <section>
     <h2>Result detail</h2>
     <div class="sections-list">
     {% for s in sections %}
       <details>
-        <summary>:{{s.name}}</summary>
+        <summary>{{s.key-edn}}<span class="section-kind">{{s.section-kind-name}}</span></summary>
         <pre class="canonical">{{s.edn}}</pre>
       </details>
     {% endfor %}

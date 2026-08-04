@@ -13,6 +13,19 @@ whether a surrounding Hegel campaign was proved, bounded-complete, sampled,
 or assumption-backed; those claims must already be represented by the owning
 artifact and test lane.
 
+Case reports render the exact validated Case coordinate, every top-level
+completed-result section, and, for the canonical outbox scenario family, an
+ordered evidence journey through the fields that were actually recorded.
+Missing fields remain missing and present `nil` remains visible. The journey
+is presentation only: it neither infers causal edges nor re-executes HTTP,
+SQLite, TCP, monitors, or simulator controllers.
+
+The core `jolt.sim.repl/replay-document!` helper is the execution handoff. It
+keeps retained scenario/input/schedule coordinates authoritative and accepts
+ambient worker command, project directory, deadline, environment, and
+retention settings separately. Case mode remains validated provenance because
+the current fresh-process supervisor does not expose a mode override.
+
 During development from this checkout:
 
 ```sh

@@ -12,9 +12,11 @@ not a second evidence schema.
 The Case/Outcome file is deliberately richer than a synthetic presentation
 fixture: it retains application, HTTP, receiver, SQLite, POSIX-capacity, fault,
 route, scheduling, pre-mark pending-state, exact marking, and final delivered
-state evidence from one hermetic whole-application run. It is still only one
-retained witness; viewing it does not strengthen the owning test lane's proof
-or coverage claims.
+state evidence from one hermetic whole-application run. Report v2 presents
+those fields as an outbox journey and exposes the validated replay coordinate;
+it does not infer events absent from the document. This is still only one
+retained witness, and viewing it does not strengthen the owning test lane's
+proof or coverage claims.
 
 ## Regenerate and verify
 

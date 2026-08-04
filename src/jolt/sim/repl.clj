@@ -10,6 +10,11 @@
     run-case!  delegates exactly once to process-explorer/run-case, records the
                exact submitted config and returned outcome, and returns the
                outcome.
+    replay-document!
+               validates a Case/Outcome document, restores its scenario,
+               input, and schedule into one fresh-worker run while accepting
+               only ambient worker settings from the caller, and records and
+               returns the replay outcome unchanged.
     last-run   returns the recorded {:config .. :outcome ..} map, or nil.
     rerun!     repeats the exact last run-case config in a fresh worker and
                records/returns the new outcome. Throws a typed ex-info
@@ -45,6 +50,15 @@
          (sim-repl/rerun!)     ; same exact config, fresh worker, new outcome
          (sim-repl/clear!)     ; drop the record
 
+       A retained Case/Outcome value or its canonical EDN can be replayed with
+       ambient process settings supplied separately:
+
+         (sim-repl/replay-document!
+          retained-document
+          {:worker-command [\"/path/to/sim/jolt\" \"-M:sim-worker\"]
+           :dir \"/abs/path/to/project\"
+           :timeout-ms 5000})
+
   Coordination rules:
     - Each agent (human or automated) uses its OWN nrepl clone session so its
       REPL bindings and evaluation context stay independent. Clone sessions do
@@ -57,12 +71,51 @@
       worker processes. run-case!/rerun! delegate to process-explorer/run-case,
       which spawns one fresh OS worker per call and reaps it; never run such a
       case directly in the long-lived nREPL process."
-  (:require [jolt.sim.process-explorer :as process-explorer]))
+  (:require [jolt.sim.case-outcome :as case-outcome]
+            [jolt.sim.process-explorer :as process-explorer]))
 
 ;; The single last run only. nil means no run has been recorded. defonce so a
 ;; namespace reload from the REPL does not silently drop a recorded run; tests
 ;; and callers reset it through clear!.
 (defonce ^:private last-run-state (atom nil))
+
+(def ^:private replay-coordinate-keys
+  ;; :mode is a Case/Outcome provenance coordinate. process-explorer/run-case
+  ;; does not expose it as a runtime override: the marked scenario owns its
+  ;; declared run-controlled mode. Still reject it here so ambient config can
+  ;; never silently pretend to override the retained document.
+  #{:scenario :mode :input :schedule})
+
+(defn- replay-error [reason data]
+  (ex-info
+   "jolt-sim repl rejected malformed replay configuration"
+   (merge {:type :jolt.sim.repl/invalid-replay
+           :reason reason}
+          data)))
+
+(defn- supplied-document [value]
+  (if (string? value)
+    (case-outcome/read-edn value)
+    (case-outcome/validate-document! value)))
+
+(defn- replay-config [runtime-config restored-case]
+  (when-not (map? runtime-config)
+    (throw
+     (replay-error :runtime-config-not-a-map
+                   {:value-class (str (class runtime-config))})))
+  (let [collisions
+        (->> (keys runtime-config)
+             (filter replay-coordinate-keys)
+             (sort-by pr-str)
+             (vec))]
+    (when (seq collisions)
+      (throw
+       (replay-error :replay-coordinate-collision {:keys collisions}))))
+  ;; Mode is deliberately absent. The document validator establishes its
+  ;; exact provenance value, but the existing worker API can replay only the
+  ;; scenario/input/schedule coordinates; the scenario itself owns mode.
+  (merge runtime-config
+         (select-keys restored-case [:scenario :input :schedule])))
 
 (defn- record-run! [config outcome]
   (reset! last-run-state {:config config :outcome outcome}))
@@ -74,6 +127,35 @@
   run-case throws, the record is left unchanged and the exception propagates."
   [config]
   (let [outcome (process-explorer/run-case config)]
+    (record-run! config outcome)
+    outcome))
+
+(defn replay-document!
+  "Replays one validated Case/Outcome document in a fresh worker.
+
+  `document` may be an already-read document map or one EDN string accepted by
+  jolt.sim.case-outcome/read-edn. `runtime-config` supplies only ambient
+  process-explorer settings such as :worker-command, :dir, deadlines,
+  environment, and artifact retention. Any supplied :scenario, :mode, :input,
+  or :schedule key is rejected before delegation; those are owned by the
+  retained case.
+
+  The exact restored :scenario, :input, and :schedule are submitted in one
+  call to process-explorer/run-case. The restored :mode remains validated
+  provenance: the current process explorer has no mode override, and the
+  marked scenario owns its declared controller mode. This helper therefore
+  neither guesses a mode mapping nor claims to enforce one.
+
+  Records {:config submitted-config :outcome returned-outcome} using the same
+  last-run semantics as run-case!, and returns the outcome unchanged. In
+  particular, :failed, :timeout, and :worker-error remain non-success outcomes.
+  If document/config validation or run-case throws, the previous last run is
+  left unchanged and the exception propagates."
+  [document runtime-config]
+  (let [document (supplied-document document)
+        restored-case (case-outcome/restore-case document)
+        config (replay-config runtime-config restored-case)
+        outcome (process-explorer/run-case config)]
     (record-run! config outcome)
     outcome))
 

@@ -391,8 +391,8 @@
 ;; jolt.sim.case-outcome, never through the cooperative trace renderer.
 
 (defn- whole-app-result []
-  ;; All ten known sections plus an unknown key, which must not become a
-  ;; section of its own.
+  ;; Ten currently used known sections plus one forward key. Report v2 must
+  ;; render both categories without changing the completed result.
   {:application {:commands 1 :payload (byte-array [0 255 128])}
    :http {:status 200 :body-octets 3}
    :receiver {:requests 1 :server-errors 0}
@@ -418,7 +418,7 @@
 
 (defn- case-outcome-doc []
   (case-outcome/document
-   {:scenario 'jolt.sim.fixtures.outbox-delivery-scenarios/exercise-with-capacities
+   {:scenario 'jolt.sim.fixtures.outbox-delivery-scenarios/exercise-reopen-with-capacities
     :mode :hermetic
     :input {:payload [83 69 84]
             :stream-capacity 8
@@ -432,18 +432,39 @@
 (defn- minimal-case []
   {:scenario 'a.b/c :mode :real :input {:x 1} :schedule nil})
 
+(def ^:private ordinary-scenario
+  'jolt.sim.fixtures.outbox-delivery-scenarios/exercise-reopen-with-capacities)
+
+(def ^:private retry-scenario
+  'jolt.sim.fixtures.outbox-delivery-scenarios/exercise-retry-recv-reset)
+
+(def ^:private cancellation-scenario
+  'jolt.sim.fixtures.outbox-delivery-scenarios/exercise-cancel-before-ack-with-capacities)
+
+(def ^:private terminal-scenario
+  'jolt.sim.fixtures.outbox-delivery-scenarios/exercise-terminal-boundary)
+
+(defn- completed-scenario-doc [scenario input result]
+  (case-outcome/document
+   {:scenario scenario :mode :hermetic :input input :schedule nil}
+   {:status :completed :result result :exit 0}
+   []))
+
 (deftest case-outcome-view-model-shape
   (let [doc (case-outcome-doc)
         vm (report/case-outcome->view-model doc)]
     (is (= report/case-outcome-view-model-version (:view-model-version vm)))
     (is (= case-outcome/version (:document-version vm)))
-    (is (= "jolt.sim.fixtures.outbox-delivery-scenarios/exercise-with-capacities"
+    (is (= "jolt.sim.fixtures.outbox-delivery-scenarios/exercise-reopen-with-capacities"
            (:scenario-name vm)))
     (is (= :hermetic (:mode vm)))
     (is (= "hermetic" (:mode-name vm)))
     (is (string? (:input-edn vm)))
     (is (string/includes? (:input-edn vm) ":payload [83 69 84]"))
     (is (false? (string/includes? (:input-edn vm) ":jolt.sim.value/map")))
+    (is (= (case-outcome/restore-case doc) (:replay-coordinate vm)))
+    (is (= (trace/canonical-edn (case-outcome/restore-case doc))
+           (:replay-coordinate-edn vm)))
     (is (= [1 0] (:schedule vm)))
     (is (= "[1 0]" (:schedule-edn vm)))
     (is (true? (:has-schedule vm)))
@@ -453,6 +474,8 @@
     (is (= "0" (:exit-edn vm)))
     (is (true? (:has-value vm)))
     (is (string? (:value-edn vm)))
+    (is (true? (:has-outbox-journey vm)))
+    (is (= :ordinary (get-in vm [:outbox-journey :kind])))
     (is (false? (:has-error vm)))
     (is (false? (:has-reason vm)))
     (is (= 3 (:monitor-count vm)))
@@ -481,7 +504,7 @@
         reordered
         (case-outcome/document
          (reverse-map
-          {:scenario 'jolt.sim.fixtures.outbox-delivery-scenarios/exercise-with-capacities
+          {:scenario 'jolt.sim.fixtures.outbox-delivery-scenarios/exercise-reopen-with-capacities
            :mode :hermetic
            :input (reverse-map {:payload [83 69 84]
                                 :stream-capacity 8
@@ -499,23 +522,41 @@
            (report/case-outcome->html reordered)))))
 
 (deftest case-outcome-result-sections
-  (testing "all ten known sections render in the fixed order; unknown keys are not sections"
+  (testing "known sections render first and every forward section follows"
     (let [vm (report/case-outcome->view-model (case-outcome-doc))
           sections (:sections vm)]
       (is (true? (:has-sections vm)))
-      (is (= ["application" "http" "receiver" "routes" "sqlite"
-              "capacity" "fault" "admission" "schedule" "clean?"]
-             (mapv :name sections)))
+      (is (= [":application" ":http" ":receiver" ":routes" ":sqlite"
+              ":capacity" ":fault" ":admission" ":schedule" ":clean?"
+              ":unregistered"]
+             (mapv :key-edn sections)))
+      (is (= (vec (concat (repeat 10 "known") ["forward"]))
+             (mapv :section-kind-name sections)))
       (is (every? string? (mapv :edn sections)))
-      (let [application (some #(when (= "application" (:name %)) (:edn %))
+      (let [application (some #(when (= ":application" (:key-edn %)) (:edn %))
                               sections)]
         (is (string/includes? application
                               "[:jolt.sim.value/bytes [0 255 128]]"))))
     (let [html (report/case-outcome->html (case-outcome-doc))]
-      (is (string/includes? html "<summary>:application</summary>"))
-      (is (string/includes? html "<summary>:admission</summary>"))
-      (is (string/includes? html "<summary>:clean?</summary>"))
-      (is (false? (string/includes? html "<summary>:unregistered</summary>")))))
+      (is (string/includes? html "<summary>:application<span"))
+      (is (string/includes? html "<summary>:admission<span"))
+      (is (string/includes? html "<summary>:clean?<span"))
+      (is (string/includes? html "<summary>:unregistered<span"))
+      (is (string/includes? html ">forward</span>"))))
+  (testing "multiple forward keys use deterministic canonical order"
+    (let [result {:z-forward 3
+                  :clean? {:memory true}
+                  :a-forward 1
+                  :m-forward 2}
+          doc (case-outcome/document
+               (minimal-case)
+               {:status :completed :result result :exit 0}
+               [])
+          sections (:sections (report/case-outcome->view-model doc))]
+      (is (= [":clean?" ":a-forward" ":m-forward" ":z-forward"]
+             (mapv :key-edn sections)))
+      (is (= ["known" "forward" "forward" "forward"]
+             (mapv :section-kind-name sections)))))
   (testing "absent sections are simply absent"
     (let [doc (case-outcome/document
                (minimal-case)
@@ -525,14 +566,18 @@
                [])
           vm (report/case-outcome->view-model doc)]
       (is (true? (:has-sections vm)))
-      (is (= ["http" "clean?"] (mapv :name (:sections vm))))))
+      (is (= [":http" ":clean?"] (mapv :key-edn (:sections vm))))))
   (testing "a present nil section remains visible"
     (let [doc (case-outcome/document
                (minimal-case)
                {:status :completed :result {:http nil} :exit 0}
                [])
           vm (report/case-outcome->view-model doc)]
-      (is (= [{:name "http" :edn "nil"}] (:sections vm)))))
+      (is (= [{:key-edn ":http"
+               :known? true
+               :section-kind-name "known"
+               :edn "nil"}]
+             (:sections vm)))))
   (testing "a non-map completed value has no sections"
     (let [doc (case-outcome/document
                (minimal-case)
@@ -543,6 +588,200 @@
       (is (false? (:has-sections vm)))
       (is (= [] (:sections vm)))
       (is (false? (string/includes? html "Result detail"))))))
+
+(deftest canonical-outbox-retry-journey-is-evidence-only
+  (let [hostile "<script>retry-evidence</script>"
+        result
+        {:application
+         {:command {:value {:payload hostile}}
+          :pending-state {:outbox [{:id 1 :status :pending}]}
+          :retry {:attempt-1 {:error :connection-reset}
+                  :delivery {:replies [{"attempt" 2}]}}
+          :marking {:row {:id 1 :status :delivered} :changed? true}
+          :store-state {:outbox [{:id 1 :status :delivered}]}}}
+        input {:payload [0 255]
+               :stream-capacity 8
+               :pipe-capacity 1
+               :poll-eintr-ordinal nil}
+        doc (completed-scenario-doc retry-scenario input result)
+        vm (report/case-outcome->view-model doc)
+        journey (:outbox-journey vm)
+        html (report/case-outcome->html doc)]
+    (is (true? (:has-outbox-journey vm)))
+    (is (= :retry (:kind journey)))
+    (is (= ["Recorded command"
+            "Recorded pending state"
+            "Recorded first attempt"
+            "Recorded retry delivery"
+            "Recorded durable marking"
+            "Recorded final store state"]
+           (mapv :label (:steps journey))))
+    (is (= ["[:application :command]"
+            "[:application :pending-state]"
+            "[:application :retry :attempt-1]"
+            "[:application :retry :delivery]"
+            "[:application :marking]"
+            "[:application :store-state]"]
+           (mapv :path-edn (:steps journey))))
+    (is (string/includes? html "Recorded outbox journey"))
+    (is (string/includes? html "Receive-reset retry"))
+    (is (string/includes? html
+                          "&lt;script&gt;retry-evidence&lt;/script&gt;"))
+    (is (false? (string/includes? html hostile)))))
+
+(deftest canonical-outbox-ordinary-journey-includes-persistence-evidence
+  (let [result
+        {:application
+         {:command {:result :accepted}
+          :pending-state {:outbox [{:status :pending}]}
+          :delivery {:replies [{"attempt" 1}]}
+          :marking {:changed? true}
+          :store-state {:outbox [{:status :delivered}]}}
+         :persistence {:connection-count 2
+                       :open-count 2
+                       :close-count 2}}
+        doc (completed-scenario-doc ordinary-scenario
+                                    {:payload [1]
+                                     :stream-capacity 8
+                                     :pipe-capacity 1
+                                     :poll-eintr-ordinal nil
+                                     :admission-plan
+                                     :receiver-poll-then-http-poll}
+                                    result)
+        journey (:outbox-journey
+                 (report/case-outcome->view-model doc))]
+    (is (= :ordinary (:kind journey)))
+    (is (= ["Recorded command"
+            "Recorded pending state"
+            "Recorded delivery exchange"
+            "Recorded durable marking"
+            "Recorded final store state"
+            "Recorded close/reopen persistence"]
+           (mapv :label (:steps journey))))
+    (is (= "[:persistence]" (:path-edn (peek (:steps journey)))))))
+
+(deftest canonical-outbox-journey-preserves-cancellation-and-deadline-optionals
+  (testing "a present nil cancellation evidence value remains visible"
+    (let [result
+          {:application
+           {:command {:result :accepted}
+            :pending-state {:outbox [{:status :pending}]}
+            :cancel nil
+            :store-state {:outbox [{:status :pending}]}}}
+          doc (completed-scenario-doc cancellation-scenario
+                                      {:payload []
+                                       :stream-capacity 8
+                                       :pipe-capacity 1
+                                       :poll-eintr-ordinal nil}
+                                      result)
+          journey (:outbox-journey
+                   (report/case-outcome->view-model doc))]
+      (is (= :cancellation (:kind journey)))
+      (is (= ["Recorded command"
+              "Recorded pending state"
+              "Recorded cancellation exchange"
+              "Recorded final store state"]
+             (mapv :label (:steps journey))))
+      (is (= "nil" (:evidence-edn (nth (:steps journey) 2))))))
+  (testing "deadline evidence projects only paths actually recorded"
+    (let [action {:kind :deadline
+                  :boundary :before-mark
+                  :offset-nanos 0}
+          result
+          {:terminal {:status :deadline-exceeded
+                      :action action
+                      :deadline-nanos 5000000000
+                      :error {:reason :operation-deadline-exceeded}}
+           :boundary-log nil
+           :clock {:before {:now-nanos 0}
+                   :after 5000000000}
+           :application nil
+           :http nil
+           :receiver nil
+           :sqlite {:outbox {:status :pending
+                             :pending? true
+                             :delivered? false}}
+           ;; :cleanup is intentionally absent: the report must not invent it.
+           }
+          doc (completed-scenario-doc terminal-scenario
+                                      {:terminal-action action}
+                                      result)
+          vm (report/case-outcome->view-model doc)
+          journey (:outbox-journey vm)]
+      (is (= :terminal (:kind journey)))
+      (is (= ["Recorded terminal action"
+              "Recorded semantic boundaries"
+              "Recorded virtual clock"
+              "Recorded application evidence"
+              "Recorded durable outbox state"]
+             (mapv :label (:steps journey))))
+      (is (= "nil" (:evidence-edn (nth (:steps journey) 1))))
+      (is (= "nil" (:evidence-edn (nth (:steps journey) 3))))
+      (is (not (some #(= "Recorded cleanup evidence" (:label %))
+                     (:steps journey)))))))
+
+(deftest outbox-journey-and-replay-coordinate-ignore-map-insertion-order
+  (let [reverse-map (fn [value] (into {} (reverse (seq value))))
+        application {:command {:result :accepted}
+                     :pending-state {:outbox [{:status :pending}]}
+                     :retry {:attempt-1 {:error :reset}
+                             :delivery {:replies [{"attempt" 2}]}}
+                     :marking {:changed? true}
+                     :store-state {:outbox [{:status :delivered}]}}
+        input {:payload [1 2 3]
+               :stream-capacity 8
+               :pipe-capacity 1
+               :poll-eintr-ordinal 2}
+        forward (completed-scenario-doc retry-scenario input
+                                        {:application application})
+        reordered
+        (completed-scenario-doc
+         retry-scenario
+         (reverse-map input)
+         (reverse-map
+          {:application
+           (reverse-map
+            (assoc application :retry (reverse-map (:retry application))))}))]
+    (is (= (report/case-outcome->view-model forward)
+           (report/case-outcome->view-model reordered)))
+    (is (= (report/case-outcome->html forward)
+           (report/case-outcome->html reordered)))))
+
+(deftest unknown-result-sections-are-preserved-and-escaped
+  (let [hostile "<script>forward-section</script>"
+        doc (completed-scenario-doc
+             'a.b/forward-result
+             {:x 1}
+             {:http {:status 200}
+              :z-forward {:value 3}
+              hostile {:value hostile}
+              :a-forward {:value 1}})
+        vm (report/case-outcome->view-model doc)
+        sections (:sections vm)
+        html (report/case-outcome->html doc)]
+    (is (= [":http" ":a-forward" ":z-forward"
+            (trace/canonical-edn hostile)]
+           (mapv :key-edn sections)))
+    (is (= ["known" "forward" "forward" "forward"]
+           (mapv :section-kind-name sections)))
+    (is (string/includes? html
+                          "&lt;script&gt;forward-section&lt;/script&gt;"))
+    (is (false? (string/includes? html hostile)))))
+
+(deftest canonical-replay-coordinate-is-visible-and-complete
+  (let [case {:scenario 'a.b/replay
+              :mode :hermetic
+              :input {:fault :reset :payload [0 255]}
+              :schedule [2 1 0]}
+        doc (case-outcome/document
+             case {:status :completed :result :ok :exit 0} [])
+        vm (report/case-outcome->view-model doc)
+        html (report/case-outcome->html doc)]
+    (is (= case (:replay-coordinate vm)))
+    (is (= (trace/canonical-edn case) (:replay-coordinate-edn vm)))
+    (is (string/includes? html "Canonical replay coordinate"))
+    (is (string/includes? html ":schedule [2 1 0]"))
+    (is (string/includes? html ":fault :reset"))))
 
 (deftest case-outcome-outcome-variants-render
   (testing "failed renders the error and no value or sections"
@@ -784,7 +1023,7 @@
     (report/-main report/case-outcome-selector input output)
     (let [html (slurp output)]
       (is (string/includes? html "jolt-sim case report"))
-      (is (string/includes? html "exercise-with-capacities")))
+      (is (string/includes? html "exercise-reopen-with-capacities")))
     (.delete (io/file input))
     (.delete (io/file output))))
 

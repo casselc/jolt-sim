@@ -138,6 +138,14 @@ stable bundle only after the child is quiescent, and preserves one successful
 retry boundary witness. CI renders complete documents under bounded time and
 then uploads raw, partial, and rendered trees from an `always()` step.
 
+The stacked report-v2 candidate adds a human/agent inspection layer without a
+second runtime: every result section remains visible, canonical outbox cases
+gain an evidence-only journey, and the validated Case coordinate can be handed
+to `jolt.sim.repl/replay-document!` for one fresh supervisor run. Runtime
+configuration stays separate and cannot replace retained scenario, input, or
+schedule. Case mode is provenance until the ordinary worker protocol exposes
+an enforceable mode coordinate.
+
 This closes the immediate parent-observed artifact-loss boundary. It does not
 provide crash-atomic record writes, machine-crash durability, or the Phase 5
 append-only journal; catastrophic runner cancellation can still prevent a CI
