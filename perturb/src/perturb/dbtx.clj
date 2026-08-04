@@ -20,8 +20,16 @@
   so. This namespace says so, and `perturb.dbtxcorpus` is what the checker does
   about it.
 
+  AND IT IS ALSO WHERE §4.6's CANCELLATION LANDED. `:poisoned` is this
+  capability's declared CANCELLED state (`:perturb.cap/cancelled`): `abort!`
+  enters it, `close!` is the only edge out of it, and it is not terminal, so
+  entering it discharges nothing. That is §4.6 piece 5 — `MUST_CLOSE` as a
+  state rather than a `cancel` term — and it is built HERE and not on
+  `perturb.http` because E27's sufficiency condition holds here and does not
+  hold there. See the comment on the key itself.
+
   HOW A SUM IS DECLARED. Several `:transitions` entries sharing an `:op` AND a
-  `:from`, with different `:to`s — `begin` is three entries and `abort!` is two.
+  `:from`, with different `:to`s — `begin` is three entries.
   Nothing in `perturb.cap` ever rejected that shape; what rejected it was the
   checker's primitive table, which was keyed `[capability operation]` with
   `assoc`, so the second entry silently overwrote the first. The annotation's
@@ -68,17 +76,22 @@
        :perturb.cap/typestate
        {:states   [:idle :open :poisoned :closed]
         :initial  :idle
-        ;; AS E26 FINDING 7 PRINTS IT. `:poisoned` is terminal: the handle is
-        ;; unusable and nothing further is owed to it. E26 finding 8 reads the
-        ;; same code the other way — `ensure-transaction-usable!` rejects every
-        ;; operation except cleanup inspection and `close`, which is an
-        ;; obligation to close and therefore NOT terminal. The two readings
-        ;; disagree and this one follows the declared machine; which is right is
-        ;; a question about `casselc/db`, not about the checker. What hangs on
-        ;; it is `abort!` below: with `:poisoned` non-terminal its `:to` would be
-        ;; a sum with a non-terminal member, and the middle arm of
-        ;; `perturb.dbtxcorpus/begin-with-full-case-split` would leak.
-        :terminal [:poisoned :closed]
+        ;; `:poisoned` IS NOT TERMINAL, AND THAT IS A CORRECTION.
+        ;;
+        ;; E26 finding 7 printed this machine with `:terminal [:poisoned
+        ;; :closed]`, on the reading that a poisoned handle is unusable and
+        ;; nothing further is owed to it. E26 finding 8 read the same code the
+        ;; other way and E27 settled it: `casselc/db` keeps `close` legal on a
+        ;; poisoned transaction, `ensure-transaction-usable!` rejects everything
+        ;; else, and `sqlite3_close_v2` is what disposes of the stranded work. A
+        ;; poisoned transaction is emphatically still OWED a close.
+        ;;
+        ;; Finding 7 recorded the discrepancy rather than papering over it, and
+        ;; predicted exactly what shrinking this list would do: the middle arm of
+        ;; `perturb.dbtxcorpus/begin-with-full-case-split` leaked. It did, it was
+        ;; rewritten to close, and the leak is now a fixture of its own
+        ;; (`abort-and-never-close`).
+        :terminal [:closed]
 
         :transitions
         ;; THE SUM. Three entries, one `:op`, one `:from`, three `:to`s.
@@ -88,15 +101,44 @@
          {:op 'perturb.dbtx/begin    :from :idle :to :poisoned}  ; R3-R7
          {:op 'perturb.dbtx/commit!  :from :open :to :idle}
          {:op 'perturb.dbtx/unwind!  :from :idle :to :closed}
-         ;; A SECOND SUM, AND BOTH ITS MEMBERS ARE TERMINAL. Releasing a poisoned
-         ;; handle either disposes of the stranded transaction or does not; the
-         ;; caller owes nothing either way, so no case split is needed to consume
-         ;; the result — and there is nothing left to consume it with.
-         {:op 'perturb.dbtx/abort!   :from :poisoned :to :closed}
-         {:op 'perturb.dbtx/abort!   :from :poisoned :to :poisoned}
+         ;; THE CANCELLATION EDGE (§4.6 piece 5). One destination, and it is the
+         ;; declared cancelled state. `abort!` is what a developer writes when
+         ;; the protocol is being abandoned mid-way; `begin`'s R3-R7 summand
+         ;; reaches the same state from the other direction, so the runtime's
+         ;; unresolvable uncertainty and the developer's decision arrive at one
+         ;; place and are disposed of by one operation.
+         {:op 'perturb.dbtx/abort!   :from [:idle :open] :to :poisoned}
          ;; THE TOTALLY-ADMITTING DESTRUCTOR. `:from :any` admits every summand,
-         ;; so a Tx in a sum state may be handed to it with no case split at all.
+         ;; so a Tx in a sum state may be handed to it with no case split at all
+         ;; — and it is therefore also the ONLY edge out of `:poisoned`, which is
+         ;; what makes the cancelled-state declaration below true rather than
+         ;; aspirational.
          {:op 'perturb.dbtx/close!   :from :any  :to :closed}]}
+
+       ;; --- cancellation, as a STATE ------------------------------------------
+       ;;
+       ;; PERTURB-DESIGN §4.6 piece 5, from E26 finding 8 and scoped by E27. One
+       ;; keyword. Everything it buys is already written above:
+       ;;
+       ;;   - `abort!` lands here, so a protocol can be abandoned;
+       ;;   - no other operation's `:from` admits `:poisoned`, so nothing but
+       ;;     `close!` is legal afterwards — and `perturb.check` says so with its
+       ;;     own diagnostic rather than a bare `typestate`;
+       ;;   - `:poisoned` is NOT in `:terminal`, so abandoning the protocol
+       ;;     discharges nothing and a handle left here is still a leak. That is
+       ;;     the difference between this and silent discard, which Fowler §1.3
+       ;;     rejects by name.
+       ;;
+       ;; WHY Tx IS ENTITLED TO IT AND `perturb.http/ServerConn` IS NOT. E27's
+       ;; sufficiency condition: a state is a fact about the HOLDER, so it
+       ;; discharges Fowler's first quandary (a developer gets feedback for an
+       ;; unfinished protocol) and cannot touch the second (a peer left waiting
+       ;; forever). It suffices exactly where no peer's progress depends on being
+       ;; told. `sqlite3_close_v2` disposes of a stranded transaction and nothing
+       ;; is blocked on it. A `ServerConn`'s counterparty is a client holding an
+       ;; open socket, and no state on this side reaches it. NO PEER IS NOTIFIED
+       ;; BY ANYTHING BELOW — see `perturb.check/report-limits` item 15.
+       :perturb.cap/cancelled :poisoned
 
        ;; --- the case split, declared ------------------------------------------
        ;;
@@ -227,21 +269,38 @@
   (tx (tx-id t) :closed (:perturb.dbtx/outcome t) (:perturb.dbtx/errors t)))
 
 (defn abort!
-  "Legal from :poisoned alone, and its own `:to` is a SUM of two TERMINAL states.
-  Whether the stranded transaction was disposed of or not, nothing further is
-  owed, so the result needs no case split — which is the terminal-sum rule doing
-  visible work."
-  {:perturb.cap/op {:consumes [{:cap 'perturb.dbtx/Tx :state :poisoned :arg 0}]
-                    :produces [{:cap 'perturb.dbtx/Tx :state [:poisoned :closed]}]}}
+  "CANCELLATION, AS A STATE. §4.6 piece 5.
+
+  Legal from `:idle` or `:open` — i.e. wherever there is still a protocol to
+  abandon — and its one destination is `:poisoned`, the state this capability
+  declares CANCELLED. After it:
+
+    - nothing but `close!` is legal, because nothing else's `:from` admits
+      `:poisoned`. That is not a rule the checker adds; it is what the machine
+      above already says, which is the whole economy of the mechanism;
+    - the obligation is NOT discharged. `:poisoned` is not terminal, so a handle
+      aborted and dropped is still `dangling`. `abort!` records that the
+      protocol was abandoned; `close!` is what disposes of the resource.
+
+  NO PEER IS NOTIFIED. Nothing here writes to a counterparty, and there is no
+  counterparty to write to — which is precisely the condition under which E27
+  says a state is enough. Read `perturb.check/report-limits` item 15 before
+  describing this as cancellation."
+  {:perturb.cap/op {:consumes [{:cap 'perturb.dbtx/Tx :state [:idle :open] :arg 0}]
+                    :produces [{:cap 'perturb.dbtx/Tx :state :poisoned}]}}
   [t]
-  (let [st (if (empty? (:perturb.dbtx/errors t)) :closed :poisoned)]
-    (cap/transition! 'perturb.dbtx/Tx (tx-id t) :poisoned st :perturb.dbtx/abort)
-    (tx (tx-id t) st (:perturb.dbtx/outcome t) (:perturb.dbtx/errors t))))
+  (let [es (conj (vec (:perturb.dbtx/errors t))
+                 "the protocol was abandoned by abort!; the handle is still owed a close")]
+    (cap/transition! 'perturb.dbtx/Tx (tx-id t) (:perturb.dbtx/state t) :poisoned
+                     :perturb.dbtx/abort)
+    (tx (tx-id t) :poisoned (:perturb.dbtx/outcome t) es)))
 
 (defn close!
   "The destructor, legal from EVERY state — `sqlite3_close_v2` disposes of the
   handle whatever it is holding. `:from :any` admits every member of any sum, so
-  a Tx straight out of `begin` may be handed to it with no case split at all."
+  a Tx straight out of `begin` may be handed to it with no case split at all —
+  and it is, for the same reason, the ONE edge out of the cancelled state, which
+  is what §4.6 piece 5 needs and gets for free from E26 finding 7's machinery."
   {:perturb.cap/op {:consumes [{:cap 'perturb.dbtx/Tx :state :any :arg 0}]
                     :produces [{:cap 'perturb.dbtx/Tx :state :closed}]}}
   [t]

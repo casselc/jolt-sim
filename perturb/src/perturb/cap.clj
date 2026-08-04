@@ -147,29 +147,85 @@
 
 (def discriminator-key :perturb.cap/discriminator)
 
+;; --- cancellation as a STATE, not a term ------------------------------------
+;;
+;; PERTURB-DESIGN §4.6 piece 5, from E26 finding 8 and scoped by E27. On
+;; `abort!` a capability enters a state whose ONLY legal outgoing edge is the
+;; destructor — `casselc/db`'s `:poisoned`, h11's `MUST_CLOSE`. It needs no new
+;; term and no live-capability set enumerated at abort sites, because the sum
+;; `:to` machinery already gives the destructor's shape: `:from :any` admits
+;; every summand, so it needs no case split.
+;;
+;;   :perturb.cap/cancelled :poisoned
+;;
+;; ONE KEYWORD, NAMING ONE OF THE CAPABILITY'S OWN DECLARED STATES.
+;;
+;; WHY THE CAPABILITY DECLARES IT RATHER THAN IT BEING IMPLICIT FOR ALL. Three
+;; reasons, and the first is the one that decides it:
+;;
+;;   1. E27's SUFFICIENCY CONDITION IS PER CAPABILITY. Fowler §1.4 names two
+;;      quandaries of silent discard — a developer gets no feedback for an
+;;      unfinished protocol, and a peer may be left waiting forever. A state
+;;      discharges the first and cannot touch the second, because a state is a
+;;      fact about the HOLDER. So the mechanism is sufficient exactly when no
+;;      peer's progress depends on being told: true of a database transaction,
+;;      FALSE of `perturb.http/ServerConn`, whose counterparty is a client on an
+;;      open socket. That is a judgement about the resource, and a judgement has
+;;      to be written down by whoever makes it. An implicit cancelled state
+;;      would silently hand `ServerConn` a cancellation it is not entitled to.
+;;   2. An implicit state would give every machine a state it did not name, and
+;;      would need a destructor SYNTHESISED for machines that have none — a
+;;      machine with no totally-admitting operation would acquire an inescapable
+;;      state, which `perturb.check/report-limits` item 14(e) already names as
+;;      the way to make a capability unusable, with no warning.
+;;   3. It is the same posture as `:perturb.cap/discriminator` and as the sum
+;;      itself: OPT-IN, so a machine that does not mention it behaves exactly as
+;;      it did before this existed.
+;;
+;; NOTHING HERE CHECKS ANYTHING, as everywhere else in this namespace. But this
+;; key is the one declaration in perturb that a checker MUST NOT simply believe:
+;; a capability that declared a cancelled state with an ordinary outgoing edge
+;; would be claiming a discipline it does not have, and every program holding it
+;; would be accepted on a false premise. `perturb.check`'s
+;; `check-cancellation-declarations!` refuses that shape where it is WRITTEN.
+
+(def cancelled-key :perturb.cap/cancelled)
+
 (defn refinements
-  "[capability operation] -> the transition's `:perturb.cap/refine` map, over
-  every declaration in `decls`.
+  "[capability operation] -> a VECTOR of that operation's refinement-carrying
+  transitions, each entry being the transition's `:perturb.cap/refine` map with
+  the edge's `:from` and `:to` added, over every declaration in `decls`.
 
   Keyed by capability AND operation on purpose: `spec`'s primitive table is
   keyed by operation alone and therefore loses one of the two machines an
   operation like `body-finish!` advances (E18 finding 1a). A refinement that
   inherited that defect would be attached to the wrong machine.
 
-  AND IT NOW HAS THE DEFECT THE PRIMITIVE TABLE SHED. Since E26 finding 7 a
-  group of transitions may share a [capability operation] key with different
-  `:to`s; two of them carrying a refinement each would collide here and one
-  would silently win. Nothing declares such a pair, and `perturb.check`'s
-  report-limits item 14(j) says so rather than this being a hidden hole."
+  A VECTOR AND NOT ONE ENTRY — THE DEFECT THE PRIMITIVE TABLE SHED, SHED HERE
+  TOO. Since E26 finding 7 a group of transitions may share a [capability
+  operation] key with different `:to`s. This table was built with `assoc`, so
+  two summands each carrying a `:perturb.cap/refine` would collide and the one
+  declared LAST would silently win — the other's obligation would never be
+  discharged and the program would be accepted on it. That was recorded as
+  `report-limits` item 14(j) rather than fixed, on the grounds that nothing
+  declared such a pair; `perturb.dbtxcorpus/Meter` now does, and it is a
+  REJECTION that the old table turned into an accept.
+
+  The consumers do the rest: `perturb.check` discharges EVERY applicable
+  summand's `:requires` (the call may take any of them, so all must hold) and
+  widens a ghost variable to unknown when the applicable summands disagree
+  about its `:update`."
   [decls]
   (reduce (fn [acc e]
             (let [cap-name (first e)
                   ts       (:perturb.cap/typestate (second e))]
               (reduce (fn [a t]
                         (if (contains? t refine-key)
-                          (assoc a [cap-name (:op t)]
-                                 (assoc (get t refine-key)
-                                        :from (:from t) :to (:to t)))
+                          (update a [cap-name (:op t)]
+                                  (fn [v]
+                                    (conj (or v [])
+                                          (assoc (get t refine-key)
+                                                 :from (:from t) :to (:to t)))))
                           a))
                       acc (:transitions ts))))
           {} decls))

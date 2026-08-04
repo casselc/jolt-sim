@@ -30,6 +30,12 @@
                capability in a sum state may be used only by an operation that
                admits EVERY member, or after a declared discriminator has
                eliminated it at an `if` (E26 finding 7; report-limits item 14)
+    CANCELLED  a capability may declare one of its own states CANCELLED; from
+               it the DESTRUCTOR is the only legal operation, and reaching it
+               discharges NOTHING — a cancelled capability that never reaches
+               its destructor is still a leak. This is §4.6's cancellation
+               piece 5, and it discharges ONE of Fowler's two quandaries: no
+               peer is notified (E26 finding 8, scoped by E27; item 15)
 
   ONE JUDGEMENT IS NOT A MODE JUDGEMENT AT ALL, AND IS THE OTHER TIER:
 
@@ -172,9 +178,11 @@
     {:declarations decls :operations ops
      :primitives prims :transitions-of by-op :representation repr
      :discriminators discr
-     ;; REFINEMENT (E18 finding 3). [capability operation] -> the refinement on
-     ;; that transition. Keyed by the PAIR, which is now also how `prims` is
-     ;; keyed — the two fixes met here and agreed.
+     ;; REFINEMENT (E18 finding 3). [capability operation] -> a VECTOR of the
+     ;; refinements on that operation's edges. Keyed by the PAIR, which is also
+     ;; how `prims` is keyed — the two fixes met here and agreed — and holding a
+     ;; COLLECTION, which is the same fix `prims` got for E26 finding 7 and
+     ;; which `cap/refinements` had not had until now (old item 14(j)).
      :refinements (cap/refinements decls)}))
 
 (defn spec
@@ -260,6 +268,74 @@
   (if (or (sum? want) (sum? got))
     (= (set (sum-members want)) (set (sum-members got)))
     (state-ok? want got)))
+
+;; --- CANCELLED: MUST_CLOSE as a state (§4.6 piece 5, E26 finding 8, E27) -----
+;;
+;; A capability may declare ONE of its own states to be the CANCELLED state:
+;;
+;;   :perturb.cap/cancelled :poisoned
+;;
+;; and then, by construction rather than by a new rule:
+;;
+;;   - an operation that lands there is a cancellation. `perturb.dbtx/abort!`
+;;     is `:from [:idle :open] :to :poisoned`, and `begin`'s R3-R7 summand
+;;     reaches the same state from the other direction — the runtime's
+;;     uncertainty and the developer's decision arrive at one place.
+;;   - EVERY OPERATION EXCEPT THE DESTRUCTOR IS REFUSED, because no other
+;;     operation's `:from` admits that state. That needs no new rule at all;
+;;     what it gets here is a better DIAGNOSTIC (`cancelled-use`), because
+;;     `typestate` is true and unhelpful when the cause is a cancellation.
+;;   - FAILING TO REACH THE DESTRUCTOR IS STILL A LEAK, because the cancelled
+;;     state is not terminal — enforced at the declaration, below. If reaching
+;;     it discharged the obligation the mechanism would be silent discard with
+;;     extra steps, which is exactly what Fowler §1.3 rejects.
+;;
+;; The destructor needs no case split: `:from :any` admits every summand, which
+;; is the sum `:to` machinery of E26 finding 7 doing the work that would
+;; otherwise need a `cancel` term per capability class.
+;;
+;; WHAT IT DOES NOT DO IS THE HEADLINE — see `report-limits` item 15. No peer is
+;; notified. This is not cancellation in EGV's sense.
+
+(defn- cancelled-state-of
+  "The state this capability declares CANCELLED, or nil. nil for every
+  capability that does not opt in, which is every capability but one."
+  [sp c] (get (decl-of sp c) cap/cancelled-key))
+
+(defn- edges-of [sp c] (vec (:transitions (:perturb.cap/typestate (decl-of sp c)))))
+
+(defn- edges-from
+  "Every declared edge whose `:from` admits one concrete state."
+  [sp c st] (vec (filter (fn [t] (admits? (:from t) st)) (edges-of sp c))))
+
+(defn- destructor-edge?
+  "An edge is a DESTRUCTOR edge when every member of its `:to` is terminal:
+  after it, nothing is owed. That is the whole definition, and it is read off
+  the machine rather than declared separately, so it cannot drift from it."
+  [sp c t] (terminal? sp c (norm-state (:to t))))
+
+(defn- destructor-lines
+  "What a reader may still DO with a cancelled capability, printed from the
+  declaration rather than invented."
+  [sp c st]
+  (let [ds (filter (fn [t] (destructor-edge? sp c t)) (edges-from sp c st))]
+    (if (empty? ds)
+      [(str "no destructor is declared out of " st " — see the declaration rule")]
+      (into ["the only operation(s) this state admits, and they all dispose of it:"]
+            (map (fn [t] (str "  " (:op t) "   " (want-str (:from t)) " -> "
+                              (want-str (:to t))))
+                 ds)))))
+
+(defn- cancelled-leak-lines
+  "The extra lines a `dangling` carries when the capability is sitting in its
+  declared cancelled state. REACHING THE CANCELLED STATE DISCHARGES NOTHING."
+  [sp c st]
+  (concat
+    [(str st " is the DECLARED CANCELLED state of " c ", and it is NOT terminal:")
+     "cancelling a capability records that its protocol was abandoned; it does"
+     "not dispose of it, and a mechanism in which it did would be silent discard"
+     "with extra steps (Fowler §1.3 rejects exactly that)"]
+    (destructor-lines sp c st)))
 
 ;; --- values -----------------------------------------------------------------
 ;;
@@ -543,16 +619,77 @@
         {:refine env
          :rlog   (vec (map (fn [k] (ghost-line k (get env k) (:pos st))) ks))}))))
 
+;; --- WHICH EDGES OF AN OPERATION APPLY TO ONE CALL --------------------------
+;;
+;; An operation may declare several edges under one [capability operation] key:
+;; several `:from`s (which has always been possible) and, since E26 finding 7,
+;; several `:to`s from one `:from` — a SUM. The refinement tier has to say which
+;; of them a given call site is subject to, and the answer is the same totality
+;; rule the typestate side already uses.
+
+(defn- applicable-edges
+  "The declared edges of `[cap opsym]` whose `:from` admits the state the
+  capability is ACTUALLY in at this call. `state-ok?` and not `admits?`, so a
+  capability in a sum state selects only edges that admit every member — the
+  same rule that lets a `:from :any` destructor consume a sum."
+  [sp cap-name opsym state]
+  (vec (filter (fn [t] (state-ok? (:from t) state))
+               (get (:primitives sp) [cap-name opsym]))))
+
+(defn- applicable-refinements
+  "The refinements on those edges. NO FALLBACK: if the call typechecked through
+  an edge that carries no refinement, there is no obligation to discharge, and
+  reaching for one from another `:from` would discharge a condition that is not
+  on this path."
+  [sp cap-name opsym state]
+  (vec (filter (fn [r] (state-ok? (:from r) state))
+               (get (:refinements sp) [cap-name opsym]))))
+
 (defn- refine-update
-  "Apply the `:update` on `[cap opsym]` to a live capability's ghost state. With
+  "Apply the `:update`s on `[cap opsym]` to a live capability's ghost state. With
   no `:update` the state is carried across unchanged, which is what makes an
-  operation that does not touch the arithmetic transparent to it."
+  operation that does not touch the arithmetic transparent to it.
+
+  SEVERAL APPLICABLE EDGES — the sum case. The call takes ONE of them and which
+  one is not knowable until run time, so:
+
+    - every applicable edge carries the SAME `:update`  -> apply it, exactly as
+      the single-edge case always did;
+    - the applicable edges DISAGREE (different `:update`s, or one has an
+      `:update` and another does not, which is `unchanged` and is a different
+      answer) -> every ghost variable any of them touches becomes UNKNOWN, with
+      the reason recorded. That is the same treatment `join-refine` gives the
+      two arms of an `if` and `widen-caps` gives a loop, for the same reason:
+      the checker does not know which value it has, and guessing is how a
+      checker becomes a false-accept generator.
+
+  Before this, the table held ONE entry per [capability operation] and a second
+  summand's refinement was silently dropped — old `report-limits` item 14(j)."
   [st sp cap-name opsym lc nodes]
-  (let [u   (:update (get (:refinements sp) [cap-name opsym]))
-        env (or (:refine lc) {})]
-    (if (or (nil? u) (empty? env))
+  (let [env   (or (:refine lc) {})
+        edges (applicable-edges sp cap-name opsym (:state lc))
+        ups   (vec (map (fn [t] (:update (get t cap/refine-key))) edges))
+        real  (vec (remove nil? ups))]
+    (cond
+      (or (empty? real) (empty? env))
       {:refine env :rlog (vec (:rlog lc))}
-      (let [af   (arg-fn st nodes)
+
+      (or (> (count (distinct real)) 1) (< (count real) (count ups)))
+      (let [ks   (vec (sort-by str (distinct (reduce (fn [a u] (into a (keys u))) [] real))))
+            why  (str "unknown here — `" opsym "` declares " (count edges)
+                      " destinations from this state and they do not agree about"
+                      " this ghost variable; which one the call took is not"
+                      " knowable until run time")
+            env2 (reduce (fn [acc k] (assoc acc k (ref/top why))) env ks)]
+        {:refine env2
+         :rlog   (into (vec (:rlog lc))
+                       (map (fn [k] (str "  " k " := unknown   (a sum with disagreeing"
+                                         " :update's) at " (pir/site (:pos st))))
+                            ks))})
+
+      :else
+      (let [u    (first real)
+            af   (arg-fn st nodes)
             ks   (sort-by str (keys u))
             env2 (reduce (fn [acc k] (assoc acc k (ref/term env af (get u k)))) env ks)]
         {:refine env2
@@ -565,19 +702,25 @@
                                          "   at " (pir/site (:pos st))))
                             ks))}))))
 
-(defn- check-requires!
-  "Discharge the `:requires` on `[cap opsym]`, if there is one, against the ghost
-  state of the capability being consumed. Three outcomes and only three: proved,
-  refuted, or REFUSED. Returns nil either way — this reports, it does not
-  change the abstract state."
-  [st sp cap-name opsym lc nodes]
-  (let [r   (get (:refinements sp) [cap-name opsym])
-        req (:requires r)]
+(defn- check-requires-one!
+  "Discharge ONE edge's `:requires` against the ghost state of the capability
+  being consumed. Three outcomes and only three: proved, refuted, or REFUSED.
+  Returns nil either way — this reports, it does not change the abstract state."
+  [st sp cap-name opsym lc nodes r n-applicable]
+  (let [req (:requires r)]
     (when (and req lc)
       (let [env (or (:refine lc) {})
             v   (ref/decide env (arg-fn st nodes) req)
-            head [(str "obligation    " (:name r) "   " (pr-str req))
-                  (str "on transition " opsym "  " (:from r) " -> " (:to r))]
+            head (concat
+                   [(str "obligation    " (:name r) "   " (pr-str req))
+                    (str "on transition " opsym "  " (want-str (:from r))
+                         " -> " (want-str (:to r)))]
+                   (if (> n-applicable 1)
+                     [(str "              one of " n-applicable
+                           " destinations this operation declares from this state;")
+                      (str "              EVERY one of them must be discharged, because which")
+                      (str "              destination the call takes is not knowable until run time")]
+                     []))
             tail (concat (ref/env-lines env)
                          (vec (:rlog lc))
                          [(str "at            " (pir/site (:pos st)))
@@ -613,6 +756,27 @@
                                      "the program is REJECTED rather than accepted: this checker"
                                      "does not treat `I cannot tell` as `yes` (perturb.refine)"]
                                     tail)}))))))
+
+(defn- check-requires!
+  "Discharge EVERY applicable edge's `:requires` against the ghost state of the
+  capability being consumed.
+
+  EVERY, not the first and not the last. One operation may declare several
+  destinations from one state and each of them may carry its own side
+  condition; the call takes one of them and which one is not knowable until run
+  time, so a program is correct only if it satisfies all of them. This is the
+  totality rule `state-ok?` uses on the typestate side, at the refinement tier.
+
+  Before `cap/refinements` held a vector, the table held one entry per
+  [capability operation] and the LAST declared summand silently overwrote the
+  others — so a refuted obligation on an earlier summand became an ACCEPT. That
+  is old `report-limits` item 14(j), and `perturb.dbtxcorpus/Meter` is the
+  fixture that would have caught it."
+  [st sp cap-name opsym lc nodes]
+  (when lc
+    (let [rs (applicable-refinements sp cap-name opsym (:state lc))]
+      (doseq [r rs]
+        (check-requires-one! st sp cap-name opsym lc nodes r (count rs))))))
 
 (defn- widen-caps
   "Every ghost variable of every capability in `bids` becomes UNKNOWN.
@@ -781,6 +945,37 @@
                       [(str "in            " (:in st))])})
   nil)
 
+(defn- report-cancelled-use!
+  "AN OPERATION THAT IS NOT THE DESTRUCTOR, APPLIED TO A CANCELLED CAPABILITY.
+
+  Deliberately NOT `:typestate`, for the same reason `state-unresolved` is not.
+  A `typestate` verdict here would be true and useless: it would say the handle
+  is in `:poisoned` and the operation wants `:open`, as if the program had
+  simply picked the wrong moment. What actually happened is that the protocol
+  was ABANDONED, and the only thing left to do with the capability is dispose
+  of it. The reader wants to be told that, and to be told that the abandonment
+  did not discharge the obligation."
+  [st sp opsym entry lc]
+  (let [c  (:cap entry)
+        cs (:state lc)]
+    (report! {:kind :cancelled-use :cap c :op opsym
+              :detail (concat
+                        [(str "operation     " opsym " requires " c "@"
+                              (want-str (:state entry)))
+                         (str "capability    "
+                              (if (:name lc) (str "`" (:name lc) "` ") "")
+                              "is in the CANCELLED state " cs)
+                         (str "              its protocol was abandoned; a cancelled"
+                              " capability admits")
+                         (str "              nothing but its destructor (PERTURB-DESIGN"
+                              " §4.6 piece 5)")
+                         (str "at            " (pir/site (:pos st)))]
+                        (destructor-lines sp c cs)
+                        [(str "and reaching " cs " discharged NOTHING — it is not terminal, so")
+                         (str "failing to reach the destructor is still a leak")
+                         (str "in            " (:in st))])})
+    nil))
+
 (defn- report-unpositioned! [st opsym entry move?]
   (report! {:kind :annotation-unpositioned :cap (:cap entry) :op opsym
             :detail [(str "operation     " opsym (if move? " consumes " " borrows ")
@@ -844,11 +1039,21 @@
           {:st st :used nil :ok false :lc nil})
 
       (not (state-ok? want-state (:state (:lc hit))))
-      (do (if (sum? (:state (:lc hit)))
+      (do (cond
+            (sum? (:state (:lc hit)))
             ;; A SUM that is not admitted in full. Its own diagnostic kind, and
             ;; the abstract state moves exactly as a typestate rejection does —
             ;; the difference is what the reader is told, not what is tracked.
             (report-state-unresolved! st sp opsym entry (:lc hit))
+
+            ;; THE CANCELLED STATE. Same treatment, third kind: the state is
+            ;; known and it is the one the capability was cancelled into, so the
+            ;; useful thing to say is that the protocol was abandoned and only
+            ;; the destructor is left — not that `:open` was wanted.
+            (= (:state (:lc hit)) (cancelled-state-of sp want-cap))
+            (report-cancelled-use! st sp opsym entry (:lc hit))
+
+            :else
             (report! {:kind :typestate :cap want-cap :op opsym
                       :detail [(str "operation     " opsym " requires " want-cap "@"
                                     (want-str want-state))
@@ -1025,12 +1230,20 @@
                 (terminal? sp (:cap c) (:state c)))
           s
           (do (report! {:kind :dangling :cap (:cap c)
-                        :detail [(str "capability    `" (:name c) "` : " (:cap c)
-                                      "@" (:state c))
-                                 (str "bound at      " (pir/site (:pos c)))
-                                 (str "goes out of scope at " where
-                                      " without reaching a terminal state")
-                                 (str "in            " (:in s))]})
+                        :detail (concat
+                                  [(str "capability    `" (:name c) "` : " (:cap c)
+                                        "@" (:state c))
+                                   (str "bound at      " (pir/site (:pos c)))
+                                   (str "goes out of scope at " where
+                                        " without reaching a terminal state")]
+                                  ;; CANCELLED IS NOT DISCHARGED. The verdict and
+                                  ;; the kind are the ordinary leak's — what is
+                                  ;; added is why the program's author may have
+                                  ;; thought otherwise.
+                                  (if (= (:state c) (cancelled-state-of sp (:cap c)))
+                                    (cancelled-leak-lines sp (:cap c) (:state c))
+                                    [])
+                                  [(str "in            " (:in s))])})
               s))))
     st bids)))
 
@@ -1612,6 +1825,106 @@
                               [(str "the declaration and the annotation disagree about "
                                     c "'s edge")]))}))))))))))
 
+;; --- the cancelled state's own rule: A DECLARATION MUST NOT BE ABLE TO LIE ---
+
+(defn check-cancellation-declarations!
+  "Refuse a `:perturb.cap/cancelled` declaration that does not mean what it says.
+
+  Every other key in a declaration is an AXIOM: `:from`/`:to` are believed,
+  `:perturb.cap/discriminator` is believed, and `report-limits` items 1 and
+  14(f) say so. This one cannot be, and the reason is specific rather than a
+  general preference for checking things.
+
+  A cancelled state is a claim about what is IMPOSSIBLE — that nothing but the
+  destructor is legal from it. Every other axiom is a claim about what a body
+  DOES, and a body that disobeys it is a wrong program that the checker was
+  told to trust. This claim is instead discharged BY THE MACHINE ITSELF: the
+  states an operation admits are the `:from`s written in the same declaration,
+  so `only the destructor is legal here` is a property of the declaration, not
+  of any body. A declaration that names a cancelled state with an ordinary
+  outgoing edge would therefore be internally inconsistent, and every program
+  holding that capability would be accepted on a premise the same file
+  contradicts. So it is refused where it is written.
+
+  Five rules, each a way the declaration could lie:
+
+    1. the cancelled state must be a DECLARED state;
+    2. it must NOT be terminal — if reaching it discharged the obligation, the
+       mechanism would be silent discard with extra steps, which is precisely
+       what Fowler §1.3 rejects and what §4.6 piece 5 exists to avoid;
+    3. something must reach it, or the mechanism is decoration;
+    4. something must leave it, or the state is inescapable and every program
+       that reaches it leaks with no way to be written correctly — that is
+       report-limits item 14(e)'s hazard, made LOUD instead of silent;
+    5. EVERY edge that leaves it must be a DESTRUCTOR edge — every member of
+       its `:to` terminal. This is the rule the mechanism is named for.
+
+  One diagnostic per capability: the first rule it breaks. Returns nothing."
+  [sp]
+  (doseq [e (sort-by (fn [x] (str (first x))) (seq (:declarations sp)))]
+    (let [c  (first e)
+          d  (second e)
+          cs (get d cap/cancelled-key)
+          ts (:perturb.cap/typestate d)]
+      (when (not (nil? cs))
+        (let [states  (set (:states ts))
+              term    (let [t (:terminal ts)] (if (coll? t) (set t) #{t}))
+              out     (edges-from sp c cs)
+              in      (filter (fn [t] (contains? (set (sum-members (:to t))) cs))
+                              (edges-of sp c))
+              bad-out (remove (fn [t] (destructor-edge? sp c t)) out)
+              say (fn [lines]
+                    (report! {:kind :cancelled-state-unsound :cap c
+                              :detail (concat
+                                        [(str "capability    " c " declares "
+                                              cap/cancelled-key " " cs)]
+                                        lines
+                                        ["the DECLARATION is refused: a cancelled state is the one"
+                                         "axiom this checker will not take on trust, because it is a"
+                                         "claim about what is impossible and the machine beside it"
+                                         "settles that claim (PERTURB-DESIGN §4.6 piece 5, E27)"])}))]
+          (cond
+            (not (contains? states cs))
+            (say [(str "rule 1        the cancelled state must be one of the machine's own")
+                  (str "declared      " (pr-str (vec (:states ts))))
+                  (str cs " is not among them, so no edge can be checked against it")])
+
+            (contains? term cs)
+            (say [(str "rule 2        the cancelled state must NOT be terminal")
+                  (str "declared      :terminal " (pr-str (:terminal ts)))
+                  "a terminal cancelled state means reaching it DISCHARGES the"
+                  "obligation, so `cancel and walk away` would type-check — that is"
+                  "silent discard with extra steps, and Fowler §1.3 rejects it by name"
+                  "as the reason affine types are not enough"])
+
+            (empty? in)
+            (say [(str "rule 3        nothing reaches " cs)
+                  "no declared edge has it as a `:to`, so no operation can cancel this"
+                  "capability and the declaration claims a mechanism that does not exist"])
+
+            (empty? out)
+            (say [(str "rule 4        nothing leaves " cs)
+                  "no declared edge admits it as a `:from`, so a cancelled capability"
+                  "can never be disposed of: it is not terminal, so every program that"
+                  "reaches this state leaks and none of them can be written correctly"
+                  "(report-limits item 14(e), made loud)"])
+
+            (seq bad-out)
+            (say (concat
+                   [(str "rule 5        the ONLY edge out of a cancelled state may be the"
+                         " destructor")
+                    (str "              — an edge every member of whose `:to` is terminal")]
+                   (map (fn [t]
+                          (str "offending     " (:op t) "   " (want-str (:from t))
+                               " -> " (want-str (:to t))
+                               "   (not terminal)"))
+                        bad-out)
+                   ["a cancelled state that admits ordinary work is not MUST_CLOSE, it is"
+                    "an ordinary state with a misleading name, and a program that reached"
+                    "it would be accepted on the strength of a discipline nothing enforces"]))
+
+            :else nil))))))
+
 (defn check-def!
   "Check one captured :def node. Returns the number of diagnostics it produced."
   [sp node]
@@ -1955,12 +2268,89 @@
    "           parameter that is genuinely in a sum state cannot be declared, so"
    "           a sum cannot cross a function boundary — it must be eliminated in"
    "           the same function that produced it."
-   "       (j) A REFINEMENT ON A SUMMAND IS NOT ADDRESSED."
-   "           `perturb.cap/refinements` is keyed [capability operation] with"
-   "           `assoc`, so if two edges of one group each carried a"
-   "           `:perturb.cap/refine`, one would silently win — the same defect"
-   "           the primitive table had before E26 finding 7, in the one table"
-   "           that was not fixed. Nothing declares such a pair today."])
+   "       (j) A REFINEMENT ON A SUMMAND — CLOSED, AND IT WAS A REAL DEFECT."
+   "           `perturb.cap/refinements` was keyed [capability operation] with"
+   "           `assoc`, so two edges of one group each carrying a"
+   "           `:perturb.cap/refine` collided and the one declared LAST silently"
+   "           won — the same defect the primitive table had before E26 finding"
+   "           7, in the one table that was not fixed. The table now holds a"
+   "           VECTOR per key and the consumers were changed with it:"
+   "             - EVERY applicable summand's `:requires` is discharged, because"
+   "               the call takes one of them and which one is not knowable"
+   "               until run time (the totality rule (b) states, at the"
+   "               refinement tier);"
+   "             - applicable summands that DISAGREE about an `:update` widen"
+   "               that ghost variable to unknown, exactly as the two arms of an"
+   "               `if` and a loop boundary already do;"
+   "             - `applicable` means `:from` admits the state the capability is"
+   "               actually in, with NO fallback: an operation that typechecked"
+   "               through an edge carrying no refinement owes nothing."
+   "           `perturb.dbtxcorpus/meter-split-refutes-one-summand` is the"
+   "           fixture: two summands, the refuted obligation declared FIRST, so"
+   "           the old table dropped it and ACCEPTED the program."
+   ""
+   " 15. CANCELLATION IS A STATE, AND HERE IS WHAT A STATE CANNOT DO."
+   "     PERTURB-DESIGN §4.6 piece 5. A capability may declare one of its own"
+   "     states CANCELLED (`:perturb.cap/cancelled`); an operation that lands"
+   "     there abandons the protocol; nothing but the destructor is legal"
+   "     afterwards; and reaching it discharges NOTHING, so a cancelled"
+   "     capability that never reaches its destructor is still `dangling`."
+   ""
+   "     THE HEADLINE IS WHAT IT DOES NOT DO. Fowler et al. (POPL 2019) §1.4"
+   "     names TWO quandaries of silently discarded endpoints:"
+   ""
+   "       \"First, a developer receives no feedback if they accidentally forget"
+   "        to finish a protocol implementation. Second, if an exception is"
+   "        raised in an evaluation context that captures an open endpoint then"
+   "        THE PEER MAY BE LEFT WAITING FOREVER.\""
+   ""
+   "     THIS MECHANISM DISCHARGES THE FIRST AND CANNOT TOUCH THE SECOND,"
+   "     because a state is a fact about the HOLDER. NO PEER IS NOTIFIED. There"
+   "     is no zapper thread, nothing propagates through buffered values, and"
+   "     nothing raises in a counterparty on receive or close. EGV's"
+   "     `E-Cancel`/`E-Zap`/`E-ReceiveZap`/`E-CloseZap` are the operational"
+   "     content this does not have, and T-Cancel's own note says that content"
+   "     is what stops cancellation violating progress. So:"
+   ""
+   "       THIS IS NOT CANCELLATION IN EGV'S SENSE AND MUST NOT BE DESCRIBED AS"
+   "       IF IT WERE. It is §4.6 pieces 1-3 collapsed for the PEERLESS case,"
+   "       and it is sufficient exactly when piece 4 is vacuous — when no peer's"
+   "       progress depends on being told. That is TRUE of a database"
+   "       transaction, which is why `perturb.dbtx` declares it, and FALSE of"
+   "       `perturb.http/ServerConn`, whose counterparty is a client holding an"
+   "       open socket, which is why `perturb.http` declares nothing of the kind"
+   "       and why the key is opt-in rather than implicit for every capability."
+   ""
+   "     FIVE MORE THINGS IT DOES NOT DO."
+   "       (a) NOTHING INSERTS THE CANCELLATION. §4.6 piece 2 — a live-capability"
+   "           set at every `abort!` site, discharged by the compiler the way"
+   "           EGV's `E-Raise` cancels every endpoint in the enclosing pure"
+   "           context — is NOT built. A programmer who wants a capability"
+   "           cancelled writes the call. A real non-local exit past a live"
+   "           capability is still item 4's hole: `try`/`catch` has no"
+   "           exception-path join, so the checker cannot even see the exit."
+   "       (b) IT DOES NOT PROPAGATE. §4.6 piece 3: cancelling a capability says"
+   "           nothing about capabilities reachable from it. The abstract domain"
+   "           has one composite and a capability inside another capability"
+   "           cannot be named at all."
+   "       (c) THE CANCELLING OPERATION'S BODY IS AN AXIOM, like every other"
+   "           transition (item 1). Nothing checks that `perturb.dbtx/abort!`"
+   "           actually abandons anything; what is checked is what the machine"
+   "           permits afterwards."
+   "       (d) IT IS ONE STATE, NOT A MODE. A capability cancelled in one arm of"
+   "           an `if` and not the other is an ordinary join failure, and there"
+   "           is no `:maybe-cancelled`. §4.6's drop-flag item is untouched."
+   "       (e) IT SAYS NOTHING ABOUT TIME OR ORDER. `MUST_CLOSE` requires that"
+   "           the destructor is reached, not that it is reached promptly, and"
+   "           nothing relates it to any other machine (item 9)."
+   ""
+   "     WHAT IS NOT AN AXIOM, UNIQUELY. The declaration itself is CHECKED —"
+   "     `check-cancellation-declarations!` refuses a cancelled state that is"
+   "     terminal, unreachable, inescapable, undeclared, or that has an outgoing"
+   "     edge which is not a destructor. That is the one declaration key in"
+   "     perturb the checker will not believe, because unlike `:from`/`:to` it"
+   "     is a claim about what is IMPOSSIBLE, and the machine written beside it"
+   "     settles that claim without reading any body."])
 
 (def ^:private line
   "========================================================================")
@@ -2051,6 +2441,81 @@
                   " declaration fixtures decided as recorded"
                   (if (empty? fails) "" (str "; FAILED " (vec fails)))))
     fails))
+
+(defn- run-cancellation-corpus
+  "Gate the CANCELLED-STATE declaration rule against hand-built machines.
+
+  Same shape and same posture as `run-declaration-corpus`: no program, no body,
+  no annotation — a `:perturb.cap/cancelled` key and the machine it claims to be
+  a state of. It is separate from that corpus because it checks a different
+  thing: `check-annotation-consistency!` asks whether an ANNOTATION agrees with
+  a machine, and this asks whether a MACHINE is internally consistent with its
+  own claim about what is impossible.
+
+  A fixture is `{:name :declarations :expect}` and `:expect` is the exact SET of
+  diagnostic kinds — `[]` for the well-formed control, which is here so that the
+  rule cannot pass by rejecting everything."
+  [corpus-sym banner]
+  (println (str "== the CANCELLED-STATE declaration rule: " corpus-sym " ======"))
+  (println (str "   " banner))
+  (println)
+  (let [fixtures (deref (resolve corpus-sym))
+        fails
+        (reduce
+          (fn [acc f]
+            (let [sp     (spec-from {:perturb.cap/declarations (:declarations f)
+                                     :perturb.cap/operations   {}})
+                  before (count @diagnostics)]
+              (check-cancellation-declarations! sp)
+              (let [ds  (vec (drop before @diagnostics))
+                    got (set (map :kind ds))
+                    ok  (= got (set (:expect f)))]
+                (println (str "  [" (if ok "ok  " "FAIL") "] " (:name f)
+                              "  expected " (pr-str (vec (sort (map name (:expect f)))))
+                              ", got " (pr-str (vec (sort (map name got))))))
+                (when (not ok) (println (render ds)))
+                (if ok acc (conj acc (:name f))))))
+          [] fixtures)]
+    (println)
+    (println (str "  " (- (count fixtures) (count fails)) "/" (count fixtures)
+                  " cancellation declaration fixtures decided as recorded"
+                  (if (empty? fails) "" (str "; FAILED " (vec fails)))))
+    fails))
+
+(defn- run-real-cancellation-declarations
+  "The same rule, over the declarations perturb ACTUALLY ships. A fixture corpus
+  that passes while the real declaration is unsound would be a gate measuring
+  itself, so this runs on `spec` and its diagnostics fail the gate."
+  [sp]
+  (println)
+  (println "== the cancelled-state rule, over perturb's OWN declarations ==========")
+  (let [before (count @diagnostics)
+        all    (sort-by (fn [e] (str (first e))) (seq (:declarations sp)))
+        decl   (filter (fn [e] (not (nil? (get (second e) cap/cancelled-key)))) all)]
+    (check-cancellation-declarations! sp)
+    (let [ds  (vec (drop before @diagnostics))
+          bad (set (map :cap ds))]
+      (println (str "   " (count decl) " of " (count all)
+                    " declared capabilities opt in to a cancelled state. The key is"))
+      (println "   opt-in exactly because E27's sufficiency condition is per capability:")
+      (println "   sufficient when no peer's progress depends on being told, which is true")
+      (println "   of a database transaction and false of perturb.http's ServerConn.")
+      (println)
+      (doseq [e all]
+        (let [c  (first e)
+              cs (get (second e) cap/cancelled-key)]
+          (println (str "  ["
+                        (cond (nil? cs) " -  "
+                              (contains? bad c) "NO  "
+                              :else "ok  ")
+                        "] " c
+                        (if (nil? cs)
+                          "   declares no cancelled state"
+                          (str "   cancelled " cs))))))
+      (when (seq ds) (println) (print (render ds)))
+      (println)
+      (println (str "  " (count ds) " unsound cancelled-state declaration(s)"))
+      (vec bad))))
 
 (defn- run-accepts
   "EXECUTE every accepted corpus program under the scripted handler.
@@ -2302,6 +2767,79 @@
     (println "   be eliminated at all — it can only be consumed by an operation")
     (println "   whose :from admits every member. See report-limits item 14.")))
 
+(defn report-cancellation-finding
+  "§4.6 piece 5, and what is now done about it. Printed from the DIAGNOSTICS the
+  run above actually raised, not asserted.
+
+  Not a gate — `run-corpus` over `perturb.dbtxcorpus` and
+  `run-cancellation-corpus` are. It exists so the shape of the answer is
+  visible, and so that the thing this mechanism does NOT do is printed beside
+  the thing it does rather than only in `report-limits`."
+  [sp]
+  (let [ds  (deref diagnostics)
+        cu  (filter (fn [d] (= :cancelled-use (:kind d))) ds)
+        cd  (filter (fn [d] (= :cancelled-state-unsound (:kind d))) ds)
+        tx  (get (:declarations sp) 'perturb.dbtx/Tx)
+        cs  (get tx cap/cancelled-key)]
+    (println)
+    (println "== MUST_CLOSE: cancellation as a STATE, not a term ====================")
+    (println "   PERTURB-DESIGN §4.6's cancellation list had four pieces, all built on")
+    (println "   Fowler's `cancel` TERM typed as a consuming use. E26 finding 8 read")
+    (println "   `casselc/db` and found a fifth: the obligation is discharged by")
+    (println "   ENTERING A STATE whose only legal outgoing edge is the destructor. No")
+    (println "   new term, and no live-capability set enumerated at abort sites.")
+    (println)
+    (println (str "   perturb.dbtx/Tx declares " cap/cancelled-key " " cs ", and the machine"))
+    (println "   is what makes the claim true rather than a comment:")
+    (println)
+    (doseq [t (:transitions (:perturb.cap/typestate tx))]
+      (println (str "     {:op " (:op t) "  :from " (pr-str (:from t))
+                    "  :to " (pr-str (:to t)) "}"
+                    (cond (and (= cs (:to t)) (admits? (:from t) cs))
+                          "   <- IMPOSSIBLE: would be an edge out that is not the destructor"
+                          (= cs (:to t)) "   <- reaches the cancelled state"
+                          (admits? (:from t) cs) "   <- the ONLY edge OUT, and it is the destructor"
+                          :else ""))))
+    (println)
+    (println "   THE DESTRUCTOR NEEDS NO CASE SPLIT. `:from :any` admits every summand,")
+    (println "   which is E26 finding 7's sum machinery doing the work a `cancel` term")
+    (println "   per capability class would otherwise have to do. That is the whole")
+    (println "   reason this piece is cheaper than pieces 1 and 2 together.")
+    (println)
+    (println (str "   " (count cu) " program(s) used a cancelled capability for something other"))
+    (println "   than its destructor, and were REFUSED:")
+    (if (empty? cu)
+      (println "   none — the corpus changed")
+      (doseq [d cu] (println) (print (render-one d))))
+    (println)
+    (println (str "   " (count cd) " declaration(s) — all of them FIXTURES from"))
+    (println "   perturb.dbtxcorpus/cancellation-corpus, none of them shipped — claimed a")
+    (println "   cancelled state the machine beside them contradicts. THE DECLARATION IS")
+    (println "   THE ONE AXIOM THIS CHECKER WILL NOT TAKE: `:from`/`:to` are claims about")
+    (println "   what a body does, and a cancelled state is a claim about what is")
+    (println "   IMPOSSIBLE — settled by the `:from`s written in the same map, with no")
+    (println "   body read.")
+    (if (empty? cd)
+      (println "   none — the fixture corpus changed")
+      (doseq [d cd] (println) (print (render-one d))))
+    (println)
+    (println "   WHAT THIS IS NOT, AND IT IS THE HEADLINE. Fowler et al. POPL 2019 §1.4")
+    (println "   names TWO quandaries of silently discarded endpoints: a developer gets")
+    (println "   no feedback for an unfinished protocol, AND \"the peer may be left")
+    (println "   waiting forever\". A STATE DISCHARGES THE FIRST AND CANNOT TOUCH THE")
+    (println "   SECOND, because a state is a fact about the HOLDER. NO PEER IS")
+    (println "   NOTIFIED here: there is no zapper thread, nothing propagates through")
+    (println "   buffered values, and nothing raises in a counterparty. This is not")
+    (println "   cancellation in EGV's sense and must not be described as if it were.")
+    (println)
+    (println "   It is sufficient exactly when that second quandary is vacuous — no")
+    (println "   peer whose progress depends on being told. TRUE of a database")
+    (println "   transaction, which `sqlite3_close_v2` disposes of with nothing")
+    (println "   blocked; FALSE of perturb.http's ServerConn, whose counterparty is a")
+    (println "   client on an open socket. That is why the key is declared per")
+    (println "   capability and not implicit for all of them, and why perturb.http")
+    (println "   declares none. See report-limits item 15.")))
+
 (defn -main [& _]
   (println line)
   (println "perturb.check — static capability checking over real Jolt IR")
@@ -2325,6 +2863,10 @@
     (println)
     (let [dfails (run-declaration-corpus 'perturb.httpcorpus/declaration-corpus
                                          "an annotation against a machine; no program, no body")
+          cdfails (run-cancellation-corpus
+                    'perturb.dbtxcorpus/cancellation-corpus
+                    "a machine against its own claim about what is impossible")
+          cxfails (run-real-cancellation-declarations sp)
           fails  (run-corpus sp "perturb.corpus" 'perturb.corpus/expectations
                              "nREPL: one capability, a straight-line typestate")
           rfails (run-accepts 'perturb.corpus/expectations)
@@ -2349,18 +2891,20 @@
                            "and that includes the two predicates the case split trusts."])
       (report-obligation-finding)
       (report-sum-finding sp)
+      (report-cancellation-finding sp)
       (report-local-finding)
       (println)
       (doseq [l (report-limits)] (println (str "  " l)))
       (println)
       (println line)
-      (let [all (concat dfails fails rfails hfails hrfails sfails srfails)]
+      (let [all (concat dfails cdfails cxfails fails rfails hfails hrfails sfails srfails)]
         (if (empty? all)
-          (do (println "CHECK OK — every declaration fixture and every corpus verdict in ALL")
-              (println "           THREE corpora is the recorded one, and every accepted")
-              (println "           program runs")
+          (do (println "CHECK OK — every declaration fixture (annotation AND cancelled-state),")
+              (println "           every corpus verdict in ALL THREE corpora, and every")
+              (println "           accepted program's run, is the recorded one")
               (System/exit 0))
           (do (println (str "CHECK FAILED — declarations " (vec dfails)
+                            "  cancelled-state " (vec (concat cdfails cxfails))
                             "  verdicts " (vec (concat fails hfails sfails))
                             "  runs " (vec (concat rfails hrfails srfails))))
               (System/exit 1)))))))
