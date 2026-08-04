@@ -89,4 +89,22 @@
   ;; top-level form in the library's own test file, which the report prints.
   ;; NOT a gate — it records no expectations, because the point is to find out
   ;; what the verdicts are.
-  :tcpcheck {:main-opts ["-m" "perturb.tcpcheck"]}}}
+  :tcpcheck {:main-opts ["-m" "perturb.tcpcheck"]}
+
+  ;; STRUCTURAL-TIER-BRIEF step 1: the BYTE-WINDOW REPRESENTATION, measured.
+  ;; Per-octet access cost against six baselines, repeated-prefix CPU under
+  ;; one-octet delivery, retained-buffer high-water mark, the HTTP layer's
+  ;; maximum legal frame, error offset/replay, and a disabled-instrument
+  ;; control. Takes a sample count (default 5). No socket and no server.
+  ;; NOT a gate — it records no expectations and asserts no threshold, because
+  ;; a threshold taken from one host on one Chez is the mistake E10 recorded.
+  :winbench {:main-opts ["-m" "perturb.winbench"]}
+
+  ;; PERTURB-DESIGN E33's B6 invariant, EXECUTED: a TRACE-LEVEL checker over
+  ;; perturb.effect's layering event log and perturb.cap's ledger. Runs the
+  ;; known-good two-rung composition and every negative control E29 built by
+  ;; hand — abort laundering, call-over-call, a multi-shot outward operation —
+  ;; plus PRACTICAL-ADOPTION §A3's runtime refusals and forged-trace controls.
+  ;; IS A GATE: it records expectations and exits non-zero when one changes.
+  ;; No socket and no server.
+  :layer  {:main-opts ["-m" "perturb.layercheck"]}}}

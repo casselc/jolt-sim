@@ -170,31 +170,71 @@
   else."
   false)
 
+(defn rung
+  "The handler INSTANCE this layer forwards through.
+
+  `handler` builds one at construction time whose named outer instance is the
+  transport, and threads it where the raw transport handler used to go — so the
+  Record value carries an instance rather than a bare function. The bare-function
+  arm exists only for `record-echo-round`, which is an isolation program the
+  checker reads and nothing runs; it lifts the transport to a bottom-rung
+  instance and wraps it in an anonymous rung so `via` has an outer to name."
+  [t]
+  (if (fx/instance? t)
+    t
+    (fx/instance! 'perturb.tlsish/anonymous-rung nil
+                  (fx/as-instance 'perturb.tlsish/transport t) nil)))
+
 (defn via
   "Reach the rung BELOW this one, from inside a handler for this one.
 
   THE WHOLE EXPERIMENT IS THIS FUNCTION, and it has two arms on purpose.
 
-  PERFORM (default). `perturb.effect/perform` is called with `transport`
-  installed under the SAME effect name for exactly the extent of the call. The
+  FORWARD (default). `perturb.effect/forward!` is called with this layer's
+  handler INSTANCE, and it crosses to that instance's NAMED OUTER INSTANCE. The
   octets leave this layer through the effect boundary: arity check, handler
   lookup, `*handling*` binding, result predicate, trace, run accounting — all of
   it, a second time, one rung down.
 
-  AND THAT REBINDING IS A FINDING. `perturb.effect/perform` does not remove the
-  currently-executing handler from `*handlers*` before calling it, so without it
-  an inner perform of `perturb.wire/socket` would dispatch back to THIS layer
-  and recur forever (`no-deep-handler-probe`). Nothing checks that a handler
-  which performs its own effect performs it against something else: this is a
-  convention, and a layer that forgot it would loop rather than be refused —
-  `perturb.posix`'s pre-`defsys` residual, one rung up and not closed.
+  WHAT THIS USED TO BE, AND WHY IT CHANGED. Until B6 was made executable this
+  arm was `with-handlers` + `perform`: rebind `perturb.wire/socket` to the rung
+  below for exactly the extent of the inner perform. That rebinding was E29
+  finding 1 — `perturb.effect/perform` does not remove the currently-executing
+  handler from `*handlers*` before calling it, so WITHOUT the rebinding an inner
+  perform of `perturb.wire/socket` dispatches back to THIS layer and recurs
+  forever (`no-deep-handler-probe`, still here, still true of `perform`). E29
+  recorded that nothing checked a layer had supplied the pop: `a layer that
+  forgot would loop rather than be refused`. `forward!` closes that at the
+  mechanism instead of at the report — there is no lookup by effect name, so
+  there is nothing to forget, `*handlers*` is neither read nor written, and
+  forwarding to yourself is a LATCHED REFUSAL (`:self-forward`) rather than a
+  stack overflow.
 
   CALL. The transport handler is invoked as an ordinary function. It is four
   lines shorter and it works, and what it costs is the whole of the answer to
-  `is the effect boundary a real seam` — see the control in `perturb.tlsdemo`."
+  `is the effect boundary a real seam` — see the control in `perturb.tlsdemo`.
+
+  THE OUTWARD-OPERATION INSTANCE. The perform arm now carries one:
+  `perturb.effect/outward-for` mints a fresh instance per forward unless the
+  caller supplied one, and `perturb.effect/perform` records it on the request.
+  It costs one map when an event log is bound and returns nil when none is, so
+  neither arm's behaviour changes. It is what makes `this layer forwarded its
+  own operation twice` and `this forward escaped the request that created it`
+  sayable at all — see `perturb.layer` clause 4 and
+  `multishot-outward-handler` below. NOTE THAT THE CALL ARM MINTS NOTHING,
+  which is not an omission: a call that never reaches the boundary has no
+  forward to correlate, and that absence is exactly what control 3 is."
   [transport op site args]
   (if *call-over-call*
-    (let [reply (transport op site args)]
+    ;; The rung below as an ordinary function. Since `handler` threads its RUNG
+    ;; INSTANCE where the bare transport handler used to go, the control arm has
+    ;; to reach through the instance to the handler its outer names — which is
+    ;; the same object it always called, reached the same way every layered
+    ;; library reaches it: by holding it.
+    (let [h     (if (fx/instance? transport)
+                  (:perturb.effect/handler (:perturb.effect/outer transport))
+                  transport)
+          reply (h op site args)]
       (cond
         (not (vector? reply))
         (fx/abort! :tlsish-malformed-transport-reply {:perturb.tlsish/reply reply})
@@ -202,8 +242,8 @@
         (fx/abort! :tlsish-transport-refused {:perturb.tlsish/reason (second reply)
                                               :perturb.tlsish/site site})
         :else (second reply)))
-    (fx/with-handlers {'perturb.wire/socket transport}
-      (fx/perform w/socket op site args))))
+    (fx/with-outward (fx/outward-for site)
+      (fx/forward! (rung transport) w/socket op site args))))
 
 (defn as-call-over-call
   "Run `f` with the layer composed by CALLING the rung below. A function rather
@@ -603,24 +643,56 @@
   Tokens handed UP are `[:tls-conn id]` / `[:tls-listener under]` and are opaque
   to the layer above, exactly as `perturb.script`'s vectors and
   `perturb.posix`'s file descriptors are. The layer above cannot reach the
-  transport token; the layer below never sees a Record."
-  [transport]
-  (let [st (atom {:conns {}})]
+  transport token; the layer below never sees a Record.
+
+  THE RUNG INSTANCE. `me` is this layer's explicit identity
+  (PRACTICAL-ADOPTION-AND-SIM-LEARNINGS §A3): it names the transport as its
+  OUTER INSTANCE once, at construction, and every forward this layer makes goes
+  through it. It is what is threaded into the Record value where the bare
+  transport handler used to sit, so a Record carries the rung it belongs to
+  rather than a function nobody can name.
+
+  AND IT CARRIES A FINALIZER. §A3 wants finalisation on success, abort and
+  exception; this one reports the Records this layer still holds and which state
+  each is in. It DISCHARGES NOTHING — a report is all a finalizer is allowed to
+  be here, and `perturb.effect/finalize!` refuses a forward from inside it, so
+  it cannot write the close-notify alert it might like to. That inability is the
+  honest finding: `close-record!`'s shutdown obligation is exactly the thing a
+  finalizer would want to discharge and exactly the thing it may not.
+
+  THE SECOND ARITY exists only so a driver can reach `me`: `perturb.layer`'s
+  finalisation clause needs the rung instance to hand to
+  `perturb.effect/with-rung`, and a closure is not reachable from outside. The
+  one-arity form is what `perturb.tlsdemo` has always called and is unchanged."
+  ([transport] (handler transport (atom nil)))
+  ([transport rung-out]
+  (let [st (atom {:conns {}})
+        me (fx/instance!
+             'perturb.tlsish/handler nil
+             (fx/as-instance 'perturb.tlsish/transport transport)
+             (fn [outcome _]
+               {:perturb.tlsish/outcome outcome
+                :perturb.tlsish/records
+                (mapv (fn [p] [(first p) (if (second p)
+                                           (:perturb.cap/state (second p))
+                                           :gone)])
+                      (seq (:conns @st)))}))]
+    (reset! rung-out me)
     (fn [op site args]
       (cond
         (= op :listen)
-        [:ok [:tls-listener (via transport :listen :perturb.tlsish/under-listen
+        [:ok [:tls-listener (via me :listen :perturb.tlsish/under-listen
                                  [(first args) (second args)])]]
 
         (= op :accept)
-        (let [r0 (open-server-record transport (nth (first args) 1))
+        (let [r0 (open-server-record me (nth (first args) 1))
               r1 (server-handshake r0)
               id (:perturb.cap/id r1)]
           (swap! st assoc-in [:conns id] r1)
           [:ok [:tls-conn id]])
 
         (= op :connect)
-        (let [r (open-client-record transport (first args) (second args))]
+        (let [r (open-client-record me (first args) (second args))]
           (swap! st assoc-in [:conns (:perturb.cap/id r)] r)
           [:ok [:tls-conn (:perturb.cap/id r)]])
 
@@ -647,7 +719,7 @@
 
         (= op :close)
         (if (= :tls-listener (first (first args)))
-          (do (via transport :close :perturb.tlsish/under-close
+          (do (via me :close :perturb.tlsish/under-close
                    [(nth (first args) 1)])
               [:ok :closed])
           (let [id (nth (first args) 1)
@@ -658,7 +730,7 @@
                 (swap! st assoc-in [:conns id] nil)
                 [:ok :closed]))))
 
-        :else [:abort {:reason :unsupported-op :op op}]))))
+        :else [:abort {:reason :unsupported-op :op op}])))))
 
 ;; --- probes -----------------------------------------------------------------
 
@@ -706,14 +778,142 @@
 
   Not a straw man: `record-recv` folds three different facts into an empty view
   already, and returning `[:ok empty]` on a failed read is what an implementation
-  that wanted to be robust would write."
-  [transport]
-  (let [inner (handler transport)]
+  that wanted to be robust would write.
+
+  The second arity forwards `perturb.tlsish/handler`'s rung-instance atom, so a
+  driver can finalise the rung this wraps."
+  ([transport] (laundering-handler transport (atom nil)))
+  ([transport rung-out]
+  (let [inner (handler transport rung-out)]
     (fn [op site args]
       (if (= op :recv)
         (try (inner op site args)
              (catch :default e [:ok o/empty-octets]))
-        (inner op site args)))))
+        (inner op site args))))))
+
+(defn multishot-outward-handler
+  "A LAYER WHOSE OUTWARD OPERATION IS CONTROL-FLOW-UNRESTRICTED. The negative
+  control both round-2 surveys asked for by name.
+
+  PERTURB-DESIGN E33 records Tang's four admissibility conditions for an
+  operation clause that performs an operation outward, and the rejection that
+  goes with them: **rejected when the outward operation is
+  control-flow-unrestricted and might resume zero or many times**. The decision
+  recorded there is `continue, and add a negative test whose outer operation is
+  multi-shot or unrestricted, which must be rejected`. This is that test.
+
+  WHAT IS AND IS NOT BEING MODELLED, SAID FIRST BECAUSE IT IS THE WEAK POINT.
+  `perturb.effect` has NO RESUMPTIONS — charter D4 is `substitute a validated
+  result or abort; no continuations at that layer` — so `resume zero or many
+  times` cannot be reproduced literally and nothing here should be read as
+  having reproduced it. What CAN be reproduced is the property the condition is
+  about: the outward operation as a value whose invocation count and dynamic
+  extent are unconstrained. `perturb.effect/outward!` mints an instance; this
+  layer STORES one in an atom and then
+
+    - answers its first `:recv` locally, having minted an outward instance it
+      never consumes — the ZERO-shot arm, and the answer is octets it never
+      received from anybody;
+    - answers its second `:recv` by re-supplying that SAME stored instance to
+      TWO forwards — the MANY-shot arm, and both of them happen under a
+      different request from the one that minted it, so the instance also
+      escaped its creating extent.
+
+  Three facts, one program, and every one of them is a fact about the recorded
+  trace rather than about the source. `perturb.layer` clause 4 names all three.
+
+  It is otherwise an honest pass-through: `:listen`, `:accept`, `:send` and
+  `:close` forward exactly once, so the program fails for the reason under test
+  and not because it is broken everywhere."
+  [transport]
+  (let [st (atom {:k nil :n 0})
+        me (fx/instance! 'perturb.tlsish/multishot nil
+                         (fx/as-instance 'perturb.tlsish/transport transport)
+                         (fn [outcome _] {:perturb.tlsish/outcome outcome}))]
+    (fn [op site args]
+      (cond
+        (= op :listen)
+        [:ok [:ms-listener (via me :listen :perturb.tlsish/ms-listen
+                                [(first args) (second args)])]]
+
+        (= op :accept)
+        [:ok [:ms-conn (via me :accept :perturb.tlsish/ms-accept
+                            [(nth (first args) 1)])]]
+
+        (= op :send)
+        [:ok (via me :send :perturb.tlsish/ms-send
+                  [(nth (first args) 1) (second args)])]
+
+        (= op :close)
+        (do (via me :close :perturb.tlsish/ms-close [(nth (first args) 1)])
+            [:ok :closed])
+
+        (= op :recv)
+        (let [u (nth (first args) 1)]
+          (if (zero? (:n @st))
+            ;; ZERO-SHOT. Mint TWO outward operations for this request: one is
+            ;; dropped on the floor and never consumed at all — the arm that
+            ;; `resumes zero times` — and one is stashed for later. Answer the
+            ;; layer above with octets that came from nowhere.
+            (do (fx/outward! :perturb.tlsish/ms-recv-dropped)
+                (swap! st assoc
+                       :k (fx/outward! :perturb.tlsish/ms-recv)
+                       :n 1)
+                [:ok (o/encode-utf8 "")])
+            ;; MANY-SHOT. Re-supply the STORED instance to two forwards, under a
+            ;; request that is not the one that minted it, and discard one of
+            ;; the two answers.
+            (let [k (:k @st)
+                  a (fx/with-outward k
+                      (via me :recv :perturb.tlsish/ms-recv [u 65536]))
+                  b (fx/with-outward k
+                      (via me :recv :perturb.tlsish/ms-recv [u 65536]))]
+              (swap! st assoc :n (+ 1 (:n @st)))
+              [:ok (o/oconcat a b)])))
+
+        :else [:abort {:reason :unsupported-op :op op}]))))
+
+(defn self-forwarding-handler
+  "A LAYER THAT FORWARDS TO ITSELF. §A3's first control: `self-forward must
+  fail`.
+
+  This is E29 finding 1's failure mode with the mechanism that makes it one. In
+  the old `via` — `with-handlers` + `perform` — a layer that omitted the
+  rebinding did not forward to itself deliberately, it simply failed to pop, and
+  the result was unbounded recursion that `no-deep-handler-probe` had to stop
+  with a counter. Here the outer instance is NAMED, so naming yourself is the
+  only way to do it and `perturb.effect/forward!` refuses on the spot with
+  `:self-forward`, latched.
+
+  Built by minting an instance and then patching its `:perturb.effect/outer` to
+  point at itself, which is a shape a layer author would reach by copying the
+  wrong variable."
+  [transport]
+  (let [me (fx/instance! 'perturb.tlsish/self-forwarder nil
+                         (fx/as-instance 'perturb.tlsish/transport transport) nil)
+        looped (assoc me :perturb.effect/outer me)]
+    (fn [op site args]
+      [:ok (via looped op :perturb.tlsish/self-forward [(first args) (second args)])])))
+
+(defn finalizer-forwarding-handler
+  "A RUNG WHOSE FINALIZER FORWARDS. §A3: a finalizer `may report
+  transfer/discharge but MAY NOT retry native proceed`; perturb's analogue of
+  retrying the outward mechanism is forwarding, so this must fail.
+
+  It is not a straw man. `close-record!`'s obligation — write a close-notify
+  alert BEFORE closing the transport — is precisely what a layer author would
+  want a finalizer to discharge on the abort path, and this is what happens when
+  they try. Returns the instance so a caller can drive `with-rung` around it."
+  [transport]
+  (let [me (fx/instance! 'perturb.tlsish/finalizer-forwarder nil
+                         (fx/as-instance 'perturb.tlsish/transport transport)
+                         nil)]
+    (assoc me :perturb.effect/finalize
+           (fn [outcome _]
+             ;; The close-notify a finalizer cannot send.
+             (via me :send :perturb.tlsish/finalizer-close-notify
+                  [[:scripted-conn 0] (frame CT-ALERT (o/encode-utf8 CLOSE-NOTIFY))])
+             {:perturb.tlsish/outcome outcome}))))
 
 ;; --- isolation programs: one rejection each ---------------------------------
 ;;
