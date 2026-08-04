@@ -55,8 +55,8 @@
 
          (sim-repl/replay-document!
           retained-document
-          {:worker-command ["/path/to/sim/jolt" "-M:sim-worker"]
-           :dir "/abs/path/to/project"
+          {:worker-command [\"/path/to/sim/jolt\" \"-M:sim-worker\"]
+           :dir \"/abs/path/to/project\"
            :timeout-ms 5000})
 
   Coordination rules:
