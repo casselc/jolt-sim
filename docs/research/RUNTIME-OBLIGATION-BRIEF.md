@@ -127,6 +127,20 @@ does the failure literature say"**.
    at *syscall* boundaries, where the check is dwarfed by the I/O it sits
    beside? This is the single most important cost question and the answer is
    not obvious from the paper.
+
+   > **ANSWERED, AND NOT THE WAY THIS ITEM HOPED (E31).** The blanket
+   > amortisation intuition is refuted. Syscall-policy monitors report ~25%
+   > (Draco, repeated `getppid` microbenchmark), ~20% on ARM for simple checks,
+   > 0–2.74% (SysXCHG), and a low average with materially higher worst case
+   > (SFP); the Linux runtime-verification documentation makes feasibility
+   > depend explicitly on event frequency against monitor throughput. O(1)
+   > transition lookup is the correct *architecture*, not evidence of a
+   > negligible constant. Blocking network or disk latency can hide a check;
+   > **cached reads, loopback, short socket operations and high packet rates
+   > may not** — which is exactly perturb's scripted-handler and loopback
+   > territory. Benchmark ns/operation and end-to-end, including in-memory
+   > handlers, loopback, small writes, batching, concurrency, and a
+   > transcript-disabled control.
 6. **Session types at runtime.** E20 found the one frequently-cited industrial
    MPST "deployment" (Ocean Observatories, RV 2013) is **runtime monitoring,
    not static typing**, and that Scribble's endpoint-API generation checks
@@ -138,6 +152,19 @@ does the failure literature say"**.
    dead weight? E20 could not find a base rate for how often hand-written
    protocol axioms are wrong. If that literature exists, it decides whether this
    is worth building.
+
+   > **FOUND, AND IT IS A WARNING (E31).** No production firing rate exists. The
+   > nearest large result is Legunsen et al.: JavaMOP with 182 handwritten and
+   > 17 mined properties across 200 projects found real accepted bugs — 95
+   > reported, 74 fixed — with **82.81% false alarms for handwritten
+   > specifications and 97.89% for mined**, and only 11/182 handwritten specs
+   > leading to a discovered bug, at under 4.3× average overhead. That is
+   > testing rather than production, and a false alarm is not a dishonest
+   > axiom. It nevertheless shows **specification and context error can dominate
+   > alerts**, so raw violation count is not defect count. A positive control
+   > proves non-vacuity, not yield. **Alert validation and triage are part of
+   > this feature, not an operational afterthought** — and if that is not built,
+   > this brief should not be either.
 
 ---
 

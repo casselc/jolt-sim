@@ -81,6 +81,13 @@ The complete current tally of claims this document made and then refuted:
 | 48 | E26 finding 7: the declaration gap is on the **`:to` side**, and `:from` collections already work | true only when every source shares one destination. `check-annotation-consistency!` groups declared edges by `[capability :from]` and compares every group against the same single annotation, so an operation with distinct `:from`s and correspondingly distinct `:to`s must fail all but one. E26's sum handles a **nondeterministic** destination; this is the **deterministic** case. The gap is the **pairing** | E30 |
 | 49 | E23/E24/E26: a capability may only live in a binding of statically known shape, the **single root cause** behind every rejection measured | measured against a library with a test suite rather than a corpus this project shaped: **4 of 23 substantive rejections, 17%**. Twelve are **in-place typestate** (a stable name over a mutable atom — not a binding-shape problem at all) and six are the `:from`/`:to` pairing. **78% of rejections have causes that were never on the list**, and the density of the known `try` limit is now a number too: one `unsupported-construct` per `clojure.test/is` | E30 |
 | 50 | `:arg` on a `:produces` entry is part of the declaration language | it is **accepted and silently ignored** — no `annotation-unsupported`, no declaration diagnostic, and the capability lands on the result anyway. A key the language takes and does not implement, which is the in-place fix already having a syntax that does nothing | E30 |
+| 51 † | §1.4's **"no resumption"**, and every argument resting on it | a misclassification. A handler that supplies a validated result after which the caller continues is an **implicit tail resumption** — the case the handler literature singles out as efficiently compilable — and only the failure path is abortive. D4 occupies two points on the control axis rather than a point below it, and the property that actually buys the resource reasoning is **no first-class continuation** | E31 |
+| 52 † | `SOTA-POSITIONING-BRIEF` and E27 finding 3: Fowler's "linear effect handlers … left as future work" means we may be standing in an **open gap** | closed. Tang et al. (POPL 2024) give control-flow linearity with an inference calculus and repair the Links bug; Brachthäuser & Leijen classify control flow as linear/affine/abortive/unrestricted; van Rooij & Krebbers (*Affect*, POPL 2025) track continuations through mutable references. The 2019 sentence can no longer be cited. My stated prediction — "still open but narrower" — was wrong in degree | E31 |
+| 53 † | E29: handler-over-handler layering as a result in itself | generic composition and outward forwarding are standard, and scoped-effect calculi formalise them. The narrow obligation — same-effect forwarding through several protocol layers **preserving typestate-linear obligations** — was not found, and is sharpened rather than answered. Separately, the nearest formal family for D4 is **runners** (Ahman & Bauer, ESOP 2020), not a handler calculus | E31 |
+| 54 ◆† | `SOTA-POSITIONING-BRIEF`: core.typed was "largely abandoned", and its retrospective may make **E6 unnecessary to measure** | both unsupported. The repository and site remain active enough to advertise a stable release, and no metric anywhere states how often a rule forced an idiomatic rewrite. What it does supply is burden data — **407 of 1,834 definitions checked (22%)** on a 19k-LOC production corpus — and the warning that adoption may require partial coverage or deliberate unsoundness (NullAway bought ~1.15× build overhead against 2.8–5.1× by choosing unsound defaults) | E31 |
+| 55 † | E26 finding 7 / `report-limits` 14(f): the declared discriminator is a **new class of axiom** we invented | it is **occurrence typing with a trusted proposition** — Typed Racket is the direct dynamic-Lisp precedent. The sound alternatives are named and materially different: a genuine tagged sum eliminated by constructor matching, an existential/GADT carrying a state witness, or SMT/proof-term verification. The axis correction is that it belongs under **trusted/assumed** until a structural witness connects predicate to transition | E31 |
+| 56 † | E25: §1.3's Content-Length arithmetic and Flo's boundedness are **the same obligation stated twice** | refuted. Flo's boundedness guarantees an evolving collection eventually becomes fixed; a length prefix states an expected cardinality and guarantees nothing about delivery. They relate only after a **transport premise** plus a decoder consuming exactly n. The right neighbours are EverParse, Vest and Narcissus | E31 |
+| 57 † | `RUNTIME-OBLIGATION-BRIEF` item 5's hope that a check beside real I/O is **dwarfed by it** | refuted in the blanket form. Draco reports ~25% on a repeated `getppid` microbenchmark and ~20% on ARM for simple checks; SFP a low average with materially higher worst case. And on yield, Legunsen et al. found **82.81% false alarms for handwritten specifications** (97.89% mined) with 11/182 specs leading to a bug. O(1) lookup is the right architecture, not a negligible constant, and alert triage is part of the design | E31 |
 
 ‡ Eight rows are the exception the sentence above does not cover: 17 and 18
 arrived from re-examining the argument and from the literature; 27–29 came from
@@ -113,7 +120,7 @@ worse ratio than E20's literature survey achieved and was obtained for a
 fraction of the effort. The standing commitment covers rows 1–26 and 33–35.
 
 **How to read this document.** §1 is the settled design, stated once in final
-corrected form. §2 is the divergence register. §3 is the findings E1–E30, each
+corrected form. §2 is the divergence register. §3 is the findings E1–E31, each
 stated as currently believed rather than as first written. §4 is the open
 questions. §5 is the v0 ladder. §6 is the nonclaims. Appendix A is the
 correction history, Appendix B holds the superseded ladders in full,
@@ -378,6 +385,25 @@ discharge, for no gain.
 Effects substitute a validated result or abort; no continuations at that layer.
 Control (blocking, scheduling, virtual time) stays in the explicit cooperative
 kernel. Protocols are step functions over both.
+
+**"No resumption" is the wrong name for this and has been throughout (E31).**
+A handler that supplies a validated result after which the caller continues *is*
+a resumption — an **implicit tail resumption**, the special case the handler
+literature singles out as efficiently compilable (*Effect Handlers, Evidently*;
+*Generalized Evidence Passing*; *Lexical Effect Handlers, Directly*). Only the
+failure path is abortive. So D4 occupies **two** points on the control axis, not
+a point below it:
+
+> abortive (zero-shot) → **implicit tail-resumptive** → explicit affine/one-shot
+> → multi-shot
+
+D4 is *implicit tail-resumptive on success, abortive on failure*. Every argument
+below that turns on "no resumption" should be read as turning on **no
+first-class continuation**, which is the property that actually holds and the
+one that buys the resource reasoning. In plainer systems language the mechanism
+is **typed operation interception with fail-closed failure**, and its nearest
+formal family is **runners** (Ahman & Bauer, ESOP 2020) rather than a handler
+calculus — see E31.
 
 This is retained on its merits, not inherited: P5 §4.2 places bounded
 completeness solely with `explore_states.clj` BFS, under stated preconditions
@@ -5063,6 +5089,152 @@ at line 204 is a **top-level form**: it executes at load and is never registered
 run, or reported as a test. Verified by balancing parens across the file. Found
 by loading the library, not by checking it — which is itself a small argument for
 compiling third-party code rather than reading it.
+
+### E31 — the SOTA survey: the broad novelty story does not survive
+
+`SOTA-POSITIONING-BRIEF.md` went to an agent with real internet access. It came
+back having killed more of this document's claims than it confirmed, which is the
+outcome the brief asked for and the right one to get. Full text was inspected for
+Tang et al., Qualified Effect Types, Affect, Yarrow, the Typed Clojure
+dissertation, SPY, and the effect-compilation papers; negative findings mean "not
+found in this survey" and nothing stronger.
+
+**The executive result.** The broad novelty story is gone. The literature has
+already closed the general gap between effect handlers and linear resources;
+handler composition and forwarding are standard; abortive and tail-resumptive
+handlers are established categories; external specification files and pluggable
+checking are mature; runtime protocol monitoring over dynamically typed programs
+exists; and session systems support unbounded, dynamically changing participant
+sets.
+
+What survives is a **conjunction**, and it is a systems-and-evidence claim rather
+than a type-theoretic one:
+
+> A static substructural typestate checker over a dynamically typed language's
+> existing compiler IR, driven by external protocol declarations, paired with
+> fail-closed runtime boundary enforcement derived from the same declarations.
+
+No source found combines all four. Each separately has close prior art.
+
+#### The corrections that change what we do
+
+**1. `no resumption` was a misclassification, and it sent the search the wrong
+way.** §1.4 is amended above. D4 is implicit tail-resumptive on success and
+abortive on failure. What buys the resource reasoning is **no first-class
+continuation**, not "no resumption" — and the cost of that choice is now stated
+in the literature's terms: it excludes generators, schedulers, backtracking and
+some state interpretations.
+
+**2. The linear-handler gap is closed.** Tang et al. (POPL 2024) give
+control-flow linearity with an inference-oriented calculus and repair the Links
+bug; Brachthäuser & Leijen classify control flow as linear/affine/abortive/
+unrestricted; van Rooij & Krebbers (*Affect*, POPL 2025) track continuations
+through mutable references and nesting. **Fowler's 2019 future-work sentence can
+no longer be cited as an open gap**, and E27 finding 3 leaned on exactly that
+sentence. My own prediction — "still open but narrower" — was wrong in degree.
+
+**3. The nearest formal family is runners, not handlers.** Ahman & Bauer,
+*Runners in Action* (ESOP 2020), models top-level external resources, modular
+virtual machines, finalisation and linear resource use; Schuster et al. give
+capability-passing handler compilation. perturb's boundary is more credibly a
+**typed, capability-mediated operation interceptor with protocol checking** than
+a novel handler calculus. This is the most useful reframing in the survey.
+
+**4. Handler layering is prior art.** Open handlers forward unhandled operations
+outward as a matter of course; scoped-effect calculi formalise explicit
+forwarding and composition. E29's stack is not novel for being nested. What the
+survey could **not** find is the narrow obligation: same-effect forwarding
+through several protocol layers while preserving typestate-linear obligations.
+That remains E29's experimental question and is now sharpened rather than
+answered.
+
+**5. The discriminator is occurrence typing with a trusted proposition.** Typed
+Racket's occurrence typing is the direct dynamic-Lisp precedent: predicates carry
+logical propositions that refine union members along branches, and a proposition
+supplied by an external declaration is a trusted boundary exactly like ours. The
+sound alternatives are named and are materially different — return a genuine
+tagged sum eliminated by constructor matching (the representation is the
+witness), return an existential/dependent pair or GADT carrying a state witness,
+or verify the predicate with refinements/SMT/proof terms. `report-limits` 14(f)
+was right to flag it, and the axis correction is that it belongs under
+**trusted/assumed** until a structural witness connects predicate to transition.
+
+**6. Flo and Content-Length are not the same obligation.** E25's unification is
+refuted. Flo's boundedness guarantees an evolving collection eventually becomes
+fixed; a length prefix states an expected cardinality and boundary and
+guarantees nothing about delivery. They relate only after adding a **transport
+premise** — exactly n bytes eventually arrive, or EOF/timeout converts
+non-arrival into failure — plus a decoder consuming exactly n. The right
+neighbours for the framing obligation are verified parser systems: EverParse,
+Vest, Narcissus.
+
+**7. The monitoring-cost intuition is refuted with numbers.**
+`RUNTIME-OBLIGATION-BRIEF` item 5 hoped that a check beside real I/O is dwarfed
+by it. Syscall-policy monitors disprove the blanket form: Draco reports ~25% on a
+repeated `getppid` microbenchmark and ~20% on ARM for simple checks; SysXCHG
+reports 0–2.74%; SFP a low average with materially higher worst case. O(1)
+lookup is the right architecture, not evidence of a negligible constant. **Cached
+reads, loopback, short socket operations and high packet rates are where it
+hurts** — which is precisely perturb's scripted-handler and loopback territory.
+
+**8. The negative result on monitor yield is worse than "no data".** Legunsen et
+al. ran JavaMOP with 182 handwritten and 17 mined properties over 200 projects:
+real accepted bugs (95 reported, 74 fixed) but **82.81% false-alarm rate for
+handwritten specifications and 97.89% for mined**, with only 11/182 handwritten
+specs leading to a discovered bug, at under 4.3× average overhead. That is
+testing rather than production, and a false alarm is not a dishonest axiom — but
+it establishes that specification and context error can dominate alerts.
+**Alert validation and triage are part of the monitored arm's design, not an
+operational afterthought.**
+
+#### Two claims of mine about our own ecosystem, both wrong
+
+**core.typed was not "largely abandoned"** — the repository and site remain
+active enough to advertise a stable release, which does not prove adoption but
+makes the premise unsupported. And it does **not** make E6 unnecessary: no metric
+states how often a particular rule forced an idiomatic rewrite. What it does give
+is burden data — CircleCI at **407 of 1,834 definitions checked (22%)**, 19k LOC
+across 87 namespaces; feeds2imap at 52/93 (56%) — and the dissertation calls
+top-level annotation burden for porting untyped code "prohibitively high".
+
+The Checker Framework side adds the design warning: mature checkers report ~2.6
+annotations/kLOC overall and 20/kLOC for Nullness, and **NullAway bought ~1.15×
+build overhead against 2.8–5.1× for compared tools by choosing deliberately
+unsound defaults**. Adoption may require partial coverage or deliberate
+unsoundness; perturb should measure both rather than inherit them silently.
+
+#### What the survey says we still have
+
+- **Our rejection-cause measurements are original.** No reviewed evaluation
+  identifies "capability stored in a runtime-shaped collection" as a dominant
+  rejection cause, and no comparable taxonomy exists. E30's 17%/78% split should
+  be published with denominators, corpus-selection rules and a mutually exclusive
+  taxonomy.
+- **Typed sans-io with exact-cursor rollback is an evidence gap.** Narcissus,
+  EverParse/LowParse and Vest are rich on verified parsing, and practical sans-io
+  separates byte/state processing from transport — but no primary account was
+  found combining chunked input, `consumed | need-more | invalid`, explicit
+  protocol typestate, and **restoration of the exact original cursor on
+  need-more**. Narrow, and not to be broadened into "typed sans-io has no prior
+  art".
+- **The four-way conjunction, and typed generational capability tables.** Both are
+  absence-of-evidence results needing a systematic search with explicit inclusion
+  criteria before novelty is claimed.
+
+#### E31's own nonclaims
+
+1. **Nothing was executed and nothing was built.** A literature survey, run by an
+   agent this session could not supervise, on a network this session cannot
+   reach. Its full-text/skim distinctions are taken on trust.
+2. **Absence findings are "not found in this survey".** The survey says so itself
+   and the two load-bearing ones are explicitly flagged as needing a
+   publication-quality search.
+3. **Nothing here was checked against our code.** That the discriminator is
+   occurrence typing does not say Typed Racket's propositions could be adopted
+   over Jolt IR, or at what cost.
+4. **The reframing is a recommendation, not a result.** "Do not lead with effect
+   handlers; describe D4 as substrate" is positioning advice. It does not follow
+   that a runner-shaped account is achievable here.
 
 ## 4. Open questions
 
