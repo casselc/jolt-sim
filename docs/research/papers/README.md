@@ -42,6 +42,7 @@ file's header, in `markdown/README.md`, and by committing the converter itself.
 | `ICFP20-liquid-resource-types.pdf` | Knoth, Wang, Reynolds, Hoffmann, Polikarpova, *Liquid Resource Types*, ICFP 2020. [10.1145/3408988](https://doi.org/10.1145/3408988) | CC-BY 4.0 (Crossref) | [cs.cmu.edu](https://www.cs.cmu.edu/~janh/assets/pdf/WangKRPH20.pdf) | E21 claim 4; row 28; D.4 |
 | `ICFP21-client-server-sessions-in-linear-logic.pdf` | Qian, Kavvos, Birkedal, *Client-Server Sessions in Linear Logic*, ICFP 2021. [10.1145/3473567](https://doi.org/10.1145/3473567) | CC-BY 4.0 (Crossref; also in PDF) | [pure.au.dk](https://pure.au.dk/ws/files/285414161/3473567.pdf) | E21 claim 11(b); D.2 |
 | `ICFP19-quantitative-program-reasoning-with-graded-modal-types.pdf` | Orchard, Liepelt, Eades III, *Quantitative Program Reasoning with Graded Modal Types*, ICFP 2019. [10.1145/3341714](https://doi.org/10.1145/3341714) | CC-BY 4.0 (in PDF) | [kent.ac.uk](https://www.cs.kent.ac.uk/people/staff/dao7/publ/granule-icfp19.pdf) | E21 claim 4; D.4 |
+| `POPL20-linear-haskell.pdf` | Bernardy, Boespflug, Newton, Peyton Jones, Spiwack, *Linear Haskell*, POPL 2018. [10.1145/3158093](https://doi.org/10.1145/3158093) | CC-BY 4.0 (arXiv posting) | [arXiv:1710.09756](https://arxiv.org/abs/1710.09756) | Structural-tier research |
 | `CONCUR20-session-types-with-arithmetic-refinements.pdf` | Das, Pfenning, *Session Types with Arithmetic Refinements*, CONCUR 2020. [10.4230/LIPIcs.CONCUR.2020.13](https://doi.org/10.4230/LIPIcs.CONCUR.2020.13) | CC-BY (LIPIcs) | [drops.dagstuhl.de](https://drops.dagstuhl.de/entities/document/10.4230/LIPIcs.CONCUR.2020.13) | E21 claim 8; D.2 |
 | `COORDINATION14-affine-sessions.pdf` | Mostrous, Vasconcelos, *Affine Sessions*, COORDINATION/DisCoTec 2014. [10.1007/978-3-662-43376-8_8](https://doi.org/10.1007/978-3-662-43376-8_8) | CC-BY 4.0 (HAL deposit, [hal-01290071](https://inria.hal.science/hal-01290071)) | HAL copy, retrieved via `web.archive.org` (HAL itself serves an anti-bot interstitial) | E21 claim 3 — **was marked ✗ unobtainable**; D.3 |
 | `dependent-multiplicities-in-dependent-linear-type-theory.pdf` | Doré, *Dependent Multiplicities in Dependent Linear Type Theory*, 2026. | CC-BY 4.0 (in PDF) | [arXiv:2507.08759](https://arxiv.org/abs/2507.08759) | E21 claim 4′; row 32; §4.6; D.4 |
@@ -49,7 +50,7 @@ file's header, in `markdown/README.md`, and by committing the converter itself.
 
 **Versions.** Every file above is the **version of record** except
 `COORDINATION14-affine-sessions.pdf`, which is the author deposit, and
-`dependent-multiplicities-…`/`grounded-conceptual-model-…`, which are the arXiv
+`dependent-multiplicities-…`/`grounded-conceptual-model-…`/`POPL20-linear-haskell.pdf`, which are the arXiv
 postings that carry the CC-BY grant. Where a paper was fetched from an author or
 institutional page rather than the publisher, that copy was checked to carry the
 published article number and pagination.
