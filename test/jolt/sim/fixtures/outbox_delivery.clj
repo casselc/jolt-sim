@@ -61,7 +61,11 @@
 
 (def ^:private bencode-content-type "application/x-bencode")
 (def ^:private ack-withheld-type ::ack-withheld)
-(def ^:private default-operation-budget-nanos 5000000000)
+;; Ordinary host-backed integration crosses two servers, SQLite transactions,
+;; and multiple socket exchanges under one shared budget. Keep enough wall
+;; clock headroom for loaded hosted runners; exact expiry semantics use an
+;; explicitly supplied 5-second virtual budget in the terminal campaign.
+(def ^:private default-operation-budget-nanos 30000000000)
 
 (defn- fail! [reason detail]
   (throw

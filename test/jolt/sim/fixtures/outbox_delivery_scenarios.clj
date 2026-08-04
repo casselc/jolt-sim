@@ -63,9 +63,9 @@
     :admission-plan})
 
 ;; Conservative bounds: the stream floor 8 is the fixed smoke capacity already
-;; proven against the fixture's 5 second client deadline; 1--2 byte HTTP
-;; fragmentation is explicitly later work. The pipe floor 1 is the smoke
-;; self-pipe bound. The closed domains deliberately mirror the Hegel lane's
+;; proven against the ordinary application's bounded operation deadline;
+;; 1--2 byte HTTP fragmentation is explicitly later work. The pipe floor 1 is
+;; the smoke self-pipe bound. The closed domains deliberately mirror the Hegel lane's
 ;; generator; both sides reject anything outside them before a world exists.
 (def ^:private max-payload-octets 32)
 (def ^:private supported-stream-capacities #{8 16 32})
