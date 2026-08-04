@@ -29,13 +29,18 @@
   marking its peer's lifecycle. poll(2) uses the supplied target's exact pollfd
   layout and nfds_t width. A blocking poll registers under the world lock,
   releases that lock while parked, and recomputes readiness after every wake.
-  Timeouts use real monotonic elapsed time; virtual time is not modeled here.
+  By default, timeouts use real monotonic elapsed time. A caller may supply a
+  jolt.sim.clock virtual clock to the four-argument `world` constructor and
+  install that clock's controller in jolt.sim.runtime. Finite poll then parks
+  on an alarm from the same clock instead of a host-timed wait; advancing the
+  clock publishes the timeout wake deterministically.
 
   sockaddr_in and addrinfo are written from the supplied descriptor, including
   Darwin's sin_len byte and its different ai_addr/ai_canonname order. Resolver
   ownership is tracked explicitly so only the returned head can free its nodes,
   and only once."
-  (:require [jolt.sim.ffi-memory :as memory]))
+  (:require [jolt.sim.clock :as clock]
+            [jolt.sim.ffi-memory :as memory]))
 
 ;; ---- byte helpers (private copies; ffi-memory helpers are private) -----
 
@@ -246,7 +251,8 @@
 ;; ---- world -------------------------------------------------------------
 
 (def ^:private world-keys
-  #{:memory :memory-handlers :state :readiness :lock :target :config :type})
+  #{:clock :memory :memory-handlers :state :readiness :lock :target :config
+    :type})
 
 (def ^:private memory-world-keys #{:state :lock :config :type})
 (def ^:private memory-config-keys
@@ -276,10 +282,12 @@
   POSIX target descriptor. An optional shared memory world and config map let a
   harness select ABI widths and deterministic resource ranges explicitly."
   ([target-descriptor]
-   (world (memory/world) target-descriptor nil))
+   (world (memory/world) target-descriptor nil nil))
   ([memory-world target-descriptor]
-   (world memory-world target-descriptor nil))
+   (world memory-world target-descriptor nil nil))
   ([memory-world target-descriptor config]
+   (world memory-world target-descriptor config nil))
+  ([memory-world target-descriptor config virtual-clock]
    (when-not (and (map? memory-world) (map? (:config memory-world)))
      (fail! :jolt.sim.net.posix-loopback/invalid-world
             "first argument must be a jolt.sim.ffi-memory world"
@@ -288,9 +296,12 @@
      (fail! :jolt.sim.net.posix-loopback/invalid-world
             "current POSIX addrinfo modeling requires an LP64 memory world"
             {:pointer-size (get-in memory-world [:config :pointer-size])}))
+   (when (some? virtual-clock)
+     (clock/validate-clock virtual-clock))
    (let [cfg (validate-config config)
          target (validate-target-descriptor target-descriptor)]
-     {:memory memory-world
+     {:clock virtual-clock
+      :memory memory-world
       :memory-handlers (memory/handlers memory-world)
       :state (atom {:next-fd (:first-fd cfg)
                     :next-ephemeral (:ephemeral-base cfg)
@@ -365,6 +376,9 @@
              "posix-loopback world config is not canonical"
              {:config (:config value)})))
   (validate-target-descriptor (:target value))
+  (let [virtual-clock (:clock value)]
+    (when (some? virtual-clock)
+      (clock/validate-clock virtual-clock)))
   (let [state (deref-world-field (:state value) :state)
         readiness (deref-world-field (:readiness value) :readiness)
         capacity (:capacity-evidence state)
@@ -543,16 +557,18 @@
       (deliver waiter true))
     nil))
 
-(defn- register-readiness-waiter! [w]
-  (let [readiness (:readiness w)
-        current @readiness
-        id (:next-waiter current)
-        signal (promise)]
-    (reset! readiness
-            (-> current
-                (assoc :next-waiter (inc id))
-                (assoc-in [:waiters id] signal)))
-    {:id id :signal signal}))
+(defn- register-readiness-waiter!
+  ([w]
+   (register-readiness-waiter! w (promise)))
+  ([w signal]
+   (let [readiness (:readiness w)
+         current @readiness
+         id (:next-waiter current)]
+     (reset! readiness
+             (-> current
+                 (assoc :next-waiter (inc id))
+                 (assoc-in [:waiters id] signal)))
+     {:id id :signal signal})))
 
 (defn- remove-readiness-waiter! [w id]
   (swap! (:readiness w) update :waiters dissoc id)
@@ -653,11 +669,14 @@
           (invoke-mem w :write [entry :int16 revents bits])
           (recur (inc idx) (if (zero? bits) ready (inc ready))))))))
 
-(defn- monotonic-nanos []
-  (System/nanoTime))
+(defn- monotonic-nanos [w]
+  (let [virtual-clock (:clock w)]
+    (if (some? virtual-clock)
+      (clock/now-nanos virtual-clock)
+      (System/nanoTime))))
 
-(defn- remaining-wait-ms [deadline]
-  (let [remaining (- deadline (monotonic-nanos))]
+(defn- remaining-wait-ms [w deadline]
+  (let [remaining (- deadline (monotonic-nanos w))]
     (if (pos? remaining)
       (max 1 (quot (+ remaining 999999) 1000000))
       0)))
@@ -677,7 +696,7 @@
              "a non-empty poll array requires a non-null buffer"
              {:count n :buffer buf}))
     (let [deadline (when-not (= -1 timeout-ms)
-                     (+ (monotonic-nanos) (* timeout-ms 1000000)))]
+                     (+ (monotonic-nanos w) (* timeout-ms 1000000)))]
       (loop []
         (let [step
               (locking (:lock w)
@@ -685,17 +704,29 @@
                   (cond
                     (pos? ready) {:result [ready 0]}
                     (zero? timeout-ms) {:result [0 0]}
-                    (and deadline (zero? (remaining-wait-ms deadline)))
+                    (and deadline (<= deadline (monotonic-nanos w)))
                     {:result [0 0]}
-                    :else {:waiter (register-readiness-waiter! w)})))]
+                    :else
+                    (if (and deadline (:clock w))
+                      (let [alarm (clock/register-alarm! (:clock w) deadline)]
+                        {:alarm alarm
+                         :waiter
+                         (register-readiness-waiter! w (:signal alarm))})
+                      {:waiter (register-readiness-waiter! w)}))))]
           (if-let [result (:result step)]
             result
-            (let [{:keys [id signal]} (:waiter step)]
+            (let [{:keys [id signal]} (:waiter step)
+                  alarm (:alarm step)]
               (try
-                (if deadline
-                  (deref signal (remaining-wait-ms deadline) ::poll-timeout)
-                  @signal)
+                (cond
+                  alarm @signal
+                  deadline
+                  (deref signal (remaining-wait-ms w deadline)
+                         ::poll-timeout)
+                  :else @signal)
                 (finally
+                  (when alarm
+                    (clock/cancel-alarm! (:clock w) alarm))
                   ;; Timeout, cancellation, and notification all converge on
                   ;; the same cleanup. If a publisher already cleared this id,
                   ;; dissoc is harmless. The next loop always recomputes bits.

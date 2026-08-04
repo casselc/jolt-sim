@@ -1,5 +1,6 @@
 (ns jolt.sim.posix-loopback-model-test
   (:require [clojure.test :refer [deftest is]]
+            [jolt.sim.clock :as clock]
             [jolt.sim.ffi-memory :as memory]
             [jolt.sim.net.posix-loopback :as posix]))
 
@@ -43,8 +44,10 @@
   ([descriptor]
    (harness descriptor nil))
   ([descriptor config]
+   (harness descriptor config nil))
+  ([descriptor config virtual-clock]
    (let [mem (memory/world)
-         world (posix/world mem descriptor config)]
+         world (posix/world mem descriptor config virtual-clock)]
      {:memory mem
       :world world
       :handlers (posix/handlers world)})))
@@ -537,6 +540,15 @@
     (is (= :jolt.sim.net.posix-loopback/invalid-target
            (:type (ex-data-of #(posix/world (memory/world) descriptor)))))))
 
+(deftest optional-virtual-clock-fails-closed
+  (is (= :not-a-virtual-clock
+         (:reason (ex-data-of
+                   #(posix/world (memory/world) linux-descriptor nil false)))))
+  (let [w (posix/world (memory/world) linux-descriptor)]
+    (is (= :not-a-virtual-clock
+           (:reason
+            (ex-data-of #(posix/validate-world (assoc w :clock false))))))))
+
 (deftest poll-ignores-negative-slots-and-flags-unknown-positive-fds
   (let [h (harness linux-descriptor)
         pollin (get-in linux-descriptor [:const :pollin])
@@ -753,6 +765,66 @@
         (foreign h "close" false [(:reader p)])
         (foreign h "close" false [(:writer p)])
         (native h :free entry)
+        (native h :free (:cell p))))
+    (is (true? (posix/clean? (:world h))))))
+
+(deftest virtual-time-advance-wakes-finite-poll-without-host-time
+  (let [virtual-clock (clock/virtual-clock 100)
+        h (harness darwin-descriptor nil virtual-clock)
+        p (open-pipe h)
+        pollin (get-in darwin-descriptor [:const :pollin])
+        entry (alloc-poll-entries h [[(:reader p) pollin]])
+        waiting (future (foreign h "poll" true [entry 1 60000]))]
+    (try
+      (is (true? (wait-for-waiter-count (:world h) 1 2000)))
+      (is (= [{:id 0 :deadline-nanos 60000000100}]
+             (:alarms (clock/snapshot virtual-clock))))
+      (is (= :still-waiting (deref waiting 0 :still-waiting)))
+      (is (= 0 (clock/advance-by! virtual-clock 59999999999)))
+      (is (= :still-waiting (deref waiting 0 :still-waiting)))
+      (is (= 1 (clock/advance-by! virtual-clock 1)))
+      (is (= [0 0] (deref waiting 2000 :host-timeout)))
+      (is (zero? (poll-revents h entry 0)))
+      (is (= [] (:alarms (clock/snapshot virtual-clock))))
+      (is (zero? (:waiter-count (posix/readiness-snapshot (:world h)))))
+      (finally
+        (foreign h "close" false [(:reader p)])
+        (foreign h "close" false [(:writer p)])
+        (let [joined (deref waiting 2000 :host-timeout)]
+          (is (not= :host-timeout joined)
+              "a failed virtual poll must join after terminal readiness")
+          (when-not (= :host-timeout joined)
+            (native h :free entry)))
+        (native h :free (:cell p))))
+    (is (true? (posix/clean? (:world h))))))
+
+(deftest readiness-before-virtual-deadline-cancels-the-alarm
+  (let [virtual-clock (clock/virtual-clock 200)
+        h (harness linux-descriptor nil virtual-clock)
+        p (open-pipe h)
+        pollin (get-in linux-descriptor [:const :pollin])
+        entry (alloc-poll-entries h [[(:reader p) pollin]])
+        payload (native h :alloc 1)
+        waiting (future (foreign h "poll" true [entry 1 100]))]
+    (try
+      (is (true? (wait-for-waiter-count (:world h) 1 2000)))
+      (is (= 1 (count (:alarms (clock/snapshot virtual-clock)))))
+      (native h :write-array payload (byte-array [42]))
+      (is (= [1 0] (foreign h "write" false [(:writer p) payload 1])))
+      (is (= [1 0] (deref waiting 2000 :host-timeout)))
+      (is (= pollin (poll-revents h entry 0)))
+      (is (= [] (:alarms (clock/snapshot virtual-clock))))
+      (is (= 0 (clock/advance-by! virtual-clock 100000000)))
+      (is (zero? (:waiter-count (posix/readiness-snapshot (:world h)))))
+      (finally
+        (foreign h "close" false [(:reader p)])
+        (foreign h "close" false [(:writer p)])
+        (native h :free payload)
+        (let [joined (deref waiting 2000 :host-timeout)]
+          (is (not= :host-timeout joined)
+              "a failed readiness poll must join after terminal readiness")
+          (when-not (= :host-timeout joined)
+            (native h :free entry)))
         (native h :free (:cell p))))
     (is (true? (posix/clean? (:world h))))))
 
