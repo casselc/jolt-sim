@@ -74,6 +74,9 @@ The complete current tally of claims this document made and then refuted:
 | 41 ◆ | §5: "**perturb has no code**", and ladder step 1 (jolt-tcp connection lifecycle) is the first checkable target | both false at HEAD. `perturb/src/` is 14,248 lines across 26 namespaces including the checker §5 called "the next step"; and step 1's contract is sourced from the jolt-tcp README, which is the **server handler** contract — the shape E24 proved unexpressible on all four axes at once. §5 was never revised after E15 | E26 |
 | 42 † | E26 finding 8: `MUST_CLOSE`-as-a-**state** is a cheaper substitute for Fowler's `cancel` **term** | **half right, and the half matters.** Fowler §1.4 names *two* quandaries of silent discard: a developer gets no feedback for an unfinished protocol, **and** "the peer may be left waiting forever". A state discharges the first — an unfinished protocol is not at a terminal state — and cannot touch the second, because a state is a fact about the holder. `E-Cancel` creates a zapper thread, `E-Zap` propagates transitively, and `E-ReceiveZap`/`E-CloseZap` **raise in the peer**, which T-Cancel's note says is what stops cancellation violating progress. The mechanism is strictly weaker, with a sharp sufficiency condition: **no peer whose progress depends on being told**. True of db's transaction, false of `perturb.http`'s `ServerConn` | E27 |
 | 43 | §1.1: the four host ops `:host`/`:host-static`/`:host-new`/`:host-call` **should be replaced by a single `:extern` carrying a declared effect row and signature** | **descriptive half confirmed, prescriptive half refuted.** Measured over 62706 IR nodes: there are **three** ops, not four (`:host` is unreachable on the Chez host — a bare unresolvable name is refused at compile time), and **three distinct key sets**, not one shape with a tag. Re-tagging is cheap and buys nothing; the row and signature are the whole value and are neither in the IR nor derivable from it — no arity is fixed per name, receivers are arbitrary nodes, and the escape surface is wider than these ops. Jolt's one signature-carrying op takes its signature from **surface syntax**. The open item is a declaration language, not an IR edit | E28 |
+| 44 | E26 finding 3 / `RUNTIME-OBLIGATION-BRIEF`: failing closed and latching makes boundary completeness a **per-run invariant** rather than a measurement | true **of the native rung only**. Under a handler stack the caller of a refusal is another handler: a layer that catches `:handler-abort` from the rung below and answers `[:ok empty]` leaves the run reporting `all-handled? true` with nothing latched. And the same layer composed by *calling* instead of performing loses 170 crossings from the trace with no instrument distinguishing the two runs — the native gate does not refuse it either, because `*handling*` is already non-nil from the outer perform. Above the native rung the boundary is a **convention** | E29 |
+| 45 | E23/E24: applications *want* the shapes §4.6 forbids (collection, growth, runtime selection, callback parameter) | stronger than wanted. A **handler is inter-invocation state by construction** — entered once per operation, carrying buffer, phase and transport token between invocations, which no `let` can span. The only carriers are an atom and a closure, both refused. A handler stack **cannot be written at all** without a refused shape; the identical operations in one straight `let` chain check clean and cannot be a handler | E29 |
+| 46 | §1.4's effect layer is checkable code like any other | **installing a handler is an `unsupported-construct`**. `binding` expands to `try`/`finally` and `report-limits` item 4 refuses `try`/`catch`, so `with-handlers`, `with-trace`, `with-run` and `perform`'s own `*handling*` binding are all refused. True since `perturb.effect` was written, never found because every handler installation lived in a demo namespace nothing checks. There is no rewrite — the dynamic extent *is* the mechanism | E29 |
 
 ‡ Eight rows are the exception the sentence above does not cover: 17 and 18
 arrived from re-examining the argument and from the literature; 27–29 came from
@@ -106,7 +109,7 @@ worse ratio than E20's literature survey achieved and was obtained for a
 fraction of the effort. The standing commitment covers rows 1–26 and 33–35.
 
 **How to read this document.** §1 is the settled design, stated once in final
-corrected form. §2 is the divergence register. §3 is the findings E1–E28, each
+corrected form. §2 is the divergence register. §3 is the findings E1–E29, each
 stated as currently believed rather than as first written. §4 is the open
 questions. §5 is the v0 ladder. §6 is the nonclaims. Appendix A is the
 correction history, Appendix B holds the superseded ladders in full,
@@ -4718,6 +4721,146 @@ OPAQUE.
    `:ffi-fn`, not through any of the three.
 5. **Nothing was run.** This is a read of trees, not an execution of the code
    they describe.
+
+### E29 — the layering experiment: the stack runs, and the boundary it runs on is voluntary
+
+The architectural goal — *events over HTTP over TCP over a descriptor, composing
+and performant* — is what everything else is nominally for, and it had never been
+tested once. `perturb.tlsish` is a **TLS-shaped** record layer (no cipher, no
+MAC, no key exchange; the docstring says so first) whose handler **satisfies
+`perturb.wire/socket` by performing `perturb.wire/socket`** against the rung
+below. `perturb.http` is unmodified: no transport argument, no conditional, and
+it never names `perturb.tlsish`.
+
+**It runs.** 121 plaintext octets become 154 in 9 records, with a 16-octet
+payload cap so no record boundary can align with an HTTP one; the stack serves
+two pipelined requests scripted *and* over a real loopback socket; the plaintext
+above the record layer is identical in all three configurations; 184 performs,
+zero faults. That is the first evidence of any kind that handler-over-handler
+composes here.
+
+Everything below is what it cost, and none of it was predicted.
+
+#### 1. There are no deep handlers, and nothing checks the substitute
+
+`perturb.effect/*handlers*` is a flat map and `perform` **does not pop the
+executing handler**, so an inner handler performing the same effect re-enters
+*itself*. Probed to depth 6 (`no-deep-handler-probe`), where the depth limit —
+not the outer handler — ends it.
+
+`via` supplies the missing pop by hand, and **nothing checks that a layer does
+so**. A layer that forgot would loop, not be refused. That is `perturb.posix`'s
+pre-`defsys` residual reopened one rung up: the discipline is a convention held
+by every layer author rather than a property of the mechanism. Given `via` the
+boundary stays coherent, because `*handling*` is a dynamic var whose rebinding
+and unwind nest correctly.
+
+#### 2. A handler is inter-invocation state by construction
+
+The checker rejects `perturb.tlsish/handler` with **character-for-character
+E24's `accept-into-table` diagnostics** — `no-signature` ×5, `dangling` ×2,
+`untracked-consume` ×5.
+
+E24 and E23 concluded that *applications want* the forbidden shapes. This is
+stronger and it is not a design choice. A handler is `(fn [op site args] …)`,
+entered once per operation, and must carry the reassembly buffer, the phase and
+the transport token **between invocations**. A `let` cannot span two invocations.
+The only carriers are an atom (`report-limits` item 5, rejected) and a closure
+(item 3, rejected) — both isolated as fixtures, both rejected. `record-echo-round`,
+the identical operations in one straight `let` chain, **checks clean and cannot
+be a handler**.
+
+So §4.6's root cause is not merely inconvenient for a layered architecture: a
+handler stack **cannot be written at all** without a shape the checker refuses.
+
+#### 3. Installing a handler is an `unsupported-construct`
+
+`perturb.tlsish/via` and `as-call-over-call` are both rejected
+`unsupported-construct`, and neither contains a `try` or a `catch`.
+`as-call-over-call` is one `binding` form — and **`binding` expands to
+`try`/`finally`**, which `report-limits` item 4 refuses.
+
+Therefore `with-handlers`, `with-trace`, `with-run`, and `perform`'s own
+`*handling*` binding are all unsupported constructs. **This has been true since
+`perturb.effect` was written and was never found**, because every prior handler
+installation lived in a demo namespace that nothing checks. There is no rewrite:
+the dynamic extent *is* the mechanism.
+
+#### 4. The fail-closed boundary holds as an invariant and loses attribution — E26 finding 3, qualified
+
+Both runs report `all-handled? true` over a non-vacuous required set, and the
+latch fires correctly through a handler frame when the rung below is missing
+(control 1: `[:threw :unhandled-effect]`, `all-handled? false`). So the per-run
+invariant survives one level of nesting.
+
+Two controls show what it stops covering, and both are qualifications of a claim
+this document made **today**:
+
+- **Control 2 — a handler launders the rung below's refusal.** The transport runs
+  dry; the record layer catches `:handler-abort` and answers `[:ok empty]`; HTTP
+  sees an orderly `:eof`; the run reports **`all-handled? true` with nothing
+  latched**. `latching-aborts` excludes `:handler-abort` on the stated ground
+  that it is "a declared outcome, catchable by the caller". That reasoning is
+  sound when the caller is application code. **Under a stack the caller is
+  another handler**, and it can convert any refusal below into any answer above
+  with the run still reporting clean.
+- **Control 3 — using the boundary is voluntary.** The same layer composed by
+  *calling* the rung below instead of performing produces identical octets, and
+  `lower rung performs: 0` against 170 in the performing stack. The 170 crossings
+  vanish from the trace, the perform count and the run state; nothing refuses it.
+  On the real socket the **native gate does not refuse it either**, because
+  `*handling*` is already non-nil from the outer perform — so the syscalls are
+  charged to `:perturb.http/*` sites.
+
+The two failure modes are complementary: *perform* and everything is counted but
+charged to the wrong rung; *call* and it is charged correctly and half is not
+counted. `report` says `all-handled? true` for both.
+
+**E26 finding 3 and `RUNTIME-OBLIGATION-BRIEF`'s update therefore need a
+qualifier that neither has.** The invariant is a per-run property **of the native
+rung**. Above it, the boundary is a convention, and a required-symbol set drawn
+from the effect's own vocabulary cannot make a run prove the lower rung ran —
+`perform` observes an op when it *finds* a handler, so the upper rung satisfies
+anti-vacuity by itself.
+
+#### 5. Two smaller results
+
+**One operation advancing three machines, across namespaces.** The ledger shows
+`perturb.http/accept` advancing `Listener` and minting `ServerConn` with
+`perturb.tlsish/open-server-record` minting a `Record` inside it. E19's fix keyed
+the primitive table by `[capability operation]`; that cannot reach this, because
+the machines are in different namespaces, neither names the other, and the only
+thing joining them is a dynamic var. **There is no var to key.** E19's item is
+closed only *within* one namespace.
+
+**A fourth data point for the join item, and the first produced by layering
+itself.** `lazy-handshake-on-first-recv` draws `join` ×2 plus `produces-mismatch`.
+It is not a control: a handshake is a round trip, and §1.4's cooperative kernel
+does not exist, so the client cannot finish one inside `connect`.
+
+#### E29's own nonclaims
+
+1. **Two rungs, one stacking, on one thread.** Nothing here says the nesting
+   composes twice. `via` rebinds one effect name; three rungs need two nested
+   rebindings and none has run. Attribution loss is already total at rung two,
+   so it may not grow — untested either way.
+2. **Not a real transport, and not real TLS.** This ran on Linux, blocking,
+   single-threaded, with no readiness effect. E26 finding 6 records that the
+   bottom rung emits no portable event vocabulary, and I20 is untouched. There is
+   no cipher, MAC or sequence number, so nothing is said about a layer whose
+   framing is stateful across records or whose failures must be fatal.
+3. **gRPC, NATS, Kafka and inotify are not this experiment.** Each is a layer
+   whose events do not map onto `recv`/`send`, and this reused
+   `perturb.wire/socket` precisely because it does. A layer needing a different
+   effect vocabulary needs no `via` at all.
+4. **`-M:tls` is not a gate.** It exits 0 iff the stack ran and the plaintexts
+   agreed, and asserts nothing about the ten rejections, which are evidence about
+   the rules.
+5. **On the lattice**: nothing is `proved` or `bounded-complete`. The fail-closed
+   boundary surviving one level of nesting is a per-run invariant; the two rungs
+   and two transports are `sampled`; the record layer's capability discipline is
+   `monitored` (ledger only); and two things are **`failed`** — the discipline as
+   a *static* property of the layer, and the effect boundary as a *seam*.
 
 ## 4. Open questions
 

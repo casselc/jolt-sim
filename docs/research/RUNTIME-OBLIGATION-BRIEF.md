@@ -70,6 +70,20 @@ for an unrelated reason.
 > gate" rather than "nothing can bypass". And the run state is thread-local: a
 > thread outliving the run and latching afterwards is charged to nobody. Both are
 > in E26's write-up.
+>
+> **E29 adds a third limit, and it is the one that bounds this brief.** The
+> invariant is a per-run property **of the native rung**. Above it the boundary is
+> a *convention*, and the layering experiment measured two ways it fails: a
+> handler that catches `:handler-abort` from the rung below and answers `[:ok
+> empty]` leaves the run reporting `all-handled? true` with nothing latched
+> (`latching-aborts` excludes `:handler-abort` because it is "catchable by the
+> caller" — sound when the caller is application code, unsound when the caller is
+> another handler); and the same layer composed by *calling* rather than
+> performing drops 170 crossings from the trace with no instrument distinguishing
+> the runs. So a monitor placed at an effect boundary is sound against *bypass to
+> the host*, and not against *a layer above it choosing not to use the boundary,
+> or rewriting what a layer below refused*. Any obligation this brief proposes to
+> monitor at a layered boundary needs that stated.
 
 A third exists in embryo: `perturb.posix/handler` records a transcript and
 `perturb.script/replay-handler` replays it. That is the out-of-process half —
