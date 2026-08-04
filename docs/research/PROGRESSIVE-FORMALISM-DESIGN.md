@@ -304,6 +304,144 @@ convention.** Every existing system makes this a career risk; the capability
 discipline is what buys it back, and it is one of the strongest practical
 arguments for the whole capability tier.
 
+### 5.5 Three fact sources, three evidence characters
+
+The REPL must answer relational and structural questions about the program —
+reachability, impact, dead code, cycles, layer violations, "can this input reach
+that sink", "is this declared state ever reachable". The reference point is
+**`yogthos/chiasmus`** (read 2026-08-04, `main` @ README): tree-sitter extracts
+`defines`/`calls`/`imports`/`exports`/`contains` plus derived `calls_qn` and
+`imports_resolved`, and O(V+E) algorithms answer reachability, reverse-transitive
+impact, dead code from entry points, cycles, Louvain communities, betweenness
+hubs and bridges, and snapshot diffs; Z3 answers "for all inputs" with unsat
+cores over named assertions; Prolog does transitive reasoning over exported
+facts.
+
+The design difference is not the algorithms. It is that **perturb has three
+independent fact sources with three different evidence characters, and a query
+must say which it used.**
+
+| source | closed? | honest verdict | good for |
+| --- | --- | --- | --- |
+| **declarations** — `cap` machines, `dbtx` sums, `defsession` projections, region bounds, operation classes, B6 edges | **closed and enumerable** | `:exhausted` with counts | the declared model: unreachable states, orphan obligations, overlapping edges, layer violations |
+| **IR / source** — `perturb.ir` | **open by construction** | `:asserted` | nothing load-bearing until §7.3's quarantine lifts |
+| **trace** — the unified `sim.trace` document | sound, **incomplete** | `:monitored`, carrying the sample rate | "this path executed"; **never** "this path is unreachable" |
+
+**`perturb.ir` cannot ground a dead-code answer.** Its own docstring records that
+a namespace loaded before `install!` is never re-analysed and that the result is
+load-order dependent. A reachability denominator drawn from it is
+`report-limits` 14(f)'s failure mode — an unchecked declaration feeding a
+completeness verdict. Declaration-sourced and trace-sourced queries do not have
+that defect, and they are the two that matter most.
+
+**The query no static analyser can ask.** Because both halves exist, the
+interesting question is the **difference** between two sources:
+
+```clojure
+(diff/declared-not-observed)   ; declared edges no trace ever took
+(diff/observed-not-declared)   ; edges taken that the model does not contain
+```
+
+The first is untested surface or dead declaration. **The second is a finding
+about the model itself** — the same shape as §9.3(b)'s model error, and the same
+shape as E38, where `cross!`'s comment described a boundary the code did not
+enforce. A tool with only a parser cannot ask it; a tool with only a monitor
+cannot ask it either.
+
+### 5.6 Which engine — and the answer is neither kanren nor Prolog
+
+Three query classes, three different mechanisms, and only one of them is a logic
+engine:
+
+**(a) Graph structure — plain algorithms over an indexed fact store.**
+Reachability, reverse-transitive impact, cycles, dead code, hubs, bridges,
+snapshot diff. These are O(V+E) graph algorithms, not logic programming.
+Chiasmus implements them directly and *exports* to Prolog for the general case;
+that is the right split. **No engine required, and this is most of the value.**
+
+**(b) Relational and recursive queries — Datalog, not Prolog, not miniKanren.**
+For ad-hoc joins and recursion over the fact store, the choice is forced by this
+record's own discipline rather than by taste:
+
+- **Datalog terminates** on a finite fact base, and reaching the fixpoint *is* a
+  completeness result. The answer set can be **counted**, so a query result can
+  honestly carry `:strength :exhausted` with `:units {:checked n :expected n}`.
+- **Prolog's SLD resolution is Turing-complete**, order-dependent, and
+  non-terminating on left-recursive rules without tabling. **You cannot attach an
+  evidence value above `:asserted` to a Prolog answer** — you do not know whether
+  the search was complete or merely stopped.
+- **miniKanren / core.logic** is elegant and can run relations backwards, which
+  is genuinely attractive for "generate an invalid state". But it inherits the
+  same completeness problem, performs poorly at fact-store scale, and core.logic
+  is JVM Clojure that would need porting to Jolt. For *generation*, §5.7's
+  bounded state search over `sim.explore` is both cheaper and better-denominated.
+
+So: **a small Datalog — semi-naive bottom-up evaluation, stratified negation** —
+in the low hundreds of lines, over the same indexed fact store as (a).
+Termination and countability are not incidental properties here; they are the
+reason it can participate in the evidence lattice at all.
+
+**(c) "For all inputs" — SMT, behind a `defforeign` boundary.**
+`perturb.refine` decides a ground linear fragment with no case split, no
+Fourier–Motzkin, no simplex, and syntactic atom comparison (tally row 57). Q2
+already identified the fit: liquid types over QF-LIA with Z3, which is already a
+toolchain dependency via `bin/verify-models`. Contradiction detection and
+**unsat cores over named assertions** are exactly chiasmus's Z3 use, and the
+core maps directly onto a residual: *these named assumptions cannot hold
+together*. Per §13 nonclaim 5, this is an honest `:asserted` external
+dependency, declared as one.
+
+### 5.7 The query surface
+
+```clojure
+;; structure — declaration-sourced unless :from says otherwise
+(reach 'http/respond! 'posix/write!)        ; => path or false, + evidence
+(paths 'a 'b {:via :forward-only})          ; edge kinds are semantic here:
+                                            ; :call :forward :perform :transition
+(impact 'lintSpec)                          ; reverse transitive
+(cycles) (hubs) (bridges)
+(dead {:from :declarations :entry #{...}})  ; :exhausted; :from :ir would be :asserted
+
+;; capability flow — sharper than a call graph, because the edges are typed
+(cap/flow :from 'accept! :to 'close!)       ; can this capability reach that op
+(cap/escapes 'conns)                        ; can a member leave the region
+
+;; the declared model
+(machine/unreachable-states 'tcp/socket)
+(machine/orphan-obligations)                ; obligations no edge discharges
+(machine/overlapping-edges)                 ; already `check-edge-overlap!`
+(model/invalid-states {:bound 3})           ; bounded product search over
+                                            ; machines × regions × sessions,
+                                            ; enumerated by sim.explore
+
+;; the two-source difference
+(diff/declared-not-observed) (diff/observed-not-declared)
+
+;; proof obligations
+(prove 'response-well-formed)               ; refine's fragment, else Z3
+(unsat-core)                                ; named assertions → residuals
+```
+
+**Two rules make these answers trustworthy:**
+
+1. **Every query result carries an evidence value** naming its fact source, its
+   denominator, and its residuals. `(dead …)` over declarations is `:exhausted`
+   with a count; over IR it is `:asserted` with the open-universe residual
+   attached; over traces it is **not offered at all**, because absence from a
+   sampled trace is not unreachability.
+2. **An empty result and an empty fact base are different values.** A query whose
+   source contributed **zero facts** returns `:inconclusive` with its `:basis`,
+   never `[]`. This is E40 verbatim, in the place it would do the most damage:
+   `(dead)` returning `[]` after a failed extraction reads exactly like "no dead
+   code", and is the single most likely way a query surface would lie.
+
+**The agent surface is the REPL, and it already has a transport.**
+`perturb.nrepl` is a working client over the socket effect. An agent attached to
+a *running* perturb system gets these queries against live declarations, live
+regions, and the actual trace — not a static parse of the source, and not a
+separate server holding its own stale copy of the codebase. §5.4's redaction
+discipline is what makes that safe to expose.
+
 ---
 
 ## 6. Reach
@@ -810,6 +948,9 @@ Maelstrom `echo` + `broadcast-a` nodes as the first `:native` lane.
 | **`datafy`/`nav`/`tap`/`capture` surface** | **new**, mostly assembly (§11) |
 | **OTel exporter, budgets, tail sampling** | **new**, mechanical once Merge 1 lands |
 | **CTMC generation + calibration + spectral analysis** | **new**, and the only piece needing numerics we do not have |
+| **indexed fact store + graph algorithms** | **new**, small; facts come from declarations and the trace, both of which exist |
+| **a small Datalog (semi-naive, stratified negation)** | **new**, low hundreds of lines |
+| **SMT escalation past `refine`'s fragment** | **new**; Z3 already a toolchain dependency via `bin/verify-models` |
 
 ---
 
@@ -838,6 +979,17 @@ Maelstrom `echo` + `broadcast-a` nodes as the first `:native` lane.
    the work happens.
 8. **I20 is not resolved by anything here.** Logical-time schedule exploration
    covers a great deal; physical contention stays `:native` only, permanently.
-9. **§11's acceptance criterion (a) may fail for a boring reason** — the two
+9. **The query surface's best fact source is the one that does not exist yet.**
+   §5.5's declaration-sourced queries need the declarations to be *reachable as
+   data in one place*, and today they are spread across `cap`, `dbtx`, `http`,
+   `tcpcap` and the checker's own tables. Collecting them is not hard, but it is
+   unbuilt, and until then the honest source is the trace — which can never
+   answer an unreachability question.
+10. **Datalog's termination guarantee is about the query, not the model.** A
+   fixpoint over the declared facts is complete *over those facts*. It says
+   nothing about whether the declarations describe the program, which is exactly
+   what `(diff/observed-not-declared)` exists to measure and exactly what the
+   record has repeatedly found to be false.
+11. **§11's acceptance criterion (a) may fail for a boring reason** — the two
    event models may not be projectable onto each other without loss. If so, that
    is the finding, and it invalidates Merge 1 rather than the thesis.
