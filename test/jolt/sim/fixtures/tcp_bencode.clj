@@ -196,12 +196,17 @@
 (def ^:private echo-handler
   (framed-handler build-reply))
 
+(defn- io-options [operation-context]
+  (if-let [deadline-nanos (:deadline-nanos operation-context)]
+    {:deadline-nanos deadline-nanos}
+    {:timeout-ms 5000}))
+
 (defn- read-exact-into!
-  [connection ^bytes dest len]
+  [connection ^bytes dest len operation-context]
   (loop [offset 0]
     (when (< offset len)
       (let [n (client/receive-into! connection dest offset (- len offset)
-                                     {:timeout-ms 5000})]
+                                     (io-options operation-context))]
         (when (nil? n)
           (throw (ex-info "tcp-bencode fixture: connection EOF mid-frame"
                           {:offset offset :length len})))
@@ -210,9 +215,9 @@
 (defn- receive-frame!
   "Blocks for one length-framed bencode reply and returns
   {:value decoded-value :bytes total-frame-length}."
-  [connection]
+  [connection operation-context]
   (let [prefix (byte-array 4)]
-    (read-exact-into! connection prefix 4)
+    (read-exact-into! connection prefix 4 operation-context)
     (let [declared-length (get-be32 (buf/wrap prefix) 0)
           _ (when (> declared-length max-frame-body-bytes)
               (throw
@@ -220,7 +225,7 @@
                         {:declared-length declared-length
                          :max-frame-body-bytes max-frame-body-bytes})))
           body (byte-array declared-length)]
-      (read-exact-into! connection body declared-length)
+      (read-exact-into! connection body declared-length operation-context)
       (let [decoded (decode-frame-body body)]
         (when-not (= :ok (:status decoded))
           (throw (ex-info "tcp-bencode fixture: reply frame failed to decode"
@@ -232,21 +237,27 @@
   connected public teensyp client, then reads one ordered reply per request.
   The caller retains connection lifecycle ownership. Returns only canonical
   request/reply values and byte counts; framing and decoding use the same
-  private implementation as exercise-tcp-bencode."
-  [connection requests]
-  (let [requests (vec requests)
-        combined
-        (concat-byte-arrays
-         (mapv #(frame-bytes (bencode/encode %)) requests))
-        _ (client/send-all! connection combined {:timeout-ms 5000})
-        replies
-        (mapv (fn [_request]
-                (receive-frame! connection))
-              requests)]
-    {:sent-bytes (alength combined)
-     :received-bytes (reduce + (map :bytes replies))
-     :requests requests
-     :replies (mapv :value replies)}))
+  private implementation as exercise-tcp-bencode. The optional operation
+  context carries one unchanged absolute :deadline-nanos through the write and
+  every prefix/body read; the original arity retains its fixed per-call
+  timeout behavior."
+  ([connection requests]
+   (exchange! connection requests nil))
+  ([connection requests operation-context]
+   (let [requests (vec requests)
+         combined
+         (concat-byte-arrays
+          (mapv #(frame-bytes (bencode/encode %)) requests))
+         _ (client/send-all! connection combined
+                             (io-options operation-context))
+         replies
+         (mapv (fn [_request]
+                 (receive-frame! connection operation-context))
+               requests)]
+     {:sent-bytes (alength combined)
+      :received-bytes (reduce + (map :bytes replies))
+      :requests requests
+      :replies (mapv :value replies)})))
 
 (defn exercise-tcp-bencode
   "Exercises the length-framed bencode request/reply protocol through only the
