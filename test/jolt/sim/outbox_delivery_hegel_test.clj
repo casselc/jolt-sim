@@ -129,9 +129,10 @@
 ;; Hegel owns selection and shrinks sampled indexes toward the smoke-capacity/
 ;; no-fault case while still exercising larger capacities and later poll
 ;; attempts. The stream floor 8 is the fixed smoke capacity proven against
-;; the fixture's 5 second client deadline; 1--2 byte HTTP fragmentation is
-;; explicitly later work. These literals deliberately mirror the closed
-;; domains in the scenario namespace, which this parent cannot load (the app
+;; the ordinary application's bounded operation deadline; 1--2 byte HTTP
+;; fragmentation is explicitly later work. These literals deliberately mirror
+;; the closed domains in the scenario namespace, which this parent cannot load
+;; (the app
 ;; dependency stack is absent here); the worker child rejects anything
 ;; outside them before a world exists.
 (def ^:private stream-capacity-domain [8 16 32])

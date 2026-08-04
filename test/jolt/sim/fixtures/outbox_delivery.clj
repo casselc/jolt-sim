@@ -61,6 +61,11 @@
 
 (def ^:private bencode-content-type "application/x-bencode")
 (def ^:private ack-withheld-type ::ack-withheld)
+;; Ordinary host-backed integration crosses two servers, SQLite transactions,
+;; and multiple socket exchanges under one shared budget. Keep enough wall
+;; clock headroom for loaded hosted runners; exact expiry semantics use an
+;; explicitly supplied 5-second virtual budget in the terminal campaign.
+(def ^:private default-operation-budget-nanos 30000000000)
 
 (defn- fail! [reason detail]
   (throw
@@ -69,6 +74,32 @@
     {:type :jolt.sim.fixtures.outbox-delivery/invalid-flow
      :reason reason
      :detail detail})))
+
+(defn new-operation-context
+  "Creates the ordinary application's shared operation context. Its absolute
+   monotonic deadline is safe to pass unchanged through every participating
+   library call and is intentionally independent of jolt-sim. Under a
+   simulation-enabled compiler, the ordinary jolt.host clock call is handled
+   by the installed clock controller."
+  ([]
+   (new-operation-context default-operation-budget-nanos))
+  ([budget-nanos]
+   {:deadline-nanos (+ (host/mono-nanos) budget-nanos)}))
+
+(defn- check-operation-deadline! [operation-context phase]
+  (when-let [deadline-nanos (:deadline-nanos operation-context)]
+    (let [observed-nanos (host/mono-nanos)]
+      (when (<= deadline-nanos observed-nanos)
+        (fail! :operation-deadline-exceeded
+               {:phase phase
+                :deadline-nanos deadline-nanos
+                :observed-nanos observed-nanos}))))
+  operation-context)
+
+(defn- connect-options [operation-context]
+  (if-let [deadline-nanos (:deadline-nanos operation-context)]
+    {:deadline-nanos deadline-nanos}
+    {:connect-timeout-ms 5000}))
 
 (defn- stable-error-summary [error]
   {:class (str (class error))
@@ -107,12 +138,16 @@
    cause chain. Failure-site identity is part of the witness contract: an
    infrastructure or transport failure must name its phase rather than
    masquerade as an untracked semantic counterexample."
-  [phase error]
-  (ex-info
-   (or (ex-message error) (str error))
-   (assoc (or (ex-data error) {})
-          :outbox-delivery/phase phase)
-   error))
+  ([phase error]
+   (phase-error phase error nil))
+  ([phase error command-evidence]
+   (ex-info
+    (or (ex-message error) (str error))
+    (cond-> (assoc (or (ex-data error) {})
+                   :outbox-delivery/phase phase)
+      command-evidence
+      (assoc :outbox-delivery/command-evidence command-evidence))
+    error)))
 
 (defn- cleanup-summaries [cleanup-errors]
   (mapv (fn [{:keys [operation error]}]
@@ -261,30 +296,34 @@
     (swap! received conj message)
     (reply-for message)))
 
-(defn- exchange-deliveries! [host port messages]
-  (let [connection* (atom nil)
-        body
-        (try
-          {:value
-           (let [connection (client/connect host port
-                                            {:connect-timeout-ms 5000})
-                 _ (reset! connection* connection)
-                 exchange (framed/exchange! connection messages)
-                 first-close (client/close! connection)
-                 second-close (client/close! connection)]
-             (assoc exchange
-                    :close-results
-                    {:connection [first-close second-close]}))}
-          (catch :default error
-            {:error error}))
-        cleanup-errors
-        (vec
-         (keep identity
-               [(when-let [connection @connection*]
-                  (cleanup-attempt :delivery-connection-close
-                                   #(client/close! connection)))]))]
-    (throw-with-cleanup! (:error body) cleanup-errors)
-    (:value body)))
+(defn- exchange-deliveries!
+  ([host port messages]
+   (exchange-deliveries! host port messages nil))
+  ([host port messages operation-context]
+   (let [connection* (atom nil)
+         body
+         (try
+           {:value
+            (let [connection (client/connect
+                              host port (connect-options operation-context))
+                  _ (reset! connection* connection)
+                  exchange (framed/exchange! connection messages
+                                             operation-context)
+                  first-close (client/close! connection)
+                  second-close (client/close! connection)]
+              (assoc exchange
+                     :close-results
+                     {:connection [first-close second-close]}))}
+           (catch :default error
+             {:error error}))
+         cleanup-errors
+         (vec
+          (keep identity
+                [(when-let [connection @connection*]
+                   (cleanup-attempt :delivery-connection-close
+                                    #(client/close! connection)))]))]
+     (throw-with-cleanup! (:error body) cleanup-errors)
+     (:value body))))
 
 (defn- load-pending-delivery
   ;; apply-command! has already returned across COMMIT. Reload through the
@@ -309,10 +348,15 @@
              {:expected expected :actual replies}))
     replies))
 
-(defn- deliver-messages! [host port messages]
-  (let [exchange (exchange-deliveries! host port messages)]
-    (validate-acks! messages (:replies exchange))
-    exchange))
+(defn- deliver-messages!
+  ([host port messages]
+   (deliver-messages! host port messages nil))
+  ([host port messages operation-context]
+   (check-operation-deadline! operation-context :before-delivery)
+   (let [exchange (exchange-deliveries! host port messages operation-context)]
+     (validate-acks! messages (:replies exchange))
+     (check-operation-deadline! operation-context :after-ack)
+     exchange)))
 
 (defn- mark-delivered-and-reload!
   "Durably marks the one acknowledged outbox row delivered through the
@@ -324,33 +368,39 @@
    :state final-state}, where :marking is exactly the mark step without its
    duplicate :state. This records the ack-gated durable marking only; a crash
    between the remote acknowledgement and this commit can still redeliver."
-  [conn outbox-id]
-  (let [mark-step (store/mark-delivered! conn outbox-id)
-        final-state (store/load-state conn)
-        delivered-row (:row mark-step)
-        _ (when-not (true? (:changed? mark-step))
-            (fail! :mark-unchanged
-                   {:outbox-id outbox-id :row delivered-row}))
-        _ (when-not (= (:state mark-step) final-state)
-            (fail! :mark-state-mismatch
-                   {:mark-state (:state mark-step)
-                    :loaded-state final-state}))
-        target-rows (filterv #(= outbox-id (:outbox-id %))
-                             (:outbox final-state))
-        _ (when-not (and (= 1 (count target-rows))
-                         (= delivered-row (first target-rows))
-                         (= :delivered (:status (first target-rows))))
-            (fail! :marked-row-not-delivered
-                   {:outbox-id outbox-id
-                    :row delivered-row
-                    :loaded-rows target-rows}))
-        pending-rows (filterv #(= :pending (:status %))
+  ([conn outbox-id]
+   (mark-delivered-and-reload! conn outbox-id nil))
+  ([conn outbox-id operation-context]
+   (check-operation-deadline! operation-context :before-mark-delivered)
+   (let [mark-step (store/mark-delivered! conn outbox-id)
+         ;; SQLite calls are blocking and cannot be cancelled mid-operation.
+         ;; Once mark-delivered! returns across COMMIT, that durable outcome
+         ;; wins even if the deadline elapsed while SQLite was running.
+         final-state (store/load-state conn)
+         delivered-row (:row mark-step)
+         _ (when-not (true? (:changed? mark-step))
+             (fail! :mark-unchanged
+                    {:outbox-id outbox-id :row delivered-row}))
+         _ (when-not (= (:state mark-step) final-state)
+             (fail! :mark-state-mismatch
+                    {:mark-state (:state mark-step)
+                     :loaded-state final-state}))
+         target-rows (filterv #(= outbox-id (:outbox-id %))
                               (:outbox final-state))
-        _ (when-not (zero? (count pending-rows))
-            (fail! :pending-rows-remain
-                   {:count (count pending-rows)}))]
-    {:marking (dissoc mark-step :state)
-     :state final-state}))
+         _ (when-not (and (= 1 (count target-rows))
+                          (= delivered-row (first target-rows))
+                          (= :delivered (:status (first target-rows))))
+             (fail! :marked-row-not-delivered
+                    {:outbox-id outbox-id
+                     :row delivered-row
+                     :loaded-rows target-rows}))
+         pending-rows (filterv #(= :pending (:status %))
+                               (:outbox final-state))
+         _ (when-not (zero? (count pending-rows))
+             (fail! :pending-rows-remain
+                    {:count (count pending-rows)}))]
+     {:marking (dissoc mark-step :state)
+      :state final-state})))
 
 (defn- attempt-delivery!
   "One ordinary delivery attempt over one fresh ordinary TCP connection:
@@ -552,30 +602,39 @@
     (throw-with-cleanup! (:error body) cleanup-errors)
     (:value body)))
 
-(defn- command-handler [conn command-evidence]
-  (fn [request]
-    (when-not (= [:post "/commands"]
-                 [(:request-method request) (:uri request)])
-      (fail! :unsupported-http-route
-             {:request-method (:request-method request)
-              :uri (:uri request)}))
-    (let [command (->> (http-body/body-bytes (:body request))
-                       (decode-bencode-exact :http-command)
-                       wire->command)
-          step (store/apply-command! conn command)
-          result (:result step)
-          evidence
-          {:identities (semantic-identities result)
-           :command {:value command
-                     :result result
-                     :emitted (:emitted step)}
-           ;; Retained only until the ordinary post-COMMIT reload is compared.
-           ;; The final public evidence uses :store-state instead.
-           :committed-state (:state step)}]
-      (reset! command-evidence evidence)
-      {:status 200
-       :headers {"Content-Type" bencode-content-type}
-       :body (bencode/encode (command-response-wire result))})))
+(defn- command-handler
+  ([conn command-evidence]
+   (command-handler conn command-evidence nil))
+  ([conn command-evidence operation-context]
+   (fn [request]
+     (when-not (= [:post "/commands"]
+                  [(:request-method request) (:uri request)])
+       (fail! :unsupported-http-route
+              {:request-method (:request-method request)
+               :uri (:uri request)}))
+     (check-operation-deadline! operation-context :before-command)
+     (let [command (->> (http-body/body-bytes (:body request))
+                        (decode-bencode-exact :http-command)
+                        wire->command)
+           step (store/apply-command! conn command)
+           result (:result step)
+           evidence
+           {:identities (semantic-identities result)
+            :command {:value command
+                      :result result
+                      :emitted (:emitted step)}
+            ;; Retained only until the ordinary post-COMMIT reload is compared.
+            ;; The final public evidence uses :store-state instead.
+            :committed-state (:state step)}]
+       ;; Publish the bounded durable evidence before observing the clock
+       ;; again. If the deadline elapsed inside non-cancellable SQLite, the
+       ;; caller can distinguish "committed, response withheld" from an
+       ;; unstarted or uncertain command and must not begin delivery.
+       (reset! command-evidence evidence)
+       (check-operation-deadline! operation-context :after-command-commit)
+       {:status 200
+        :headers {"Content-Type" bencode-content-type}
+        :body (bencode/encode (command-response-wire result))}))))
 
 (defn exercise-outbox-delivery
   "Runs one ordinary HTTP -> committed SQLite outbox -> framed TCP/bencode
@@ -590,7 +649,12 @@
   bounded negative-control seam: reply-for receives the validated delivery
   message and returns the receiver reply. Ordinary callers use the exact
   correlated acknowledgement; tests may return a hostile reply to prove that
-  validation failure cannot authorize marking.
+  validation failure cannot authorize marking. The four-argument form accepts
+  an ordinary operation context. Otherwise the application creates one after
+  schema initialization and carries its single absolute deadline through HTTP,
+  the command transaction boundaries, reload, delivery, acknowledgement, and
+  the pre-mark boundary. Once mark-delivered! returns across COMMIT, that
+  durable delivered outcome wins even if the deadline elapsed inside SQLite.
   The bencode payload is an octet vector; SQLite stores the same semantics as a
   BLOB, but this witness does not claim bencode binary-string wire parity."
   ([]
@@ -598,6 +662,8 @@
   ([command]
    (exercise-outbox-delivery command expected-ack))
   ([command reply-for]
+   (exercise-outbox-delivery command reply-for nil))
+  ([command reply-for supplied-operation-context]
    (when-not (fn? reply-for)
      (fail! :invalid-reply-function {:value reply-for}))
    (let [receiver-errors (atom [])
@@ -623,18 +689,40 @@
              "sqlite::memory:"
              (fn [conn]
                (store/init-schema! conn)
-               (let [http-cycle
-                    (http-fixture/run-request-cycle
-                     (command-handler conn command-evidence*)
-                     (fn [host port]
-                       (post-request-bytes command host port)))
-                    command-evidence @command-evidence*
-                    _ (when-not command-evidence
-                        (fail! :missing-application-evidence {}))
+               (let [operation-context
+                     (or supplied-operation-context (new-operation-context))
+                     _ (check-operation-deadline! operation-context
+                                                  :before-http)
+                     http-outcome
+                     (try
+                       {:value
+                        (http-fixture/run-request-cycle
+                         (command-handler conn command-evidence*
+                                          operation-context)
+                         (fn [host port]
+                           (post-request-bytes command host port))
+                         operation-context)}
+                       (catch :default error
+                         {:error error}))
+                     command-evidence @command-evidence*
+                     _ (when-let [error (:error http-outcome)]
+                         (throw (phase-error :http error command-evidence)))
+                     http-cycle (:value http-outcome)
+                     _ (when-not (= 200 (get-in http-cycle [:parsed :status]))
+                         (fail! :http-command-failed
+                                {:status (get-in http-cycle [:parsed :status])
+                                 :command-evidence command-evidence
+                                 :server-errors (:server-errors http-cycle)}))
+                     _ (when-not command-evidence
+                         (fail! :missing-application-evidence {}))
                     ;; The explicit post-COMMIT/pre-delivery reload. The
                     ;; emitted command row remains :pending evidence on this
                     ;; side of the delivery boundary.
+                    _ (check-operation-deadline! operation-context
+                                                 :before-pending-reload)
                     pending (load-pending-delivery conn)
+                    _ (check-operation-deadline! operation-context
+                                                 :after-pending-reload)
                     pending-state (:state pending)
                     _ (when-not (= (:committed-state command-evidence)
                                    pending-state)
@@ -647,11 +735,13 @@
                     ;; connection stays open. deliver-messages! performs the
                     ;; existing exact correlated acknowledgement validation.
                     delivery (deliver-messages! "127.0.0.1" (:port receiver)
-                                                (:messages pending))
+                                                (:messages pending)
+                                                operation-context)
                     ;; Only after the ack validates: durable marking for the
                     ;; one outbox id, then the final reload checks.
                     outbox-id (:outbox-id (first (:outbox pending-state)))
-                    marked (mark-delivered-and-reload! conn outbox-id)
+                    marked (mark-delivered-and-reload!
+                            conn outbox-id operation-context)
                     app (-> command-evidence
                             (dissoc :committed-state)
                             (assoc :pending-state pending-state

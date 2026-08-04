@@ -79,14 +79,24 @@
           (recur (rest remaining) (+ offset (alength chunk))))
         dest))))
 
+(defn- io-options [operation-context]
+  (if-let [deadline-nanos (:deadline-nanos operation-context)]
+    {:deadline-nanos deadline-nanos}
+    {:timeout-ms 5000}))
+
+(defn- connect-options [operation-context]
+  (if-let [deadline-nanos (:deadline-nanos operation-context)]
+    {:deadline-nanos deadline-nanos}
+    {:connect-timeout-ms 5000}))
+
 (defn- read-response-until-eof!
   "Reads every byte the server sends until it closes, via only the public
   teensyp.client blocking API."
-  [connection]
+  [connection operation-context]
   (let [scratch (byte-array 4096)]
     (loop [chunks []]
       (let [n (client/receive-into! connection scratch 0 (alength scratch)
-                                     {:timeout-ms 5000})]
+                                     (io-options operation-context))]
         (if (nil? n)
           (concat-byte-arrays chunks)
           (recur (conj chunks (copy-of-length scratch n))))))))
@@ -163,12 +173,16 @@
 
    The one-argument form preserves this fixture's original fixed GET request.
    The two-argument form calls `request-builder` with host and bound port and
-   sends the exact byte array it returns. This is deliberately only a request
-   construction seam; server, client, response parsing, and cleanup behavior
-   remain identical for both forms."
+   sends the exact byte array it returns. The three-argument form additionally
+   accepts an ordinary operation context; when it contains :deadline-nanos,
+   that same absolute value drives connect, send, and every response read.
+   This is deliberately only a request construction/deadline seam; server,
+   client, response parsing, and cleanup behavior remain otherwise identical."
   ([handler]
-   (run-request-cycle handler request-bytes))
+   (run-request-cycle handler request-bytes nil))
   ([handler request-builder]
+   (run-request-cycle handler request-builder nil))
+  ([handler request-builder operation-context]
    (let [server-errors (atom [])
          server (http/run-server handler
                                   :port 0
@@ -181,12 +195,14 @@
            (try
              {:value
               (let [port (:port server)
-                    connection (client/connect "127.0.0.1" port
-                                                {:connect-timeout-ms 5000})
+                    connection (client/connect
+                                "127.0.0.1" port
+                                (connect-options operation-context))
                     _ (reset! connection* connection)
                     request (request-builder "127.0.0.1" port)
-                    sent (client/send-all! connection request {:timeout-ms 5000})
-                    raw (read-response-until-eof! connection)
+                    sent (client/send-all! connection request
+                                           (io-options operation-context))
+                    raw (read-response-until-eof! connection operation-context)
                     parsed (parse-response raw server-errors)]
                 {:port port
                  :sent-result sent
