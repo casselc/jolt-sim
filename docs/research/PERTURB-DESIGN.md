@@ -90,6 +90,9 @@ The complete current tally of claims this document made and then refuted:
 | 57 † | `RUNTIME-OBLIGATION-BRIEF` item 5's hope that a check beside real I/O is **dwarfed by it** | refuted in the blanket form. Draco reports ~25% on a repeated `getppid` microbenchmark and ~20% on ARM for simple checks; SFP a low average with materially higher worst case. And on yield, Legunsen et al. found **82.81% false alarms for handwritten specifications** (97.89% mined) with 11/182 specs leading to a bug. O(1) lookup is the right architecture, not a negligible constant, and alert triage is part of the design | E31 |
 | 58 † | E25: Milano's regions admit a connection table because intra-region references are untracked, so **it needs no annotation** | narrower than recorded. Regions give ownership of a graph **as a unit**; the paper does **not** establish independent lookup, removal or transfer of a single member of a growable `ConnId → session` table, which is exactly what a server does, and its virtual-transformation search carries a **stated worst-case exponential cost**. It covers neither handlers, exceptions nor multi-shot control, so adopting regions is a distinct effects-aware language design rather than an extension of this checker | E32 |
 | 59 † | §1.4: "no continuations at that layer" | wrong twice, for independent reasons. E31: a handler that substitutes a result and lets the caller continue is an **implicit tail resumption**. E32: the `proceed` seam is scoped and single-use, which is a **one-shot resumption / linear continuation** — E14 had already recorded the delivered controller dispatching substitute / abort / **proceed-once**. The guards that make it safe (scope, owner thread, single use) are load-bearing and undocumented as such | E31, E32 |
+| 60 † | §1.2's `:linearity :once` as the discipline for a resource | it conflates **three different things**: a stable shared handle, its current protocol state, and the obligation to discharge the underlying resource. Both round-2 surveys reach this independently, and **E30's failures follow directly** — the double `close!`, the rejected terminal observers and the 12-of-23 in-place bucket are one conflation seen three ways. The formal account is a monotonic shared fact plus a **one-shot discharge right** consumed by the winning CAS, with observer permission surviving closure; fractional permissions are explicitly insufficient | E33 |
+| 61 † | E26 finding 7 and the discriminator built on it: a declared predicate at an `if` is **the** mechanism for a state-dependent destination | it is the **fallback**. Both surveys independently name **result-labelled transitions** as the established syntax (Mungo/StMungo `<OK: Open, ERROR: end>`, Vault, Fugue, Plural), with the primitive relation keyed by `(capability, operation, source-state, argument-shape, result-label)`. Preference order: a tagged result whose constructor determines the state; a state witness from trusted boundary code; a generated cross-check; and only then an axiom. What was built is correct and wrongly prioritised | E33 |
+| 62 † | §1.2's Yarrow citation as an argument against locality | corrected for the **third** time (E25, E32, E33). Yarrow treats *lexically scoped, stack-disciplined* regions and implies nothing about domination-induced heap regions; the real rule is that non-well-bracketed control needs explicit capture/revocation accounting and a multi-shot resumption cannot retain reclaimed local references | E33 |
 
 ‡ Eight rows are the exception the sentence above does not cover: 17 and 18
 arrived from re-examining the argument and from the literature; 27–29 came from
@@ -122,7 +125,7 @@ worse ratio than E20's literature survey achieved and was obtained for a
 fraction of the effort. The standing commitment covers rows 1–26 and 33–35.
 
 **How to read this document.** §1 is the settled design, stated once in final
-corrected form. §2 is the divergence register. §3 is the findings E1–E32, each
+corrected form. §2 is the divergence register. §3 is the findings E1–E33, each
 stated as currently believed rather than as first written. §4 is the open
 questions. §5 is the v0 ladder. §6 is the nonclaims. Appendix A is the
 correction history, Appendix B holds the superseded ladders in full,
@@ -5376,6 +5379,232 @@ and currently undocumented as such.
 4. **Cavoj et al. was read by that pass, not by this document.** The comparison
    to §5's ladder is from its summary and its stated exclusions, and the paper
    is in hand to check.
+
+### E33 — round 2, answered twice again: the conceptual correction, and the experiment that survives
+
+`SOTA-POSITIONING-BRIEF-2.md` was answered by both teams independently, as round
+1 was: `SOTA-SURVEY-ROUND2.md` (three tracks) and `SOTA-POSITIONING-FINDINGS-2.md`
+(four assignments). Neither saw the other. **They converge on every load-bearing
+point** — the strongest evidence this project has had for any positioning claim —
+and differ usefully on how to state the one open invariant.
+
+#### The conceptual correction, and it is the whole finding
+
+> **A stable shared handle, its current protocol state, and the obligation to
+> discharge the underlying resource are three different things.**
+
+`:linearity :once` treats them as one, and **E30's failures follow directly**:
+the double `close!`, the rejected `closed?` and `connection-info`, and the
+12-of-23 in-place bucket are one conflation seen three ways. Both reports reach
+this independently, and the second adds a side condition the first omits — **an
+observer self-loop must not re-acquire the discharged resource**.
+
+The formal account of the close pattern, from both: a stable shared handle; a
+**monotonic shared fact** `Open → Closed`; a **one-shot discharge right**
+consumed by the successful CAS; persistent knowledge that `Closed` holds; and
+observer permission surviving closure. Iris-style authoritative/one-shot ghost
+state models it, with **Iron** named for obligations under dynamically allocated
+threads. Fractional permissions are explicitly **insufficient** — they give many
+readers and a writer, not an unknown reader made the unique runtime winner.
+
+- **Refuted:** close should make the stable handle name unusable.
+- **Refuted:** an idempotent close means the resource is closed twice.
+- **Confirmed:** the boolean is a **race witness** selecting the one logical
+  transition — E30's reading, now with a formal account.
+- **No answer found** (both): a typed account of CAS-based discharge among an
+  *unknown alias set*. Both flag it as an absence, not a novelty claim.
+
+#### The question that could have invalidated E29 — it does not
+
+Brief 2 asked whether Tang's deep-handler restriction forbids the two-rung
+stack. **Both say no.** Tang prohibits a *deep handler* from freely capturing
+linear values, because deep reinstallation can duplicate or discard their use;
+it does not prohibit an operation clause from receiving and using a linear
+resumption, and innermost-handler selection makes a same-label operation
+performed by a clause available to an outer handler.
+
+Admissible when all four hold: the outward operation is control-flow-linear; the
+resumption is resumed **exactly once**; no linear resource is retained by a
+repeatedly installed deep handler; and failure/cancellation separately discharges
+what normal resumption would have returned. **Rejected** when the outward
+operation is control-flow-unrestricted and might resume zero or many times.
+
+**Decision, from both: continue, and add a negative test whose outer operation is
+multi-shot or unrestricted, which must be rejected.** With the caution both
+state: Tang gives continuation/resource integrity, **not** typestate preservation
+between layered protocols, so `via`'s ability to simulate the pattern must not be
+described as enforcing it.
+
+#### The B6 invariant, stated two ways — take the second, it is executable
+
+The first frames it as **forward simulation plus resource conservation**, five
+conditions, of which the fifth is the interesting one: *the adapter cannot
+intercept its own forwarded operation accidentally* — precisely E29's
+no-deep-handlers finding, and it needs explicit effect instances or labels rather
+than a convention every layer author holds.
+
+The second frames it as a **forwarding refinement over a labelled transition
+system**: for each declared request a layer either takes a declared local
+transition or emits **exactly one correlated `forward`** to its immediate lower
+layer; the projection of the composed trace onto each capability must be a legal
+protocol trace; and **a lower refusal may not become upper success except through
+an explicit error-mapping edge**.
+
+That last clause is E29's control 2 — the abort-laundering hole — stated as an
+invariant, and it names E29's two controls as **negative controls for an
+executable invariant, not counterexamples to Tang**. Take the second framing: it
+is checkable against code we already have.
+
+Its own caution is the sharpest line in either report: **"forwarding may be too
+narrow — a useful layer can interpret locally rather than forward, so B6 must
+state exactly which operation classes require correlation."**
+
+#### Runners: right analogy, not literally a runner
+
+Both confirm it, and the first found that Ahman & Bauer's **interposed-runner
+example does exactly what E29 built** — handle an operation, perform accounting,
+invoke the same operation outward, return. Closest direct precedent found, with
+runner composition giving it a formal account connected to finalisation.
+
+What runners require that we lack: user operations and kernel co-operations, a
+user/kernel distinction, typed operation sets, explicit kernel state, recoverable
+exceptions distinguished from fatal signals, and **mandatory finalisation
+clauses**. perturb is *runner-shaped*, not an implementation of the calculus.
+
+**Adopt:** explicit finalisation and explicit outer-operation selection. **Do not
+adopt:** the runner monad or kernel/user calculus unless a formalisation needs
+it. The second adds the sequencing — do not add first-class runners to validate
+B6; first add correlated forwarding records, lower-rung attribution,
+terminal-latch propagation and replayable traces to the seam that exists.
+
+#### The declaration language: result labels, not a predicate at an `if`
+
+Both independently name the established syntax, and it is **not** what was built
+this morning. Mungo/StMungo spells result-dependent poststates directly:
+
+```text
+Status open():         <OK: Open,   ERROR: end>
+BooleanEnum hasNext(): <TRUE: Read, FALSE: Close>
+```
+
+Vault keys transitions by source and destination; Fugue computes postconditions
+from receiver, state, arguments and results; Plural uses pre/post permissions.
+The recommended primitive relation:
+
+```text
+(capability, operation, source-state, argument-shape, result-label)
+    -> destination-state + obligation delta
+```
+
+with source collections as sugar **only** where every source shares a destination
+and obligation delta. Both say the same of the discriminator: **do not treat a
+declared predicate as evidence it is honest**, and prefer, in order, a tagged
+result whose constructor determines the state; a state witness from trusted
+boundary code; a generated monitor cross-checking an independent observation;
+and only then an explicit axiom.
+
+**This supersedes the discriminator as the primary mechanism.** What was built is
+the fallback — correctly implemented, wrongly prioritised. `report-limits` 14(f)
+was right to be uneasy.
+
+#### Identity-indexed typestate, and the honest caveat
+
+Both confirm identity-indexed protocol state is the established model for stable
+mutable handles (Vault, Fugue, Plural/Plaid, Mungo/StMungo, Obsidian), and both
+refuse to oversell it. The first: value threading is **not universally wrong** —
+a fine presentation for exclusive resources, and the wrong *only* representation.
+The second is blunter: Obsidian's own usability work reports substantial
+challenges, no source gives per-annotation costs or a same-program comparison,
+and **E30's 12-of-23 shape is not shown to disappear under permissions**. The
+systems pay in alias control, tracked keys, fractional or access permissions, and
+pre/post specifications.
+
+**Decision:** keep value threading internally; expose identity-indexed protocol
+state and permission tokens in the declaration model; treat it as a separate
+design needing an alias policy and its own corpus measurement.
+
+#### Priority 1: both absence results hold, and both refuse to call it novelty
+
+Each ran a stated protocol with recorded query families and sources; neither
+found a qualifying four-way system or a typed generational capability table. The
+first supplies a scored near-neighbour table — Pupo et al.'s RASP→SAST is the
+strongest security neighbour (external declarations, static JavaScript pass,
+fail-closed monitor, **no substructural resource protocol**), with
+JAMScript/policy weaving and Sorbet/RBI behind it — and states plainly this is a
+**scoped absence audit, not a PRISMA study**: sufficient for an architecture
+decision, insufficient for a "first system" claim. The second records DBLP
+returning HTTP 500 and excluded, and says the result establishes **neither
+novelty nor impossibility**.
+
+For the table, the design both converge on: statically own the table/region
+capability; use copyable generational keys **only** for stale-key safety; have
+lookup yield a scoped borrow, lease or existential dynamic capability; monitor
+each occupant's state at run time; require finalisation to account for every
+outstanding obligation. With a caveat worth keeping: **generation width is a
+runtime parameter and a finite counter can wrap**, after which an ancient key may
+alias a reused slot — choose a practically non-wrapping width, retire exhausted
+slots, or document the bounded guarantee.
+
+#### Yarrow, corrected a third time
+
+Both say the same thing, and it is the third correction to this citation (E25,
+E32, now E33). Yarrow **refutes a blanket claim that regions make handlers
+unsound**: it treats *lexically scoped, stack-disciplined* regions under one- and
+multi-shot effects and implies nothing about domination-induced heap regions. The
+real rule is narrower — non-well-bracketed control needs explicit
+capture/revocation accounting, and a multi-shot resumption cannot retain
+reclaimed local references. §1.2's citation must **distinguish lexical allocation
+regions from domination/ownership regions**. Its operation-protocol vocabulary is
+useful for stating what ownership crosses an adapter boundary; Iris/Rocq is
+**not** a prerequisite for the next experiment.
+
+#### The monitored arm, narrowed by both
+
+Reduce ambition rather than chase precision. **Build first**, because these are
+objective and independently observable: a declared edge exists; Content-Length
+equals emitted byte count; every resource in a closing region reached a terminal
+state; an unhandled native operation latched the run; a single-use token was
+consumed at most once; an adapter emitted only an allowed outer trace.
+**Defer**, because they need an independent oracle: whether a function "really
+responded"; whether an external predicate truthfully characterises hidden state;
+whether a third-party function's declared effects are complete.
+
+Attach declaration and trace provenance to every alert; classify missing facts as
+**inconclusive** rather than passing; use stable violation fingerprints and show
+new or regressed ones by default; make suppressions carry an owner, reason, scope
+and expiry rather than filtering silently. eMOP reports up to 8.4× faster runs
+and 31.3× fewer displayed violations across 676 versions of 21 projects;
+ahead-of-time feasibility analysis reports ~75% reduction over 13 specifications
+— **neither is a production alarm rate**, and both reports say so.
+
+#### The parser: keep exact rollback for v0, and measure before changing it
+
+Both agree the verified-parser literature does not supply the combination, and
+both say keep `:need-more` returning the exact original cursor **for now**. The
+first adds the engineering reality: practical incremental parsers return a
+**suspended continuation** (attoparsec's `Partial`), and arbitrary backtracking
+retains all prior input, so mandatory rollback is a real cost rather than a free
+semantic nicety. Measure one-byte chunk delivery, maximum legal frame size,
+repeated-prefix CPU, retained-buffer high-water mark, and error-offset/replay
+behaviour. Only if reparse goes quadratic or retention becomes material, move to
+`Done(value, committed-cursor, remainder)` / `NeedMore(resume, committed-cursor,
+minimum-hint?)` / `Invalid(error, error-cursor)`, committing only at explicit
+frame boundaries, with an observational-equivalence test against the rollback
+implementation.
+
+#### E33's own nonclaims
+
+1. **Nothing was executed.** Two literature surveys, agent-run, on a network this
+   session cannot reach. Where they agree they may share a source's error.
+2. **Both absence results are bounded by their own protocols**, and both say so.
+   Neither is publication-grade; "first system" remains unclaimable.
+3. **The recommendations are not decisions.** Six phases were proposed; nothing
+   in §1 or §4.6 is amended by a recommendation, only by what is measured.
+4. **The B6 invariant is a testable hypothesis, not a theorem** — the second
+   report says this of its own framing, and it is the right label.
+5. **Two agreeing surveys are not verification.** The papers now in `papers/`
+   (Tang, Runners, Yarrow among them) exist so claims can be checked against text
+   rather than against a summary.
 
 ## 4. Open questions
 
