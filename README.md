@@ -87,6 +87,15 @@ baseline and remints the affected contracts and tests in place.
   passes both real-socket/real-SQLite parity and one shared hermetic
   POSIX/SQLite native boundary.
 
+## Optional static trace reports
+
+The [`report`](report/) dependency root turns a validated trace document and
+already-computed monitor decisions into a self-contained deterministic HTML
+report. It is packaged separately so ordinary simulator consumers do not pull
+in Selmer or its Jolt host-support dependencies. The same data-only view model
+is intended to feed the later live web/GTK trace viewer; rendering does not run
+monitor functions or introduce a second trace schema.
+
 ### Executed scenario coverage
 
 This is an execution manifest, not a namespace-import checklist. A row records

@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<!-- Compiled into jolt.sim.report during namespace analysis. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>jolt-sim trace report</title>
+<style>
+  :root {
+    --bg: #f6f7f9;
+    --panel: #ffffff;
+    --ink: #1c2733;
+    --muted: #5b6b7b;
+    --line: #d8dee6;
+    --accent: #2456a6;
+    --pass: #1e7d3c;
+    --violation: #b3261e;
+    --inconclusive: #8a6d00;
+    --code-bg: #eef1f5;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    line-height: 1.45;
+  }
+  header {
+    background: var(--panel);
+    border-bottom: 1px solid var(--line);
+    padding: 1.25rem 1.5rem;
+  }
+  header h1 { margin: 0 0 0.25rem; font-size: 1.35rem; }
+  header .subtitle { margin: 0; color: var(--muted); font-size: 0.95rem; }
+  main { padding: 1.25rem 1.5rem 2rem; max-width: 1100px; margin: 0 auto; }
+  section { margin-bottom: 1.75rem; }
+  h2 {
+    font-size: 1.05rem;
+    margin: 0 0 0.6rem;
+    padding-bottom: 0.3rem;
+    border-bottom: 1px solid var(--line);
+  }
+  .cards { display: flex; gap: 0.75rem; flex-wrap: wrap; }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 0.7rem 1rem;
+    min-width: 9rem;
+  }
+  .card-label { display: block; color: var(--muted); font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.04em; }
+  .card-value { display: block; font-size: 1.15rem; font-weight: 600; margin-top: 0.15rem; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    overflow: hidden;
+    font-size: 0.9rem;
+  }
+  th, td { padding: 0.45rem 0.6rem; text-align: left; vertical-align: top; border-bottom: 1px solid var(--line); }
+  thead th { background: var(--code-bg); font-weight: 600; white-space: nowrap; }
+  tbody tr:last-child td { border-bottom: none; }
+  .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.85em; }
+  .edn { word-break: break-all; }
+  .detail { word-break: break-word; }
+  .status { font-weight: 600; }
+  .status-pass { color: var(--pass); }
+  .status-violation { color: var(--violation); }
+  .status-inconclusive { color: var(--inconclusive); }
+  .filter-row { margin: 0 0 0.6rem; }
+  .filter-row label { margin-right: 0.5rem; color: var(--muted); }
+  .filter-row input {
+    padding: 0.35rem 0.55rem;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    font-size: 0.9rem;
+    width: min(26rem, 100%);
+  }
+  details { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; }
+  summary { cursor: pointer; padding: 0.6rem 0.8rem; font-weight: 600; }
+  pre.canonical {
+    margin: 0;
+    padding: 0.8rem;
+    background: var(--code-bg);
+    overflow-x: auto;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.82rem;
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+  footer { padding: 0 1.5rem 1.5rem; color: var(--muted); font-size: 0.8rem; text-align: center; }
+</style>
+</head>
+<body>
+<header>
+  <h1>jolt-sim trace report</h1>
+  <p class="subtitle">trace version {{trace-version}} &middot; {{event-count}} events</p>
+</header>
+
+<main>
+  <section class="cards">
+    <div class="card">
+      <span class="card-label">Trace version</span>
+      <span class="card-value">{{trace-version}}</span>
+    </div>
+    <div class="card">
+      <span class="card-label">Events</span>
+      <span class="card-value">{{event-count}}</span>
+    </div>
+    <div class="card">
+      <span class="card-label">Outcome</span>
+      <span class="card-value">{{terminal-label}}</span>
+    </div>
+  </section>
+
+  {% if has-monitors %}
+  <section>
+    <h2>Monitor outcomes</h2>
+    <table>
+      <thead>
+        <tr><th>Monitor</th><th>Status</th><th>Index</th><th>Detail</th></tr>
+      </thead>
+      <tbody>
+      {% for m in monitors %}
+        <tr>
+          <td><code>{{m.id-edn}}</code></td>
+          <td class="status status-{{m.status-name}}">{{m.status}}</td>
+          <td class="num">{{m.index}}</td>
+          <td class="detail"><code>{{m.detail-edn}}</code></td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </section>
+  {% endif %}
+
+  <section>
+    <h2>Event tags</h2>
+    <table>
+      <thead>
+        <tr><th>Tag</th><th>Count</th></tr>
+      </thead>
+      <tbody>
+      {% for entry in tag-counts %}
+        <tr>
+          <td><code>{{entry.0}}</code></td>
+          <td class="num">{{entry.1}}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Events</h2>
+    <p class="filter-row">
+      <label for="event-filter">Filter events</label>
+      <input id="event-filter" type="search" placeholder="tag, step, time, task, or EDN text" oninput="filterEvents()">
+    </p>
+    <table id="event-table">
+      <thead>
+        <tr><th>#</th><th>Tag</th><th>Step</th><th>Time</th><th>Task</th><th>Event (EDN)</th></tr>
+      </thead>
+      <tbody>
+      {% for e in events %}
+        <tr>
+          <td class="num">{{e.index}}</td>
+          <td><code>{{e.tag}}</code></td>
+          <td class="num">{{e.step}}</td>
+          <td class="num">{{e.time}}</td>
+          <td class="num">{{e.task}}</td>
+          <td class="edn"><code>{{e.edn}}</code></td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Canonical trace (EDN)</h2>
+    <details>
+      <summary>Complete validated trace document ({{event-count}} events)</summary>
+      <pre class="canonical">{{canonical-edn}}</pre>
+    </details>
+  </section>
+</main>
+
+<footer>
+  <p>Generated by jolt.sim.report &middot; view-model version {{view-model-version}}</p>
+</footer>
+
+{% verbatim %}
+<script>
+function filterEvents() {
+  var needle = document.getElementById("event-filter").value.toLowerCase();
+  var rows = document.querySelectorAll("#event-table tbody tr");
+  for (var i = 0; i < rows.length; i++) {
+    var row = rows[i];
+    var haystack = row.textContent.toLowerCase();
+    row.style.display = haystack.indexOf(needle) === -1 ? "none" : "";
+  }
+}
+</script>
+{% endverbatim %}
+</body>
+</html>
