@@ -1,7 +1,8 @@
 (ns jolt.sim.outbox-delivery-integration-test
   "Focused real/hermetic parity gate for the first ordinary whole-application
-  post-COMMIT outbox delivery witness."
+   post-COMMIT outbox delivery witness."
   (:require [clojure.test :refer [deftest is testing]]
+            [jdbc.core :as jdbc]
             [jolt.net :as net]
             [jolt.sim.ffi-memory :as memory]
             [jolt.sim.fixtures.outbox-delivery :as fixture]
@@ -36,6 +37,17 @@
    :next-outbox-id 2
    :outbox [expected-row]})
 
+;; The delivered side of the boundary: the same row and state after the
+;; validated ack authorizes the guarded pending -> delivered marking.
+(def ^:private expected-delivered-row
+  (assoc expected-row :status :delivered))
+
+(def ^:private expected-delivered-state
+  (assoc expected-state :outbox [expected-delivered-row]))
+
+(def ^:private expected-marking
+  {:row expected-delivered-row :changed? true})
+
 (def ^:private expected-identities
   {:request-id "req-1"
    :transaction-id [:outbox/command "req-1"]
@@ -64,6 +76,16 @@
    "entity-id" "entity-a"
    "version" 1
    "outbox-id" 1})
+
+(def ^:private modeled-outbox-key
+  [:jolt.sim.sqlite/row
+   :outbox/rows
+   [{:type :integer :value 1}]])
+
+(defn- hostile-ack [message]
+  (assoc expected-ack
+         "outbox-id" (get message "outbox-id")
+         "attempt" 99))
 
 (deftest ordinary-http-commits-outbox-then-delivers-over-framed-tcp
   (let [real-result (when-not *sim-only?*
@@ -97,8 +119,20 @@
               :result expected-result
               :emitted [expected-row]}
              (:command app)))
-      (is (= expected-state (:store-state app)))
-      (is (= :pending (get-in app [:store-state :outbox 0 :status]))))
+      ;; The explicit post-COMMIT/pre-delivery reload: the emitted command row
+      ;; remains :pending evidence on this side of the delivery boundary.
+      (is (= expected-state (:pending-state app)))
+      (is (= :pending (get-in app [:pending-state :outbox 0 :status]))))
+
+    (testing "the validated ack gates one durable delivery marking"
+      ;; Exactly the mark step without its duplicate :state.
+      (is (= expected-marking (:marking app)))
+      ;; The final delivered state equals the reload after mark-delivered!:
+      ;; the target row is :delivered and no :pending rows remain.
+      (is (= expected-delivered-state (:store-state app)))
+      (is (= :delivered (get-in app [:store-state :outbox 0 :status])))
+      (is (empty? (filter #(= :pending (:status %))
+                          (get-in app [:store-state :outbox])))))
 
     (testing "a later phase delivers the reloaded row in one framed bencode attempt"
       (is (= [expected-message] (:requests delivery)))
@@ -120,9 +154,9 @@
       (is (= {:connection [true false]}
              (get-in result [:http :close-results]))))
 
-    (testing "all 15 SQLite plans and all native effects stay inside the model"
-      (is (= {:plan-index 15
-              :plan-count 15
+    (testing "all 24 SQLite plans and all native effects stay inside the model"
+      (is (= {:plan-index 24
+              :plan-count 24
               :open-dbs 0
               :active-stmts 0}
              (sqlite/summary sqlite-world)))
@@ -145,6 +179,128 @@
         (is (= 1 (:max-pipe-fifo-bytes pipe)))))
 
     (testing "the shared native worlds quiesce cleanly"
+      (is (true? (memory/clean? mem)))
+      (is (true? (sqlite/clean? sqlite-world)))
+      (is (true? (posix/clean? posix-world))))))
+
+(deftest hostile-ack-cannot-authorize-delivery-marking
+  ;; This is the negative control for the slice's central ordering claim. The
+  ;; complete ordinary HTTP -> SQLite -> TCP path succeeds through the remote
+  ;; reply, but the receiver deliberately corrupts only the correlated attempt
+  ;; number. Ack validation must throw before the first mark-delivered! SQL
+  ;; statement is claimed, and closing the in-memory connection must preserve
+  ;; the committed pending row as model evidence.
+  (let [mem (memory/world)
+        sqlite-world (sqlite/world mem (plans/delivery-statement-plans))
+        posix-world (posix/world mem (net/target-descriptor)
+                                 {:progress-limit 64
+                                  :stream-capacity 8
+                                  :pipe-capacity 1})
+        handlers
+        (hp/compose
+         (hp/pack :jolt.sim/memory (memory/handlers mem))
+         (hp/pack :jolt.sim/sqlite (sqlite/foreign-handlers sqlite-world))
+         (hp/pack :jolt.sim/posix (posix/foreign-handlers posix-world)))
+        error
+        (try
+          (runtime/run-controlled
+           {:ffi-handlers handlers
+            :drain-timeout-ms 10000}
+           (fn []
+             (fixture/exercise-outbox-delivery
+              fixture/default-command
+              hostile-ack)))
+          nil
+          (catch :default e e))
+        sqlite-state (sqlite/state sqlite-world)
+        closed-db (first (:closed-db-evidence sqlite-state))
+        row (get-in closed-db [:committed modeled-outbox-key])]
+    (testing "the exact hostile acknowledgement is rejected"
+      (is (some? error))
+      (is (= :jolt.sim.fixtures.outbox-delivery/invalid-flow
+             (:type (ex-data error))))
+      (is (= :ack-mismatch (:reason (ex-data error))))
+      (is (= [expected-ack]
+             (get-in (ex-data error) [:detail :expected])))
+      (is (= [(assoc expected-ack "attempt" 99)]
+             (get-in (ex-data error) [:detail :actual]))))
+
+    (testing "no mark transaction is claimed and the row stays pending"
+      ;; Plans 0..14 are schema, command transaction, and the explicit
+      ;; post-COMMIT reload. Plan 15 is the unclaimed BEGIN belonging to
+      ;; mark-delivered!; all nine mark/final-reload plans remain untouched.
+      (is (= {:plan-index 15
+              :plan-count 24
+              :open-dbs 0
+              :active-stmts 0}
+             (sqlite/summary sqlite-world)))
+      (is (= {:type :text :value "pending"} (get row "status")))
+      (is (not-any? #(= :update-row (:op %)) (:row-evidence closed-db))))
+
+    (testing "the failed whole-app case still quiesces every modeled resource"
+      (is (true? (memory/clean? mem)))
+      (is (true? (sqlite/clean? sqlite-world)))
+      (is (true? (posix/clean? posix-world))))))
+
+(deftest sqlite-close-failure-cannot-replace-primary-ack-failure
+  ;; A close failure used to escape with-open's finally and replace the hostile
+  ;; ack mismatch entirely. Wrap one real modeled connection so physical close
+  ;; succeeds and its owner then reports a deterministic cleanup failure. The
+  ;; application error must remain primary, with bounded close diagnostics.
+  (let [mem (memory/world)
+        sqlite-world (sqlite/world mem (plans/delivery-statement-plans))
+        posix-world (posix/world mem (net/target-descriptor)
+                                 {:progress-limit 64
+                                  :stream-capacity 8
+                                  :pipe-capacity 1})
+        handlers
+        (hp/compose
+         (hp/pack :jolt.sim/memory (memory/handlers mem))
+         (hp/pack :jolt.sim/sqlite (sqlite/foreign-handlers sqlite-world))
+         (hp/pack :jolt.sim/posix (posix/foreign-handlers posix-world)))
+        real-connection jdbc/connection
+        close-error (ex-info "injected sqlite close failure"
+                             {:kind :close-control})
+        error
+        (with-redefs-fn
+          {#'jdbc/connection
+           (fn [spec]
+             (let [conn (real-connection spec)
+                   close (:close conn)]
+               (assoc conn :close
+                      (fn []
+                        (close)
+                        (throw close-error)))))}
+          #(try
+             (runtime/run-controlled
+              {:ffi-handlers handlers
+               :drain-timeout-ms 10000}
+              (fn []
+                (fixture/exercise-outbox-delivery
+                 fixture/default-command
+                 hostile-ack)))
+             nil
+             (catch :default e e)))
+        data (ex-data error)
+        cleanup (:outbox-delivery/cleanup-errors data)]
+    (testing "the acknowledgement mismatch remains the primary failure"
+      (is (some? error))
+      (is (= :ack-mismatch (:reason data)))
+      (is (= :ack-mismatch (:reason (ex-data (ex-cause error)))))
+      (is (= ":ack-mismatch"
+             (get-in data
+                     [:outbox-delivery/primary-error :data ":reason"]))))
+
+    (testing "the close failure is retained as bounded cleanup evidence"
+      (is (= [:sqlite-connection-close] (mapv :operation cleanup)))
+      (is (= ["injected sqlite close failure"] (mapv :message cleanup))))
+
+    (testing "reported close failure still leaves no native/model owner live"
+      (is (= {:plan-index 15
+              :plan-count 24
+              :open-dbs 0
+              :active-stmts 0}
+             (sqlite/summary sqlite-world)))
       (is (true? (memory/clean? mem)))
       (is (true? (sqlite/clean? sqlite-world)))
       (is (true? (posix/clean? posix-world))))))

@@ -44,16 +44,17 @@
     ECONNRESET rule (modeled receiver peer port), an optional captured poll
     EINTR, and a fixed two-step ack-send-before-client-recv admission gate.
     Its assertions discriminate receiver attempts exactly [1 2], one exact
-    scoped recv-reset firing, one successful correlated ack on attempt 2, the
+    scoped recv-reset firing, one successful correlated ack on attempt 2
+    gating one durable delivery marking (attempt 1 never marks), the
     unchanged committed state after the caught failure, exactly one ordinary
     receiver-side write reset while sending the first attempt's ack (the
     bounded FIFO is smaller than the constant ack frame at every drawn
     capacity), exact
-    18-statement SQLite plan consumption, unrenumbered poll fault IDs,
-    handler-only routing, and complete cleanup. This lane claims duplicate
-    delivery, never exactly-once, receiver idempotence, process restart,
-    close/reopen durability, real-kernel ECONNRESET parity, or unbounded
-    liveness.
+    27-statement SQLite plan consumption, unrenumbered poll fault IDs,
+    handler-only routing, and complete cleanup. This lane demonstrates
+    duplicate delivery under the scoped reset; it does not claim exactly-once
+    behavior, receiver idempotence, process restart, close/reopen durability,
+    real-kernel ECONNRESET parity, or unbounded liveness.
 
    Process-isolated like :tcp-bencode-hegel-test: each case spawns a fresh
    worker, and the parent supplies the worker command through JOLT_SIM_BIN and
@@ -174,7 +175,11 @@
 (defn- expected-for
   "Derives the exact ordinary application expectations from the drawn
   payload. Fixed request/entity IDs and first-command/outbox numbering are
-  the fixture's default-command semantics for this slice."
+  the fixture's default-command semantics for this slice. The pending side of
+  the delivery boundary is the explicit post-COMMIT reload with the row still
+  :pending; the delivered side is the final state after the validated ack
+  gates one durable marking, plus the exact mark step (without its duplicate
+  :state) the public :marking evidence carries."
   [payload]
   (let [command {:request-id "req-1" :entity-id "entity-a" :payload payload}
         result {:status :committed
@@ -187,7 +192,8 @@
              :entity-id "entity-a"
              :version 1
              :payload payload
-             :status :pending}]
+             :status :pending}
+        delivered-row (assoc row :status :delivered)]
     {:command command
      :command-evidence {:value command :result result :emitted [row]}
      :identities {:request-id "req-1"
@@ -195,10 +201,15 @@
                   :outbox-id 1
                   :delivery-id [:outbox/delivery 1]
                   :attempt-id [:outbox/delivery-attempt 1 1]}
+     :pending-state {:entities {"entity-a" {:version 1 :payload payload}}
+                     :request-log {"req-1" {:command command :result result}}
+                     :next-outbox-id 2
+                     :outbox [row]}
+     :marking {:row delivered-row :changed? true}
      :store-state {:entities {"entity-a" {:version 1 :payload payload}}
                    :request-log {"req-1" {:command command :result result}}
                    :next-outbox-id 2
-                   :outbox [row]}
+                   :outbox [delivered-row]}
      :message {"type" "outbox_delivery"
                "outbox-id" 1
                "request-id" "req-1"
@@ -349,7 +360,8 @@
                             (vec (sort-by pr-str (keys evidence))))}))
       (when-not (exact-map-keys?
                  application
-                 #{:identities :command :store-state :delivery})
+                 #{:identities :command :pending-state :store-state :marking
+                   :delivery})
         (violation "jolt.sim.outbox-delivery-hegel-test/application-shape"
                    input
                    {:application application}))
@@ -361,8 +373,10 @@
                    {:command (:command application)}))
       ;; Exact command/store results derived from the drawn input: the command
       ;; observed after the HTTP bencode round trip, its committed transition
-      ;; result and emitted row, the semantic identities, and the post-COMMIT
-      ;; reloaded store state with the row still :pending.
+      ;; result and emitted row (still :pending evidence), the semantic
+      ;; identities, the explicit post-COMMIT/pre-delivery reloaded pending
+      ;; state, the exact ack-gated mark step without its duplicate :state,
+      ;; and the final delivered store state with zero :pending rows.
       (when-not (= (:command-evidence expected) (:command application))
         (violation "jolt.sim.outbox-delivery-hegel-test/command"
                    input
@@ -372,6 +386,20 @@
         (violation "jolt.sim.outbox-delivery-hegel-test/identities"
                    input
                    {:identities (:identities application)}))
+      (when-not (= (:pending-state expected) (:pending-state application))
+        (violation "jolt.sim.outbox-delivery-hegel-test/pending-state"
+                   input
+                   {:pending-state (:pending-state application)
+                    :expected (:pending-state expected)}))
+      (when-not (exact-map-keys? (:marking application) #{:row :changed?})
+        (violation "jolt.sim.outbox-delivery-hegel-test/marking-shape"
+                   input
+                   {:marking (:marking application)}))
+      (when-not (= (:marking expected) (:marking application))
+        (violation "jolt.sim.outbox-delivery-hegel-test/marking"
+                   input
+                   {:marking (:marking application)
+                    :expected (:marking expected)}))
       (when-not (= (:store-state expected) (:store-state application))
         (violation "jolt.sim.outbox-delivery-hegel-test/store-state"
                    input
@@ -483,9 +511,10 @@
                      input
                      {:missing (vec (sort (remove (set symbols)
                                                   required-foreign-symbols)))})))
-      ;; Exact SQLite plan consumption: all 15 delivery plans consumed; no
-      ;; live connections or statements leaked past the flow.
-      (when-not (= {:plan-index 15 :plan-count 15 :open-dbs 0 :active-stmts 0}
+      ;; Exact SQLite plan consumption: all 24 delivery plans consumed
+      ;; (command, post-COMMIT reload, mark-delivered! transaction, final
+      ;; reload); no live connections or statements leaked past the flow.
+      (when-not (= {:plan-index 24 :plan-count 24 :open-dbs 0 :active-stmts 0}
                    sqlite)
         (violation "jolt.sim.outbox-delivery-hegel-test/sqlite-plans"
                    input
@@ -1267,10 +1296,11 @@
 (defn- assert-retry-case-outcome!
   "Asserts the full two-attempt retry invariant set for one completed worker
    outcome: the unchanged committed command/store semantics, the caught
-   attempt-1 reset and unchanged post-failure state, the successful
-   attempt-2 correlated ack, receiver attempts exactly [1 2], one exact
+   attempt-1 reset and unchanged post-failure state (attempt 1 never marks),
+   the successful attempt-2 correlated ack gating one durable marking, the
+   final delivered store state, receiver attempts exactly [1 2], one exact
    scoped recv-reset firing beside unrenumbered poll fault IDs, exact
-   18-statement SQLite plan consumption, exact plan-order admission
+   27-statement SQLite plan consumption, exact plan-order admission
    releases, and complete cleanup. Throws on the first violation."
   [input outcome]
   (let [completed (require-completed-carrying-input! outcome input)
@@ -1291,12 +1321,14 @@
                    input
                    {:keys (when (map? evidence)
                             (vec (sort-by pr-str (keys evidence))))}))
-      ;; Application: the committed command evidence and store state are
-      ;; byte-identical to the non-retry lane; :retry carries the
-      ;; two-attempt witness.
+      ;; Application: the committed command evidence, the original
+      ;; post-COMMIT pending state, the exact mark step, and the final
+      ;; delivered store state are byte-identical to the non-retry lane;
+      ;; :retry carries the two-attempt witness.
       (when-not (exact-map-keys?
                  application
-                 #{:identities :command :store-state :retry})
+                 #{:identities :command :pending-state :store-state :marking
+                   :retry})
         (violation
          "jolt.sim.outbox-delivery-hegel-test/retry-application-shape"
          input
@@ -1316,6 +1348,20 @@
         (violation "jolt.sim.outbox-delivery-hegel-test/retry-identities"
                    input
                    {:identities (:identities application)}))
+      (when-not (= (:pending-state expected) (:pending-state application))
+        (violation "jolt.sim.outbox-delivery-hegel-test/retry-pending-state"
+                   input
+                   {:pending-state (:pending-state application)
+                    :expected (:pending-state expected)}))
+      (when-not (exact-map-keys? (:marking application) #{:row :changed?})
+        (violation "jolt.sim.outbox-delivery-hegel-test/retry-marking-shape"
+                   input
+                   {:marking (:marking application)}))
+      (when-not (= (:marking expected) (:marking application))
+        (violation "jolt.sim.outbox-delivery-hegel-test/retry-marking"
+                   input
+                   {:marking (:marking application)
+                    :expected (:marking expected)}))
       (when-not (= (:store-state expected) (:store-state application))
         (violation "jolt.sim.outbox-delivery-hegel-test/retry-store-state"
                    input
@@ -1503,10 +1549,12 @@
                      input
                      {:missing (vec (sort (remove (set symbols)
                                                   required-foreign-symbols)))})))
-      ;; Exact SQLite plan consumption: the 18-statement retry plan (schema,
+      ;; Exact SQLite plan consumption: the 27-statement retry plan (schema,
       ;; one committed command, two post-COMMIT load-states over the same
-      ;; still-open connection), fully consumed with no live handles.
-      (when-not (= {:plan-index 18 :plan-count 18 :open-dbs 0
+      ;; still-open connection, the mark-delivered! transaction after the
+      ;; validated attempt-2 ack, and the final reload scans), fully consumed
+      ;; with no live handles.
+      (when-not (= {:plan-index 27 :plan-count 27 :open-dbs 0
                     :active-stmts 0}
                    sqlite)
         (violation "jolt.sim.outbox-delivery-hegel-test/retry-sqlite-plans"

@@ -1413,7 +1413,31 @@
     (is (invalid? {:sql "update" :params params
                    :row-effect (assoc update :set [["id" 2]])}))
     (is (map? (sqlite/world [{:sql "update" :params params
-                              :row-effect update}])))))
+                              :row-effect update}])))
+
+    ;; :where is an optional closed vector of [column param-index] equality
+    ;; guard pairs, separate from :key-params/:key-columns, subject to the
+    ;; same malformed/unknown-param/duplicate rules as :set -- but, unlike
+    ;; :set, a :where column may equal a :set column under a different
+    ;; parameter.
+    (let [params3 (assoc params 3 {:type :text :value "guard"})]
+      (is (invalid? {:sql "update" :params params3
+                     :row-effect (assoc update :where [])}))
+      (is (invalid? {:sql "update" :params params3
+                     :row-effect (assoc update :where [["status"]])}))
+      (is (invalid? {:sql "update" :params params3
+                     :row-effect (assoc update :where [[1 3]])}))
+      (is (invalid? {:sql "update" :params params3
+                     :row-effect (assoc update :where [["status" 9]])}))
+      (is (invalid? {:sql "update" :params params3
+                     :row-effect (assoc update
+                                        :where [["status" 3] ["status" 3]])}))
+      (is (invalid? {:sql "update" :params params3
+                     :row-effect (assoc update
+                                        :where [["status" 3] ["other" 3]])}))
+      (is (map? (sqlite/world
+                 [{:sql "update" :params params3
+                   :row-effect (assoc update :where [["value" 3]])}]))))))
 
 (deftest row-insert-uses-actual-bindings-preserves-only-empty-blob-presentation
   (let [id {:type :integer :value 7 :plan-only :discard-me}
@@ -1553,6 +1577,247 @@
            (mapv #(select-keys % [:location :source-location :present?
                                   :applied? :changes])
                  (get-in (sqlite/state w) [:dbs db :row-evidence]))))
+    (close-db H db)
+    (is (true? (sqlite/clean? w)))))
+
+(deftest guarded-update-where-checks-prior-status-with-set-overlap-and-null-semantics
+  ;; Mirrors the production adapter's exact guarded delivery-marking SQL:
+  ;; physical identity is outbox_id alone (:key-params [3]); status is a
+  ;; :where equality guard, not a key column, and the guard column
+  ;; intentionally equals the :set column under a different parameter.
+  (let [insert {:op :insert-row :table :outbox/rows
+                :key-params [1]
+                :row [["outbox_id" 1] ["status" 2]]}
+        guarded-update {:op :update-row :table :outbox/rows
+                        :key-params [3] :key-columns ["outbox_id"]
+                        :set [["status" 1]]
+                        :where [["status" 2]]}
+        plans
+        [{:sql "insert-pending"
+          :params {1 {:type :integer :value 1}
+                   2 {:type :text :value "pending"}}
+          :row-effect insert}
+         {:sql "insert-null-status"
+          :params {1 {:type :integer :value 2}
+                   2 {:type :null}}
+          :row-effect insert}
+         {:sql "mark-delivered"
+          :params {1 {:type :text :value "delivered"}
+                   2 {:type :text :value "pending"}
+                   3 {:type :integer :value 1}}
+          :row-effect guarded-update}
+         {:sql "mark-delivered-replay"
+          :params {1 {:type :text :value "delivered"}
+                   2 {:type :text :value "pending"}
+                   3 {:type :integer :value 1}}
+          :row-effect guarded-update}
+         {:sql "mark-null-guard"
+          :params {1 {:type :text :value "delivered"}
+                   2 {:type :null}
+                   3 {:type :integer :value 1}}
+          :row-effect guarded-update}
+         {:sql "mark-stored-null"
+          :params {1 {:type :text :value "shipped"}
+                   2 {:type :text :value "pending"}
+                   3 {:type :integer :value 2}}
+          :row-effect guarded-update}
+         {:sql "mark-null-against-stored-null"
+          :params {1 {:type :text :value "shipped"}
+                   2 {:type :null}
+                   3 {:type :integer :value 2}}
+          :row-effect guarded-update}]
+        w (sqlite/world plans)
+        H (sqlite/handlers w)
+        db (open-db H)
+        key1 (modeled-row-key :outbox/rows [{:type :integer :value 1}])
+        key2 (modeled-row-key :outbox/rows [{:type :integer :value 2}])]
+    (is (= 101 (run-row-statement!
+                H db "insert-pending"
+                [[1 {:type :integer :value 1}]
+                 [2 {:type :text :value "pending"}]])))
+    (is (= 101 (run-row-statement!
+                H db "insert-null-status"
+                [[1 {:type :integer :value 2}]
+                 [2 {:type :null}]])))
+    ;; Guard hit: the :where param reads the required prior status while
+    ;; the overlapping :set column, bound to a different parameter, writes
+    ;; the new one.
+    (is (= 101 (run-row-statement!
+                H db "mark-delivered"
+                [[1 {:type :text :value "delivered"}]
+                 [2 {:type :text :value "pending"}]
+                 [3 {:type :integer :value 1}]])))
+    (is (= 1 (ff H "sqlite3_changes" [db])))
+    (is (= "delivered" (get-in (sqlite/state w)
+                                [:dbs db :committed key1 "status" :value])))
+    ;; Replay after the status already changed: the guard misses, so the
+    ;; delivered row is left exactly as it is and changes is 0.
+    (is (= 101 (run-row-statement!
+                H db "mark-delivered-replay"
+                [[1 {:type :text :value "delivered"}]
+                 [2 {:type :text :value "pending"}]
+                 [3 {:type :integer :value 1}]])))
+    (is (= 0 (ff H "sqlite3_changes" [db])))
+    (is (= "delivered" (get-in (sqlite/state w)
+                                [:dbs db :committed key1 "status" :value])))
+    ;; A null bound guard never matches, even against a row whose stored
+    ;; status is the ordinary non-null "delivered".
+    (is (= 101 (run-row-statement!
+                H db "mark-null-guard"
+                [[1 {:type :text :value "delivered"}]
+                 [2 {:type :null}]
+                 [3 {:type :integer :value 1}]])))
+    (is (= 0 (ff H "sqlite3_changes" [db])))
+    ;; A stored null cell likewise never matches a non-null bound guard.
+    (is (= 101 (run-row-statement!
+                H db "mark-stored-null"
+                [[1 {:type :text :value "shipped"}]
+                 [2 {:type :text :value "pending"}]
+                 [3 {:type :integer :value 2}]])))
+    (is (= 0 (ff H "sqlite3_changes" [db])))
+    ;; SQL NULL equality remains unknown/nonmatching even when both the
+    ;; bound predicate and the stored value are NULL.
+    (is (= 101 (run-row-statement!
+                H db "mark-null-against-stored-null"
+                [[1 {:type :text :value "shipped"}]
+                 [2 {:type :null}]
+                 [3 {:type :integer :value 2}]])))
+    (is (= 0 (ff H "sqlite3_changes" [db])))
+    (is (= {:type :null}
+           (get-in (sqlite/state w) [:dbs db :committed key2 "status"])))
+    (is (= [{:location :committed :source-location :committed
+             :present? true :applied? true :changes 1}
+            {:location nil :source-location :committed
+             :present? true :applied? false :changes 0}
+            {:location nil :source-location :committed
+             :present? true :applied? false :changes 0}
+            {:location nil :source-location :committed
+             :present? true :applied? false :changes 0}
+            {:location nil :source-location :committed
+             :present? true :applied? false :changes 0}]
+           (mapv #(select-keys % [:location :source-location :present?
+                                  :applied? :changes])
+                 (drop 2 (get-in (sqlite/state w) [:dbs db :row-evidence])))))
+    (close-db H db)
+    (is (true? (sqlite/clean? w)))))
+
+(deftest concurrent-guarded-updates-allow-exactly-one-status-transition
+  ;; Two independently prepared delivery markers race from the same captured
+  ;; pending row. Both SQLite steps report DONE, but the row decision and
+  ;; storage publication share one world CAS: exactly one statement may match
+  ;; pending and write delivered; the loser must recompute against delivered
+  ;; and record a guard miss rather than applying a second transition.
+  (let [insert {:op :insert-row :table :outbox/rows
+                :key-params [1]
+                :row [["outbox_id" 1] ["status" 2]]}
+        guarded-update {:op :update-row :table :outbox/rows
+                        :key-params [3] :key-columns ["outbox_id"]
+                        :set [["status" 1]]
+                        :where [["status" 2]]}
+        update-params {1 {:type :text :value "delivered"}
+                       2 {:type :text :value "pending"}
+                       3 {:type :integer :value 1}}
+        w (sqlite/world
+           [{:sql "insert"
+             :params {1 {:type :integer :value 1}
+                      2 {:type :text :value "pending"}}
+             :row-effect insert}
+            {:sql "mark-a" :params update-params
+             :row-effect guarded-update}
+            {:sql "mark-b" :params update-params
+             :row-effect guarded-update}])
+        H (sqlite/handlers w)
+        db (open-db H)
+        _ (is (= 101 (run-row-statement!
+                      H db "insert"
+                      [[1 {:type :integer :value 1}]
+                       [2 {:type :text :value "pending"}]])))
+        prepare-marker
+        (fn [sql]
+          (let [stmt (prepare H db sql)]
+            (bind-cell! H stmt 1 {:type :text :value "delivered"})
+            (bind-cell! H stmt 2 {:type :text :value "pending"})
+            (bind-cell! H stmt 3 {:type :integer :value 1})
+            stmt))
+        a-stmt (prepare-marker "mark-a")
+        b-stmt (prepare-marker "mark-b")
+        decision-var (resolve 'jolt.sim.sqlite/row-mutation-decision)
+        original @decision-var
+        arrivals (atom 0)
+        both-inside (promise)
+        wrapped
+        (fn [db-state statement reported]
+          (let [arrival (swap! arrivals inc)]
+            ;; Hold only the two initial decisions. After one world CAS wins,
+            ;; the loser retries normally and must see the delivered status.
+            (when (<= arrival 2)
+              (when (= arrival 2) (deliver both-inside true))
+              (when (= ::timeout (deref both-inside 5000 ::timeout))
+                (throw (ex-info "guarded update contention timed out"
+                                {:arrival arrival}))))
+            (original db-state statement reported)))
+        step (fn [stmt]
+               (try {:value (ff H "sqlite3_step" [stmt])}
+                    (catch :default e {:error (ex-data e)})))
+        results
+        (with-redefs-fn
+          {decision-var wrapped}
+          #(let [a (future (step a-stmt))
+                 b (future (step b-stmt))]
+             [(await-worker a) (await-worker b)]))
+        key (modeled-row-key :outbox/rows [{:type :integer :value 1}])
+        update-evidence
+        (filterv #(= :update-row (:op %))
+                 (get-in (sqlite/state w) [:dbs db :row-evidence]))]
+    (is (= 3 @arrivals))
+    (is (= [{:value 101} {:value 101}] results) (pr-str results))
+    (is (= "delivered"
+           (get-in (sqlite/state w) [:dbs db :committed key "status" :value])))
+    (is (= #{[true 1 :committed] [false 0 nil]}
+           (set (map (juxt :applied? :changes :location) update-evidence))))
+    (is (= #{:committed} (set (map :source-location update-evidence))))
+    (is (= 0 (ff H "sqlite3_finalize" [a-stmt])))
+    (is (= 0 (ff H "sqlite3_finalize" [b-stmt])))
+    (close-db H db)
+    (is (true? (sqlite/clean? w)))))
+
+(deftest guarded-update-missing-where-column-fails-closed-without-mutation
+  ;; A :where column absent from the visible row is schema corruption, not an
+  ;; ordinary guard-value mismatch, so it fails closed before any write or
+  ;; evidence append -- exactly like a :key-columns identity mismatch.
+  (let [insert {:op :insert-row :table :outbox/rows
+                :key-params [1]
+                :row [["outbox_id" 1] ["status" 2]]}
+        guarded-update {:op :update-row :table :outbox/rows
+                         :key-params [1] :key-columns ["outbox_id"]
+                         :set [["status" 2]]
+                         :where [["carrier" 3]]}
+        plans [{:sql "insert"
+                :params {1 {:type :integer :value 1}
+                         2 {:type :text :value "pending"}}
+                :row-effect insert}
+               {:sql "mark-delivered"
+                :params {1 {:type :integer :value 1}
+                         2 {:type :text :value "delivered"}
+                         3 {:type :text :value "ups"}}
+                :row-effect guarded-update}]
+        w (sqlite/world plans)
+        H (sqlite/handlers w)
+        db (open-db H)]
+    (is (= 101 (run-row-statement!
+                H db "insert"
+                [[1 {:type :integer :value 1}]
+                 [2 {:type :text :value "pending"}]])))
+    (let [before (get-in (sqlite/state w) [:dbs db])
+          stmt (prepare H db "mark-delivered")]
+      (bind-cell! H stmt 1 {:type :integer :value 1})
+      (bind-cell! H stmt 2 {:type :text :value "delivered"})
+      (bind-cell! H stmt 3 {:type :text :value "ups"})
+      (is (= :jolt.sim.sqlite/row-key-schema-mismatch
+             (:type (ex-data-of #(ff H "sqlite3_step" [stmt])))))
+      (is (= before (get-in (sqlite/state w) [:dbs db])))
+      (is (= 1 (count (:row-evidence before))))
+      (is (= 0 (ff H "sqlite3_finalize" [stmt]))))
     (close-db H db)
     (is (true? (sqlite/clean? w)))))
 

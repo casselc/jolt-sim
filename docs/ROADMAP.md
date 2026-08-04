@@ -78,6 +78,7 @@ networking, TCP, HTTP, clocks, process isolation, Hegel, replay, and monitoring.
 | Whole HTTP -> SQLite -> TCP outbox application | Real/hermetic base and generated workload/capacity/poll-fault slice are hosted and green | Base draft PR `casselc/jolt-sim#28`; Hegel draft PR `#29`; hosted run `30861666592`; Hegel `2 tests / 5 assertions` over 2 boundaries plus 15 generated cases; aggregate `513 / 4,042`; Phase 3 below |
 | Scoped reset and ordinary retry | The unchanged DB/TCP application now closes the failed connection, reloads the pending row, and retries after one receiver-port-scoped read reset | `2d41266`; draft PR `casselc/jolt-sim#33`; exact retry boundaries plus 15 generated fresh-process cases; Phase 3 below |
 | Whole-case evidence and static reports | Versioned Case/Outcome, parent-owned monitor verdicts, stable failure/success bundles, and deterministic HTML are integrated and retained by bounded CI post-processing | Schema `f44be7a` / PR `#35`; harness `e0aa464` / PR `#36`; reporter `69e9abb` / PR `#37`; aggregate retention `8c7b270` / PR `#38`; exact aggregate outbox gate `9 tests / 48 assertions`; real retained report `41,200 bytes` |
+| Ack-gated durable delivery marking | Integrated on the current stack: ordinary and retry application paths validate the exact ack before one guarded `pending` → `delivered` transaction and final reload | Adapter API `f6f7538` / PR `#39`; guarded model plus hostile-ack, close-error, and concurrent-marker controls in the current slice; unit `557 / 4,677`; SQLite parity `1 / 47`; sim-only `3 / 51`; real/hermetic `3 / 52`; fresh-process Hegel `9 / 48` |
 
 Phase 1 was last run on Linux x86-64 using the prior simulator image
 `jolt v0.5.17-13-g3af5622d`
@@ -231,11 +232,26 @@ affected-row count of one, and rolls back after either a post-mutation failure
 or a count mismatch. With the exact v0.5.20 simulation image, the pure gate
 reported 16 tests / 181 assertions, the real-SQLite gate 22 / 187, the aggregate
 suite 554 / 4,579, SQLite parity 1 / 47, and the unchanged delivery witness
-1 / 27, all green. The whole-application fixture does not call the marking API
-yet: the next slice must validate the exact correlated acknowledgement first,
-then mark and reload the row. Until that integration lands, delivery remains
-at least once and a crash between remote acknowledgement and durable marking
-may redeliver.
+1 / 27, all green. At that API checkpoint the whole-application fixture did not
+yet call the marking operation.
+
+The current integration slice closes that application boundary without a
+simulator-specific application path. Both the ordinary and scoped-reset retry
+flows keep their ordinary HTTP, JDBC/SQLite, TCP, bytes, and bencode bodies;
+they validate the exact correlated acknowledgement before calling
+`mark-delivered!`, then require the returned delivered state to equal a final
+reload. The SQLite model separates physical row identity from an optional
+typed equality `:where` guard, with SQL NULL nonmatching semantics, and applies
+the guard decision plus mutation in the same world CAS. Exact negative controls
+prove that a hostile acknowledgement never claims the mark transaction, two
+racing markers produce one applied transition plus one guard miss, and a
+reported SQLite close failure cannot replace the primary acknowledgement
+failure. The statement scripts now consume 24 plans for ordinary delivery and
+27 for retry. On the exact v0.5.20 image, the final serial gates reported unit
+`557 / 4,677`, SQLite parity `1 / 47`, sim-only delivery `3 / 51`, real/hermetic
+delivery `3 / 52`, and fresh-process Hegel `9 / 48`, all green. Delivery remains
+at least once: close/reopen persistence is unproved, and a crash after remote
+acknowledgement but before durable marking may redeliver.
 
 The simulation layer may provide boundary handlers and models. It must not
 replace the HTTP, DB, TCP, codec, or application implementation with a second
@@ -249,12 +265,13 @@ embedded-zero values, durable restart/retry, and one injected native failure.
 
 Status: workload/capacity/poll-fault search is implemented in draft PR
 `casselc/jolt-sim#29`; semantic FFI admission-order search is stacked in PRs
-`#30` and `#31`; scoped-reset retry is exercised in PR `#33`; and the canonical
-Case/Outcome/reporter spine is stacked in PRs `#35` through `#38`. The current
-lanes do not yet vary cancellation, crash actions, deadlines, broader future
-admission, or one- and two-byte HTTP fragmentation. Those are the next bounded
-slices around the same ordinary application, not alternate simulator
-implementations.
+`#30` and `#31`; scoped-reset retry is exercised in PR `#33`; the canonical
+Case/Outcome/reporter spine is stacked in PRs `#35` through `#38`; and the
+current slice carries ack-gated durable marking through both generated
+campaigns. The current lanes do not yet vary cancellation, crash actions,
+deadlines, broader future admission, or one- and two-byte HTTP fragmentation.
+Those are the next bounded slices around the same ordinary application, not
+alternate simulator implementations.
 
 As the complete app gains those modes:
 

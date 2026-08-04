@@ -118,7 +118,7 @@ only the application surfaces and modes exercised by a durable gate.
 | HTTP Hello World | `jolt-http`, `jolt-tcp`, `jolt.net`, `jolt.ffi` | Not in the durable gate | Modeled POSIX loopback | One request; public CI, no faults |
 | HTTP SQLite BLOB | `jolt-http`, `jolt-tcp`, `jolt.net`, `jdbc.core`, `db.sqlite`, `jolt.ffi`, byte arrays | Host sockets plus system SQLite | Shared FFI-memory, POSIX, and SQLite worlds | One request at one-byte capacities plus one captured first-poll `EINTR`; local gate, no generated schedule/fault search |
 | Length-framed TCP bencode echo | `teensyp.server`, `teensyp.client`, `teensyp.buffer`, `jolt.bytes`, `jolt.bencode`, `jolt.net`, `jolt.ffi` | Host loopback parity witness | Modeled POSIX loopback and native memory | Pipelined requests, finite stream/self-pipe capacities, captured `EINTR`, and Hegel-generated UTF-8; no half-close or concurrent clients |
-| HTTP SQLite outbox delivery | `jolt-http`, `jdbc.core`, `db.sqlite`, `teensyp.server/client`, `jolt.bytes`, `jolt.bencode`, `jolt.net`, `jolt.ffi` | Host HTTP/TCP sockets plus system SQLite | Shared FFI-memory, POSIX, and exact-plan SQLite worlds | HTTP returns after COMMIT; a later delivery phase reloads and sends one octet-vector message; Hegel varies payload bytes, bounded capacities, and captured poll interruption; no schedule/admission, retry, close/reopen, or crash-durability claim |
+| HTTP SQLite outbox delivery | `jolt-http`, `jdbc.core`, `db.sqlite`, `teensyp.server/client`, `jolt.bytes`, `jolt.bencode`, `jolt.net`, `jolt.ffi` | Host HTTP/TCP sockets plus system SQLite | Shared FFI-memory, POSIX, and exact-plan SQLite worlds | HTTP returns after COMMIT; ordinary and scoped-reset retry paths validate the correlated ack before a guarded `pending` → `delivered` transaction and final reload; Hegel varies payload bytes, capacities, poll interruption, and ordinary-lane semantic admission; no general scheduler, cancellation, close/reopen, crash-durability, or exactly-once claim |
 | Maelstrom Echo | `jolt.maelstrom` node/handler code | JSON-lines lane reviewed but not integrated | Deterministic memory transport | FIFO/history integrity only; no nemesis or liveness claim |
 
 These capabilities belong to two deliberately different execution tracks:
@@ -952,14 +952,19 @@ Every executed case still checks exact application results, the fixture's
 result-producing SQLite statement script, routes, fault firings, capacities,
 and cleanup. That exact statement script supplies query results to unchanged
 application code; it is not a claim of general SQLite protocol conformance.
-The retry lane additionally injects one receiver-port-scoped read reset,
-requires the first connection to cleanly close before retry, proves the row
-unchanged through the still-open SQLite connection, and observes attempts 1
-and 2 with a correlated second acknowledgement. Completed child artifacts
-survive until the parent verdict, while passing cases clean them up. The
-current whole-application simulation slices do not prove close/reopen
-persistence, crash durability, delivery marking, exactly-once behavior,
-real-kernel reset parity, or extreme one- and two-byte HTTP fragmentation.
+Both ordinary and retry lanes validate the exact correlated acknowledgement
+before calling the ordinary durable `mark-delivered!` adapter, then require its
+guarded `pending` → `delivered` update to affect exactly one row and equal a
+final reload through the same still-open SQLite connection. A hostile-ack
+control stops before the mark transaction, and a concurrent model control
+allows exactly one of two racing guarded markers to apply. The retry lane
+additionally injects one receiver-port-scoped read reset, requires the first
+TCP connection to cleanly close, proves the row still pending before retry,
+and observes attempts 1 and 2 before attempt 2 authorizes marking. Completed
+child artifacts survive until the parent verdict, while passing cases clean
+them up. The current whole-application simulation slices do not prove
+close/reopen persistence, crash durability, exactly-once behavior, real-kernel
+reset parity, or extreme one- and two-byte HTTP fragmentation.
 
 ### Composing handler packs
 

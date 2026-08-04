@@ -44,6 +44,13 @@
        " (outbox_id, request_id, entity_id, version, payload, status)"
        " values (?, ?, ?, ?, ?, ?)"))
 
+;; The production adapter's exact guarded delivery-marking SQL from
+;; jolt.example.outbox.sqlite/mark-delivered!: the status guard in the WHERE
+;; clause makes the transition pending -> delivered exactly once per row.
+(def ^:private outbox-mark-delivered-sql
+  (str "update " outbox-table
+       " set status = ? where outbox_id = ? and status = ?"))
+
 ;; The historical req-1 command payload pinned by the zero-argument plan
 ;; arities below; it must stay byte-identical to
 ;; jolt.sim.fixtures.outbox-delivery/default-command's :payload.
@@ -81,17 +88,20 @@
                 :row row}})
 
 (defn- update-plan
-  [sql params table key-params key-columns set-pairs changes]
-  {:sql sql
-   :params params
-   :columns []
-   :changes changes
-   :last-row-id 0
-   :row-effect {:op :update-row
-                :table table
-                :key-params key-params
-                :key-columns key-columns
-                :set set-pairs}})
+  ([sql params table key-params key-columns set-pairs changes]
+   (update-plan sql params table key-params key-columns set-pairs changes nil))
+  ([sql params table key-params key-columns set-pairs changes where-pairs]
+   (cond-> {:sql sql
+            :params params
+            :columns []
+            :changes changes
+            :last-row-id 0
+            :row-effect {:op :update-row
+                         :table table
+                         :key-params key-params
+                         :key-columns key-columns
+                         :set set-pairs}}
+     (some? where-pairs) (assoc-in [:row-effect :where] where-pairs))))
 
 (defn parity-statement-plans
   "Returns the exact 28-statement FIFO plan used by the existing adapter parity
@@ -244,38 +254,74 @@
               ["outbox_id" "request_id" "entity_id" "version" "payload" "status"]
               ["outbox_id"])]))
 
+(defn- mark-delivered-statement-plans
+  "Returns the exact 6-statement mark-delivered! transaction transcript that
+   runs after a validated acknowledgement: BEGIN, the three canonical
+   load-state scans (byte-identical to the parity final load-state, taken from
+   `plans`), the production adapter's guarded UPDATE, and COMMIT.
+
+   The guarded UPDATE binds exactly [\"delivered\" 1 \"pending\"]: parameter 1
+   is the new status, parameter 2 the outbox id, parameter 3 the required
+   prior status. Physical row identity is outbox_id alone (:key-params [2],
+   :key-columns [\"outbox_id\"]); status is not part of the row's physical
+   key. The prior-status equality guard is a separate :where [[\"status\" 3]]
+   predicate, evaluated after the row is found by outbox_id, that
+   intentionally names the same column :set replaces. A guard hit sets status
+   to delivered and reports exactly one change; a guard miss (status already
+   changed) leaves the row untouched and reports changes 0."
+  [plans]
+  (vec (concat [(tx-plan "BEGIN" :begin)]
+               (subvec plans 25 28)
+               [(update-plan outbox-mark-delivered-sql
+                             {1 {:type :text :value "delivered"}
+                              2 {:type :integer :value 1}
+                              3 {:type :text :value "pending"}}
+                             :outbox/rows [2]
+                             ["outbox_id"]
+                             [["status" 1]]
+                             1
+                             [["status" 3]])
+                (tx-plan "COMMIT" :commit)])))
+
 (defn delivery-statement-plans
-  "Returns the exact 15-statement whole-app plan: schema setup, the first fresh
-   req-1/entity-a command and successful COMMIT, then one explicit post-COMMIT
-   load-state used by the delivery worker. This is deliberately a projection of
-   parity-statement-plans so the command's SQL, binds, and row effects cannot
-   diverge between the two gates.
+  "Returns the exact 24-statement whole-app plan: schema setup, the first fresh
+   req-1/entity-a command and successful COMMIT, one explicit post-COMMIT
+   load-state used by the delivery worker, the 6-statement mark-delivered!
+   transaction appended after the validated acknowledgement, and the three
+   explicit final reload scans. This is deliberately a projection of
+   parity-statement-plans plus the mark transcript so the command's SQL,
+   binds, and row effects cannot diverge between the two gates.
 
    The zero-argument arity is byte-for-byte the plan the existing delivery
-   gates have always consumed. The one-argument arity carries the scenario
-   command's payload (a vector of unsigned octets) into the first command's
-   three BLOB binds; everything else is unchanged."
+   gates consume. The one-argument arity carries the scenario command's
+   payload (a vector of unsigned octets) into the first command's three BLOB
+   binds; everything else is unchanged."
   ([]
    (delivery-statement-plans default-command-payload))
   ([command-payload]
    (let [plans (parity-statement-plans command-payload)]
      (vec (concat (subvec plans 0 12)
+                  (subvec plans 25 28)
+                  (mark-delivered-statement-plans plans)
                   (subvec plans 25 28))))))
 
 (defn retry-statement-plans
-  "Returns the exact 18-statement two-attempt retry plan: schema setup, the
+  "Returns the exact 27-statement two-attempt retry plan: schema setup, the
    first fresh req-1/entity-a command and successful COMMIT, then TWO explicit
    post-COMMIT load-states over the same still-open connection -- the
    pre-delivery reload and the post-failure reload that proves the committed
    outbox/application state unchanged before the second delivery attempt. No
    statement runs during either TCP attempt, so the two load-states are
-   adjacent in the plan.
+   adjacent in the plan. Attempt 1 never marks: after the validated attempt-2
+   acknowledgement the 6-statement mark-delivered! transaction runs, followed
+   by the three explicit final reload scans.
 
    The count is derived from the implementation, not provisioned: the retry
    flow is delivery-statement-plans plus exactly one more load-state, and one
    load-state is the three final scan plans of parity-statement-plans. Like
-   delivery-statement-plans this is a projection of parity-statement-plans, so
-   the command's SQL, binds, and row effects cannot diverge between gates.
+   delivery-statement-plans this is a projection of parity-statement-plans
+   plus the mark transcript, so the command's SQL, binds, and row effects
+   cannot diverge between gates.
    It is an exact result-producing fixture for this unchanged application
    path, not a claim that every legal SQLite implementation must expose this
    transcript. General statement/transaction legality and handle ownership
@@ -290,4 +336,6 @@
    (let [plans (parity-statement-plans command-payload)]
      (vec (concat (subvec plans 0 12)
                   (subvec plans 25 28)
+                  (subvec plans 25 28)
+                  (mark-delivered-statement-plans plans)
                   (subvec plans 25 28))))))

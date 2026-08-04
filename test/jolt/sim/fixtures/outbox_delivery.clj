@@ -9,12 +9,18 @@
    One HTTP POST carries a bencoded canonical command whose payload is an octet
    vector. The request handler applies the existing SQLite outbox transition and
    returns after COMMIT. Once the HTTP server is quiescent, the outer application
-   reloads the pending row, closes SQLite, and gives the materialized message to
-   an ordinary framed TCP/bencode delivery function. The receiver returns an
-   outbox-id/attempt ack. This first witness deliberately does not mark the row
-   delivered: the reloaded store state remains :pending after the acknowledged
-   attempt. It proves post-COMMIT visibility, not close/reopen or crash
-   durability.
+   reloads the pending row through the same still-open in-memory connection,
+   gives the materialized message to an ordinary framed TCP/bencode delivery
+   function, and validates the receiver's exact correlated outbox-id/attempt
+   ack. Only after that validation succeeds does it call
+   jolt.example.outbox.sqlite/mark-delivered! for the one outbox id, still on
+   the open connection, and reload once more: the returned mark state must equal
+   the final reload, the target row must be :delivered, and zero :pending rows
+   may remain. The connection therefore stays open through delivery,
+   acknowledgement validation, durable marking, and final reload. This proves
+   post-COMMIT visibility and ack-gated durable marking, not close/reopen or
+   crash durability: a crash after the remote acknowledgement but before durable
+   marking can still redeliver, so exactly-once is not claimed.
 
    exercise-outbox-delivery-retry is the two-attempt at-least-once companion
    witness. The HTTP phase is identical, but the SQLite connection stays open
@@ -24,7 +30,9 @@
    connection to prove the committed state unchanged, and redelivers the same
    row with an incremented attempt over a fresh ordinary connection. The
    receiver therefore records exactly attempts [1 2] -- duplicate delivery is
-   the witnessed semantics, not an exactly-once claim."
+   the witnessed semantics, not an exactly-once claim. Attempt 1 never marks:
+   only the validated attempt-2 acknowledgement authorizes mark-delivered!,
+   followed by the same final reload checks as the one-attempt flow."
   (:require [jdbc.core :as jdbc]
             [jolt.bencode :as bencode]
             [jolt.bytes :as bytes]
@@ -118,6 +126,28 @@
            (cleanup-summaries cleanup-errors)}
           first-error))))))
 
+(defn- with-sqlite-connection
+  "Opens one ordinary JDBC connection, runs `thunk`, and closes the connection
+   without allowing a close failure to replace the application's primary
+   error. Connection acquisition remains outside the captured body: if open
+   itself fails, no owner exists and no close is attempted. Once acquired, the
+   connection is closed exactly once through its documented map `:close`
+   function. A body failure remains primary while close diagnostics are
+   attached by throw-with-cleanup!; a close-only failure still fails the case."
+  [spec thunk]
+  (let [conn (jdbc/connection spec)
+        body (try
+               {:value (thunk conn)}
+               (catch :default error
+                 {:error error}))
+        cleanup-errors
+        (vec
+         (keep identity
+               [(cleanup-attempt :sqlite-connection-close
+                                 #((:close conn)))]))]
+    (throw-with-cleanup! (:error body) cleanup-errors)
+    (:value body)))
+
 (defn- concat-byte-arrays ^bytes [chunks]
   (let [total (reduce + 0 (map alength chunks))
         out (byte-array total)]
@@ -207,14 +237,14 @@
    "outbox-id" (get message "outbox-id")
    "attempt" (get message "attempt")})
 
-(defn- receiver-reply [received]
+(defn- receiver-reply [received reply-for]
   (fn [message]
     (when-not (and (map? message)
                    (= delivery-wire-keys (set (keys message)))
                    (= "outbox_delivery" (get message "type")))
       (fail! :invalid-delivery-wire {:value message}))
     (swap! received conj message)
-    (expected-ack message)))
+    (reply-for message)))
 
 (defn- exchange-deliveries! [host port messages]
   (let [connection* (atom nil)
@@ -257,13 +287,55 @@
      {:state state
       :messages messages})))
 
-(defn- deliver-messages! [host port messages]
-  (let [exchange (exchange-deliveries! host port messages)
-        expected (mapv expected-ack messages)]
-    (when-not (= expected (:replies exchange))
+(defn- validate-acks! [messages replies]
+  (let [expected (mapv expected-ack messages)]
+    (when-not (= expected replies)
       (fail! :ack-mismatch
-             {:expected expected :actual (:replies exchange)}))
+             {:expected expected :actual replies}))
+    replies))
+
+(defn- deliver-messages! [host port messages]
+  (let [exchange (exchange-deliveries! host port messages)]
+    (validate-acks! messages (:replies exchange))
     exchange))
+
+(defn- mark-delivered-and-reload!
+  "Durably marks the one acknowledged outbox row delivered through the
+   ordinary adapter, then reloads through the same still-open connection.
+   Fails closed unless the returned mark state equals the reload, the target
+   row is :delivered, and zero :pending rows remain; the witnessed transition
+   must also report :changed? true because the row was reloaded :pending
+   before the ack. Returns {:marking {:row delivered-row :changed? true}
+   :state final-state}, where :marking is exactly the mark step without its
+   duplicate :state. This records the ack-gated durable marking only; a crash
+   between the remote acknowledgement and this commit can still redeliver."
+  [conn outbox-id]
+  (let [mark-step (store/mark-delivered! conn outbox-id)
+        final-state (store/load-state conn)
+        delivered-row (:row mark-step)
+        _ (when-not (true? (:changed? mark-step))
+            (fail! :mark-unchanged
+                   {:outbox-id outbox-id :row delivered-row}))
+        _ (when-not (= (:state mark-step) final-state)
+            (fail! :mark-state-mismatch
+                   {:mark-state (:state mark-step)
+                    :loaded-state final-state}))
+        target-rows (filterv #(= outbox-id (:outbox-id %))
+                             (:outbox final-state))
+        _ (when-not (and (= 1 (count target-rows))
+                         (= delivered-row (first target-rows))
+                         (= :delivered (:status (first target-rows))))
+            (fail! :marked-row-not-delivered
+                   {:outbox-id outbox-id
+                    :row delivered-row
+                    :loaded-rows target-rows}))
+        pending-rows (filterv #(= :pending (:status %))
+                              (:outbox final-state))
+        _ (when-not (zero? (count pending-rows))
+            (fail! :pending-rows-remain
+                   {:count (count pending-rows)}))]
+    {:marking (dissoc mark-step :state)
+     :state final-state}))
 
 (defn- attempt-delivery!
   "One ordinary delivery attempt over one fresh ordinary TCP connection:
@@ -341,72 +413,97 @@
 
 (defn exercise-outbox-delivery
   "Runs one ordinary HTTP -> committed SQLite outbox -> framed TCP/bencode
-  delivery/ack flow. Returns canonical immutable evidence with no native
-  handles, pointers, byte arrays, mutable values, controller objects, or
-  ephemeral ports. The optional command arity lets generated hermetic plans
-  exercise payload variants; the real/sim parity witness still uses
-  default-command.
+  delivery/ack -> ack-gated durable delivery-marking flow. The same in-memory
+  SQLite connection stays open through the post-COMMIT reload, downstream TCP
+  delivery, acknowledgement validation, mark-delivered!, and the final reload;
+  this is still not a close/reopen or crash-durability witness. Returns
+  canonical immutable evidence with no native handles, pointers, byte arrays,
+  mutable values, controller objects, or ephemeral ports. The optional command
+  arity lets generated hermetic plans exercise payload variants; the real/sim
+  parity witness still uses default-command. The two-argument arity is a
+  bounded negative-control seam: reply-for receives the validated delivery
+  message and returns the receiver reply. Ordinary callers use the exact
+  correlated acknowledgement; tests may return a hostile reply to prove that
+  validation failure cannot authorize marking.
   The bencode payload is an octet vector; SQLite stores the same semantics as a
   BLOB, but this witness does not claim bencode binary-string wire parity."
   ([]
    (exercise-outbox-delivery default-command))
   ([command]
+   (exercise-outbox-delivery command expected-ack))
+  ([command reply-for]
+   (when-not (fn? reply-for)
+     (fail! :invalid-reply-function {:value reply-for}))
    (let [receiver-errors (atom [])
          received (atom [])
          receiver
          (tcp/run-server
           :port 0
           :reuse-address? true
-          :handler (framed/framed-handler (receiver-reply received))
+          :handler (framed/framed-handler
+                    (receiver-reply received reply-for))
           :error-logger
           #(swap! receiver-errors conj (stable-error-summary %)))
          command-evidence* (atom nil)
          body
          (try
            {:value
-            (let [{:keys [http-cycle command-evidence store-state messages]}
-                  (with-open [conn (jdbc/connection "sqlite::memory:")]
-                    (store/init-schema! conn)
-                    (let [http-cycle
-                          (http-fixture/run-request-cycle
-                           (command-handler conn command-evidence*)
-                           (fn [host port]
-                             (post-request-bytes command host port)))
-                          command-evidence @command-evidence*
-                          _ (when-not command-evidence
-                              (fail! :missing-application-evidence {}))
-                          pending (load-pending-delivery conn)
-                          store-state (:state pending)
-                          _ (when-not (= (:committed-state command-evidence)
-                                         store-state)
-                              (fail! :committed-state-mismatch
-                                     {:step-state
-                                      (:committed-state command-evidence)
-                                      :loaded-state store-state}))]
-                      {:http-cycle http-cycle
-                       :command-evidence command-evidence
-                       :store-state store-state
-                       :messages (:messages pending)}))
-                  ;; The HTTP request has succeeded, its server is quiescent,
-                  ;; and SQLite is closed before downstream delivery begins.
-                  delivery (deliver-messages! "127.0.0.1" (:port receiver)
-                                               messages)
-                  app (-> command-evidence
-                          (dissoc :committed-state)
-                          (assoc :store-state store-state
-                                 :delivery delivery))
-                  parsed (:parsed http-cycle)
-                  response
-                  (decode-bencode-exact :http-response (:body parsed))]
-              {:application app
-               :http {:status (:status parsed)
-                      :content-type
-                      (get (:headers parsed) "content-type")
-                      :content-length
-                      (get (:headers parsed) "content-length")
-                      :response response
-                      :server-errors (:server-errors http-cycle)
-                      :close-results (:close-results http-cycle)}})}
+            ;; The SQLite connection deliberately stays OPEN across delivery
+            ;; and durable marking: the post-COMMIT reload, the exact
+            ;; correlated ack validation, mark-delivered!, and the final
+            ;; reload all flow through the same ordinary connection. No
+            ;; close/reopen or crash-durability claim.
+            (with-sqlite-connection
+             "sqlite::memory:"
+             (fn [conn]
+               (store/init-schema! conn)
+               (let [http-cycle
+                    (http-fixture/run-request-cycle
+                     (command-handler conn command-evidence*)
+                     (fn [host port]
+                       (post-request-bytes command host port)))
+                    command-evidence @command-evidence*
+                    _ (when-not command-evidence
+                        (fail! :missing-application-evidence {}))
+                    ;; The explicit post-COMMIT/pre-delivery reload. The
+                    ;; emitted command row remains :pending evidence on this
+                    ;; side of the delivery boundary.
+                    pending (load-pending-delivery conn)
+                    pending-state (:state pending)
+                    _ (when-not (= (:committed-state command-evidence)
+                                   pending-state)
+                        (fail! :committed-state-mismatch
+                               {:step-state
+                                (:committed-state command-evidence)
+                                :loaded-state pending-state}))
+                    ;; The HTTP request has succeeded and its server is
+                    ;; quiescent; downstream delivery now begins while the
+                    ;; connection stays open. deliver-messages! performs the
+                    ;; existing exact correlated acknowledgement validation.
+                    delivery (deliver-messages! "127.0.0.1" (:port receiver)
+                                                (:messages pending))
+                    ;; Only after the ack validates: durable marking for the
+                    ;; one outbox id, then the final reload checks.
+                    outbox-id (:outbox-id (first (:outbox pending-state)))
+                    marked (mark-delivered-and-reload! conn outbox-id)
+                    app (-> command-evidence
+                            (dissoc :committed-state)
+                            (assoc :pending-state pending-state
+                                   :store-state (:state marked)
+                                   :marking (:marking marked)
+                                   :delivery delivery))
+                    parsed (:parsed http-cycle)
+                    response
+                    (decode-bencode-exact :http-response (:body parsed))]
+                {:application app
+                 :http {:status (:status parsed)
+                        :content-type
+                        (get (:headers parsed) "content-type")
+                        :content-length
+                        (get (:headers parsed) "content-length")
+                        :response response
+                        :server-errors (:server-errors http-cycle)
+                        :close-results (:close-results http-cycle)}})))}
            (catch :default error
              {:error error}))
          cleanup-errors
@@ -438,9 +535,12 @@
    is a typed :retry-attempt-1-anomaly, an infrastructure anomaly rather
    than a retry counterexample: the second attempt runs only when the
    caught failure is the reset this witness exists for. Attempt 2 likewise
-   fails typed and bounded when it does not deliver the correlated ack. No
-   row is ever marked delivered: the reloaded store state remains :pending
-   throughout.
+   fails typed and bounded when it does not deliver the correlated ack.
+   Attempt 1 never marks; only the validated attempt-2 acknowledgement calls
+   mark-delivered! on the same still-open connection, after which the final
+   reload must equal the returned mark state with the row :delivered and zero
+   :pending rows. This is still not an exactly-once claim: a crash after the
+   remote acknowledgement but before durable marking can still redeliver.
 
    The receiver's :server-errors reflect the world the flow runs against:
    under the simulation lane's bounded receive FIFOs (every supported
@@ -469,7 +569,8 @@
          (tcp/run-server
           :port 0
           :reuse-address? true
-          :handler (framed/framed-handler (receiver-reply received))
+          :handler (framed/framed-handler
+                    (receiver-reply received expected-ack))
           :error-logger
           #(swap! receiver-errors conj (stable-error-summary %)))
          command-evidence* (atom nil)
@@ -480,9 +581,11 @@
             ;; delivery attempts: the post-failure reload flows through the
             ;; same ordinary connection, proving the committed state without
             ;; any close/reopen or crash-durability claim.
-            (with-open [conn (jdbc/connection "sqlite::memory:")]
-              (store/init-schema! conn)
-              (let [http-cycle
+            (with-sqlite-connection
+             "sqlite::memory:"
+             (fn [conn]
+               (store/init-schema! conn)
+               (let [http-cycle
                     (try
                       (http-fixture/run-request-cycle
                        (command-handler conn command-evidence*)
@@ -493,14 +596,17 @@
                     command-evidence @command-evidence*
                     _ (when-not command-evidence
                         (fail! :missing-application-evidence {}))
+                    ;; The explicit post-COMMIT/pre-delivery reload. The
+                    ;; emitted command row remains :pending evidence on this
+                    ;; side of the delivery boundary.
                     pending (load-pending-delivery conn)
-                    store-state (:state pending)
+                    pending-state (:state pending)
                     _ (when-not (= (:committed-state command-evidence)
-                                   store-state)
+                                   pending-state)
                         (fail! :committed-state-mismatch
                                {:step-state
                                 (:committed-state command-evidence)
-                                :loaded-state store-state}))
+                                :loaded-state pending-state}))
                     ;; Delivery attempt 1: ordinary connect/exchange/close.
                     ;; Ordinary application code catches the transport
                     ;; failure and cleans the first connection.
@@ -529,11 +635,13 @@
                         (fail! :retry-attempt-1-anomaly
                                {:attempt-1 attempt-1}))
                     ;; The post-failure reload through the same still-open
-                    ;; connection must observe the exact committed state.
+                    ;; connection must observe the exact committed state:
+                    ;; attempt 1 failed before any marking, so the row is
+                    ;; still :pending here.
                     reloaded (load-pending-delivery conn 2)
-                    _ (when-not (= store-state (:state reloaded))
+                    _ (when-not (= pending-state (:state reloaded))
                         (fail! :post-failure-state-changed
-                               {:committed-state store-state
+                               {:committed-state pending-state
                                 :loaded-state (:state reloaded)}))
                     ;; Delivery attempt 2: a fresh ordinary connection, the
                     ;; same reloaded row, an incremented attempt, and the
@@ -546,15 +654,18 @@
                         (fail! :retry-attempt-2-failed
                                {:attempt-2 (dissoc attempt-2 :status)}))
                     delivery (:exchange attempt-2)
-                    _ (when-not (= (mapv expected-ack (:messages reloaded))
-                                   (:replies delivery))
-                        (fail! :ack-mismatch
-                               {:expected (mapv expected-ack
-                                                (:messages reloaded))
-                                :actual (:replies delivery)}))
+                    _ (validate-acks! (:messages reloaded)
+                                      (:replies delivery))
+                    ;; Only after the exact correlated attempt-2 ack: durable
+                    ;; marking for the one outbox id through the same
+                    ;; still-open connection, then the final reload checks.
+                    outbox-id (:outbox-id (first (:outbox pending-state)))
+                    marked (mark-delivered-and-reload! conn outbox-id)
                     app (-> command-evidence
                             (dissoc :committed-state)
-                            (assoc :store-state store-state
+                            (assoc :pending-state pending-state
+                                   :store-state (:state marked)
+                                   :marking (:marking marked)
                                    :retry
                                    {:attempt-1 (dissoc attempt-1 :status)
                                     :state-unchanged-after-failure? true
@@ -570,7 +681,7 @@
                         (get (:headers parsed) "content-length")
                         :response response
                         :server-errors (:server-errors http-cycle)
-                        :close-results (:close-results http-cycle)}}))}
+                        :close-results (:close-results http-cycle)}})))}
            (catch :default error
              {:error error}))
          cleanup-errors

@@ -489,7 +489,9 @@
 ;; application: one committed outbox row, an ordinary delivery attempt that
 ;; fails on a captured ECONNRESET, an ordinary catch/close/reload through the
 ;; same still-open SQLite connection, and a second ordinary delivery attempt
-;; that succeeds. The receiver records exactly attempts [1 2] -- this is an
+;; that succeeds. Attempt 1 never marks; the validated attempt-2 ack gates
+;; one durable mark-delivered! and a final reload through the same
+;; connection. The receiver records exactly attempts [1 2] -- this is an
 ;; at-least-once duplicate-delivery witness, not an exactly-once or receiver
 ;; idempotence claim.
 ;;
@@ -860,7 +862,7 @@
    before reset without claiming original-handler execution order. The
    evidence map carries
    the ordinary application/HTTP/receiver projections, route and exact
-   18-statement SQLite plan evidence, capacity summaries, per-operation
+   27-statement SQLite plan evidence, capacity summaries, per-operation
    fault evidence with the exact scoped firing identities, plan-order
    coordinator release evidence with diagnostics and bounded label counts,
    and all-world cleanup. Accepts the standard

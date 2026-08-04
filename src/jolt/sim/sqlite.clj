@@ -41,8 +41,8 @@
   A plan may instead carry one closed :row-effect directive describing a
   physical table-row transition over the same committed/staged overlay (:op
   :insert-row with :table/:key-params/:row, :op :update-row with
-  :table/:key-params/:key-columns/:set, or :op :scan-rows with
-  :table/:project/:order-key;
+  :table/:key-params/:key-columns/:set and an optional :where equality guard,
+  or :op :scan-rows with :table/:project/:order-key;
   never more than one of :tx-effect, :store-effect, and :row-effect on one
   plan). Complete rows live under tagged [:jolt.sim.sqlite/row table
   key-cells] identities that cannot collide with legacy :store-effect cell
@@ -388,7 +388,7 @@
 
 (def ^:private row-effect-keys
   {:insert-row #{:op :table :key-params :row}
-   :update-row #{:op :table :key-params :key-columns :set}
+   :update-row #{:op :table :key-params :key-columns :set :where}
    :scan-rows #{:op :table :project :order-key}})
 
 (defn- require-row-positive-index! [plan-index field value]
@@ -476,9 +476,12 @@
   unique within their list. :insert-row requires every key parameter to be
   named by a :row column so the stored complete row carries its primary key;
   :update-row requires one :key-columns name per :key-params entry and forbids
-  replacing any of those columns through :set; :scan-rows requires every
-  :order-key column to be projected and its declared :columns, when present,
-  to equal :project. No :row-effect plan may declare :rows, even an empty one."
+  replacing any of those columns through :set; :update-row's :where is an
+  optional closed vector of [column param-index] equality guard pairs,
+  separate from :key-params/:key-columns, and may name a column also named by
+  :set; :scan-rows requires every :order-key column to be projected and its
+  declared :columns, when present, to equal :project. No :row-effect plan may
+  declare :rows, even an empty one."
   [plan-index row-effect params columns columns-present? rows-present?]
   (when-not (or (nil? row-effect) (map? row-effect))
     (fail! :jolt.sim.sqlite/invalid-plan
@@ -540,6 +543,9 @@
                            (:key-columns row-effect))
               set-pairs (normalize-row-column-bindings
                          plan-index :set (:set row-effect) params)
+              where-pairs (when (contains? row-effect :where)
+                            (normalize-row-column-bindings
+                             plan-index :where (:where row-effect) params))
               key-column-set (set key-columns)]
           (when-not (seq key-columns)
             (fail! :jolt.sim.sqlite/invalid-plan
@@ -559,11 +565,12 @@
                      {:plan-index plan-index
                       :row-effect row-effect
                       :column column})))
-          {:op op
-           :table (:table row-effect)
-           :key-params key-params
-           :key-columns key-columns
-           :set set-pairs})
+          (cond-> {:op op
+                   :table (:table row-effect)
+                   :key-params key-params
+                   :key-columns key-columns
+                   :set set-pairs}
+            (some? where-pairs) (assoc :where where-pairs)))
 
         :scan-rows
         (let [project (normalize-row-column-names
@@ -692,7 +699,8 @@
                    :row [[\"entity_id\" 1] [\"version\" 2] [\"payload\" 3]]}}
       ;; optional physical table-row directive; :op :update-row takes
       ;; :key-params, aligned :key-columns [\"entity_id\"], and
-      ;; :set [[\"version\" 2] [\"payload\" 3]], and
+      ;; :set [[\"version\" 2] [\"payload\" 3]], plus an optional :where
+      ;; [[\"status\" 4]] closed vector of equality guard pairs, and
       ;; :op :scan-rows takes :project [\"entity_id\" \"version\" \"payload\"]
       ;; and :order-key [\"entity_id\"]. At most one of :tx-effect,
       ;; :store-effect, and :row-effect may appear on one plan.
@@ -746,8 +754,18 @@
    aligned :key-params/:key-columns and a :set of [column param-index] pairs,
    replaces the named non-key columns of the one visible existing row (changes
    1) without ever manufacturing or replacing key columns, and reports DONE
-   with changes 0 and no write when the key is absent. :op :scan-rows requires
-   :project and :order-key,
+   with changes 0 and no write when the key is absent. An optional :where is a
+   closed vector of [column param-index] equality guard pairs, separate from
+   the physical key, evaluated after the key is found and key-schema
+   validated; a :where column may also appear in :set. Guard evaluation is
+   exact typed cell equality on the actual exactly matched bindings, with SQL
+   NULL semantics: a null bound guard, or a stored null cell, never matches.
+   A guard mismatch performs no write and reports DONE with changes 0,
+   recording the row as present but not applied; a guard match applies :set
+   and reports changes 1 like an unguarded update. A :where column absent
+   from the visible row is schema corruption and fails closed like a
+   :key-columns mismatch, mutating neither storage nor evidence.
+   :op :scan-rows requires :project and :order-key,
    snapshots its table's visible rows at its first sqlite3_step, projects
    typed cells in :project order (its exposed :columns are exactly :project),
    sorts them by :order-key under a stable total ordering over the supported
@@ -1436,6 +1454,39 @@
               :expected-key key-cells
               :stored-key stored-key}))))
 
+(defn- require-where-columns-present!
+  "Fails closed when an update plan's declared :where guard columns are not
+  present in the visible row, addressed by physical key and already key-schema
+  validated. This is column-presence schema corruption, distinct from an
+  ordinary guard-value mismatch, which never mutates storage or evidence."
+  [table row where-pairs]
+  (let [where-columns (mapv first where-pairs)
+        missing-columns (vec (remove #(contains? row %) where-columns))]
+    (when (seq missing-columns)
+      (fail! :jolt.sim.sqlite/row-key-schema-mismatch
+             "update :where columns are absent from the visible row"
+             {:table table
+              :where-columns where-columns
+              :missing-columns missing-columns}))))
+
+(defn- where-guard-matches?
+  "Exact typed cell equality for a closed :where vector of [column
+  param-index] guards against the visible row, using the same actual
+  exactly-matched binding identity as row keys. This is not general SQL
+  three-valued logic: it only implements the one rule this seam needs -- a
+  null bound guard, or a stored null cell, never matches, even against
+  another null. An empty/absent guard vacuously matches, so plans without
+  :where retain their unguarded behavior."
+  [stmt row where-pairs]
+  (every?
+   (fn [[column index]]
+     (let [param-cell (canonical-bound-key stmt index)
+           stored-cell (canonical-cell-identity (get row column))]
+       (and (not= :null (:type param-cell))
+            (not= :null (:type stored-cell))
+            (= param-cell stored-cell))))
+   where-pairs))
+
 (defn- row-mutation-decision
   "Pure decision for one :row-effect :insert-row/:update-row terminal step.
   The primary key and every stored cell come from the actual exactly matched
@@ -1507,27 +1558,45 @@
                                 :applied? false
                                 :changes 0))
              :outcome :unchanged}
-            (let [_ (require-visible-row-key!
+            (let [where-pairs (:where row-effect)
+                  _ (require-visible-row-key!
                      table existing (:key-columns row-effect) key-cells)
-                  location (if (some? (:staging db)) :staging :committed)
-                  replacement
-                  (reduce
-                   (fn [row [column index]]
-                     (assoc row column
-                            (bound-value-cell stmt index)))
-                   existing
-                   (:set row-effect))]
-              {:db (-> db
-                       (update :row-evidence conj
-                               (assoc base-event
-                                      :reported :done
-                                      :location location
-                                      :source-location found-location
-                                      :present? true
-                                      :applied? true
-                                      :changes 1))
-                       (update location assoc key replacement))
-               :outcome :written})))))))
+                  _ (when (seq where-pairs)
+                      (require-where-columns-present!
+                       table existing where-pairs))]
+              (if-not (where-guard-matches? stmt existing where-pairs)
+                {:db (update db :row-evidence conj
+                             (assoc base-event
+                                    :reported :done
+                                    ;; The row was found but no write target
+                                    ;; was selected. Keep provenance in
+                                    ;; :source-location and reserve :location
+                                    ;; for an applied mutation.
+                                    :location nil
+                                    :source-location found-location
+                                    :present? true
+                                    :applied? false
+                                    :changes 0))
+                 :outcome :guard-mismatch}
+                (let [location (if (some? (:staging db)) :staging :committed)
+                      replacement
+                      (reduce
+                       (fn [row [column index]]
+                         (assoc row column
+                                (bound-value-cell stmt index)))
+                       existing
+                       (:set row-effect))]
+                  {:db (-> db
+                           (update :row-evidence conj
+                                   (assoc base-event
+                                          :reported :done
+                                          :location location
+                                          :source-location found-location
+                                          :present? true
+                                          :applied? true
+                                          :changes 1))
+                           (update location assoc key replacement))
+                   :outcome :written})))))))))
 
 (defn- complete-row-mutation-terminal!
   "Atomically owns one :row-effect :insert-row/:update-row statement's
@@ -1597,7 +1666,7 @@
                            :errmsg "not an error"
                            :changes 1
                            :rowid (or (:last-row-id plan) 0))
-                    :unchanged
+                    (:unchanged :guard-mismatch)
                     (assoc next-db
                            :errcode 0
                            :errmsg "not an error"
@@ -1607,7 +1676,8 @@
                   (assoc stmt
                          :row-effect-evaluated? true
                          :done? (or (= :written outcome)
-                                    (= :unchanged outcome))
+                                    (= :unchanged outcome)
+                                    (= :guard-mismatch outcome))
                          :errored? (or (= :error outcome)
                                        (= :constraint outcome))
                          :borrowed []

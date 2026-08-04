@@ -263,8 +263,10 @@
    :main-opts ["-m" "jolt.sim.outbox-sqlite-integration-test-main"]}
 
   ;; First ordinary whole-application witness: one bencoded HTTP command,
-  ;; post-COMMIT SQLite outbox reload, and one later framed TCP/bencode delivery
-  ;; with an ack. Direct pins keep the DB/HTTP/TCP/net/codec/bytes stack exact.
+  ;; post-COMMIT SQLite outbox reload, one later framed TCP/bencode delivery
+  ;; with an ack, and the ack-gated durable delivery marking plus final reload
+  ;; on the same open connection. Direct pins keep the DB/HTTP/TCP/net/codec/
+  ;; bytes stack exact.
   :outbox-delivery-test
   {:extra-paths ["test"]
    :extra-deps
