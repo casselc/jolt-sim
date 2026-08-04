@@ -61,6 +61,22 @@
   vector whether it applies, finds nothing, hits a constraint, or is reported
   as a plan-level error without mutating or exposing rows.
 
+  An optional third world argument opts exact filenames into the sequential
+  file-image substrate. sqlite3_open decodes the real filename pointer; only
+  a filename in the world's closed :persistent-filenames set receives an
+  :image-key and a durable image under the state's immutable :images map. The
+  first open of a selected filename creates an empty image; a reopen after
+  close starts a fresh connection from the prior committed image. A selected
+  connection's :committed storage publishes to :images atomically in the same
+  world CAS as any terminal DB transition, so transaction COMMIT and
+  autocommit store/row writes survive close/reopen while staging, rollback,
+  failed effects, and close with an active transaction never publish. At most
+  one live connection per selected filename: a second simultaneous open fails
+  with :jolt.sim.sqlite/connection-already-open before the output pointer is
+  written and frees its provisional handle. Every other filename, including
+  \":memory:\" and unselected file: names, keeps independent ephemeral
+  per-connection storage.
+
   handlers returns the 16 native-operation handlers from the memory world
   merged with exactly the 23 SQLite foreign-function keys required by
   db.sqlite, so a single :ffi-handlers map drives both layers unchanged.
@@ -676,6 +692,42 @@
 
 ;; ---- world --------------------------------------------------------------
 
+(defn- normalize-options
+  "Validates the closed world options map. The only supported key is
+  :persistent-filenames, an exact set of nonempty strings that must not name
+  the SQLite \":memory:\" sentinel; it defaults to the empty set. A non-map
+  options value, any extra key, a non-set :persistent-filenames, or a
+  malformed entry fails closed."
+  [options]
+  (when-not (map? options)
+    (fail! :jolt.sim.sqlite/invalid-options
+           "world options must be a closed map"
+           {:options options}))
+  (let [unknown (seq (sort-by pr-str
+                              (remove #{:persistent-filenames}
+                                      (keys options))))]
+    (when unknown
+      (fail! :jolt.sim.sqlite/invalid-options
+             "world options are closed: only :persistent-filenames is allowed"
+             {:unknown-keys (vec unknown)}))
+    (if-not (contains? options :persistent-filenames)
+      #{}
+      (let [filenames (:persistent-filenames options)]
+        (when-not (set? filenames)
+          (fail! :jolt.sim.sqlite/invalid-options
+                 ":persistent-filenames must be an exact set of nonempty strings"
+                 {:persistent-filenames filenames}))
+        (doseq [filename filenames]
+          (when-not (and (string? filename) (pos? (count filename)))
+            (fail! :jolt.sim.sqlite/invalid-options
+                   ":persistent-filenames entries must be nonempty strings"
+                   {:filename filename}))
+          (when (= ":memory:" filename)
+            (fail! :jolt.sim.sqlite/invalid-options
+                   ":persistent-filenames must not name the SQLite \":memory:\" sentinel"
+                   {:filename filename})))
+        filenames))))
+
 (defn world
   "Returns a deterministic SQLite world over a memory world and an ordered
   vector of statement plans. With one argument the world builds a default
@@ -767,23 +819,38 @@
    :key-columns mismatch, mutating neither storage nor evidence.
    :op :scan-rows requires :project and :order-key,
    snapshots its table's visible rows at its first sqlite3_step, projects
-   typed cells in :project order (its exposed :columns are exactly :project),
-   sorts them by :order-key under a stable total ordering over the supported
-   cell types, and serves ordinary ROW/DONE from that immutable snapshot. A
-   plan-level :error records the attempted row effect without mutating or
-   exposing rows. Each executed row directive is recorded in the connection's
-   address-free :row-evidence vector with its sequence, plan-index, op,
-   table, reported outcome, key (when applicable), write/snapshot location,
-   update source location, whether a row was present/applied, and changes."
-   ([plans]
-   (world (memory/world) plans))
+    typed cells in :project order (its exposed :columns are exactly :project),
+    sorts them by :order-key under a stable total ordering over the supported
+    cell types, and serves ordinary ROW/DONE from that immutable snapshot. A
+    plan-level :error records the attempted row effect without mutating or
+    exposing rows. Each executed row directive is recorded in the connection's
+    address-free :row-evidence vector with its sequence, plan-index, op,
+    table, reported outcome, key (when applicable), write/snapshot location,
+    update source location, whether a row was present/applied, and changes.
+
+  The optional third argument is a closed options map whose only key is
+  :persistent-filenames, an exact set of nonempty strings (never \":memory:\")
+  defaulting to empty. sqlite3_open decodes the real filename pointer and
+  compares it exactly: a selected filename's connection carries :image-key and
+  starts from the world's immutable :images entry for that filename (created
+  empty at first open), its :committed storage publishes back to :images
+  atomically inside every terminal DB transition's world CAS, and a second
+  simultaneous open of the same selected filename fails with
+  :jolt.sim.sqlite/connection-already-open before the output pointer is
+  written. Every unselected filename keeps independent ephemeral
+  per-connection storage, byte-for-byte as without the option."
+    ([plans]
+    (world (memory/world) plans))
   ([memory-world plans]
+   (world memory-world plans {}))
+  ([memory-world plans options]
    (when-not (and (map? memory-world) (map? (:config memory-world)))
      (fail! :jolt.sim.sqlite/invalid-world
             "first argument must be a jolt.sim.ffi-memory world"
             {:provided memory-world}))
    {:memory memory-world
     :memory-handlers (memory/handlers memory-world)
+    :persistent-filenames (normalize-options options)
     :state (atom {:plans (validate-plans plans)
                   :plan-index 0
                   :dbs {}
@@ -791,7 +858,9 @@
                   :stmts {}
                   :closed-dbs #{}
                   :closed-db-evidence []
-                  :finalized-stmts #{}})
+                  :finalized-stmts #{}
+                  :images {}
+                  :open-images #{}})
     :type ::sqlite-world}))
 
 ;; ---- memory bridge ------------------------------------------------------
@@ -816,23 +885,44 @@
         [idx (nth plans idx)]
         :else (recur)))))
 
-(defn- register-db! [w handle]
+(defn- register-db!
+  "Registers one freshly opened connection under handle. When image-key is
+  non-nil the filename was selected for the file-image substrate: the claim
+  rejects a second simultaneous live connection for the same filename, the
+  first open seeds an empty :images entry, and the fresh connection starts
+  from the filename's last committed image with fresh connection/tx/error/
+  evidence fields. Returns the connection id, or ::image-busy when the claim
+  fails."
+  [w handle image-key]
   (loop []
     (let [st (:state w)
-          s @st
-          connection-id (:next-connection-id s)
-          db {:connection-id connection-id
-              :errcode 0 :errmsg "not an error" :changes 0 :rowid 0
-              :autocommit? true :tx nil :tx-evidence []
-              :autocommit-evidence []
-              :committed {} :staging nil :store-evidence []
-              :row-evidence []}
-          next-state (-> s
-                         (assoc-in [:dbs handle] db)
-                         (update :next-connection-id inc))]
-      (if (compare-and-set! st s next-state)
-        connection-id
-        (recur)))))
+          s @st]
+      (if (and (some? image-key) (contains? (:open-images s) image-key))
+        ::image-busy
+        (let [connection-id (:next-connection-id s)
+              db (cond-> {:connection-id connection-id
+                          :errcode 0 :errmsg "not an error" :changes 0 :rowid 0
+                          :autocommit? true :tx nil :tx-evidence []
+                          :autocommit-evidence []
+                          :committed (if (some? image-key)
+                                       (get-in s [:images image-key] {})
+                                       {})
+                          :staging nil :store-evidence []
+                          :row-evidence []}
+                   (some? image-key) (assoc :image-key image-key))
+              next-state (cond-> (-> s
+                                     (assoc-in [:dbs handle] db)
+                                     (update :next-connection-id inc))
+                           (some? image-key)
+                           (-> (update :open-images conj image-key)
+                               (update :images
+                                       (fn [images]
+                                         (if (contains? images image-key)
+                                           images
+                                           (assoc images image-key {}))))))]
+          (if (compare-and-set! st s next-state)
+            connection-id
+            (recur)))))))
 
 (defn- require-db! [w addr]
   (let [s @(:state w)]
@@ -865,6 +955,19 @@
     (invoke-mem w :free [addr])))
 
 ;; ---- physical transaction boundary ---------------------------------------
+
+(defn- publish-image
+  "Mirrors a terminal connection record's :committed storage into the world's
+  immutable :images when the connection owns a selected persistent filename,
+  inside the same state transition as the terminal DB change. Ephemeral
+  connections leave next-state untouched, and only :committed is ever
+  published, so staging, rollback, failed effects, and close with an active
+  transaction cannot leak uncommitted storage into the durable image."
+  [next-state terminal-db]
+  (let [image-key (:image-key terminal-db)]
+    (if (nil? image-key)
+      next-state
+      (assoc-in next-state [:images image-key] (:committed terminal-db)))))
 
 (defn- tx-effect-decision [db stmt reported]
   (let [tx-effect (:tx-effect (:plan stmt))
@@ -1032,7 +1135,8 @@
                          :blob-cache {})
                   next-state (-> s
                                  (assoc-in [:dbs db-addr] terminal-db)
-                                 (assoc-in [:stmts stmt-addr] terminal-stmt))]
+                                 (assoc-in [:stmts stmt-addr] terminal-stmt)
+                                 (publish-image terminal-db))]
               (if (compare-and-set! st s next-state)
                 (do
                   (free-list! w borrowed)
@@ -1175,7 +1279,8 @@
                          :blob-cache {})
                   next-state (-> s
                                  (assoc-in [:dbs db-addr] terminal-db)
-                                 (assoc-in [:stmts stmt-addr] terminal-stmt))]
+                                 (assoc-in [:stmts stmt-addr] terminal-stmt)
+                                 (publish-image terminal-db))]
               (if (compare-and-set! st s next-state)
                 (do
                   (free-list! w borrowed)
@@ -1684,7 +1789,8 @@
                          :blob-cache {})
                   next-state (-> s
                                  (assoc-in [:dbs db-addr] terminal-db)
-                                 (assoc-in [:stmts stmt-addr] terminal-stmt))]
+                                 (assoc-in [:stmts stmt-addr] terminal-stmt)
+                                 (publish-image terminal-db))]
               (if (compare-and-set! st s next-state)
                 (do
                   (free-list! w borrowed)
@@ -1950,12 +2056,34 @@
 ;; ---- per-function handlers ----------------------------------------------
 
 (defn- h-open [w {:keys [arguments]}]
-  (let [[_filename-ptr db-out-ptr] (vec arguments)
+  (let [[filename-ptr db-out-ptr] (vec arguments)
+        ;; Decode the real filename pointer (nil for a null pointer, matching
+        ;; ptr->string). Only exact members of the world's
+        ;; :persistent-filenames set opt into the file-image substrate; every
+        ;; other name keeps independent ephemeral storage.
+        filename (invoke-mem w :ptr->string [filename-ptr])
+        image-key (when (contains? (:persistent-filenames w) filename)
+                    filename)
         handle-size (invoke-mem w :sizeof [:pointer])
         handle (invoke-mem w :alloc [handle-size])]
-    (invoke-mem w :write [db-out-ptr :pointer 0 handle])
-    (register-db! w handle)
-    (:ok result-codes)))
+    (if (nil? image-key)
+      (do
+        (invoke-mem w :write [db-out-ptr :pointer 0 handle])
+        (register-db! w handle nil)
+        (:ok result-codes))
+      (let [claim (register-db! w handle image-key)]
+        (if (= ::image-busy claim)
+          (do
+            ;; The claim failed, so the provisional handle never reaches the
+            ;; caller's output cell: free it before failing closed, leaving
+            ;; the first connection and the image untouched.
+            (invoke-mem w :free [handle])
+            (fail! :jolt.sim.sqlite/connection-already-open
+                   "a connection for this persistent filename is already open"
+                   {:filename filename}))
+          (do
+            (invoke-mem w :write [db-out-ptr :pointer 0 handle])
+            (:ok result-codes)))))))
 
 (defn- claim-close! [w db-addr]
   (loop []
@@ -1980,10 +2108,16 @@
                          (not (:autocommit? db))
                          (assoc :discarded-transaction (:tx db)
                                 :discarded-staging (:staging db)))
-              next-state (-> s
-                             (update :dbs dissoc db-addr)
-                             (update :closed-dbs conj db-addr)
-                             (update :closed-db-evidence conj evidence))]
+              ;; A selected connection's close releases the per-filename
+              ;; claim so a later reopen can start from the published image;
+              ;; the image itself is never touched here, so discarded staging
+              ;; cannot reach :images.
+              next-state (cond-> (-> s
+                                     (update :dbs dissoc db-addr)
+                                     (update :closed-dbs conj db-addr)
+                                     (update :closed-db-evidence conj evidence))
+                           (:image-key db)
+                           (update :open-images disj (:image-key db)))]
           (if (compare-and-set! st s next-state)
             evidence
             (recur)))))))
@@ -2431,7 +2565,10 @@
   appended in close order to
   :closed-db-evidence without their raw handle addresses, retaining their
   final :committed/:staging and, if closed with an active transaction,
-  :discarded-transaction and :discarded-staging."
+  :discarded-transaction and :discarded-staging. The file-image substrate adds
+  :images (selected filename to its last published committed storage) and
+  :open-images (selected filenames with a live connection), and a selected
+  connection's record carries :image-key."
   [w]
   @(:state w))
 

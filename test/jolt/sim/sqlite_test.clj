@@ -12,6 +12,9 @@
 (def ^:private tx-effect-decision-var
   (resolve 'jolt.sim.sqlite/tx-effect-decision))
 
+(def ^:private register-db-var
+  (resolve 'jolt.sim.sqlite/register-db!))
+
 (def ^:private native-ops
   [:load-library :loaded? :alloc :free :read :write :sizeof :read-bytes
    :write-bytes :read-array :read-array! :write-array
@@ -2861,4 +2864,473 @@
              (ff-hybrid H "sqlite3_get_autocommit" [db])))
       (is (= (runtime/substitute 0) (ff-hybrid H "sqlite3_finalize" [s]))))
     (close-db-hybrid H db)
+    (is (true? (sqlite/clean? w)))))
+
+;; ---- file-image substrate (:persistent-filenames) -------------------------
+
+(defn- open-db-file
+  "Opens an explicit filename through the same public FFI surface as open-db."
+  [H filename]
+  (let [filename-ptr (native H :string->ptr filename)
+        cell (native H :alloc 8)]
+    (is (= 0 (ff H "sqlite3_open" [filename-ptr cell])))
+    (let [db (native H :read cell :pointer)]
+      (native H :free filename-ptr)
+      (native H :free cell)
+      db)))
+
+(defn- open-db-file-failure
+  "Attempts to open an explicit filename, capturing the failure ex-data and
+  the caller's output cell afterwards; a zero cell proves the handle never
+  escaped into caller ownership."
+  [H filename]
+  (let [filename-ptr (native H :string->ptr filename)
+        cell (native H :alloc 8)
+        data (ex-data-of #(ff H "sqlite3_open" [filename-ptr cell]))
+        out (native H :read cell :pointer)]
+    (native H :free filename-ptr)
+    (native H :free cell)
+    {:ex-data data :out out}))
+
+(defn- try-open-db-file
+  "Bare open attempt for concurrent witnesses: no clojure.test assertions on
+  the worker thread, just the outcome plus the connection handle on success."
+  [H filename]
+  (let [filename-ptr (native H :string->ptr filename)
+        cell (native H :alloc 8)]
+    (try
+      (let [code (ff H "sqlite3_open" [filename-ptr cell])
+            db (native H :read cell :pointer)]
+        (native H :free filename-ptr)
+        (native H :free cell)
+        {:value code :db db})
+      (catch :default error
+        (native H :free filename-ptr)
+        (native H :free cell)
+        {:error (ex-data error)}))))
+
+(deftest world-options-are-closed-and-persistent-filenames-are-an-exact-set
+  (is (= :jolt.sim.sqlite/invalid-options
+         (:type (ex-data-of #(sqlite/world (memory/world) [] nil)))))
+  (is (= :jolt.sim.sqlite/invalid-options
+         (:type (ex-data-of #(sqlite/world (memory/world) [] "not-a-map")))))
+  (is (= :jolt.sim.sqlite/invalid-options
+         (:type (ex-data-of
+                 #(sqlite/world (memory/world) []
+                                {:persistent-filenames #{} :extra true})))))
+  (is (= :jolt.sim.sqlite/invalid-options
+         (:type (ex-data-of
+                 #(sqlite/world (memory/world) []
+                                {:persistent-filenames ["file:a.db"]})))))
+  (is (= :jolt.sim.sqlite/invalid-options
+         (:type (ex-data-of
+                 #(sqlite/world (memory/world) []
+                                {:persistent-filenames nil})))))
+  (is (= :jolt.sim.sqlite/invalid-options
+         (:type (ex-data-of
+                 #(sqlite/world (memory/world) []
+                                {:persistent-filenames #{""}})))))
+  (is (= :jolt.sim.sqlite/invalid-options
+         (:type (ex-data-of
+                 #(sqlite/world (memory/world) []
+                                {:persistent-filenames #{":memory:"}})))))
+  (is (= :jolt.sim.sqlite/invalid-options
+         (:type (ex-data-of
+                 #(sqlite/world (memory/world) []
+                                {:persistent-filenames #{"file:a.db" 7}})))))
+  ;; every arity and the empty option default to no selection and no images
+  (doseq [w [(sqlite/world [])
+             (sqlite/world (memory/world) [])
+             (sqlite/world (memory/world) [] {})
+             (sqlite/world (memory/world) [] {:persistent-filenames #{}})]]
+    (is (map? w))
+    (is (= {} (:images (sqlite/state w))))
+    (is (= #{} (:open-images (sqlite/state w))))))
+
+(deftest unselected-filenames-keep-independent-ephemeral-storage
+  (let [plans [{:sql "PUT k v"
+                :params {1 {:type :integer :value 1}
+                         2 {:type :text :value "one"}}
+                :store-effect {:op :put :key-param 1 :value-param 2}}
+               {:sql "GET k"
+                :params {1 {:type :integer :value 1}}
+                :columns ["value"]
+                :store-effect {:op :get :key-param 1}}]
+        w (sqlite/world (memory/world) plans
+                        {:persistent-filenames #{"file:selected.db"}})
+        H (sqlite/handlers w)
+        ;; The existing helper filename is not selected: a committed write on
+        ;; one open is still invisible to the next open.
+        db1 (open-db H)]
+    (is (not (contains? (get-in (sqlite/state w) [:dbs db1]) :image-key)))
+    (is (= 101 (run-row-statement! H db1 "PUT k v"
+                                   [[1 {:type :integer :value 1}]
+                                    [2 {:type :text :value "one"}]])))
+    (is (= {{:type :integer :value 1} {:type :text :value "one"}}
+           (get-in (sqlite/state w) [:dbs db1 :committed])))
+    (close-db H db1)
+    (let [db2 (open-db H)]
+      (is (not (contains? (get-in (sqlite/state w) [:dbs db2]) :image-key)))
+      (is (= {} (get-in (sqlite/state w) [:dbs db2 :committed])))
+      (is (= 101 (run-row-statement! H db2 "GET k"
+                                     [[1 {:type :integer :value 1}]])))
+      (close-db H db2))
+    ;; ":memory:" is a decodable string but can never be selected; it stays
+    ;; ephemeral like any other unselected filename.
+    (let [memdb (open-db-file H ":memory:")]
+      (is (not (contains? (get-in (sqlite/state w) [:dbs memdb]) :image-key)))
+      (close-db H memdb))
+    ;; the file-image substrate never engaged
+    (is (= {} (:images (sqlite/state w))))
+    (is (= #{} (:open-images (sqlite/state w))))
+    (is (every? #(not (contains? % :image-key))
+                (:closed-db-evidence (sqlite/state w))))
+    (is (true? (sqlite/clean? w)))))
+
+(deftest selected-file-reopen-restores-committed-store-and-row-writes
+  (let [table :outbox/items
+        row-key-1 (modeled-row-key table [{:type :integer :value 1}])
+        row-key-2 (modeled-row-key table [{:type :integer :value 2}])
+        store-key-1 {:type :integer :value 1}
+        store-key-2 {:type :integer :value 2}
+        plans [;; autocommit store and row writes publish directly
+               {:sql "PUT k v"
+                :params {1 {:type :integer :value 1}
+                         2 {:type :text :value "auto"}}
+                :store-effect {:op :put :key-param 1 :value-param 2}}
+               {:sql "insert-1"
+                :params {1 {:type :integer :value 1}
+                         2 {:type :text :value "first"}}
+                :row-effect {:op :insert-row :table table
+                             :key-params [1]
+                             :row [["id" 1] ["payload" 2]]}}
+               ;; staged writes publish only at COMMIT
+               {:sql "BEGIN" :tx-effect {:op :begin}}
+               {:sql "PUT k2 v2"
+                :params {1 {:type :integer :value 2}
+                         2 {:type :text :value "staged"}}
+                :store-effect {:op :put :key-param 1 :value-param 2}}
+               {:sql "insert-2"
+                :params {1 {:type :integer :value 2}
+                         2 {:type :text :value "second"}}
+                :row-effect {:op :insert-row :table table
+                             :key-params [1]
+                             :row [["id" 1] ["payload" 2]]}}
+               {:sql "COMMIT" :tx-effect {:op :commit}}
+               ;; after close/reopen
+               {:sql "GET k"
+                :params {1 {:type :integer :value 1}}
+                :columns ["value"]
+                :store-effect {:op :get :key-param 1}}
+               {:sql "GET k2"
+                :params {1 {:type :integer :value 2}}
+                :columns ["value"]
+                :store-effect {:op :get :key-param 1}}
+               {:sql "scan"
+                :row-effect {:op :scan-rows :table table
+                             :project ["id" "payload"]
+                             :order-key ["id"]}}]
+        expected-committed
+        {store-key-1 {:type :text :value "auto"}
+         store-key-2 {:type :text :value "staged"}
+         row-key-1 {"id" {:type :integer :value 1}
+                    "payload" {:type :text :value "first"}}
+         row-key-2 {"id" {:type :integer :value 2}
+                    "payload" {:type :text :value "second"}}}
+        w (sqlite/world (memory/world) plans
+                        {:persistent-filenames #{"file:app.db"}})
+        H (sqlite/handlers w)
+        db1 (open-db-file H "file:app.db")]
+    ;; the first open claims the filename and creates the empty image
+    (is (= "file:app.db" (get-in (sqlite/state w) [:dbs db1 :image-key])))
+    (is (= {"file:app.db" {}} (:images (sqlite/state w))))
+    (is (= #{"file:app.db"} (:open-images (sqlite/state w))))
+    ;; autocommit writes publish at their own terminal step
+    (is (= 101 (run-row-statement! H db1 "PUT k v"
+                                   [[1 {:type :integer :value 1}]
+                                    [2 {:type :text :value "auto"}]])))
+    (is (= 101 (run-row-statement! H db1 "insert-1"
+                                   [[1 {:type :integer :value 1}]
+                                    [2 {:type :text :value "first"}]])))
+    (is (= {store-key-1 {:type :text :value "auto"}
+            row-key-1 {"id" {:type :integer :value 1}
+                       "payload" {:type :text :value "first"}}}
+           (get (:images (sqlite/state w)) "file:app.db")))
+    ;; staged writes stay out of the image until COMMIT
+    (is (= 101 (run-row-statement! H db1 "BEGIN" [])))
+    (is (= 101 (run-row-statement! H db1 "PUT k2 v2"
+                                   [[1 {:type :integer :value 2}]
+                                    [2 {:type :text :value "staged"}]])))
+    (is (= 101 (run-row-statement! H db1 "insert-2"
+                                   [[1 {:type :integer :value 2}]
+                                    [2 {:type :text :value "second"}]])))
+    (is (not (contains? (get (:images (sqlite/state w)) "file:app.db")
+                        store-key-2)))
+    (is (not (contains? (get (:images (sqlite/state w)) "file:app.db")
+                        row-key-2)))
+    (is (= 101 (run-row-statement! H db1 "COMMIT" [])))
+    (is (= expected-committed (get (:images (sqlite/state w)) "file:app.db")))
+    (close-db H db1)
+    ;; the image survives close; the claim is released
+    (is (= expected-committed (get (:images (sqlite/state w)) "file:app.db")))
+    (is (= #{} (:open-images (sqlite/state w))))
+    ;; reopen receives the committed image with fresh everything else
+    (let [db2 (open-db-file H "file:app.db")]
+      (is (= {:connection-id 1
+              :errcode 0 :errmsg "not an error" :changes 0 :rowid 0
+              :autocommit? true :tx nil :tx-evidence []
+              :autocommit-evidence []
+              :committed expected-committed
+              :staging nil :store-evidence []
+              :row-evidence []
+              :image-key "file:app.db"}
+             (get-in (sqlite/state w) [:dbs db2])))
+      (let [get1 (prepare H db2 "GET k")]
+        (is (= 0 (ff H "sqlite3_bind_int64" [get1 1 1])))
+        (is (= 100 (ff H "sqlite3_step" [get1])))
+        (is (= "auto" (ff H "sqlite3_column_text" [get1 0])))
+        (is (= 101 (ff H "sqlite3_step" [get1])))
+        (is (= 0 (ff H "sqlite3_finalize" [get1]))))
+      (let [get2 (prepare H db2 "GET k2")]
+        (is (= 0 (ff H "sqlite3_bind_int64" [get2 1 2])))
+        (is (= 100 (ff H "sqlite3_step" [get2])))
+        (is (= "staged" (ff H "sqlite3_column_text" [get2 0])))
+        (is (= 101 (ff H "sqlite3_step" [get2])))
+        (is (= 0 (ff H "sqlite3_finalize" [get2]))))
+      (let [scan (prepare H db2 "scan")]
+        (is (= 100 (ff H "sqlite3_step" [scan])))
+        (is (= 1 (ff H "sqlite3_column_int64" [scan 0])))
+        (is (= "first" (ff H "sqlite3_column_text" [scan 1])))
+        (is (= 100 (ff H "sqlite3_step" [scan])))
+        (is (= 2 (ff H "sqlite3_column_int64" [scan 0])))
+        (is (= "second" (ff H "sqlite3_column_text" [scan 1])))
+        (is (= 101 (ff H "sqlite3_step" [scan])))
+        (is (= 0 (ff H "sqlite3_finalize" [scan]))))
+      (close-db H db2))
+    (is (true? (sqlite/clean? w)))))
+
+(deftest rollback-failed-effects-and-close-with-active-tx-never-publish
+  (let [plans [;; a reported error on an autocommit put writes nothing
+               {:sql "PUT-ERR k v"
+                :params {1 {:type :integer :value 9}
+                         2 {:type :text :value "lost"}}
+                :store-effect {:op :put :key-param 1 :value-param 2}
+                :error {:code 5 :msg "disk full"}}
+               ;; a rolled-back staged write never publishes
+               {:sql "BEGIN" :tx-effect {:op :begin}}
+               {:sql "PUT k1"
+                :params {1 {:type :integer :value 1}
+                         2 {:type :integer :value 10}}
+                :store-effect {:op :put :key-param 1 :value-param 2}}
+               {:sql "ROLLBACK" :tx-effect {:op :rollback}}
+               ;; an active transaction at close is discarded, not published
+               {:sql "BEGIN2" :tx-effect {:op :begin}}
+               {:sql "PUT k2"
+                :params {1 {:type :integer :value 2}
+                         2 {:type :integer :value 20}}
+                :store-effect {:op :put :key-param 1 :value-param 2}}
+               ;; after close/reopen every discarded write is invisible
+               {:sql "GET k9"
+                :params {1 {:type :integer :value 9}}
+                :columns ["value"]
+                :store-effect {:op :get :key-param 1}}
+               {:sql "GET k1"
+                :params {1 {:type :integer :value 1}}
+                :columns ["value"]
+                :store-effect {:op :get :key-param 1}}
+               {:sql "GET k2"
+                :params {1 {:type :integer :value 2}}
+                :columns ["value"]
+                :store-effect {:op :get :key-param 1}}]
+        w (sqlite/world (memory/world) plans
+                        {:persistent-filenames #{"file:app.db"}})
+        H (sqlite/handlers w)
+        db1 (open-db-file H "file:app.db")]
+    (let [err-put (prepare H db1 "PUT-ERR k v")]
+      (is (= 0 (ff H "sqlite3_bind_int64" [err-put 1 9])))
+      (is (= 0 (ff H "sqlite3_bind_text" [err-put 2 "lost" 4 0])))
+      (is (= 5 (ff H "sqlite3_step" [err-put])))
+      (is (= 5 (ff H "sqlite3_errcode" [db1])))
+      (is (= 0 (ff H "sqlite3_finalize" [err-put]))))
+    (is (= {"file:app.db" {}} (:images (sqlite/state w))))
+    (is (= 101 (run-row-statement! H db1 "BEGIN" [])))
+    (is (= 101 (run-row-statement! H db1 "PUT k1"
+                                   [[1 {:type :integer :value 1}]
+                                    [2 {:type :integer :value 10}]])))
+    (is (= {"file:app.db" {}} (:images (sqlite/state w))))
+    (is (= 101 (run-row-statement! H db1 "ROLLBACK" [])))
+    (is (= {"file:app.db" {}} (:images (sqlite/state w))))
+    (is (= 101 (run-row-statement! H db1 "BEGIN2" [])))
+    (is (= 101 (run-row-statement! H db1 "PUT k2"
+                                   [[1 {:type :integer :value 2}]
+                                    [2 {:type :integer :value 20}]])))
+    ;; close with an active transaction discards staging; the image is empty
+    (close-db H db1)
+    (is (= {"file:app.db" {}} (:images (sqlite/state w))))
+    (let [evidence (first (:closed-db-evidence (sqlite/state w)))]
+      (is (= "file:app.db" (:image-key evidence)))
+      (is (= {{:type :integer :value 2} {:type :integer :value 20}}
+             (:discarded-staging evidence))))
+    (let [db2 (open-db-file H "file:app.db")]
+      (is (= {} (get-in (sqlite/state w) [:dbs db2 :committed])))
+      (doseq [[sql key] [["GET k9" 9] ["GET k1" 1] ["GET k2" 2]]]
+        (is (= 101 (run-row-statement! H db2 sql
+                                       [[1 {:type :integer :value key}]]))))
+      (close-db H db2))
+    (is (true? (sqlite/clean? w)))))
+
+(deftest images-are-separated-by-exact-filename
+  (let [put-plan (fn [value]
+                   {:sql (str "PUT k " value)
+                    :params {1 {:type :integer :value 1}
+                             2 {:type :text :value value}}
+                    :store-effect {:op :put :key-param 1 :value-param 2}})
+        get-plan {:sql "GET k"
+                  :params {1 {:type :integer :value 1}}
+                  :columns ["value"]
+                  :store-effect {:op :get :key-param 1}}
+        plans [(put-plan "a") (put-plan "b") (put-plan "c")
+               get-plan get-plan get-plan]
+        store-key {:type :integer :value 1}
+        w (sqlite/world (memory/world) plans
+                        {:persistent-filenames #{"file:a.db" "file:b.db"}})
+        H (sqlite/handlers w)
+        ;; distinct selected filenames may be live simultaneously
+        dba (open-db-file H "file:a.db")
+        dbb (open-db-file H "file:b.db")]
+    (is (= #{"file:a.db" "file:b.db"} (:open-images (sqlite/state w))))
+    (is (= 101 (run-row-statement! H dba "PUT k a"
+                                   [[1 {:type :integer :value 1}]
+                                    [2 {:type :text :value "a"}]])))
+    (is (= 101 (run-row-statement! H dbb "PUT k b"
+                                   [[1 {:type :integer :value 1}]
+                                    [2 {:type :text :value "b"}]])))
+    (close-db H dba)
+    (close-db H dbb)
+    ;; an unselected filename keeps its own ephemeral storage
+    (let [dbc (open-db-file H "file:c.db")]
+      (is (= 101 (run-row-statement! H dbc "PUT k c"
+                                     [[1 {:type :integer :value 1}]
+                                      [2 {:type :text :value "c"}]])))
+      (close-db H dbc))
+    ;; exact-string membership: a near-miss name is not selected
+    (let [near (open-db-file H "file:a.db2")]
+      (is (not (contains? (get-in (sqlite/state w) [:dbs near]) :image-key)))
+      (close-db H near))
+    (is (= {"file:a.db" {store-key {:type :text :value "a"}}
+            "file:b.db" {store-key {:type :text :value "b"}}}
+           (:images (sqlite/state w))))
+    ;; each selected filename reopens from exactly its own image
+    (let [dba2 (open-db-file H "file:a.db")
+          get-a (prepare H dba2 "GET k")]
+      (is (= 0 (ff H "sqlite3_bind_int64" [get-a 1 1])))
+      (is (= 100 (ff H "sqlite3_step" [get-a])))
+      (is (= "a" (ff H "sqlite3_column_text" [get-a 0])))
+      (is (= 101 (ff H "sqlite3_step" [get-a])))
+      (is (= 0 (ff H "sqlite3_finalize" [get-a])))
+      (close-db H dba2))
+    (let [dbb2 (open-db-file H "file:b.db")
+          get-b (prepare H dbb2 "GET k")]
+      (is (= 0 (ff H "sqlite3_bind_int64" [get-b 1 1])))
+      (is (= 100 (ff H "sqlite3_step" [get-b])))
+      (is (= "b" (ff H "sqlite3_column_text" [get-b 0])))
+      (is (= 101 (ff H "sqlite3_step" [get-b])))
+      (is (= 0 (ff H "sqlite3_finalize" [get-b])))
+      (close-db H dbb2))
+    ;; the unselected filename starts empty again on reopen
+    (let [dbc2 (open-db-file H "file:c.db")]
+      (is (= {} (get-in (sqlite/state w) [:dbs dbc2 :committed])))
+      (is (= 101 (run-row-statement! H dbc2 "GET k"
+                                     [[1 {:type :integer :value 1}]])))
+      (close-db H dbc2))
+    (is (true? (sqlite/clean? w)))))
+
+(deftest second-simultaneous-open-of-a-selected-file-fails-closed
+  (let [plans [{:sql "PUT k v"
+                :params {1 {:type :integer :value 1}
+                         2 {:type :text :value "kept"}}
+                :store-effect {:op :put :key-param 1 :value-param 2}}
+               {:sql "GET k"
+                :params {1 {:type :integer :value 1}}
+                :columns ["value"]
+                :store-effect {:op :get :key-param 1}}]
+        w (sqlite/world (memory/world) plans
+                        {:persistent-filenames #{"file:app.db"}})
+        H (sqlite/handlers w)
+        db1 (open-db-file H "file:app.db")]
+    ;; the second open fails with a stable typed error before output ownership
+    ;; escapes: the caller's output cell still reads the zero fill
+    (let [{:keys [ex-data out]} (open-db-file-failure H "file:app.db")]
+      (is (= :jolt.sim.sqlite/connection-already-open (:type ex-data)))
+      (is (= "file:app.db" (:filename ex-data)))
+      (is (= 0 out)))
+    ;; the failed open freed its provisional handle: the first connection's
+    ;; handle is the only live allocation
+    (is (= [db1] (mapv :base (sqlite/leaks w))))
+    ;; the first connection and image are not corrupted
+    (is (= {"file:app.db" {}} (:images (sqlite/state w))))
+    (is (= #{"file:app.db"} (:open-images (sqlite/state w))))
+    (is (= 101 (run-row-statement! H db1 "PUT k v"
+                                   [[1 {:type :integer :value 1}]
+                                    [2 {:type :text :value "kept"}]])))
+    (is (= {"file:app.db" {{:type :integer :value 1}
+                           {:type :text :value "kept"}}}
+           (:images (sqlite/state w))))
+    (close-db H db1)
+    ;; close released the claim: reopen succeeds from the published image
+    (let [db2 (open-db-file H "file:app.db")
+          get (prepare H db2 "GET k")]
+      (is (= 0 (ff H "sqlite3_bind_int64" [get 1 1])))
+      (is (= 100 (ff H "sqlite3_step" [get])))
+      (is (= "kept" (ff H "sqlite3_column_text" [get 0])))
+      (is (= 101 (ff H "sqlite3_step" [get])))
+      (is (= 0 (ff H "sqlite3_finalize" [get])))
+      (close-db H db2))
+    (is (true? (sqlite/clean? w)))))
+
+(deftest concurrent-opens-of-a-selected-file-have-exactly-one-winner
+  (let [w (sqlite/world (memory/world) []
+                        {:persistent-filenames #{"file:app.db"}})
+        H (sqlite/handlers w)
+        original @register-db-var
+        arrivals (atom 0)
+        both-inside (promise)
+        wrapped-register
+        (fn [world handle image-key]
+          (let [arrival (swap! arrivals inc)]
+            ;; Both racers have decoded the filename, allocated a provisional
+            ;; handle, and entered the claim before either can attempt its
+            ;; CAS, so this discriminates one atomic claim from two merely
+            ;; serialized opens.
+            (when (<= arrival 2)
+              (when (= arrival 2)
+                (deliver both-inside true))
+              (when (= ::timeout (deref both-inside 5000 ::timeout))
+                (throw (ex-info "concurrent-open barrier timed out"
+                                {:arrival arrival}))))
+            (original world handle image-key)))
+        results
+        (with-redefs-fn
+          {register-db-var wrapped-register}
+          #(let [a (future (try-open-db-file H "file:app.db"))
+                 b (future (try-open-db-file H "file:app.db"))]
+             [(await-worker a) (await-worker b)]))]
+    (is (= 2 @arrivals))
+    (is (not-any? #{::timeout} results) (pr-str results))
+    (is (every? map? results) (pr-str results))
+    (when (every? map? results)
+      (is (= 1 (count (filter #(contains? % :value) results)))
+          (pr-str results))
+      (let [errors (vec (filter :error results))]
+        (is (= 1 (count errors)) (pr-str results))
+        (is (= :jolt.sim.sqlite/connection-already-open
+               (:type (:error (first errors)))))
+        (is (= "file:app.db" (:filename (:error (first errors)))))))
+    ;; exactly one live claim, one seeded empty image
+    (is (= {"file:app.db" {}} (:images (sqlite/state w))))
+    (is (= #{"file:app.db"} (:open-images (sqlite/state w))))
+    (let [winner (:db (first (filter #(contains? % :value) results)))]
+      (close-db H winner))
+    (is (= #{} (:open-images (sqlite/state w))))
+    ;; the loser's provisional handle was freed
     (is (true? (sqlite/clean? w)))))
