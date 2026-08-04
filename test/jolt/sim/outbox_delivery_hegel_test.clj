@@ -1850,13 +1850,24 @@
   (let [bin (required-environment "JOLT_SIM_BIN")
         project-dir (required-environment "JOLT_SIM_PROJECT_DIR")
         export-dir (System/getenv "JOLT_SIM_CASE_ARTIFACT_DIR")
+        temp-dir (System/getenv "JOLT_SIM_CASE_TEMP_DIR")
+        export-dir (when (and (string? export-dir) (seq export-dir))
+                     export-dir)
+        temp-dir (when (and (string? temp-dir) (seq temp-dir)) temp-dir)
+        _ (doseq [directory [export-dir temp-dir]
+                  :when directory]
+            ;; Create both roots before the first worker starts. A hard parent
+            ;; failure can then leave the original request/result/log tree in
+            ;; the configured temp root even when no stable copy or
+            ;; Case/Outcome document was completed.
+            (fs/create-dirs directory))
         result
         (binding [*process-config*
-                  {:worker-command [bin "-M:outbox-delivery-explore-worker"]
-                   :dir project-dir}
-                  *case-artifact-export-dir*
-                  (when (and (string? export-dir) (seq export-dir))
-                    export-dir)]
+                  (cond->
+                   {:worker-command [bin "-M:outbox-delivery-explore-worker"]
+                    :dir project-dir}
+                    temp-dir (assoc :temp-dir temp-dir))
+                  *case-artifact-export-dir* export-dir]
           (reduce (fn [summary test-var]
                     (merge-with + summary
                                 (run-serial-test-var! test-var)))

@@ -87,14 +87,24 @@ baseline and remints the affected contracts and tests in place.
   passes both real-socket/real-SQLite parity and one shared hermetic
   POSIX/SQLite native boundary.
 
-## Optional static trace reports
+## Optional static reports
 
-The [`report`](report/) dependency root turns a validated trace document and
-already-computed monitor decisions into a self-contained deterministic HTML
-report. It is packaged separately so ordinary simulator consumers do not pull
-in Selmer or its Jolt host-support dependencies. The same data-only view model
-is intended to feed the later live web/GTK trace viewer; rendering does not run
-monitor functions or introduce a second trace schema.
+The [`report`](report/) dependency root turns either a validated cooperative
+trace plus already-computed monitor decisions or one validated ordinary-runtime
+Case/Outcome document into a self-contained deterministic HTML report. It is
+packaged separately so ordinary simulator consumers do not pull in Selmer or
+its Jolt host-support dependencies. Human-facing Case/Outcome sections use the
+contract's public restoration API while the complete canonical replay document
+remains available in a collapsed section. The same data-only view models are
+intended to feed the later live web/GTK viewer; rendering does not run monitor
+functions or introduce another evidence schema.
+
+From the report dependency root, select the document schema explicitly:
+
+```sh
+jolt -M:trace-report TRACE.edn [OUTPUT.html]
+jolt -M:case-report CASE-OUTCOME.edn [OUTPUT.html]
+```
 
 ### Executed scenario coverage
 
@@ -903,9 +913,29 @@ Each direct integration command prints the path of an append-only EDN progress
 file. Set `JOLT_SIM_OUTBOX_DELIVERY_PROGRESS_FILE` to retain it at a chosen
 location.
 These records are best-effort test-process breadcrumbs, not the later
-crash-safe journal contract. The Hegel lanes run explicit payload boundaries
-and fresh-process generated cases. Their claim strength is deliberately
-per-axis:
+crash-safe journal contract. For restart-safe whole-case forensics, configure
+both Hegel artifact roots before running the outbox lane:
+
+```sh
+export JOLT_SIM_CASE_TEMP_DIR="$PWD/target/outbox-case-runs"
+export JOLT_SIM_CASE_ARTIFACT_DIR="$PWD/target/outbox-case-artifacts"
+mkdir -p "$JOLT_SIM_CASE_TEMP_DIR" "$JOLT_SIM_CASE_ARTIFACT_DIR"
+```
+
+Every worker creates its original request/result/stdout/stderr tree beneath
+the temp root before it is spawned. Parent-observed non-successes retain that
+tree. After successful Case/Outcome creation, a safely quiescent failure also
+receives a fresh never-overwritten stable copy; the first deterministic retry
+boundary pass is exported as the downloadable success witness. If child exit
+was not observed, only the possibly live original is retained and reported—no
+reader or copier races it. CI renders every complete Case/Outcome it can within
+bounded post-processing time and uploads raw, partial, and rendered trees even
+after the Hegel or rendering step fails. These files materially improve crash
+forensics, but they are not yet the separately planned crash-safe append-only
+journal.
+
+The Hegel lanes run explicit payload boundaries and fresh-process generated
+cases. Their claim strength is deliberately per-axis:
 
 - stream capacity, pipe capacity, and poll-`EINTR` ordinal are
   **bounded-complete per finite axis**: the fixed-seed run fails unless every
