@@ -92,6 +92,10 @@ The complete current tally of claims this document made and then refuted:
 | 59 | `perturb.effect/cross!`: "a handler that lies about its result type is stopped here, not downstream in the codec" | **false as written** — the comment describes a `:result-pred` that was a tag test. Ten hand-built forgeries crossed the boundary and failed later as host exceptions at arbitrary depth, none naming the boundary or the handler that lied; two paths were silent | E38 |
 | 60 | E34: "4 of the 7 remaining tcpcheck rejections are §4.6's root cause" | true but **imprecise**. One is decided by a declaration perturb already had (`:contention :thread-confined` + `future-call`); the other three are blocked by a *single* named gap — higher-order capability passing. §4.6's higher-order bullet is the **sole** blocker on 3 of 7 | E38 |
 | 61 | a faster inner loop is a free win inside the noio window | `every?`/`reduce` over a persistent vector is **~2.5× faster** and moved the scripted run from 0 to 2 attributable syscalls — anonymous `mmap`, Chez growing its heap. INHERITED I11's instrument is a **syscall counter** and cannot distinguish heap growth from I/O, so an allocation-free loop is required and the 2.5× is the price | E38 |
+| 62 | E4: the sans-io decoder shape is `bounded-complete` "within its stated corpus" | **seven of eleven conditions.** The phrase names **no bound**, and the finding states none of the ones it relies on (`≤16`, 162 values, ≤2 deep). The `:invalid` arm — one third of the trichotomy the finding is about — is enumerated nowhere, and the `offset` field the finding names is asserted nowhere | E39 |
+| 63 | jolt-bytes' `-M:test` gate demonstrates its corpus is the domain | **it does not.** Mutation A — one row swapped for a duplicate of another — reports `:verified` at the full 132,672 assertions with a domain member missing. The uniqueness/completeness checks live in the generating spike and reach the runtime lane only via `bin/verify-oracle-sync`, which the Jolt CI runtime job does not run | E39 |
+| 64 | jolt-sim's Hegel axes are `bounded-complete` — "the test already asserts exact domain coverage" — **published to `casselc/jolt-sim` #29** | the axes are `sampled-from`, **15 cases over a 90-combination product**, and the property is quantified over a tuple containing a sampled payload. Coverage is **marginal, not joint**: "every value appeared in a passing case", not "the property holds for every value" | E39. A correction is owed to that repo |
+| 65 | `schedule-plans` and `bounded-complete` | two documents in this directory say **opposite things** — the adoption audit proposes `:coverage :bounded-complete` for it, the temporal-ledger sketch says it "does not establish bounded completeness". Both are defensible under different readings: it completely enumerates **its own output domain** while establishing nothing about the system explored through it. The record must say which it means | E39 |
 | 51 † | §1.4's **"no resumption"**, and every argument resting on it | a misclassification. A handler that supplies a validated result after which the caller continues is an **implicit tail resumption** — the case the handler literature singles out as efficiently compilable — and only the failure path is abortive. D4 occupies two points on the control axis rather than a point below it, and the property that actually buys the resource reasoning is **no first-class continuation** | E31 |
 | 52 † | `SOTA-POSITIONING-BRIEF` and E27 finding 3: Fowler's "linear effect handlers … left as future work" means we may be standing in an **open gap** | **partly** closed — E31 recorded "closed" from one survey and E32's second, independent reading of the full text (now in `papers/`) narrows it: control-flow linearity gives a direct theory for continuation/resource integrity, and **cancellation protocol obligations remain separate**; it proves nothing about our checker, external declarations, refined typestate, native resources or `abort!` cleanup. Tang et al. (POPL 2024) give control-flow linearity with an inference calculus and repair the Links bug; Brachthäuser & Leijen classify control flow as linear/affine/abortive/unrestricted; van Rooij & Krebbers (*Affect*, POPL 2025) track continuations through mutable references. The 2019 sentence can no longer be cited. My stated prediction — "still open but narrower" — was wrong in degree | E31 |
 | 53 † | E29: handler-over-handler layering as a result in itself | generic composition and outward forwarding are standard, and scoped-effect calculi formalise them. The narrow obligation — same-effect forwarding through several protocol layers **preserving typestate-linear obligations** — was not found, and is sharpened rather than answered. Separately, the nearest formal family for D4 is **runners** (Ahman & Bauer, ESOP 2020), not a handler calculus | E31 |
@@ -1110,9 +1114,25 @@ already fully specified, with a small leader election as the more honest one.
 That recommendation was taken up and then superseded twice on the choice of
 target (Appendix A rows 26–27); the target chosen is now §5.
 
-### E4 — The sans-io decoder shape is already validated
+### E4 — The sans-io decoder shape is validated over a declared bounded fragment
 
-`bounded-complete` within its stated corpus (jolt-bytes/jolt-bencode oracles).
+**Verdict rewritten by E39; the original is kept below.** `bounded-complete`
+over the byte-window/cursor **geometry** fragment (`capacity`, `limit`, `size`
+≤ 16) and the bencode `:ok`/`:need-more` fragment (162 declared values: ASCII
+and small-integer atoms, containers ≤ 2 elements and ≤ 2 deep) — **on the
+evidence chain `bin/verify-ansatz` → `bin/verify-oracle-sync` → `-M:test`, not
+on `-M:test` alone.** `sampled` on the `:invalid` arm: 10 malformed wires, 221
+leading-zero cases and 4 limit cases, hand-picked and not enumerated, with the
+`offset` field this finding names **asserted nowhere**. `sampled` on the Hegel
+state machines. Nothing here claims unbounded inputs, non-ASCII payloads,
+deeper nesting, machine-integer overflow, or alias safety — see the oracles'
+own `:not-claimed` and `:runtime-only` lists in `provenance.edn`, which are
+more honest than this finding originally was.
+
+> *Superseded wording:* "The sans-io decoder shape is already validated —
+> `bounded-complete` within its stated corpus (jolt-bytes/jolt-bencode
+> oracles)." E39 measured that "within its stated corpus" names no bound, and
+> that the finding states none of the bounds it relies on.
 
 `jolt.bytes/read-window` and `jolt.bencode/decode` return a transactional
 trichotomy — `:ok` with a new cursor, `:need-more` with the *exact original*
@@ -6199,6 +6219,106 @@ so the rejected variant stays measurable.
    audited, and the other effects' `:result-pred`s (`conn-token?`, `count?`,
    `closed?`) are unexamined. `conn-token?` is `some?`, deliberately opaque by
    design, and nobody has looked at whether that is the same category.
+
+### E39 — the only `bounded-complete` verdict, audited: seven of eleven, and a published claim to another repo that does not hold
+
+Three documents independently defined `bounded-complete` more strictly than this
+record has used it — a **decidable** property checked for **every** member of an
+**explicitly finite** domain, with harness evidence of **expected cardinality**,
+**equality-confirmed uniqueness** and **full consumption**, applying only to that
+fragment; plus the survey's four further conditions (surjective generator,
+property-preserving pruning, total and independent oracle, exceptional paths
+enumerated or excluded). E4 predates all of it. It was audited by execution.
+
+**The result is not the one this brief set up.** The audit was asked whether the
+answer is "perturb holds zero verdicts above `sampled`" and declined to
+manufacture it.
+
+#### The measurement
+
+E4's cited numbers **reproduce exactly** at the pin — 132,672 assertions over
+969 parents / 20,349 slices / 2,601 cursor reads / 4,845 compositions, and
+bencode's 109,209 — and the corpora were independently re-derived from the
+declared enumeration rule: **complete, duplicate-free enumerations of explicitly
+finite domains**, digests matching. The facts are true. **The gap is
+evidentiary, not factual.**
+
+**Mutation A is the finding.** Swapping one corpus row for a duplicate of
+another — count preserved, one domain member missing, one row duplicated — the
+gate reports `{:status :verified :assertions 132672 …}`. **Green, at full
+assertion count, with a hole in the domain.** The uniqueness and completeness
+checks *do* exist, in the generating spike's `validate-oracle!`
+(`(count (set rows))`, `(= (set expected-domain) (set actual-domain))`, six
+assertions per axis, Clojure equality rather than hash) — but they reach the
+runtime lane only through `bin/verify-oracle-sync`, **which the Jolt CI runtime
+job does not run.** E4 cited the lane that does not verify its own corpus.
+
+| | window/cursor | bencode `:ok`/`:need-more` | bencode `:invalid` |
+| --- | --- | --- | --- |
+| decidable per member | met | met | met |
+| every member of the domain | met *(spike only)* | met | **not met** |
+| explicitly finite, declared | met | met | **not met** |
+| expected cardinality | met | met | **not met** |
+| equality-confirmed uniqueness | **not met on the cited lane** | met | n/a |
+| full consumption | partial | partial | n/a |
+| applies only to that fragment | **not met** | — | — |
+| surjective generator | met *(spike only)* | met | **not met** |
+| pruning preserves property | met (vacuous — nothing is pruned) | met (vacuous) | n/a |
+| **oracle total and independent** | **met** | **met** | **met** |
+| exceptional paths enumerated/excluded | partial | — | **not met** |
+
+**Seven of eleven outright, two conditionally, two not** — and separately the
+scope sentence is wrong regardless of the harness.
+
+**Oracle independence holds, and it was checked specifically** because it had just
+sunk a claim in a neighbouring document. The window/cursor expected values come
+from a hand-written portable reference that requires nothing from `jolt.bytes`;
+bencode's `model-encode` states in its own docstring that it does not call
+`jolt.bencode/encode`. One blemish: `verify-cursor-composition!` compares
+implementation against implementation on 1 of 8 assertions on that path.
+
+#### The correct statement, which is narrower and worse in a different way
+
+Not "zero verdicts above `sampled`". Rather: **perturb holds one
+`bounded-complete`-grade verdict, over a fragment narrower than E4 states, on a
+harness perturb did not write, for code perturb did not write — and zero over
+code perturb wrote.** `tlsdemo.clj:716` and `layercheck.clj:511` already print
+`bounded-complete    nothing`, so **the executable record was ahead of the
+prose.**
+
+#### A correction owed to a neighbouring repo
+
+`FEEDBACK-TO-NEIGHBOURING-LANES.md` and §4524 both label jolt-sim's Hegel axes
+`bounded-complete` — "the test already asserts exact domain coverage" — and that
+was **published to `casselc/jolt-sim` #29**. The coverage assertions are real and
+equality-confirmed. The verdict drawn from them is wrong for three reasons
+visible in the source: the axes are `sampled-from`, not enumerated; **15 cases
+run against a 90-combination product** (≤17%), so coverage is **marginal, not
+joint**; and the property is quantified over a tuple including a *sampled*
+payload, so what is established is "every axis value appeared in at least one
+passing case", not "the property holds for every axis value". The structural
+reframe rules it out by name: Hegel generation and shrinking remain `sampled`.
+
+The right label is **`sampled`, with asserted marginal coverage of four finite
+axes (15 cases over a 90-combination product, one seed)** — which is still
+meaningfully stronger than bare `sampled` and a discipline most property-based
+suites lack. The advice that accompanied it, to publish a verdict per axis,
+survives intact.
+
+#### E39's nonclaims
+
+1. **The audit could not run two gates** — `bin/verify-ansatz` and `bin/test-jvm`
+   need a `clojure` CLI that is not installed here. The chain E4's rewritten
+   verdict cites is therefore *read*, not executed end to end.
+2. **The Hegel test was read, not run** — it launches isolated workers and needs
+   an absent dependency stack. The three defects are visible in source.
+3. **The `:invalid` arm should be relabelled, not fixed.** Enumerating a finite
+   malformed-input domain is genuinely new upstream work (~150–250 lines) and
+   needs a decision nobody has made: *what is the finite domain of invalid
+   inputs?* There is no canonical answer.
+4. **The C5/S1 fix is measured, not estimated** — 11 lines, 3 assertions,
+   132,672 → 132,675, 5.76 s → 6.10 s, and mutation A then fails as it should.
+   It is upstream code and was not committed.
 
 ## 4. Open questions
 

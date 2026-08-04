@@ -48,7 +48,7 @@ A green Hegel run over the outbox is three different strengths at once:
 
 | axis | strength |
 | --- | --- |
-| stream capacity {8,16,32}, pipe capacity {1,2,4}, poll-EINTR ordinal {nil,1,2,4,8} | **bounded-complete** — the test already asserts exact domain coverage |
+| stream capacity {8,16,32}, pipe capacity {1,2,4}, poll-EINTR ordinal {nil,1,2,4,8} | ~~**bounded-complete** — the test already asserts exact domain coverage~~ **CORRECTED (E39): `sampled`, with asserted marginal coverage of four finite axes** — the coverage assertions are real and equality-confirmed, but the axes are `sampled-from`, 15 cases run against a 90-combination product (≤17%), and the property is quantified over a tuple containing a sampled payload. What is established is *every axis value appeared in at least one passing case*, not *the property holds for every axis value*. Still stronger than bare `sampled`, and a discipline most property-based suites lack |
 | payload octets (≤32) | **sampled**, at one seed |
 | the classification invariant behind the semantic selectors | **assumed** — an argued property of application code order, with a loud-failure detector |
 
