@@ -1,0 +1,13 @@
+{:port 8788
+ :max-document-bytes 1048576
+ :allowed-scenarios
+ #{jolt.sim.fixtures.outbox-delivery-scenarios/exercise-retry-recv-reset}
+ :runtime-config
+ {:worker-command ["/absolute/path/to/sim/jolt"
+                   "-M:outbox-delivery-explore-worker"]
+  :dir "/absolute/path/to/jolt-sim"
+  :timeout-ms 30000
+  :startup-timeout-ms 30000
+  :kill-grace-ms 500
+  :temp-dir "/tmp"
+  :retain-completed-artifacts? true}}

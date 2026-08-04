@@ -133,6 +133,22 @@ The HTML is generated through `trace->view-model` or
 [example regeneration guide](report/examples/) for exact commands and the
 boundary between a retained witness and the owning campaign's evidence claim.
 
+### Optional retained-case web viewer
+
+The [`viewer`](viewer/) dependency root is a loopback-only web application for
+opening one retained Case/Outcome document, rendering it through the same
+report API, and explicitly replaying its exact scenario/input/schedule in one
+fresh worker. Trusted startup configuration owns the worker command, project
+directory, deadlines, environment, artifact policy, and scenario allowlist;
+the browser cannot supply those settings. A per-process capability token is
+required even on loopback.
+
+The first slice includes a real host-loopback HTTP test for the browser shell
+and retained-document render path. It is deliberately not a second simulator
+or report implementation, and it does not yet provide live event streaming,
+trace comparison, or a GTK frontend. See the [viewer guide](viewer/README.md)
+and its closed [example configuration](viewer/example-config.edn).
+
 ### Executed scenario coverage
 
 This is an execution manifest, not a namespace-import checklist. A row records
