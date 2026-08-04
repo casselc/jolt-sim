@@ -49,6 +49,28 @@ assumption; with it, it is a bounded claim. Any write-up of this work should say
 so, because it is the strongest thing perturb has here and it was established
 for an unrelated reason.
 
+> **E26 update: this paragraph now understates its own foundation.** The premise
+> is no longer a sampled measurement on one host. The boundary **fails closed** —
+> an effect or native crossing with no handler in dynamic extent is refused
+> before any I/O — and the refusal is **latched** before the throw, so a caller
+> that catches it cannot make the run report success
+> (`perturb.effect/native!`, `latch!`, `report`; `perturb.posix/gate!`). Monitor
+> soundness is therefore conditioned on an invariant *checked on every run that
+> executes*, rather than bounded by one measurement.
+>
+> The brief's own constraint below — "a monitor that never fires is not
+> evidence" — is satisfied here by two things the build half should copy
+> verbatim: `-M:noio --unhandled-native`, a deliberately unhandled crossing that
+> must trip the latch, and an **anti-vacuity required-symbol set**, so a run that
+> performs no effect at all reports `all-handled? false` instead of passing by
+> doing nothing.
+>
+> Two limits carry forward. perturb gates at its own wrapper rather than at the
+> runtime's FFI descriptor layer, so the residual is "a binding added without a
+> gate" rather than "nothing can bypass". And the run state is thread-local: a
+> thread outliving the run and latching afterwards is charged to nobody. Both are
+> in E26's write-up.
+
 A third exists in embryo: `perturb.posix/handler` records a transcript and
 `perturb.script/replay-handler` replays it. That is the out-of-process half —
 a trace checked offline, or replayed to re-derive the ledger, without the
