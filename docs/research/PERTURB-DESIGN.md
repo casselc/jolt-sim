@@ -72,6 +72,7 @@ The complete current tally of claims this document made and then refuted:
 | 39 ◆ | `perturb.cap`'s stated rationale: a runtime guard is always a deferred static check in disguise | `casselc/db`'s R6 pre-probe reads SQLite's `sqlite3_get_autocommit` **before** issuing `BEGIN`, to detect that the library's own depth bookkeeping has diverged from the engine. No static checker of the Clojure program can know that flag. There is a class of runtime guard that is not a deferred static check, and the rationale does not distinguish it | E26 |
 | 40 ◆ | E16 nonclaim 2: "0 attributable syscalls" is **attribution by instrument** — a sixth path would be invisible — and `RUNTIME-OBLIGATION-BRIEF`'s monitor-soundness premise built on that sampled window | refuted **by construction**. `jolt.sim.runtime` fails *closed*: an intercepted descriptor with no registered handler throws before any OS access, and the failure is **latched in run state so application code cannot catch it and make the run succeed**. Boundary completeness becomes a per-run invariant, not a measurement, and the enumerated-declared-bindings blind spot disappears. perturb forked its runtime, so this is available to it | E26 |
 | 41 ◆ | §5: "**perturb has no code**", and ladder step 1 (jolt-tcp connection lifecycle) is the first checkable target | both false at HEAD. `perturb/src/` is 14,248 lines across 26 namespaces including the checker §5 called "the next step"; and step 1's contract is sourced from the jolt-tcp README, which is the **server handler** contract — the shape E24 proved unexpressible on all four axes at once. §5 was never revised after E15 | E26 |
+| 42 † | E26 finding 8: `MUST_CLOSE`-as-a-**state** is a cheaper substitute for Fowler's `cancel` **term** | **half right, and the half matters.** Fowler §1.4 names *two* quandaries of silent discard: a developer gets no feedback for an unfinished protocol, **and** "the peer may be left waiting forever". A state discharges the first — an unfinished protocol is not at a terminal state — and cannot touch the second, because a state is a fact about the holder. `E-Cancel` creates a zapper thread, `E-Zap` propagates transitively, and `E-ReceiveZap`/`E-CloseZap` **raise in the peer**, which T-Cancel's note says is what stops cancellation violating progress. The mechanism is strictly weaker, with a sharp sufficiency condition: **no peer whose progress depends on being told**. True of db's transaction, false of `perturb.http`'s `ServerConn` | E27 |
 
 ‡ Eight rows are the exception the sentence above does not cover: 17 and 18
 arrived from re-examining the argument and from the literature; 27–29 came from
@@ -87,7 +88,7 @@ accordingly: nothing in E20 or E21 was executed. Note the shape of 30–32: E20
 refuted four of my claims from abstracts, and reading the papers refuted three
 of E20's — two of them in the direction of *more* work, not less.
 
-† Rows 36–37 are the same case one step further out: E25 read the two papers
+† Rows 36–37 and 42 are the same case one step further out: E25 read the two papers
 that *were* in hand and refuted a reason recorded in §1.2 and a hypothesis
 recorded in Appendix D.8. Like 27–32, no artifact produced them. Rows 33–35, by
 contrast, came from running code (E22, E23, E24) and are covered by the standing
@@ -104,7 +105,7 @@ worse ratio than E20's literature survey achieved and was obtained for a
 fraction of the effort. The standing commitment covers rows 1–26 and 33–35.
 
 **How to read this document.** §1 is the settled design, stated once in final
-corrected form. §2 is the divergence register. §3 is the findings E1–E26, each
+corrected form. §2 is the divergence register. §3 is the findings E1–E27, each
 stated as currently believed rather than as first written. §4 is the open
 questions. §5 is the v0 ladder. §6 is the nonclaims. Appendix A is the
 correction history, Appendix B holds the superseded ladders in full,
@@ -4425,6 +4426,110 @@ out-of-process half of `RUNTIME-OBLIGATION-BRIEF`.
    cross-reference was found in either lane's documents; that is not the same as
    having asked.
 
+### E27 — Fowler read in full: `MUST_CLOSE`-as-a-state discharges one of the two quandaries, and the paper names both
+
+E26 finding 8 proposed a fifth mechanism for `abort!`, cheaper than §4.6's four:
+discharge the obligation by entering a **state** whose only legal outgoing edge
+is the destructor, as `casselc/db` does with `:poisoned`, rather than adding a
+`cancel` **term**. §4.6's list was built on E20's reading of this paper's
+*abstract*, which E21 had already caught being wrong once. The text is now in
+hand (`papers/POPL19-exceptional-asynchronous-session-types.pdf`), so the
+proposal can be checked against it before anything is built.
+
+**The paper states exactly what explicit cancellation buys, and it is two
+things, not one.** §1.4, on the quandaries of silently discarded endpoints:
+
+> First, a developer receives no feedback if they accidentally forget to finish
+> a protocol implementation. Second, if an exception is raised in an evaluation
+> context that captures an open endpoint then **the peer may be left waiting
+> forever**.
+
+and, on the mechanism:
+
+> Explicit cancellation neatly handles failure while **ruling out accidentally
+> incomplete implementations** and **providing a mechanism for notifying peers**
+> when an exception is raised.
+
+**A state discharges the first and not the second.** Entering `:poisoned` makes
+an unfinished protocol a *checkable* condition — the capability is not at a
+terminal state, so the obligation is outstanding, which is precisely "the
+developer receives feedback". It does nothing whatever about the peer, because a
+state is a fact about the holder.
+
+The operational content the state does not have is explicit in the semantics:
+
+- `E-Cancel` does not merely mark the endpoint; it **creates a zapper thread**,
+  and `E-Zap` propagates cancellation transitively through the values sitting in
+  the cancelled endpoint's buffer.
+- `E-ReceiveZap` and `E-CloseZap` **raise an exception in the peer**. This is
+  load-bearing, not a convenience: T-Cancel's own note says "Naïvely
+  implemented, cancellation violates progress: a thread could discard an
+  endpoint, leaving a peer waiting forever. We avoid this pitfall by raising an
+  exception when a communication action would wait forever due to cancellation."
+
+**So the state/term distinction is not a cheaper encoding of one mechanism. It
+is a strictly weaker mechanism, and the condition under which it suffices is
+sharp: the capability must have no peer whose progress depends on being told.**
+
+That condition is *satisfied* by db's transaction — `sqlite3_close_v2` disposes
+of it and nothing is blocked waiting. It is *violated* by `perturb.http`'s
+`ServerConn`, where the counterparty is a client holding an open socket. E26
+finding 8 was therefore right about db and wrong as a general replacement, and
+§4.6's list gains the piece with that condition attached rather than as a
+substitute for pieces 1–3.
+
+#### Three further things the full text settles
+
+**1. The asymmetry is deliberate and is about confluence.** There is *no*
+exception when sending to a cancelled peer, and §3.4 gives the critical pair
+that would be non-convergent if there were. The paper's own comment: "Not
+raising exceptions on sends to dead peers is standard in languages such as
+Erlang." Any perturb design that notifies peers must inherit this asymmetry —
+notify on receive and close, not on send — and the reason is a confluence
+result, not an engineering preference.
+
+**2. The closure case is the one perturb cannot represent at all.** Fig. 2c: a
+function `f` captures endpoint `s`; the parent raises; `f` is discarded with the
+continuation, so `s` must be cancelled. `E-Raise` cancels "all endpoints in the
+enclosing pure context" automatically — §4.6 item 2 guessed this correctly. But
+cancelling a captured endpoint requires knowing what the closure captured, and
+§4.6's *first* forbidden shape is a capability passed to a function-valued
+parameter. **The cancellation item and the collection/callback item are the same
+item seen twice**, which is the second time this document has discovered that
+about `abort!` (E25 found it for regions). Links' implementation answer is
+telling and is squarely in the instrumented-core arm of §4.6's fork: it "adorns
+closures with an explicit environment field that can be directly inspected", and
+for each `do raise` compiles a function that "inspects all affected variables and
+cancels any affected endpoints in the continuation".
+
+**3. Linear effect handlers are explicitly future work in the source.** The
+paper's handler translation sets `raise r ↦ cancel r` — the resumption is
+cancelled rather than invoked, "assuming the natural extension of cancellation to
+arbitrary linear values, whereby all free names in the value are cancelled" — and
+then says: "A formalisation of linear effect handlers for session typing is
+outside the scope of this paper and left as future work." perturb's D4 handlers
+plus linearity *is* that combination. There is no off-the-shelf answer to take;
+E21's tally row 30 stands, and the gap is acknowledged in the source rather than
+merely unnoticed by this document.
+
+#### E27's own nonclaims
+
+1. **Nothing was executed.** This is a reading, in the E21/E25 mould.
+2. **The sufficiency condition is stated, not proved.** "No peer whose progress
+   depends on being told" is a criterion extracted from the paper's rationale,
+   not a theorem about perturb's capabilities. Which of perturb's declared
+   capabilities satisfy it has not been enumerated — `ServerConn` plainly does
+   not, and db's transaction plainly does, and nothing between them has been
+   examined.
+3. **EGV is a concurrent calculus and perturb has no concurrency.** Every
+   peer-notification result here is about configurations with a peer thread.
+   perturb's contention axis is untested (I20), so the setting in which the
+   second quandary bites has never been run.
+4. **`E-Raise`'s automatic cancellation was read, not costed.** That EGV inserts
+   the cancels says nothing about what inserting them over Jolt IR would cost, or
+   whether perturb's checker could identify "all endpoints in the enclosing pure
+   context" at all — which finding 2 above suggests it currently cannot.
+
 ## 4. Open questions
 
 Q1–Q5 are §4.1–§4.5; §4.6 collects open items that never carried a Q number.
@@ -4847,6 +4952,29 @@ Recorded here so they are not lost between sections. None of these is decided.
      `⨸`/raise machinery exists to stop it hanging; a perturb buffer or cursor
      has none. What survives for `ServerConn` is the *obligation* to leave the
      wire consistent, which is an axiom, not a typing rule.
+  5. **`MUST_CLOSE` as a state rather than a `cancel` term** (E26 finding 8,
+     scoped by E27). On `abort!` the capability enters a state whose only legal
+     outgoing edge is the destructor — `casselc/db`'s `:poisoned`, h11's
+     `MUST_CLOSE`. No new term, and no live-capability set enumerated at abort
+     sites, so it is cheaper than 1 and 2 together. **It is sufficient exactly
+     when piece 4 is vacuous**: Fowler §1.4 names two quandaries of silent
+     discard, and a state discharges only the first (an unfinished protocol is
+     not at a terminal state) while doing nothing about the second (the peer
+     waiting forever), because a state is a fact about the holder. True of a
+     database transaction; false of `ServerConn`. Read piece 5 as pieces 1–3
+     collapsed for the peerless case, not as a replacement for them.
+
+  **Pieces 2 and the callback item are the same item.** EGV's `E-Raise` cancels
+  "all endpoints in the enclosing pure context", and Fig. 2c makes the hard case
+  explicit: a closure captures an endpoint, the closure is discarded with the
+  continuation, so the endpoint must be cancelled. Identifying that endpoint
+  requires knowing what the closure captured — and a capability passed to a
+  function-valued parameter is the *first* forbidden shape in the item above.
+  Links resolves it in the instrumented arm: it adorns closures with an
+  inspectable environment field and compiles, per `do raise`, a function that
+  inspects the affected variables. This is the second time a cancellation
+  question has turned out to be the collection/callback question wearing
+  different clothes; E25 found the same for regions.
 
   Still the highest-value item the queue did not contain (Appendix D.3), and now
   the one item on this list with a written specification.
