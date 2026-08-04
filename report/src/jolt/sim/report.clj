@@ -35,8 +35,9 @@
   other's document shape rather than guessing a shared schema.
 
   Determinism: the view models contain only ordered data (event vectors, a
-  sorted tag-count map, caller- or document-ordered monitor decisions, a fixed
-  result-section order) and the rendered HTML embeds no wall-clock time,
+  sorted tag-count map, caller- or document-ordered monitor decisions, fixed
+  known result sections followed by canonically ordered forward sections) and
+  the rendered HTML embeds no wall-clock time,
   random ids, unordered map iteration, absolute host paths, environment data,
   or machine identity. Rendering the same document and options twice produces
   byte-identical HTML.
@@ -49,6 +50,7 @@
             [clojure.string :as string]
             [jolt.fs :as fs]
             [jolt.sim.case-outcome :as case-outcome]
+            [jolt.sim.report.outbox :as outbox]
             [jolt.sim.report-template :refer [embedded-html]]
             [jolt.sim.trace :as trace]
             [selmer.parser :as selmer]
@@ -60,7 +62,7 @@
 
 (def case-outcome-view-model-version
   "Version of the Case/Outcome view-model shape this namespace emits."
-  1)
+  2)
 
 (def invalid-monitor-result
   "Type value for a malformed supplied monitor decision."
@@ -294,25 +296,46 @@
 
 (def ^:private result-section-keys
   ;; Fixed display order for the known whole-application result sections of a
-  ;; completed Case/Outcome value. Absent sections are simply absent from the
-  ;; view model; unknown keys remain visible only in the value and document
-  ;; EDN projections.
-  [:application :http :receiver :routes :sqlite :capacity :fault :admission
-   :schedule :clean?])
+  ;; completed Case/Outcome value. This contains every section in the current
+  ;; canonical outbox family. Absent sections are simply absent; forward or
+  ;; application-specific keys follow these rows in canonical key order.
+  [:terminal :boundary-log :clock :application :http :receiver :routes
+   :sqlite :persistence :capacity :fault :admission :schedule :cleanup
+   :clean?])
+
+(def ^:private result-section-key-set
+  (set result-section-keys))
+
+(defn- result-section-row [known? k value]
+  {:key-edn (trace/canonical-edn k)
+   :known? known?
+   :section-kind-name (if known? "known" "forward")
+   :edn (trace/canonical-edn value)})
 
 (defn- result-sections
   "Projects the known whole-application sections present in an ordinary
-  completed result, in the fixed `result-section-keys` order. Each row is
-  {:name .. :edn ..} with byte-stable ordinary-value EDN; absent sections are
-  simply absent while a present nil section is still shown."
+  completed result. Known rows use fixed `result-section-keys` order, followed
+  by every unknown/forward row in canonical key order. Each row carries
+  byte-stable key and value EDN. Absent sections are absent while a present nil
+  section remains visible."
   [result]
   (if (map? result)
-    (into []
-          (keep (fn [k]
-                  (when (contains? result k)
-                    {:name (name k)
-                     :edn (trace/canonical-edn (get result k))})))
-          result-section-keys)
+    (let [known
+          (into []
+                (keep (fn [k]
+                        (when (contains? result k)
+                          (result-section-row true k (get result k)))))
+                result-section-keys)
+          forward-keys
+          (->> (keys result)
+               (remove result-section-key-set)
+               ;; Match jolt.sim.trace's canonical map-key ordering rather
+               ;; than ordinary host comparison or insertion order.
+               (sort-by (comp pr-str trace/canonical-value)))]
+      (into known
+            (map (fn [k]
+                   (result-section-row false k (get result k))))
+            forward-keys))
     []))
 
 (defn- monitor-decision-row
@@ -333,7 +356,7 @@
   the known result sections, :failed and :worker-error add canonical :error
   EDN, and :timeout adds its :reason. Flags and EDN text are explicit for
   absent fields so the template never guesses."
-  [outcome]
+  [scenario outcome]
   (let [status (:status outcome)
         exit (:exit outcome)
         base {:outcome-status status
@@ -348,15 +371,21 @@
               :has-error false
               :error-edn nil
               :sections []
-              :has-sections false}]
+              :has-sections false
+              :outbox-journey nil
+              :has-outbox-journey false}]
     (case status
       :completed
-      (let [sections (result-sections (:result outcome))]
+      (let [result (:result outcome)
+            sections (result-sections result)
+            journey (outbox/project scenario result)]
         (assoc base
                :has-value true
-               :value-edn (trace/canonical-edn (:result outcome))
+               :value-edn (trace/canonical-edn result)
                :sections sections
-               :has-sections (pos? (count sections))))
+               :has-sections (pos? (count sections))
+               :outbox-journey journey
+               :has-outbox-journey (some? journey)))
 
       :failed
       (assoc base
@@ -393,8 +422,12 @@
   result, error EDN of a `:failed`/`:worker-error` outcome, or
   the `:deadline` reason of a `:timeout`. For a completed whole-application
   result, the known sections named by `result-section-keys` are projected in
-  that fixed order when present; absent sections are simply absent, and
-  unknown keys remain visible only in the value and document EDN. The ordered
+  that fixed order when present; absent sections are simply absent, and every
+  unknown/forward section follows in deterministic canonical key order. The
+  exact ordinary Case is also rendered as the canonical replay coordinate.
+  Completed results from the four canonical outbox scenarios gain a pure,
+  evidence-only journey projection; missing optional evidence stays missing.
+  The ordered
   monitor decisions keep document order and gain `:status-name`, `:id-edn`,
   and `:detail-edn` rendering projections. `:canonical-edn` is the
   byte-stable EDN of the complete validated document."
@@ -412,6 +445,8 @@
       :mode (:mode ordinary-case)
       :mode-name (name (:mode ordinary-case))
       :input-edn (trace/canonical-edn (:input ordinary-case))
+      :replay-coordinate ordinary-case
+      :replay-coordinate-edn (trace/canonical-edn ordinary-case)
       :schedule schedule
       :schedule-edn (trace/canonical-edn schedule)
       :has-schedule (some? schedule)
@@ -419,7 +454,7 @@
       :has-monitors (pos? (count monitor-rows))
       :monitor-count (count monitor-rows)
       :canonical-edn (case-outcome/canonical-edn doc)}
-     (outcome-view-model ordinary-outcome))))
+     (outcome-view-model (:scenario ordinary-case) ordinary-outcome))))
 
 (defmacro ^:private embedded-template
   "Expands to the complete contents of the named template resource as a
