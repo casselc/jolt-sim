@@ -61,7 +61,7 @@ The complete current tally of claims this document made and then refuted:
 | 28 ‡ | graded/quantitative types decide the Content-Length obligation without a solver | Granule requires Z3; grades are parameterized *over* a decision procedure; and grades count **uses of a binder**, not octets | E20 |
 | 29 ‡ | sealing gives a principled account of "these bodies are axioms" | it **relocates** trust from a list to a scope; representation independence constrains clients, not implementations | E20 |
 | 30 ‡ | E20: §1.4's no-resumption rule places perturb **outside** the linearity/handler tension | reading Tang et al.: the mismatch has two halves — continuations *discarded* and continuations *multi-invoked*. `abort!` is the discard half. perturb is outside one half of two | E21 |
-| 31 ‡ | E20: exceptions require weakening linearity to **affinity** plus cancellation, and "perturb has the affinity" | reading Fowler et al.: §1.3 rejects affinity **by name** (silent discard is the defect); §1.4 is "**Linear** Types with Explicit Cancellation". E6's affine binding is the rejected option, not half the fix | E21 |
+| 31 ‡ | E20: exceptions require weakening linearity to **affinity** plus cancellation, and **"perturb has the affinity"** | the second clause is the error. Fowler et al. §1.3 rejects affine types by name (silent discard is the defect) and §1.4 is "**Linear** Types with Explicit Cancellation". Mostrous & Vasconcelos — recovered after E21 marked it unobtainable — *does* say "we relax the condition of linearity to that of **affinity**", so E20's vocabulary is theirs; but their affinity **is constituted by** the explicit `cancel` term. It is not a property perturb can hold half of, and E6's silent-discard binding is the version both papers reject | E21, refined by E25's recovery of the source |
 | 32 ‡ | E20: "grades count uses of a binder, not octets", so no graded system can state the Content-Length obligation | Doré, *Dependent Multiplicities* (2507.08759) — multiplicities **can** depend on run-time values. The conclusion (row 28) survives; the reason does not. The barrier is undecidability and hand-written proof terms, not expressiveness | E21 |
 | 33 | `report-limits` item 8: destructuring / `peek` / `last` / a computed index lose a capability **silently**, the likeliest false accept | probing all four: nothing is silent, every case draws two diagnostics. The real defect was a **false reject on idiomatic Clojure**, caused by an arity check | E22 |
 | 34 | E15/E17/E18's blind-spot lists are the checker's limits | they omit **higher-order capability passing** entirely — `(f c)` has no annotation, which is `with-open` and every reactor callback | E23, E24 |
@@ -3662,11 +3662,15 @@ not resolved and remain open.
 3. **The mapping onto perturb is still argument.** Confirming that Fowler et al.
    say X does not establish that X applies to a capability with no peer; claim 3
    item 4 says exactly where the transplant stops.
-4. **Two papers could not be obtained**, and are marked ✗ in Appendix D:
-   Parkinson & Bierman (POPL 2005) and Mostrous & Vasconcelos (2014), both
-   behind `dl.acm.org`'s Cloudflare challenge with no author-hosted copy found.
-   Claim 5's abstract-predicates half therefore rests on RustBelt plus E20's
-   second-hand reading, not on Parkinson & Bierman directly.
+4. **Two papers could not be obtained**, and were marked ✗ in Appendix D:
+   Parkinson & Bierman (POPL 2005) and Mostrous & Vasconcelos (2014).
+   **Since corrected: Mostrous & Vasconcelos was recovered** from its CC-BY HAL
+   deposit and is now in `docs/research/papers/`. It refines tally row 31 rather
+   than overturning it — the word "affinity" is theirs, but their affinity is
+   *constituted by* explicit cancellation, so "perturb has the affinity" is
+   still wrong. Parkinson & Bierman remains unobtained; Unpaywall reports it is
+   **not open access at all**, so claim 5's abstract-predicates half still rests
+   on RustBelt, which was read, plus E20's second-hand reading.
 5. **The brief that commissioned this contained a factual error, as it
    predicted.** It restated E20's "linearity must weaken to affinity **plus** an
    explicit cancellation obligation" as the thing to verify against Fowler et
@@ -5009,24 +5013,34 @@ paper rather than against a summary of it.
 | ✗ | **attempted and not obtained** during E21; the reason is given |
 | (none) | still verified for existence, venue, authors and year only. E20's method limitation applies unchanged |
 
-Two entries were attempted and failed, both behind `dl.acm.org`'s Cloudflare
-challenge with no author-hosted copy found: **Parkinson & Bierman** (D.5) and
-**Mostrous & Vasconcelos 2014** (cited by Fowler et al. as the origin of explicit
-cancellation, and not previously listed here — added to D.3 marked ✗). ACM was a
-dead end for automated fetching exactly as E20 recorded; everything obtained came
+Two entries were attempted and failed at first: **Parkinson & Bierman** (D.5)
+and **Mostrous & Vasconcelos 2014** (cited by Fowler et al. as the origin of
+explicit cancellation, and not previously listed here — added to D.3).
+**Mostrous & Vasconcelos has since been recovered** from its CC-BY HAL deposit
+and is marked ✔✔. **Parkinson & Bierman is not open access at all** (Unpaywall
+`is_oa=false`, no author or institutional copy located) and remains ✗ and unread.
+ACM was a dead end for automated fetching exactly as E20 recorded; everything obtained came
 from arXiv, LIPIcs, author pages, institutional repositories, `web.archive.org`
 (for `di.fc.ul.pt`, which redirect-loops), or GitHub.
 
-**Six of the papers read are now committed to the repository**, under
-`docs/research/papers/`, joining the two in D.8. The rule applied, and the
-per-paper evidence, is in `docs/research/papers/README.md`: a paper is
-redistributed **only** where the PDF or its canonical hosting page carries an
-explicit CC licence. ACM's `© Copyright held by the owner/author(s)` line is a
-copyright statement, not a redistribution grant, and papers carrying only that —
-Fowler, RustBelt, Astrauskas, Liquid Resource Types, Qian et al., Alms, Vault,
-seL4, Turnstile — are **not** included. Ghica & Smith's repository copy states
-"All rights reserved" explicitly. Das & Pfenning is committed in its **LIPIcs**
-form rather than the arXiv one, because only the former is CC-BY.
+**Twelve of the papers read are now committed to the repository**, under
+`docs/research/papers/`, joining the two in D.8 — fourteen files in all. The
+rule applied, and the per-paper evidence, is in
+`docs/research/papers/README.md`: a paper is
+redistributed **only** where there is an explicit licence grant. **Fourteen are
+now committed**, and the selection rule was itself corrected once: the first pass
+read the licence line printed on the PDF, which wrongly excluded five PACMPL
+papers whose CC-BY grant lives in the publisher's **Crossref metadata** rather
+than in the page furniture — Fowler et al., RustBelt, Astrauskas et al., Liquid
+Resource Types and Qian et al. are all `creativecommons.org/licenses/by/4.0`
+per `api.crossref.org`, and are included. ACM's
+`© Copyright held by the owner/author(s)` line remains a copyright statement and
+not a grant; papers whose Crossref record points at ACM's copyright policy —
+**Rudra, Alms, Vault, seL4, Turnstile** — are **not** included. Ghica & Smith's
+repository copy states "All rights reserved" explicitly, and Vasconcelos's I&C
+paper is open at Elsevier with no licence. Das & Pfenning is committed in its
+**LIPIcs** form rather than the arXiv one, because only the former is CC-BY.
+`docs/research/papers/README.md` carries the per-paper evidence.
 
 ### D.1 Typestate
 
@@ -5063,7 +5077,7 @@ form rather than the arXiv one, because only the former is CC-BY.
 | Chen, Balzer, Toninho, Ferrite | [arXiv:2009.13619](https://arxiv.org/abs/2009.13619), [arXiv:2205.06921](https://arxiv.org/abs/2205.06921) |
 | Scalas & Yoshida, lchannels, ECOOP 2016; Scalas, Yoshida, Benussi, Effpi, PLDI 2019 | Scala |
 | Deniélou & Yoshida, *Parameterised Multiparty Session Types*, FoSSaCS 2011 / LMCS 8(4) 2012 | [arXiv:1208.6483](https://arxiv.org/abs/1208.6483) |
-| ✔✔ Qian, Kavvos, Birkedal, *Client-Server Sessions in Linear Logic*, ICFP 2021 | [arXiv:2010.13926](https://arxiv.org/abs/2010.13926) — right theory for listener+N, **no implementation found**. **E21: negative claim confirmed** — every "implement" in the paper is an encoding *within* the calculus (CAS, a beauty-contest umpire), not software |
+| ✔✔ Qian, Kavvos, Birkedal, *Client-Server Sessions in Linear Logic*, ICFP 2021 | [10.1145/3473567](https://doi.org/10.1145/3473567) · **CC-BY, in repo:** `papers/ICFP21-client-server-sessions-in-linear-logic.pdf` — right theory for listener+N, **no implementation found**. **E21: negative claim confirmed** — every "implement" in the paper is an encoding *within* the calculus (CAS, a beauty-contest umpire), not software |
 | Balzer & Pfenning, *Manifest Sharing with Session Types*, ICFP 2017; *Manifest Deadlock-Freedom for Shared Session Types*, ESOP 2019 | trouble with a statically undetermined number of shared sessions — i.e. a server |
 | ✔✔ Das & Pfenning, *Session Types with Arithmetic Refinements*, CONCUR 2020 | [10.4230/LIPIcs.CONCUR.2020.13](https://doi.org/10.4230/LIPIcs.CONCUR.2020.13) · **CC-BY, in repo:** `papers/CONCUR20-session-types-with-arithmetic-refinements.pdf` (the LIPIcs version; the arXiv posting is not redistributable) — **refinements inside recursive session types ⇒ undecidable type equality**. **E21: confirmed**; cause is a reduction from two-counter-machine halting, needing arithmetic constraints **and recursion in the language of types** — which E19's transition-level placement never introduces |
 | Das & Pfenning, Rast, FSCD 2020 | the implementation of the above |
@@ -5077,8 +5091,8 @@ form rather than the arXiv one, because only the former is CC-BY.
 | --- | --- |
 | Orchard & Yoshida, *Effects as Sessions, Sessions as Effects*, POPL 2016 | the two-way embedding — "the protocol **is** the effect signature" |
 | ✔✔ Tang, Hillerström, Lindley, Morris, *Soundly Handling Linearity*, POPL 2024 (distinguished paper) | [arXiv:2307.09383](https://arxiv.org/abs/2307.09383) · **CC-BY, in repo:** `papers/POPL24-soundly-handling-linearity.pdf` — Links' soundness bug (the paper says "**long-standing**"; it states no duration); control-flow linearity; the price list for reopening D3. **E21: confirmed, and E20's use of it overstated** — the mismatch has two halves, *discarded* and *multi-invoked*, and `abort!` is the first (tally row 30) |
-| ✔✔ Fowler, Lindley, Morris, Decova, *Exceptional Asynchronous Session Types: Session Types without Tiers*, POPL 2019 | [slindley/papers/zap.pdf](https://homepages.inf.ed.ac.uk/slindley/papers/zap.pdf) — **~~affinity~~ LINEARITY + explicit cancellation**, still the highest-value unadopted item. **E21: E20 had the mechanism backwards** — §1.3 rejects affine types by name; §1.4 is "*Linear* Types with Explicit Cancellation" (tally row 31) |
-| ✗ Mostrous & Vasconcelos, *Affine Sessions*, 2014 | the origin of explicit cancellation, per Fowler et al. §1.4. **Not obtained** (Springer; no open copy found). Everything recorded about it here is Fowler et al.'s characterisation, including the warning not to read their "affine" as affine typing |
+| ✔✔ Fowler, Lindley, Morris, Decova, *Exceptional Asynchronous Session Types: Session Types without Tiers*, POPL 2019 | [slindley/papers/zap.pdf](https://homepages.inf.ed.ac.uk/slindley/papers/zap.pdf) · **CC-BY, in repo:** `papers/POPL19-exceptional-asynchronous-session-types.pdf` — **~~affinity~~ LINEARITY + explicit cancellation**, still the highest-value unadopted item. **E21: E20 had the mechanism backwards** — §1.3 rejects affine types by name; §1.4 is "*Linear* Types with Explicit Cancellation" (tally row 31) |
+| ✔✔ Mostrous & Vasconcelos, *Affine Sessions*, COORDINATION 2014 | [10.1007/978-3-662-43376-8_8](https://doi.org/10.1007/978-3-662-43376-8_8) · **CC-BY via [hal-01290071](https://inria.hal.science/hal-01290071), in repo:** `papers/COORDINATION14-affine-sessions.pdf` — the origin of explicit cancellation. **Recovered after E21 marked it ✗**, and it refines row 31: the paper *does* say "We relax the condition of linearity to that of **affinity**, by which channels exhibit **at most** the behaviour prescribed by their types" — so E20's vocabulary came from here. What does not follow is that perturb "has the affinity" |
 | Brady, *Programming and Reasoning with Algebraic Effects and Dependent Types*, ICFP 2013; *Resource-Dependent Algebraic Effects*, TFP 2014; *State Machines All The Way Down*, ML 2017 | Idris `Control.ST`; closest existing design |
 | Brachthäuser, Schuster, Ostermann, *Effects as Capabilities*, OOPSLA 2020; *Effects, Capabilities, and Boxes*, OOPSLA 2022 | Effekt — **vocabulary warning**: its "capability" is handler evidence, not a linear resource |
 | Schuster et al., *From Capabilities to Regions*, OOPSLA 2023 | |
@@ -5100,7 +5114,7 @@ form rather than the arXiv one, because only the former is CC-BY.
 | Petricek, Orchard, Mycroft, *Coeffects*, ICFP 2014 | framework, not a mechanism |
 | Marshall, Vollmer, Orchard, *Linearity and Uniqueness: An Entente Cordiale*, ESOP 2022 | the citation to use **if** grading is reconsidered for §1.2's axis list |
 | Marshall & Orchard, *Replicate, Reuse, Repeat*, 2022 | [arXiv:2203.12875](https://arxiv.org/abs/2203.12875) — session types as grades |
-| ✔✔ Knoth, Wang, Reynolds, Polikarpova, Hoffmann, *Liquid Resource Types*, ICFP 2020 | [arXiv:2006.16233](https://arxiv.org/abs/2006.16233) — **confirmed verbatim**: "more expressive proof techniques admitting value-dependent bounds rely on handwritten proofs. Liquid resource types combine the best of these approaches, using logical refinements..." Value-dependent counting ⇒ refinements ⇒ SMT |
+| ✔✔ Knoth, Wang, Reynolds, Polikarpova, Hoffmann, *Liquid Resource Types*, ICFP 2020 | [10.1145/3408988](https://doi.org/10.1145/3408988) · **CC-BY, in repo:** `papers/ICFP20-liquid-resource-types.pdf` (the published version; the arXiv posting is not redistributable) — **confirmed verbatim**: "more expressive proof techniques admitting value-dependent bounds rely on handwritten proofs. Liquid resource types combine the best of these approaches, using logical refinements..." Value-dependent counting ⇒ refinements ⇒ SMT |
 | ✔✔ Lehmann, Geller, Vazou, Jhala, *Flux: Liquid Types for Rust*, PLDI 2023 | [flux-pldi23.pdf](https://ranjitjhala.github.io/static/flux-pldi23.pdf) · **CC-BY, in repo:** `papers/PLDI23-flux-liquid-types-for-rust.pdf` — **nearest system to perturb's shape. E21: every conjunct confirmed** — indexed mutable locations, ownership-based substructural reasoning, strong updates, and loop invariants synthesised by the Liquid Fixpoint Horn solver. Reaching this class costs SMT + a Horn solver + indexed locations |
 | Sammler, Lepigre, Krebbers, Memarian, Dreyer, Garg, *RefinedC*, PLDI 2021 | [10.1145/3453483.3454036](https://dl.acm.org/doi/10.1145/3453483.3454036) — ownership + refinement **without SMT**, via Lithium |
 | Vazou et al., abstract refinements, ESOP 2013; *LiquidHaskell in the real world* | already cited in §1.3/Q2 |
@@ -5118,8 +5132,8 @@ form rather than the arXiv one, because only the former is CC-BY.
 | Cardelli, Donahue, Jordan et al., *Modula-3 Report*, SRC-RR-52 | **partial revelation** — graded disclosure, the one classical answer to rights amplification |
 | Morris, *Protection in Programming Languages*, CACM 16(1), 1973 | [10.1145/361932.361937](https://dl.acm.org/doi/pdf/10.1145/361932.361937) — sealer/unsealer pairs; **fits two-machine operations better than ML modules** |
 | Matthews & Ahmed, *Parametric Polymorphism through Run-Time Sealing*, ESOP 2008 | [10.1007/978-3-540-78739-6_2](https://link.springer.com/chapter/10.1007/978-3-540-78739-6_2) |
-| ✗ Parkinson & Bierman, *Separation logic and abstraction*, POPL 2005 | [10.1145/1040305.1040326](https://dl.acm.org/doi/10.1145/1040305.1040326) — **abstract predicates**. **Not obtained** (ACM Cloudflare; no author-hosted copy found). E20's claim 5 therefore rests on RustBelt, which *was* read, plus second-hand reading of this |
-| ✔✔ Jung, Jourdan, Krebbers, Dreyer, *RustBelt*, POPL 2018 | [plv.mpi-sws.org PDF](https://plv.mpi-sws.org/rustbelt/popl18/paper.pdf) — **confirmed verbatim**: "for each new Rust library that uses unsafe features, we can say what verification condition it must satisfy". §1.2: "library-specific verification condition". *Scope:* discharged in Coq against a semantic model of the whole language |
+| ✗ Parkinson & Bierman, *Separation logic and abstraction*, POPL 2005 | [10.1145/1040305.1040326](https://dl.acm.org/doi/10.1145/1040305.1040326) — **abstract predicates**. **Not obtained, and now known why**: Unpaywall reports `is_oa=false` — it is not open access anywhere, and no author or institutional copy was located. E20's claim 5 therefore rests on RustBelt, which *was* read and is in `papers/`, plus second-hand reading of this. The only reference E21 attempted and still has not read |
+| ✔✔ Jung, Jourdan, Krebbers, Dreyer, *RustBelt*, POPL 2018 | [plv.mpi-sws.org PDF](https://plv.mpi-sws.org/rustbelt/popl18/paper.pdf) · **CC-BY, in repo:** `papers/POPL18-rustbelt-securing-the-foundations-of-rust.pdf` — **confirmed verbatim**: "for each new Rust library that uses unsafe features, we can say what verification condition it must satisfy". §1.2: "library-specific verification condition". *Scope:* discharged in Coq against a semantic model of the whole language |
 | *RustHornBelt*, PLDI 2022; *RefinedRust*, PLDI 2024 | [10.1145/3519939.3523704](https://dl.acm.org/doi/10.1145/3519939.3523704) |
 | Jung, Dang, Kang, Dreyer, *Stacked Borrows*, POPL 2020; Tree Borrows, PLDI 2025 | [plv.mpi-sws.org/rustbelt/stacked-borrows](https://plv.mpi-sws.org/rustbelt/stacked-borrows/) |
 | Jung et al., *Miri*, POPL 2026 | [10.1145/3776690](https://dl.acm.org/doi/abs/10.1145/3776690) — **a dynamic checker for the trusted core**; cheap and perturb has no analogue |
@@ -5135,7 +5149,7 @@ form rather than the arXiv one, because only the former is CC-BY.
 
 | ref | where |
 | --- | --- |
-| ✔✔ Astrauskas, Matheja, Poli, Müller, Summers, *How Do Programmers Use Unsafe Rust?*, OOPSLA 2020 | [ETH PDF](https://pm.inf.ethz.ch/publications/AstrauskasMathejaMuellerPoliSummers20.pdf) — **92.3% ≤10% confirmed verbatim, but the denominator is "all crates", 76.4% of which contain no unsafe at all.** The authors' own conclusion: of the 21.3% that do, 24.6% exceed 20%, so "**we cannot claim that developers use unsafe Rust sparingly**". Do not quote 92.3% to argue trusted cores are small |
+| ✔✔ Astrauskas, Matheja, Poli, Müller, Summers, *How Do Programmers Use Unsafe Rust?*, OOPSLA 2020 | [ETH PDF](https://pm.inf.ethz.ch/publications/AstrauskasMathejaMuellerPoliSummers20.pdf) · **CC-BY, in repo:** `papers/OOPSLA20-how-do-programmers-use-unsafe-rust.pdf` — **92.3% ≤10% confirmed verbatim, but the denominator is "all crates", 76.4% of which contain no unsafe at all.** The authors' own conclusion: of the 21.3% that do, 24.6% exceed 20%, so "**we cannot claim that developers use unsafe Rust sparingly**". Do not quote 92.3% to argue trusted cores are small |
 | ✔✔ Bae, Kim, Askar, Lim, Kim, *Rudra*, SOSP 2021 | [author PDF](https://taesoo.kim/pubs/2021/bae:rudra.pdf) — **264 bugs in 145 packages = 51.6% of memory-safety bugs reported to RustSec since 2016; 112 advisories, 76 CVEs. Confirmed.** Denominator correction: 43k *downloaded*, **33k analysed** (7k did not compile, 2k no Rust code, 0.7k bad metadata) |
 | ✔✔ *A Grounded Conceptual Model for Ownership Types in Rust*, 2023 | [arXiv:2309.04134](https://arxiv.org/abs/2309.04134) · **CC-BY, in repo:** `papers/grounded-conceptual-model-for-ownership-types-in-rust.pdf` — not in E20. Participants predicted the borrow checker's reason for rejection in **78%** of cases but could only **fix** the program in **46%**, and build a counterexample in **31%**. The measured usability cost of a substructural rejection (§4.6's join item) |
 | Qin, Chen, Yu, Song, Zhang, PLDI 2020 | [10.1145/3385412.3386036](https://dl.acm.org/doi/10.1145/3385412.3386036) — all memory-safety bugs involved unsafe; "interior unsafe" |
