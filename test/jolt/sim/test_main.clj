@@ -3,6 +3,7 @@
             [jolt.example.outbox-test]
             [jolt.maelstrom.echo-sim-test]
             [jolt.maelstrom.echo-test]
+            [jolt.sim.case-outcome-test]
             [jolt.sim.completion-test]
             [jolt.sim.explore-states-test]
             [jolt.sim.explore-test]
@@ -29,6 +30,7 @@
         (test/run-tests 'jolt.example.outbox-test
                         'jolt.maelstrom.echo-sim-test
                         'jolt.maelstrom.echo-test
+                        'jolt.sim.case-outcome-test
                         'jolt.sim.completion-test
                         'jolt.sim.explore-states-test
                         'jolt.sim.explore-test
