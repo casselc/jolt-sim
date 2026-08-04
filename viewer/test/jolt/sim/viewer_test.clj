@@ -124,7 +124,7 @@
   (doseq [[mutation reason]
           [[#(assoc % :surprise true) :unknown-keys]
            [#(assoc % :capability-token "short") :weak-capability-token]
-           [#(assoc % :port 0) :invalid-port]
+           [#(assoc % :port -1) :invalid-port]
            [#(assoc % :max-document-bytes 0) :invalid-max-document-bytes]
            [#(assoc % :allowed-scenarios #{'unqualified})
             :invalid-allowed-scenarios]
