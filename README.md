@@ -538,9 +538,11 @@ fresh-process supervisor, and shrink a failure:
 
 The adapter validates the ordered plan set before generation. Hegel owns the
 choice and shrink spans; each generated or replayed case still gets a new
-worker process. A non-completed process outcome can be promoted to a stable
+worker process. A timeout or application failure can be promoted to a stable
 property failure with `require-completed!`, while an application-specific
-invariant supplies its own stable failure origin and evidence.
+invariant supplies its own stable failure origin and evidence. A
+`:worker-error` instead aborts the Hegel run as infrastructure: dependency,
+process bootstrap, and result-protocol failures are not useful shrink targets.
 
 When the future count is known but materializing an explicit plan domain is
 undesirable, the property body can generate a schedule directly:
@@ -875,9 +877,15 @@ complete socket/pipe/native-memory cleanup:
 ```sh
 export JOLT_SIM_BIN=/path/to/current-sim/target/sim/jolt
 export JOLT_SIM_PROJECT_DIR=/absolute/path/to/jolt-sim
-"$JOLT_SIM_BIN" -A:tcp-bencode-hegel-test -m hegel.install
-"$JOLT_SIM_BIN" -M:tcp-bencode-hegel-test
+script/run-hegel-gates.sh tcp-bencode-hegel-test
 ```
+
+The runner keeps fresh HOME/cache/temp state separate from one complete
+`JOLT_GITLIBS` dependency cache, pre-resolves both the parent and nested-worker
+aliases, installs the pinned Hegel native library once, and retains its full
+gate root and transcript. This avoids turning a missing Git dependency into a
+generated counterexample. Set `JOLT_SIM_GATE_PARENT` to choose the parent of
+the never-overwritten gate directory.
 
 This is an unchanged-library integration witness, not a replacement TCP or
 bencode implementation. The current bencode profile carries UTF-8 text and
@@ -905,8 +913,7 @@ export JOLT_SIM_BIN=/path/to/current-sim/target/sim/jolt
 export JOLT_SIM_PROJECT_DIR=/absolute/path/to/jolt-sim
 "$JOLT_SIM_BIN" -M:outbox-delivery-test
 "$JOLT_SIM_BIN" -M:outbox-delivery-sim-test
-"$JOLT_SIM_BIN" -A:outbox-delivery-hegel-test -m hegel.install
-"$JOLT_SIM_BIN" -M:outbox-delivery-hegel-test
+script/run-hegel-gates.sh outbox-delivery-hegel-test
 export JOLT_SIM_CRASH_ARTIFACT_DIR="$PWD/target/outbox-crash-artifacts"
 "$JOLT_SIM_BIN" -M:outbox-crash-recovery-test
 ```

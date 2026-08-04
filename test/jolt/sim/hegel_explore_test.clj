@@ -12,6 +12,14 @@
 
 (def ^:dynamic *process-config* nil)
 
+;; This bounds the launcher, dependency resolution, namespace loading, and the
+;; tiny scenario together; it is not a simulated application deadline. Keep it
+;; aligned with the cold-worker completion budget in explore_process_test.
+;; A deliberately blocked scenario belongs in a separate test with a shorter,
+;; discriminating timeout.
+(def ^:private completion-timeout-ms 20000)
+(def ^:private kill-grace-ms 500)
+
 (defn- required-environment [name]
   (let [value (System/getenv name)]
     (when-not (and (string? value) (seq value))
@@ -50,8 +58,8 @@
                     (process-config)
                     {:scenario
                      'jolt.sim.fixtures.explore-scenarios/independent-three
-                     :timeout-ms 5000
-                     :kill-grace-ms 500})
+                     :timeout-ms completion-timeout-ms
+                     :kill-grace-ms kill-grace-ms})
                    plans))
                  schedule (:schedule outcome)
                  start-order
@@ -110,8 +118,8 @@
                     (process-config)
                     {:scenario
                      'jolt.sim.fixtures.explore-scenarios/independent-three
-                     :timeout-ms 5000
-                     :kill-grace-ms 500})
+                     :timeout-ms completion-timeout-ms
+                     :kill-grace-ms kill-grace-ms})
                    3))
                  schedule (:schedule outcome)
                  start-order
