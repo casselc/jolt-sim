@@ -9,32 +9,38 @@
    0x80, and 0xff octets) at the fixed smoke capacities, the second with one
    captured first-poll EINTR. Each witness carries one of the two
    discriminating first-poll admission plans, so both release orders hold
-   outside generation. Real/sim parity is deliberately NOT rerun in this lane;
-   the existing real-plus-hermetic PR #28 gate (:outbox-delivery-test) remains
-   the parity evidence for the unchanged application.
+   outside generation. Real/hermetic parity is deliberately not rerun per
+   generated case: the dedicated close/reopen integration gate
+   (:outbox-delivery-test) proves the canonical command through this same
+   ordinary two-connection path in both modes. Generated payload cases remain
+   hermetic-only.
 
    Every generated case draws a Hegel-owned, shrinkable scenario input --
    command payload octet vector, stream capacity, pipe capacity, an optional
    captured poll EINTR activation ordinal, and one of two discriminating
    first-poll admission plans (receiver reactor before HTTP reactor, or the
-   reverse) -- and runs the unchanged fixture once in a fresh sim-enabled Jolt
-   worker through jolt.sim.process-explorer/run-case (protocol-v2 :input). The
-   worker loads jolt.sim.fixtures.outbox-delivery-scenarios, builds the shared
-   hermetic worlds from the drawn input (including the exact SQLite plan world
-   parameterized with the same payload), wraps the composed handlers with
-   jolt.sim.ffi-schedule semantic selector steps over occurrence 1 of each
-   reactor's poll role, and returns one canonical evidence map. Request and
-   entity IDs stay fixed for this slice; extreme 1--2 byte HTTP fragmentation
-   is explicitly later work.
+   reverse) -- and runs the unchanged outbox-delivery-reopen fixture (a clean
+   two-connection close/reopen of one selected file-backed SQLite filename)
+   once in a fresh sim-enabled Jolt worker through
+   jolt.sim.process-explorer/run-case (protocol-v2 :input). The worker loads
+   jolt.sim.fixtures.outbox-delivery-scenarios, builds the shared hermetic
+   worlds from the drawn input (including the exact reopen-delivery SQLite
+   plan world parameterized with the same payload and selecting the bare
+   outbox.db filename into the file-image substrate), wraps the composed
+   handlers with jolt.sim.ffi-schedule semantic selector steps over
+   occurrence 1 of each reactor's poll role, and returns one canonical
+   evidence map. Request and entity IDs stay fixed for this slice; extreme
+   1--2 byte HTTP fragmentation is explicitly later work.
 
-    Each completed case checks exact command/store/delivery/ack results derived
-    from the drawn input, exact SQLite plan consumption, handler-only routing,
-    fault activation identity, bounded capacity participation, exact plan-order
-    coordinator releases with quiesced diagnostics and per-role poll label
-    counts, and all-world cleanup. A regression failure carries the bounded
-    drawn input so Hegel can replay and shrink it: a non-:completed outcome is
-    enriched with :input (and the worker :artifact-dir coordinates when
-    retained) around jolt.sim.hegel/require-completed!, and every assertion
+     Each completed case checks exact command/store/delivery/ack results derived
+     from the drawn input, exact reopen SQLite plan consumption, a small
+     immutable file-image continuity persistence projection, handler-only
+     routing, fault activation identity, bounded capacity participation, exact
+     plan-order coordinator releases with quiesced diagnostics and per-role
+     poll label counts, and all-world cleanup. A regression failure carries the
+     bounded drawn input so Hegel can replay and shrink it: a non-:completed
+     outcome is enriched with :input (and the worker :artifact-dir coordinates
+     when retained) around jolt.sim.hegel/require-completed!, and every assertion
     site throws a typed ex-info carrying :hegel/origin and the same input.
 
     The retry lane at the bottom of this namespace is the two-attempt
@@ -76,7 +82,7 @@
     "sqlite3_bind_blob64" "sqlite3_column_blob"})
 
 (def ^:private scenario-sym
-  'jolt.sim.fixtures.outbox-delivery-scenarios/exercise-with-capacities)
+  'jolt.sim.fixtures.outbox-delivery-scenarios/exercise-reopen-with-capacities)
 
 (def ^:private retry-scenario-sym
   'jolt.sim.fixtures.outbox-delivery-scenarios/exercise-retry-recv-reset)
@@ -111,6 +117,16 @@
   :jolt.sim.fixtures.outbox-delivery-scenarios/receiver-poll)
 (def ^:private http-poll-step-id
   :jolt.sim.fixtures.outbox-delivery-scenarios/http-poll)
+
+;; The modeled outbox row identity mirrored from the ordinary lane's
+;; outbox_id-1 primary key, used by the persistence projection's
+;; close-time/final image status assertions. The Hegel parent cannot load the
+;; scenario namespace, so the literal is mirrored here exactly as the worker's
+;; SQLite plan world builds it.
+(def ^:private modeled-outbox-key
+  [:jolt.sim.sqlite/row
+   :outbox/rows
+   [{:type :integer :value 1}]])
 
 ;; The retry lane's fixed two-step admission gate, mirrored from the scenario
 ;; namespace's own ::receiver-ack-send and ::delivery-client-recv literals
@@ -345,7 +361,7 @@
                  input
                  {:evidence-class (str (class evidence))}))
     (let [{:keys [application http receiver routes sqlite capacity fault
-                  admission clean?]} evidence]
+                  admission persistence clean?]} evidence]
       ;; Evidence is the versioned boundary between the fresh worker and this
       ;; parent property. Reject missing, extra, or malformed fields here so a
       ;; truthy value or a host predicate exception cannot masquerade as a
@@ -353,7 +369,7 @@
       (when-not (exact-map-keys?
                  evidence
                  #{:application :http :receiver :routes :sqlite :capacity
-                   :fault :admission :clean?})
+                   :fault :admission :persistence :clean?})
         (violation "jolt.sim.outbox-delivery-hegel-test/evidence-keys"
                    input
                    {:keys (when (map? evidence)
@@ -511,14 +527,98 @@
                      input
                      {:missing (vec (sort (remove (set symbols)
                                                   required-foreign-symbols)))})))
-      ;; Exact SQLite plan consumption: all 24 delivery plans consumed
-      ;; (command, post-COMMIT reload, mark-delivered! transaction, final
-      ;; reload); no live connections or statements leaked past the flow.
-      (when-not (= {:plan-index 24 :plan-count 24 :open-dbs 0 :active-stmts 0}
+      ;; Exact SQLite plan consumption: all 25 reopen-delivery plans consumed
+      ;; (connection 0: schema + command transaction + close; connection 1:
+      ;; reopen PRAGMA, reload scans, mark-delivered! transaction, final
+      ;; reloads, close); no live connections or statements leaked past the
+      ;; flow.
+      (when-not (= {:plan-index 25 :plan-count 25 :open-dbs 0 :active-stmts 0}
                    sqlite)
         (violation "jolt.sim.outbox-delivery-hegel-test/sqlite-plans"
                    input
                    {:sqlite sqlite}))
+      ;; Persistence: the ordinary close/reopen lane publishes a small
+      ;; immutable projection from the SQLite world state plus the controlled
+      ;; effect trace. Two sequential modeled connections opened and closed
+      ;; the selected file-backed filename; no selected filename stays open;
+      ;; the committed pending image recorded at the first close after COMMIT
+      ;; equals the second close image with only that modeled outbox row's
+      ;; status changed back to pending; the second close image equals the
+      ;; final published image (delivered). This proves two sequential modeled
+      ;; connections and pending-to-delivered file-image continuity in each
+      ;; fresh hermetic worker; it does not prove process restart,
+      ;; real-SQLite parity in this lane, power-loss/WAL/torn-write behavior,
+      ;; multi-connection concurrency, or exactly-once delivery.
+      (when-not (exact-map-keys?
+                 persistence
+                 #{:filename :connection-count :open-count :close-count
+                   :first-close-image :second-close-image :final-image
+                   :open-images})
+        (violation "jolt.sim.outbox-delivery-hegel-test/persistence-shape"
+                   input
+                   {:persistence persistence}))
+      (let [first-image (:first-close-image persistence)
+            second-image (:second-close-image persistence)
+            final-image (:final-image persistence)]
+        (when-not (= "outbox.db" (:filename persistence))
+          (violation "jolt.sim.outbox-delivery-hegel-test/persistence-filename"
+                     input
+                     {:persistence persistence}))
+        (when-not (= 2 (:connection-count persistence))
+          (violation
+           "jolt.sim.outbox-delivery-hegel-test/persistence-connection-count"
+           input
+           {:persistence persistence}))
+        (when-not (= 2 (:open-count persistence))
+          (violation "jolt.sim.outbox-delivery-hegel-test/persistence-open-count"
+                     input
+                     {:persistence persistence}))
+        (when-not (= 2 (:close-count persistence))
+          (violation
+           "jolt.sim.outbox-delivery-hegel-test/persistence-close-count"
+           input
+           {:persistence persistence}))
+        (when-not (= #{} (:open-images persistence))
+          (violation
+           "jolt.sim.outbox-delivery-hegel-test/persistence-open-images"
+           input
+           {:persistence persistence}))
+        (when-not (= {:type :text :value "pending"}
+                     (get-in first-image [modeled-outbox-key "status"]))
+          (violation
+           "jolt.sim.outbox-delivery-hegel-test/persistence-first-close-status"
+           input
+           {:persistence persistence}))
+        (when-not (= {:type :text :value "delivered"}
+                     (get-in second-image [modeled-outbox-key "status"]))
+          (violation
+           "jolt.sim.outbox-delivery-hegel-test/persistence-second-close-status"
+           input
+           {:persistence persistence}))
+        (when-not (= {:type :text :value "delivered"}
+                     (get-in final-image [modeled-outbox-key "status"]))
+          (violation
+           "jolt.sim.outbox-delivery-hegel-test/persistence-final-status"
+           input
+           {:persistence persistence}))
+        ;; Marking changes exactly one modeled field: the first close image is
+        ;; the second close image with only the modeled outbox row's status
+        ;; cell changed back to pending. This catches a vacuous reopen whose
+        ;; second connection is seeded from plans or loses another table while
+        ;; still returning the expected projected application rows.
+        (when-not (= first-image
+                     (assoc-in second-image
+                               [modeled-outbox-key "status"]
+                               {:type :text :value "pending"}))
+          (violation
+           "jolt.sim.outbox-delivery-hegel-test/persistence-marking-diff"
+           input
+           {:persistence persistence}))
+        (when-not (= second-image final-image)
+          (violation
+           "jolt.sim.outbox-delivery-hegel-test/persistence-final-image"
+           input
+           {:persistence persistence})))
       ;; Bounded capacity participation under the drawn bounds: configuration
       ;; echoes, observed occupancy inside the configured bounds, and -- at
       ;; the smoke-proven floor capacity 8 -- at least one capacity-limited

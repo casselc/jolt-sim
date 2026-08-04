@@ -17,16 +17,18 @@
   the closed schema, build the hermetic worlds, run run-controlled directly,
   and project one canonical evidence map.
 
-    Real/sim parity is intentionally NOT rerun here: the existing
-    real-plus-hermetic PR #28 gate (:outbox-delivery-test) remains the parity
-    evidence for the unchanged application. Every case additionally wraps the
-    already composed canonical handlers with jolt.sim.ffi-schedule semantic
-    selector steps over occurrence 1 of the receiver-poll role and occurrence 1
-    of the HTTP-poll role, in one of two drawn release orders (see the
-    admission section below). Broader schedule search and extreme 1--2 byte
-    HTTP fragmentation remain omitted: generated payload semantics,
-    conservative capacity fragmentation, captured EINTR, and the two
-    discriminating first-poll admission orders are the feature boundary.
+    Real/hermetic parity is intentionally not rerun per generated case: the
+    dedicated close/reopen integration gate (:outbox-delivery-test) proves the
+    canonical command through this same ordinary two-connection application
+    path in both modes. The generated payload campaign remains hermetic-only.
+    Every case additionally wraps the already composed canonical handlers with
+    jolt.sim.ffi-schedule semantic selector steps over occurrence 1 of the
+    receiver-poll role and occurrence 1 of the HTTP-poll role, in one of two
+    drawn release orders (see the admission section below). Broader schedule
+    search and extreme 1--2 byte HTTP fragmentation remain omitted: generated
+    payload semantics, conservative capacity fragmentation, captured EINTR,
+    and the two discriminating first-poll admission orders are the feature
+    boundary.
 
     The exercise-retry-recv-reset scenario at the bottom of this namespace is
     the two-attempt at-least-once companion: it drives the UNCHANGED
@@ -68,6 +70,13 @@
 ;; lane exercises the semantic-selector coordinator.
 (def ^:private supported-admission-plans
   #{:receiver-poll-then-http-poll :http-poll-then-receiver-poll})
+
+;; The bare filename selected by the hermetic SQLite file-image substrate for
+;; the ordinary close/reopen lane. Only the ordinary lane opts this exact
+;; filename into the persistent file-image substrate; the retry lane keeps its
+;; same-open in-memory connection and is untouched here. This is a fixed
+;; scenario-side constant, not part of the closed generated input schema.
+(def ^:private outbox-db-filename "outbox.db")
 
 (defn- invalid-scenario-input [reason data]
   (ex-info
@@ -148,6 +157,16 @@
        set
        sort
        vec))
+
+(defn- effect-foreign-symbol
+  "Returns the foreign-function symbol for one effect-trace entry, or nil when
+   the entry is not a foreign-function call. Used by the persistence projection
+   to count sqlite3_open / sqlite3_close_v2 entries directly from the
+   controlled effect trace."
+  [entry]
+  (let [descriptor (:descriptor entry)]
+    (when (= :foreign-function (:kind descriptor))
+      (:symbol descriptor))))
 
 (defn- interrupt-poll-plan
   "One captured-EINTR fault plan that fires exactly once on the poll call
@@ -308,26 +327,29 @@
   "Builds the hermetic SQLite and POSIX handler packs from `input`, wraps the
    already composed canonical handlers with jolt.sim.ffi-schedule semantic
    selector steps for the drawn first-poll admission plan, runs the unchanged
-   outbox-delivery fixture once under run-controlled, and returns one
-   canonical evidence map: the ordinary application/HTTP/receiver projections
-   plus route, SQLite, capacity, fault, admission, and cleanup evidence
-   sufficient to catch a model bypass. The command is the fixture's
-   default-command with its :payload rebound to the drawn octet vector; the
-   exact SQLite plan world is parameterized with the same payload, so plan
-   binds and application binds cannot diverge.
+   outbox-delivery-reopen fixture (a clean two-connection close/reopen of one
+   selected file-backed SQLite filename) once under run-controlled, and
+   returns one canonical evidence map: the ordinary application/HTTP/receiver
+   projections plus route, SQLite, capacity, fault, admission, persistence,
+   and cleanup evidence sufficient to catch a model bypass. The command is
+   the fixture's default-command with its :payload rebound to the drawn octet
+   vector; the exact SQLite plan world is built from the reopen-delivery
+   statement plans parameterized with the same payload and selects the bare
+   outbox.db filename into the file-image substrate, so plan binds and
+   application binds cannot diverge.
 
    The coordinator wraps only the one canonical poll handler key with two
    semantic :selector steps (occurrence 1 of each reactor's poll role, in the
    plan's release order); every other key and every unlabeled or client poll
    delegates to the original handler unchanged. check-complete! runs only
-   after exercise-outbox-delivery returns -- and therefore after HTTP client
-   close, HTTP server stop/join, SQLite close, delivery close, and receiver
-   stop -- so the coordinator's completeness check observes a quiesced
-   application. On body failure the coordinator is aborted, the wrapper waits
-   up to one bounded deadline for selected calls to drain, records bounded
-   coordinator diagnostics, and rethrows the original application exception
-   as the primary cause. Final lifecycle drainage remains run-controlled's
-   responsibility.
+   after exercise-outbox-delivery-reopen returns -- and therefore after HTTP
+   client close, HTTP server stop/join, both SQLite connection close/reopen
+   boundaries, delivery close, and receiver stop -- so the coordinator's
+   completeness check observes a quiesced application. On body failure the
+   coordinator is aborted, the wrapper waits up to one bounded deadline for
+   selected calls to drain, records bounded coordinator diagnostics, and
+   rethrows the original application exception as the primary cause. Final
+   lifecycle drainage remains run-controlled's responsibility.
 
    `overrides` is the process-explorer worker's runtime-overrides map (empty
    for a no-schedule case; :future-schedule when supplied). It is merged over
@@ -341,7 +363,8 @@
         mem (memory/world)
         target (net/target-descriptor)
         sqlite-world
-        (sqlite/world mem (plans/delivery-statement-plans payload))
+        (sqlite/world mem (plans/reopen-delivery-statement-plans payload)
+                       {:persistent-filenames #{outbox-db-filename}})
         ;; The 64-octet native progress ceiling and the finite per-socket
         ;; receive FIFO and self-pipe capacities are the per-case variables;
         ;; every framed octet crosses the capacity model.
@@ -386,11 +409,15 @@
                 overrides)
          (fn []
            (try
-             (let [fixture-result (fixture/exercise-outbox-delivery command)]
+             (let [fixture-result
+                   (fixture/exercise-outbox-delivery-reopen
+                    (str "sqlite:" outbox-db-filename)
+                    command)]
                ;; check-complete! runs only after the fixture returns, so
-               ;; client close, both server stop/join boundaries, and SQLite
-               ;; cleanup precede the coordinator's completeness check over a
-               ;; quiesced application.
+               ;; client close, both server stop/join boundaries, and both
+               ;; SQLite connection close/reopen boundaries precede the
+               ;; coordinator's completeness check over a quiesced
+               ;; application.
                ((:check-complete! coord))
                fixture-result)
              (catch :default error
@@ -413,7 +440,32 @@
                     (catch :default _ nil))
                (throw error)))))
         result (:result controlled)
-        effect-trace (:effect-trace controlled)]
+        effect-trace (:effect-trace controlled)
+        ;; A small immutable persistence projection derived purely from the
+        ;; SQLite world state plus the controlled effect trace. It carries no
+        ;; handles, addresses, controllers, paths, or mutable values: the
+        ;; close-time/final images are the connection's immutable committed
+        ;; storage maps (tagged row identities to typed cell maps) and the
+        ;; open-image set holds selected filename strings. This is a
+        ;; file-image continuity witness over two sequential modeled
+        ;; connections in one fresh hermetic worker; it is not process
+        ;; restart, real-SQLite parity, power-loss/WAL/torn-write,
+        ;; multi-connection concurrency, or exactly-once delivery evidence.
+        sqlite-state (sqlite/state sqlite-world)
+        closed-db-evidence (:closed-db-evidence sqlite-state)
+        persistence
+        {:filename outbox-db-filename
+         :connection-count (:next-connection-id sqlite-state)
+         :open-count
+         (count (filter #(= "sqlite3_open" (effect-foreign-symbol %))
+                        effect-trace))
+         :close-count
+         (count (filter #(= "sqlite3_close_v2" (effect-foreign-symbol %))
+                        effect-trace))
+         :first-close-image (:committed (first closed-db-evidence))
+         :second-close-image (:committed (second closed-db-evidence))
+         :final-image (get (:images sqlite-state) outbox-db-filename)
+         :open-images (:open-images sqlite-state)}]
     {:application (:application result)
      :http (:http result)
      :receiver (:receiver result)
@@ -423,6 +475,7 @@
       (every? #(= :handler (:route %)) effect-trace)
       :foreign-symbols (foreign-symbols effect-trace)}
      :sqlite (sqlite/summary sqlite-world)
+     :persistence persistence
      :capacity {:stream (posix/capacity-summary posix-world)
                 :pipe (posix/pipe-capacity-summary posix-world)}
      :fault
@@ -453,31 +506,46 @@
               :posix (posix/clean? posix-world)}}))
 
 (defn ^{:jolt.sim/scenario true
-        :jolt.sim/accepts-input true} exercise-with-capacities
-  "Runs the unchanged jolt.sim.fixtures.outbox-delivery application once under
-  the shared hermetic SQLite plus POSIX loopback handler packs, parameterized
-  by one canonical input map:
+        :jolt.sim/accepts-input true} exercise-reopen-with-capacities
+  "Runs the unchanged jolt.sim.fixtures.outbox-delivery-reopen application once
+   under the shared hermetic SQLite plus POSIX loopback handler packs,
+   parameterized by one canonical input map:
 
-    {:payload           vector of at most 32 unsigned octets
-     :stream-capacity   8 | 16 | 32
-     :pipe-capacity     1 | 2 | 4
-     :poll-eintr-ordinal nil | 1 | 2 | 4 | 8
-     :admission-plan    :receiver-poll-then-http-poll |
-                        :http-poll-then-receiver-poll}
+     {:payload           vector of at most 32 unsigned octets
+      :stream-capacity   8 | 16 | 32
+      :pipe-capacity     1 | 2 | 4
+      :poll-eintr-ordinal nil | 1 | 2 | 4 | 8
+      :admission-plan    :receiver-poll-then-http-poll |
+                         :http-poll-then-receiver-poll}
 
-  A nil :poll-eintr-ordinal drives no fault frontend; a positive ordinal
-  fires one captured EINTR on that per-poll attempt ordinal. The
-  :admission-plan wraps the composed handlers with jolt.sim.ffi-schedule
-  semantic :selector steps over occurrence 1 of the receiver-poll role and
-  occurrence 1 of the HTTP-poll role on the shared poll handler key, released
-  in the plan's order; the evidence map carries :admission with plan-derived
-  release evidence, coordinator diagnostics, bounded per-label poll counts,
-  and a poll route projection. Request and entity IDs stay fixed at the
-  fixture's default-command values. Accepts the standard
-  jolt.sim.explore-worker protocol-v2 (runtime-overrides, input) arity used
-  by jolt.sim.process-explorer/run-case."
+   The ordinary application commits the pending outbox row over one HTTP ->
+   SQLite connection, that connection closes cleanly, and a freshly reopened
+   connection to the same selected file-backed 'outbox.db' filename reloads
+   the committed row, delivers it over the existing framed TCP/bencode path,
+   validates the correlated ack, durably marks it delivered, and closes. This
+   witnesses the committed pending row surviving a clean sequential
+   single-owner close/reopen of one modeled file-backed SQLite database in
+   each fresh hermetic worker; it does not prove process restart, real-SQLite
+   parity in this lane, power-loss/WAL/torn-write behavior, multi-connection
+   concurrency, or exactly-once delivery.
+
+   A nil :poll-eintr-ordinal drives no fault frontend; a positive ordinal
+   fires one captured EINTR on that per-poll attempt ordinal. The
+   :admission-plan wraps the composed handlers with jolt.sim.ffi-schedule
+   semantic :selector steps over occurrence 1 of the receiver-poll role and
+   occurrence 1 of the HTTP-poll role on the shared poll handler key, released
+   in the plan's order; the evidence map carries :admission with plan-derived
+   release evidence, coordinator diagnostics, bounded per-label poll counts,
+   and a poll route projection, plus a small immutable :persistence
+   projection (filename, sequential connection/open/close counts, the two
+   close-time committed images, the final published image, and the open-image
+   set) derived from the SQLite world state and the controlled effect trace.
+   Request and entity IDs stay fixed at the fixture's default-command values.
+   Accepts the standard jolt.sim.explore-worker protocol-v2
+   (runtime-overrides, input) arity used by
+   jolt.sim.process-explorer/run-case."
   ([input]
-   (exercise-with-capacities {} input))
+   (exercise-reopen-with-capacities {} input))
   ([overrides input]
    (validate-scenario-input! input)
    (evidence-for overrides input)))
