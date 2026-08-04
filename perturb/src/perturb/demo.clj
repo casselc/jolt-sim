@@ -120,6 +120,11 @@
                          (w/recv [:liar] 10 :perturb.demo/probe))
                        "NOT REJECTED"
                        (catch :default e (str (:perturb.effect/abort (ex-data e))))))))
+  ;; NOTE. This probe deliberately trips a LATCHING abort (`:unhandled-effect`).
+  ;; The demo is not run inside `perturb.effect/with-run`, so the fault is
+  ;; charged to the process-global orphan list and nothing here reads it. Do not
+  ;; wrap this function in `with-run` without moving the probe out: it would
+  ;; correctly fail the run.
   (println (str "    an unhandled effect -> "
                 (try (binding [fx/*handlers* {}] (w/recv [:x] 10 :perturb.demo/probe))
                      "NOT REJECTED"

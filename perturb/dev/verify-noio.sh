@@ -27,6 +27,18 @@
 # perturb.posix/handler inside the window. Run 2's window must contain socket()
 # and connect(). If it does not, run 1's clean window is meaningless.
 #
+# WHAT RUNS 1-4 DO NOT GIVE YOU, AND RUN 2b DOES. Everything above is a
+# MEASUREMENT of a window: E16 nonclaim 2 conceded that attribution is by
+# instrument, over enumerated bindings, so a sixth path is invisible to it.
+# perturb now also FAILS CLOSED — `perturb.posix/gate!` refuses a native
+# crossing with no handler in dynamic extent, before the library load, before
+# symbol resolution, before the syscall — and LATCHES the refusal in run state,
+# so a caller that catches the exception cannot make the run report success.
+# Run 2b is that mechanism's positive control: the same socket(2) as run 2,
+# written outside any handler, with the exception swallowed. Its window must be
+# clean AND its report must say all-handled? false. Runs 1 and 2 must both say
+# all-handled? true, over a required-symbol set, so neither can pass vacuously.
+#
 # WHAT strace CANNOT SEE, and why the in-process counter exists. `(load-library)`
 # with no argument is dlopen(NULL): it binds the process's own already-mapped
 # symbols and issues zero syscalls (run 4 demonstrates the instrument's blind
@@ -101,6 +113,21 @@ run "jolt -M:noio --touch-native" "$tmp/ctl" --touch-native
 ctl_net=$(window "$tmp/ctl" | grep -c -E '\b(socket|connect)\(' || true)
 
 echo "========================================================================"
+echo "RUN 2b — LATCH POSITIVE CONTROL. The same socket(2) as run 2, written"
+echo "  OUTSIDE any handler, with the caller catching the exception."
+echo "  Two things must hold: the window contains no socket/connect (fail closed"
+echo "  means refused BEFORE the crossing), and the run reports all-handled?"
+echo "  false anyway (the latch is not catchable away)."
+echo "========================================================================"
+run "jolt -M:noio --unhandled-native" "$tmp/latch" --unhandled-native
+latch_net=$(window "$tmp/latch" | grep -c -E '\b(socket|connect)\(' || true)
+latch_fired=$(grep -c 'LATCH FIRED' "$tmp/latch.out" || true)
+latch_false=$(grep -c 'all-handled?   false' "$tmp/latch.out" || true)
+clean_handled=$(grep -c 'all-handled?   true' "$tmp/clean.out" || true)
+ctl_handled=$(grep -c 'all-handled?   true' "$tmp/ctl.out" || true)
+vacuous=$(grep -c 'vacuous-run check  all-handled? false' "$tmp/clean.out" || true)
+
+echo "========================================================================"
 echo "RUN 3 — LEAK 2 (INHERITED I12), measured. Same scripted run, but the three"
 echo "  values are printed INSIDE the window with unmediated println."
 echo "========================================================================"
@@ -110,7 +137,7 @@ loud_w=$(window "$tmp/loud" | grep -c -E '\bwrite\(' || true)
 echo "========================================================================"
 echo "WHOLE-PROCESS network syscalls (not just the window)"
 echo "========================================================================"
-for f in clean ctl loud; do
+for f in clean ctl latch loud; do
   c=$(grep -c -E '\b(socket|connect|bind|listen|accept[0-9]*|sendto|recvfrom|sendmsg|recvmsg)\(' "$tmp/$f" || true)
   echo "  $f: $c"
 done
@@ -151,6 +178,31 @@ if [ "$ctl_net" -gt 0 ]; then
   echo "        -> the instrument is live, so the clean window is a measurement"
 else
   echo "  FAIL  positive control did not fire; the clean window proves nothing"; fail=1
+fi
+# --- the per-run invariant (E26 finding 3) --------------------------------
+# Runs 1 and 2 must report all-handled? true; run 2b must report it false and
+# must not have crossed. A run that simply performed no effect cannot pass:
+# perturb.noio's required-symbol set is asserted by the same report.
+if [ "$clean_handled" -gt 0 ] && [ "$ctl_handled" -gt 0 ]; then
+  echo "  PASS  per-run invariant: runs 1 and 2 both report all-handled? true"
+  echo "        (run 2 did real I/O — three C entry points, each gated inside a handler)"
+else
+  echo "  FAIL  per-run invariant: run1=$clean_handled run2=$ctl_handled all-handled? true"; fail=1
+fi
+if [ "$vacuous" -gt 0 ]; then
+  echo "  PASS  anti-vacuity: a run that performs no effect reports all-handled?"
+  echo "        false against the same required-symbol set, so the invariant"
+  echo "        cannot be satisfied by doing nothing"
+else
+  echo "  FAIL  anti-vacuity: a run with no effects was not rejected"; fail=1
+fi
+if [ "$latch_fired" -gt 0 ] && [ "$latch_false" -gt 0 ] && [ "$latch_net" -eq 0 ]; then
+  echo "  PASS  latch control: an unhandled native crossing was REFUSED before the"
+  echo "        syscall ($latch_net socket/connect in its window), and the run reports"
+  echo "        all-handled? false even though the caller caught the exception"
+else
+  echo "  FAIL  latch control: fired=$latch_fired all-handled-false=$latch_false"
+  echo "        socket/connect in window=$latch_net — the boundary is blind"; fail=1
 fi
 echo "  NOTE  leak 2 exhibit: $loud_w write() syscalls in the window when the same"
 echo "        scripted run prints its three values. Console output is real,"

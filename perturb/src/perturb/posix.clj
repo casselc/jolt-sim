@@ -19,6 +19,7 @@
   that from outside, with a positive control."
   (:require [clojure.string :as str]
             [jolt.ffi :as ffi]
+            [perturb.effect :as fx]
             [perturb.octet :as o]
             [perturb.cap :as cap]))
 
@@ -101,16 +102,34 @@
 (defn- count! [op]
   (swap! native-log (fn [m] (-> m (update :calls inc) (update-in [:by-op op] (fnil inc 0))))))
 
-(defn- sys-socket  [d t p]     (ensure-native!) (count! :socket)  (c-socket d t p))
-(defn- sys-connect [fd sa n]   (ensure-native!) (count! :connect) (c-connect fd sa n))
-(defn- sys-send    [fd p n fl] (ensure-native!) (count! :send)    (c-send fd p n fl))
-(defn- sys-recv    [fd p n fl] (ensure-native!) (count! :recv)    (c-recv fd p n fl))
-(defn- sys-close   [fd]        (ensure-native!) (count! :close)   (c-close fd))
-(defn- sys-bind    [fd sa n]   (ensure-native!) (count! :bind)    (c-bind fd sa n))
-(defn- sys-listen  [fd bl]     (ensure-native!) (count! :listen)  (c-listen fd bl))
-(defn- sys-accept  [fd sa sl]  (ensure-native!) (count! :accept)  (c-accept fd sa sl))
+(defn- gate!
+  "FAIL CLOSED, and do it first.
+
+  Every `sys-*` wrapper below begins here, and `ensure-native!` is reachable
+  only through them, so `perturb.effect/native!` runs before the library load,
+  before symbol resolution and before the syscall. If no handler is executing on
+  this thread the crossing is refused and latched into the run — it does not
+  fall through to the host.
+
+  This is the difference E26 finding 3 names. `native-log` still counts, and it
+  is still attribution by instrument in E16's sense. `gate!` is not an
+  instrument: it is a precondition, and the run it fails cannot be reported as
+  successful even if the caller swallows the exception."
+  [op]
+  (fx/native! (symbol "perturb.posix" (name op)))
+  (ensure-native!)
+  (count! op))
+
+(defn- sys-socket  [d t p]     (gate! :socket)  (c-socket d t p))
+(defn- sys-connect [fd sa n]   (gate! :connect) (c-connect fd sa n))
+(defn- sys-send    [fd p n fl] (gate! :send)    (c-send fd p n fl))
+(defn- sys-recv    [fd p n fl] (gate! :recv)    (c-recv fd p n fl))
+(defn- sys-close   [fd]        (gate! :close)   (c-close fd))
+(defn- sys-bind    [fd sa n]   (gate! :bind)    (c-bind fd sa n))
+(defn- sys-listen  [fd bl]     (gate! :listen)  (c-listen fd bl))
+(defn- sys-accept  [fd sa sl]  (gate! :accept)  (c-accept fd sa sl))
 (defn- sys-setsockopt [fd l o p n]
-  (ensure-native!) (count! :setsockopt) (c-setsockopt fd l o p n))
+  (gate! :setsockopt) (c-setsockopt fd l o p n))
 
 (defn absent-canary-probe
   "Call the canary symbol. Returns `:resolved` if it somehow came back (it
@@ -122,6 +141,25 @@
 
 (def ^:private AF-INET 2)
 (def ^:private SOCK-STREAM 1)
+
+(defn unhandled-native-probe
+  "POSITIVE CONTROL for the fail-closed boundary, in E16's discipline.
+
+  Calls the SAME `sys-socket` the `:connect` handler calls, with no handler in
+  dynamic extent, and CATCHES the exception — which is the point. A caller
+  catching the throw is exactly the attack the latch exists to defeat: this
+  returns normally, and the run's `perturb.effect/report` still says
+  `:all-handled? false`.
+
+  Two things must be true of a run of this probe, and `dev/verify-noio.sh`
+  checks both: the latch fires, and the strace window contains no `socket(2)`,
+  because the refusal happens before the crossing rather than after it.
+
+  If this ever returns `:crossed`, the gate has gone blind and every clean run
+  in this artifact means nothing."
+  []
+  (try (sys-socket AF-INET SOCK-STREAM 0) :crossed
+       (catch :default e [:refused (:perturb.effect/abort (ex-data e))])))
 
 ;; INHERITED I19: these are the C ABI's numbers, not perturb's, and they differ
 ;; per platform. Copied from <sys/socket.h>; nothing verifies them but a failing

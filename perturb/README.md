@@ -18,7 +18,7 @@ its reader and runtime, diverging only where semantics differ.
 | | claim | where it lives | verdict |
 | --- | --- | --- | --- |
 | 1 | wire bytes are unsigned octets, `0..255`, no `unchecked-byte` fold | `perturb/octet.clj`, `perturb/posix.clj` | **holds on the wire path**, by not routing wire bytes through a Jolt byte array at all — see below |
-| 2 | socket I/O goes through a declared effect with handlers; the same codec and session code run against a real socket and a scripted handler | `perturb/effect.clj`, `perturb/wire.clj`, `perturb/nrepl.clj`, `perturb/http.clj` | **holds for the socket, and a scripted run is now measured to perform no I/O** (`INHERITED.md` I11, closed). One leak remains and is deliberate: console output is unmediated `println` (I12), measured at 3 `write(2)` calls in the exhibit run |
+| 2 | socket I/O goes through a declared effect with handlers; the same codec and session code run against a real socket and a scripted handler | `perturb/effect.clj`, `perturb/wire.clj`, `perturb/nrepl.clj`, `perturb/http.clj` | **holds for the socket; a scripted run is measured to perform no I/O** (`INHERITED.md` I11, closed) **and the boundary now also fails closed and latches** — a native crossing with no handler in extent is refused before the syscall and the run cannot then be reported as successful, asserted per run over a required-symbol set with its own positive control. One leak remains and is deliberate: console output is unmediated `println` (I12), measured at 3 `write(2)` calls in the exhibit run |
 | 3 | the connection is a `unique` capability with typestate, closed exactly once, annotated as data a future checker could consume | `perturb/cap.clj`, `perturb/nrepl.clj`, `perturb/check.clj` | **the checker exists and rejects** — `jolt -M:check` refuses use-after-close, double-close, use-after-move and a dangling connection, statically, over real Jolt IR, across two protocols. `perturb.nrepl` and `perturb.http` both check above their abstraction boundary; what the rules **cannot say** about the second protocol is the more useful result (E18) |
 
 **Claim 1 needs its qualification stated up front.** `PERTURB-DESIGN` §1.5 and §8
@@ -75,6 +75,9 @@ $JOLT -M:http 7900
 # the no-I/O verifier: a full scripted session, and what it did or did not touch
 $JOLT -M:noio
 $JOLT -M:noio --touch-native   # positive control: one real connect()
+$JOLT -M:noio --unhandled-native  # positive control for the LATCH: a native
+                                  # crossing outside any handler, refused before
+                                  # the syscall and unsalvageable afterwards
 
 # the same thing under strace, with the control and a sensitivity check
 JOLT=/path/to/jolt/bin/jolt dev/verify-noio.sh
@@ -96,6 +99,10 @@ RUN 1  scripted only            0 syscalls attributable to perturb in the window
                                  from Chez's collector, printed, not filtered)
 RUN 2  positive control         socket() + connect() + close() appear; native-log
        (--touch-native)         reads {:library-loads 1 :calls 3}
+RUN 2b latch positive control   the SAME socket(2), written outside any handler,
+       (--unhandled-native)     with the exception caught: 0 syscalls in the window
+                                (refused before the crossing) and the run still
+                                reports all-handled? false
 RUN 3  leak-2 exhibit           exactly 3 write(2) calls — the console leak, sized
        (--print-inside)
 RUN 4  instrument sensitivity   (load-library)            -> 0 syscalls
@@ -110,13 +117,34 @@ all, so library loading and symbol resolution are covered by
 counts) and by an absent-symbol canary bound with `defcfn` at namespace load,
 while strace covers everything else.
 
+### And what is no longer only measured
+
+Everything above is a measurement of a window, and attribution by instrument:
+the counter counts the nine bindings perturb declares, so a tenth path would be
+invisible to it. Beside it there is now a **per-run invariant**. A native
+crossing with no handler executing on the thread is **refused before the library
+load, before symbol resolution and before the syscall**
+(`perturb.posix/gate!` → `perturb.effect/native!`), and the refusal is
+**latched** in the run's state, which nothing un-latches — so a caller that
+catches the exception cannot make the run report success.
+`perturb.effect/report` is the per-run verdict: no latched fault, no orphan
+fault, and every symbol in a **required set** actually reached, so a run that
+performed nothing cannot pass vacuously. `-M:noio` prints it and exits on it,
+and RUN 2b is its positive control.
+
+It is not a proof. It holds for the crossings that happened on the runs that
+executed, and it does not cover a raw `jolt.ffi/defcfn` binding called without
+going through `gate!` — the deliberately ungated `c-absent-canary` is the one
+such binding in the artifact today.
+
 ## What runs
 
 ```
 perturb.octet     unsigned octets 0..255; UTF-8 written over octets; the
                   interop seam that EXHIBITS what a Jolt byte array does
 perturb.effect    declared effects; perform validates the handler's result or
-                  aborts; no continuations (§1.4 / charter D4)
+                  aborts; no continuations (§1.4 / charter D4). Also the
+                  fail-closed native gate, the run latch and the per-run report
 perturb.wire      the socket effect, declared once. The only I/O the session
                   and codec code can name.
 perturb.bencode   sans-io codec over octets, E4's :ok / :need-more / :invalid
@@ -147,7 +175,8 @@ perturb.oracle    differential test against jolt.nrepl (jolt-core/jolt/nrepl.clj
 perturb.selftest  codec/octet tests
 perturb.noio      the no-I/O verifier for CLAIM 2: runs a full scripted session
                   between two markers so a tracer can see what it touched, and
-                  reports the instrumented native-call log and the canary
+                  reports the instrumented native-call log and the canary. Also
+                  the per-run boundary invariant and its latch positive control
 perturb.demo      the transcript and the per-claim evidence
 ```
 
