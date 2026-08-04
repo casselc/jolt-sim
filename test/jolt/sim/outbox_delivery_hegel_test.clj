@@ -62,10 +62,12 @@
             [hegel.core :as h]
             [hegel.generator :as g]
             [jolt.fs :as fs]
+            [jolt.sim.case-outcome :as case-outcome]
             [jolt.sim.hegel :as sim-hegel]
             [jolt.sim.process-explorer :as process-explorer]))
 
 (def ^:dynamic *process-config* nil)
+(def ^:dynamic *case-artifact-export-dir* nil)
 
 (def ^:private required-foreign-symbols
   #{"socket" "connect" "accept" "poll" "send" "recv" "close"
@@ -77,6 +79,10 @@
 
 (def ^:private retry-scenario-sym
   'jolt.sim.fixtures.outbox-delivery-scenarios/exercise-retry-recv-reset)
+
+(def ^:private case-outcome-filename "case-outcome.edn")
+(def ^:private delivery-monitor-id :outbox/delivery-invariants)
+(def ^:private retry-monitor-id :outbox/retry-invariants)
 
 ;; Ordered, discriminating boundaries rather than every integer in a range.
 ;; Hegel owns selection and shrinks sampled indexes toward the smoke-capacity/
@@ -663,13 +669,209 @@
                    input
                    {:clean? clean?})))))
 
+(def ^:private diagnostic-depth-limit 4)
+(def ^:private diagnostic-collection-limit 16)
+
+(defn- retainable-value
+  "Reduces arbitrary error data to bounded ordinary values without realizing
+   lazy or otherwise arbitrary sequences. The failure-retention path must
+   never hang or replace the primary error merely while explaining it."
+  ([value]
+   (retainable-value value 0))
+  ([value depth]
+   (cond
+     (nil? value) nil
+     (boolean? value) value
+     (number? value) value
+     (string? value) value
+     (char? value) value
+     (keyword? value) value
+     (symbol? value)
+     (if-let [ns (namespace value)]
+       (symbol ns (name value))
+       (symbol (name value)))
+     (>= depth diagnostic-depth-limit) (str (class value))
+     (record? value) (str (class value))
+     (map? value)
+     (into {}
+           (map (fn [[entry-key entry-value]]
+                  [(retainable-value entry-key (inc depth))
+                   (retainable-value entry-value (inc depth))]))
+           (take diagnostic-collection-limit value))
+     (set? value)
+     (into #{}
+           (map #(retainable-value % (inc depth)))
+           (take diagnostic-collection-limit value))
+     (vector? value)
+     (mapv #(retainable-value % (inc depth))
+           (take diagnostic-collection-limit value))
+     (sequential? value) (str (class value))
+     :else (str (class value)))))
+
+(defn- retained-error-detail [error]
+  (let [data (or (ex-data error) {})]
+    {:class (str (class error))
+     :message (or (ex-message error) (str error))
+     :data (retainable-value
+            (select-keys data
+                         [:hegel/origin :type :status :reason :exit :error
+                          :actual]))}))
+
+(defn- ordinary-process-outcome
+  "Projects process-explorer's supervisor result onto the closed ordinary
+   outcome accepted by case-outcome/document. PIDs, diagnostics, and artifact
+   paths stay in the surrounding forensic directory rather than entering the
+   deterministic document."
+  [outcome]
+  (case (:status outcome)
+    :completed {:status :completed
+                :result (:result outcome)
+                :exit (:exit outcome)}
+    :failed {:status :failed
+             :error (:error outcome)
+             :exit (:exit outcome)}
+    :timeout {:status :timeout
+              :reason :deadline
+              :exit (:exit outcome)}
+    :worker-error {:status :worker-error
+                   :error (:error outcome)
+                   :exit (get outcome :exit)}
+    (throw
+     (ex-info
+      "process explorer returned an unsupported outcome status"
+      {:type :jolt.sim.outbox-delivery-hegel-test/unsupported-outcome
+       :status (:status outcome)}))))
+
+(defn- monitor-id-for [scenario]
+  (cond
+    (= scenario scenario-sym) delivery-monitor-id
+    (= scenario retry-scenario-sym) retry-monitor-id
+    :else
+    (throw
+     (ex-info
+      "outbox Case/Outcome adapter received an unsupported scenario"
+      {:type :jolt.sim.outbox-delivery-hegel-test/unsupported-scenario
+       :scenario scenario}))))
+
+(defn- monitor-decision [scenario outcome verdict-error]
+  (let [completed? (= :completed (:status outcome))]
+    {:id (monitor-id-for scenario)
+     :status (cond
+               (not completed?) :inconclusive
+               verdict-error :violation
+               :else :pass)
+     :detail (cond
+               (not completed?)
+               (retainable-value
+                (select-keys outcome [:status :reason :exit :error]))
+
+               verdict-error
+               (retained-error-detail verdict-error)
+
+               :else nil)
+     :index nil}))
+
+(defn- case-document-for [scenario input outcome verdict-error]
+  (case-outcome/document
+   {:scenario scenario
+    :mode :hermetic
+    :input input
+    :schedule (:schedule outcome)}
+   (ordinary-process-outcome outcome)
+   [(monitor-decision scenario outcome verdict-error)]))
+
+(defn- case-outcome-path [artifact-dir]
+  (str (fs/path artifact-dir case-outcome-filename)))
+
+(defn- export-prefix [scenario lane ordinal]
+  (str (if (= scenario retry-scenario-sym)
+         "outbox-retry-"
+         "outbox-delivery-")
+       (name lane) "-" ordinal "-"))
+
+(defn- export-artifact-directory!
+  "Copies one complete run directory into a fresh, never-overwritten child of
+   the configured stable export root. A partial destination is deliberately
+   retained if copying fails."
+  [export-root scenario lane ordinal artifact-dir]
+  (fs/create-dirs export-root)
+  (let [destination
+        (str
+         (fs/create-temp-dir
+          {:dir export-root
+           :prefix (export-prefix scenario lane ordinal)}))]
+    (try
+      (fs/copy-tree artifact-dir destination)
+      destination
+      (catch :default error
+        (throw
+         (ex-info
+          "failed to copy the complete case artifact directory"
+          {:type :jolt.sim.outbox-delivery-hegel-test/case-export-failure
+           :artifact-dir artifact-dir
+           :export-dir destination}
+          error))))))
+
+(defn- persist-case-artifacts!
+  [scenario lane ordinal input outcome verdict-error artifact-dir export?]
+  (let [document (case-document-for scenario input outcome verdict-error)
+        document-path (case-outcome-path artifact-dir)]
+    (spit document-path (case-outcome/canonical-edn document))
+    {:case-outcome-path document-path
+     :export-dir
+     (when (and export?
+                (string? *case-artifact-export-dir*)
+                (seq *case-artifact-export-dir*))
+       (export-artifact-directory!
+        *case-artifact-export-dir* scenario lane ordinal artifact-dir))}))
+
+(defn- rethrow-with-artifact-error!
+  [primary artifact-dir artifact-error]
+  (if primary
+    (throw
+     (ex-info
+      (or (ex-message primary) (str primary))
+      (assoc (or (ex-data primary) {})
+             :artifact-dir artifact-dir
+             :case-artifact-error (retained-error-detail artifact-error)
+             :partial-export-dir (:export-dir (ex-data artifact-error)))
+      primary))
+    (throw
+     (ex-info
+      "failed to persist whole-application Case/Outcome artifacts"
+      {:type :jolt.sim.outbox-delivery-hegel-test/case-artifact-failure
+       :artifact-dir artifact-dir
+       :partial-export-dir (:export-dir (ex-data artifact-error))
+       :case-artifact-error (retained-error-detail artifact-error)}
+      artifact-error))))
+
+(defn- rethrow-with-persisted-artifacts!
+  "Rethrows the parent semantic failure while attaching both the transient
+   source and stable export coordinates. The original failure remains the
+   cause and supplies the message and all existing ex-data."
+  [primary artifact-dir export-dir]
+  (if (and (string? export-dir) (seq export-dir))
+    (throw
+     (ex-info
+      (or (ex-message primary) (str primary))
+      (assoc (or (ex-data primary) {})
+             :artifact-dir artifact-dir
+             :export-dir export-dir)
+      primary))
+    (throw primary)))
+
 (defn- check-case!
-  "Runs one fresh case for the drawn `input` against `scenario` and asserts
-   the full invariant set with `assert-fn` (called as (assert-fn input
-   outcome)). Throws on the first violation; returns nil on success.
-   Throwing (rather than returning false) is required inside a property
-   passed to a custom Hegel runner."
-  [scenario assert-fn input timeout-ms]
+  "Runs one fresh case for the drawn `input` against `scenario`, records the
+   closed Case/Outcome plus parent monitor decision in the worker artifact
+   directory, and asserts the full invariant set with `assert-fn` (called as
+   (assert-fn input outcome)). Every non-success keeps its original directory;
+   when a stable export root is configured it is copied there before rethrow.
+   One successful retry boundary witness is also exported for CI and humans.
+   The exceptional supervisor paths where child exit was not observed retain
+   and report their original directory without reading or copying it while the
+   child might still be alive. Throws on the first violation and returns
+   export coordinates on success."
+  [scenario assert-fn lane ordinal input timeout-ms]
   (let [base-config
         (merge (process-config)
                {:scenario scenario
@@ -699,10 +901,37 @@
          "jolt.sim.outbox-delivery-hegel-test/missing-artifact-directory"
          input
          {:status (:status outcome)}))
-      (assert-fn input outcome)
-      ;; Only a passing parent verdict authorizes deletion. Any worker,
-      ;; protocol, or semantic failure keeps the complete directory.
-      (fs/delete-tree artifact-dir)
+      (let [assertion-error
+            (try
+              (assert-fn input outcome)
+              (when-not (= :completed (:status outcome))
+                (ex-info
+                 "non-completed worker outcome escaped the parent assertion"
+                 {:type
+                  :jolt.sim.outbox-delivery-hegel-test/non-completed-accepted
+                  :status (:status outcome)}))
+              (catch :default error error))
+            export?
+            (or assertion-error
+                (and (= scenario retry-scenario-sym)
+                     (= :boundary lane)
+                     (= 1 ordinal)))
+            persisted
+            (try
+              (persist-case-artifacts!
+               scenario lane ordinal input outcome assertion-error
+               artifact-dir export?)
+              (catch :default artifact-error
+                (rethrow-with-artifact-error!
+                 assertion-error artifact-dir artifact-error)))]
+        (when assertion-error
+          (rethrow-with-persisted-artifacts!
+           assertion-error artifact-dir (:export-dir persisted)))
+        ;; Only a passing parent verdict after successful document creation
+        ;; (and requested export) authorizes deletion of the transient run
+        ;; tree. This is not a crash-durability claim.
+        (fs/delete-tree artifact-dir)
+        persisted)
       (catch :default error
         (let [data (ex-data error)]
           (if (and (string? artifact-dir)
@@ -744,9 +973,12 @@
    (let [started (System/nanoTime)]
      (case-progress! :outbox-delivery/case-start lane ordinal input nil)
      (try
-       (check-case! scenario assert-fn input timeout-ms)
+       (let [persisted
+             (check-case! scenario assert-fn lane ordinal input timeout-ms)]
        (case-progress! :outbox-delivery/case-finish lane ordinal input
-                       {:elapsed-ms (elapsed-ms started)})
+                       (cond-> {:elapsed-ms (elapsed-ms started)}
+                         (:export-dir persisted)
+                         (assoc :export-dir (:export-dir persisted)))))
        (catch :default error
          (case-progress!
           :outbox-delivery/case-failure lane ordinal input
@@ -756,8 +988,202 @@
            :data (select-keys
                   (or (ex-data error) {})
                   [:hegel/origin :type :status :reason :exit :error
-                   :input :actual :artifact-dir])})
+                   :input :actual :artifact-dir :export-dir
+                   :partial-export-dir :case-artifact-error])})
          (throw error))))))
+
+;; ---- Case/Outcome artifact adapter controls ------------------------------
+
+(deftest case-outcome-adapter-covers-supervisor-outcomes
+  (let [input {:payload [0 255]
+               :stream-capacity 8
+               :pipe-capacity 1
+               :poll-eintr-ordinal nil}
+        cases
+        [{:process {:status :completed
+                    :schedule nil
+                    :result {:clean? true}
+                    :exit 0}
+          :expected {:status :completed
+                     :result {:clean? true}
+                     :exit 0}
+          :monitor :pass}
+         {:process {:status :failed
+                    :schedule nil
+                    :error {:type :scenario-failure}
+                    :exit 0}
+          :expected {:status :failed
+                     :error {:type :scenario-failure}
+                     :exit 0}
+          :monitor :inconclusive}
+         {:process {:status :timeout
+                    :schedule nil
+                    :reason :deadline
+                    :exit 143}
+          :expected {:status :timeout :reason :deadline :exit 143}
+          :monitor :inconclusive}
+         {:process {:status :worker-error
+                    :schedule nil
+                    :error {:phase :spawn}}
+          :expected {:status :worker-error
+                     :error {:phase :spawn}
+                     :exit nil}
+          :monitor :inconclusive}]]
+    (doseq [{:keys [process expected monitor]} cases]
+      (let [document (case-document-for scenario-sym input process nil)]
+        (is (= {:scenario scenario-sym
+                :mode :hermetic
+                :input input
+                :schedule nil}
+               (case-outcome/restore-case document)))
+        (is (= expected (case-outcome/restore-outcome document)))
+        (is (= monitor
+               (:status (first (case-outcome/restore-monitors document)))))))))
+
+(deftest semantic-violation-retains-canonical-case-outcome
+  (let [artifact-dir
+        (str (fs/create-temp-dir
+              {:prefix "jolt-sim-case-outcome-violation-"}))
+        export-root
+        (str (fs/create-temp-dir
+              {:prefix "jolt-sim-case-outcome-violation-export-"}))
+        outcome {:status :completed
+                 :schedule nil
+                 :result {:application {:status :unexpected}}
+                 :exit 0
+                 :artifact-dir artifact-dir}
+        caught (atom nil)]
+    (spit (str (fs/path artifact-dir "request.edn")) "request")
+    (try
+      (binding [*process-config* {}
+                *case-artifact-export-dir* export-root]
+        (with-redefs
+          [process-explorer/run-case (fn [_] outcome)]
+          (try
+            (check-case!
+             scenario-sym
+             (fn [input _]
+               (violation "artifact/control" input {:observed :bad}))
+             :generated 7 {:payload []} 1000)
+            (catch :default error
+              (reset! caught error)))))
+      (is (some? @caught))
+      (is (= artifact-dir (:artifact-dir (ex-data @caught))))
+      (is (fs/exists? artifact-dir))
+      (let [exported (:export-dir (ex-data @caught))
+            document
+            (case-outcome/read-edn
+             (slurp (case-outcome-path artifact-dir)))
+            exported-document
+            (case-outcome/read-edn
+             (slurp (str (fs/path exported case-outcome-filename))))
+            monitor (first (case-outcome/restore-monitors document))]
+        (is (and (string? exported) (seq exported)))
+        (is (fs/exists? exported))
+        (is (= document exported-document))
+        (is (fs/exists? (str (fs/path exported "request.edn"))))
+        (is (= :completed (:status (case-outcome/restore-outcome document))))
+        (is (= delivery-monitor-id (:id monitor)))
+        (is (= :violation (:status monitor)))
+        (is (= "artifact/control"
+               (get-in monitor [:detail :data :hegel/origin]))))
+      (finally
+        (when (fs/exists? artifact-dir)
+          (fs/delete-tree artifact-dir))
+        (when (fs/exists? export-root)
+          (fs/delete-tree export-root))))))
+
+(deftest successful-retry-boundary-exports-before-transient-cleanup
+  (let [artifact-dir
+        (str (fs/create-temp-dir
+              {:prefix "jolt-sim-case-outcome-success-"}))
+        export-root
+        (str (fs/create-temp-dir
+              {:prefix "jolt-sim-case-outcome-export-"}))
+        outcome {:status :completed
+                 :schedule nil
+                 :result {:application {:attempts [1 2]}
+                          :clean? {:memory true :sqlite true :posix true}}
+                 :exit 0
+                 :artifact-dir artifact-dir}]
+    (spit (str (fs/path artifact-dir "request.edn")) "request")
+    (try
+      (let [persisted
+            (binding [*process-config* {}
+                      *case-artifact-export-dir* export-root]
+              (with-redefs
+                [process-explorer/run-case (fn [_] outcome)]
+                (check-case!
+                 retry-scenario-sym (fn [_ _] nil)
+                 :boundary 1 {:payload []} 1000)))
+            exported (:export-dir persisted)
+            document
+            (case-outcome/read-edn
+             (slurp (str (fs/path exported case-outcome-filename))))
+            monitor (first (case-outcome/restore-monitors document))]
+        (is (and (string? exported) (seq exported)))
+        (is (false? (fs/exists? artifact-dir)))
+        (is (fs/exists? (str (fs/path exported "request.edn"))))
+        (is (= retry-monitor-id (:id monitor)))
+        (is (= :pass (:status monitor)))
+        (is (nil? (:detail monitor))))
+      (finally
+        (when (fs/exists? artifact-dir)
+          (fs/delete-tree artifact-dir))
+        (when (fs/exists? export-root)
+          (fs/delete-tree export-root))))))
+
+(deftest retained-error-details-never-realize-lazy-sequences
+  (let [realized? (atom false)
+        hostile (map (fn [value]
+                       (reset! realized? true)
+                       value)
+                     (range))
+        retained (retainable-value {:hostile hostile})]
+    (is (false? @realized?))
+    (is (string? (:hostile retained)))
+    (is (false? @realized?))))
+
+(deftest supervisor-escape-does-not-copy-a-possibly-live-directory
+  (let [artifact-dir
+        (str (fs/create-temp-dir
+              {:prefix "jolt-sim-supervisor-escape-"}))
+        export-root
+        (str (fs/create-temp-dir
+              {:prefix "jolt-sim-supervisor-export-"}))
+        caught (atom nil)]
+    (spit (str (fs/path artifact-dir "request.edn")) "request")
+    (try
+      (binding [*process-config* {}
+                *case-artifact-export-dir* export-root]
+        (with-redefs
+          [process-explorer/run-case
+           (fn [_]
+             (throw
+              (ex-info
+               "worker exit unobserved"
+               {:type :jolt.sim.process-explorer/worker-exit-unobserved
+                :artifact-dir artifact-dir})))]
+          (try
+            (check-case!
+             scenario-sym (fn [_ _] nil)
+             :generated 9 {:payload []} 1000)
+            (catch :default error
+              (reset! caught error)))))
+      (let [exported (:export-dir (ex-data @caught))]
+        (is (some? @caught))
+        (is (= artifact-dir (:artifact-dir (ex-data @caught))))
+        (is (fs/exists? artifact-dir))
+        (is (nil? exported))
+        ;; The worker may still be alive and mutating this tree. Preserve and
+        ;; report the original path, but neither read it nor create a snapshot
+        ;; that could race or grow without bound.
+        (is (empty? (vec (fs/list-dir export-root)))))
+      (finally
+        (when (fs/exists? artifact-dir)
+          (fs/delete-tree artifact-dir))
+        (when (fs/exists? export-root)
+          (fs/delete-tree export-root))))))
 
 ;; The deterministic payload-semantics boundary witness: the empty payload
 ;; and the [0 127 128 255] payload (embedded zero, 0x7f, 0x80, 0xff) at the
@@ -1391,7 +1817,12 @@
              (pr-str @seen-poll-ordinals)))))
 
 (def ^:private serial-test-vars
-  [#'outbox-delivery-payload-boundary-witness
+  [#'case-outcome-adapter-covers-supervisor-outcomes
+   #'semantic-violation-retains-canonical-case-outcome
+   #'successful-retry-boundary-exports-before-transient-cleanup
+   #'retained-error-details-never-realize-lazy-sequences
+   #'supervisor-escape-does-not-copy-a-possibly-live-directory
+   #'outbox-delivery-payload-boundary-witness
    #'hegel-outbox-delivery-holds-across-payload-capacities-eintr-and-plans
    #'outbox-delivery-retry-boundary-witness
    #'hegel-outbox-delivery-retry-holds-across-payload-capacities-and-eintr])
@@ -1418,10 +1849,14 @@
 (defn -main [& _]
   (let [bin (required-environment "JOLT_SIM_BIN")
         project-dir (required-environment "JOLT_SIM_PROJECT_DIR")
+        export-dir (System/getenv "JOLT_SIM_CASE_ARTIFACT_DIR")
         result
         (binding [*process-config*
                   {:worker-command [bin "-M:outbox-delivery-explore-worker"]
-                   :dir project-dir}]
+                   :dir project-dir}
+                  *case-artifact-export-dir*
+                  (when (and (string? export-dir) (seq export-dir))
+                    export-dir)]
           (reduce (fn [summary test-var]
                     (merge-with + summary
                                 (run-serial-test-var! test-var)))
