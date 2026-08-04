@@ -261,3 +261,33 @@
    (let [plans (parity-statement-plans command-payload)]
      (vec (concat (subvec plans 0 12)
                   (subvec plans 25 28))))))
+
+(defn retry-statement-plans
+  "Returns the exact 18-statement two-attempt retry plan: schema setup, the
+   first fresh req-1/entity-a command and successful COMMIT, then TWO explicit
+   post-COMMIT load-states over the same still-open connection -- the
+   pre-delivery reload and the post-failure reload that proves the committed
+   outbox/application state unchanged before the second delivery attempt. No
+   statement runs during either TCP attempt, so the two load-states are
+   adjacent in the plan.
+
+   The count is derived from the implementation, not provisioned: the retry
+   flow is delivery-statement-plans plus exactly one more load-state, and one
+   load-state is the three final scan plans of parity-statement-plans. Like
+   delivery-statement-plans this is a projection of parity-statement-plans, so
+   the command's SQL, binds, and row effects cannot diverge between gates.
+   It is an exact result-producing fixture for this unchanged application
+   path, not a claim that every legal SQLite implementation must expose this
+   transcript. General statement/transaction legality and handle ownership
+   belong to a separate model rather than being inferred from plan count.
+
+   The zero-argument arity pins the historical req-1 payload; the one-argument
+   arity rebinds the first command's three BLOB params exactly as
+   delivery-statement-plans does."
+  ([]
+   (retry-statement-plans default-command-payload))
+  ([command-payload]
+   (let [plans (parity-statement-plans command-payload)]
+     (vec (concat (subvec plans 0 12)
+                  (subvec plans 25 28)
+                  (subvec plans 25 28))))))

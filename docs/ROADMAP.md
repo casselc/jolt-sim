@@ -174,10 +174,13 @@ The next stacked slice, draft PR `casselc/jolt-sim#29`, keeps that application
 body unchanged and runs every case in a fresh sim-enabled process. Hegel owns
 and shrinks the command payload octets, stream capacity, pipe capacity, and one
 captured poll-interruption ordinal. Two explicit payload boundaries plus 15
-generated cases assert exact coverage of every declared capacity/fault choice,
-exact application and SQLite-plan evidence, handler-only routing, and clean
-worlds. Completed worker artifacts remain available until the parent semantic
-verdict and are removed only after all assertions pass.
+generated cases require every value of each declared finite capacity/fault
+axis to appear, but do not enumerate the axes' Cartesian product. Payloads are
+sampled at the recorded seed. Every executed case asserts exact application
+results and fixture-result SQLite statement evidence, handler-only routing,
+and clean worlds; the scripted statement transcript is not a general SQLite
+conformance claim. Completed worker artifacts remain available until the
+parent semantic verdict and are removed only after all assertions pass.
 
 The simulation layer may provide boundary handlers and models. It must not
 replace the HTTP, DB, TCP, codec, or application implementation with a second

@@ -580,6 +580,14 @@ activation and firing decision plus the chosen rule's global and per-rule
 firing ordinals and a fresh copy of its outcome. Plans, attempts, public state,
 and returned evidence fail closed outside the stable trace domain.
 
+The director transition is pure; that is the load-bearing reason recorded
+history can be checked for internal coherence without claiming protocol
+legality. Frontends replay the complete history from the initial director at
+construction and snapshot boundaries, an O(N) check. A live call advances only
+the next director state in O(1); replaying the whole prefix on every call would
+make N calls quadratic and could consume the application's real monotonic
+deadline.
+
 This core does not itself simulate errno, delay, loss, partitions, clocks, or
 transport behavior. A boundary frontend must construct attempts, interpret only
 the outcomes it owns, and retain its real buffer/readiness/ownership semantics.
@@ -886,15 +894,33 @@ Each direct integration command prints the path of an append-only EDN progress
 file. Set `JOLT_SIM_OUTBOX_DELIVERY_PROGRESS_FILE` to retain it at a chosen
 location.
 These records are best-effort test-process breadcrumbs, not the later
-crash-safe journal contract. The Hegel lane runs two explicit payload
-boundaries and 15 fresh-process generated cases. It shrinks payload octets,
-stream capacity, pipe capacity, and one captured poll `EINTR` activation
-ordinal; it requires exact finite-domain coverage and exact application,
-SQLite-plan, route, fault, capacity, and cleanup evidence. Completed child
-artifacts survive until the parent verdict, while passing cases clean them up.
-The current slices do not prove close/reopen persistence, crash durability,
-retry, delivery marking, future-admission schedules, or extreme one- and
-two-byte HTTP fragmentation.
+crash-safe journal contract. The Hegel lanes run explicit payload boundaries
+and fresh-process generated cases. Their claim strength is deliberately
+per-axis:
+
+- stream capacity, pipe capacity, and poll-`EINTR` ordinal are
+  **bounded-complete per finite axis**: the fixed-seed run fails unless every
+  declared value of each axis appears; it does not enumerate their Cartesian
+  product;
+- payload octets up to length 32 are **sampled** at the recorded seed, with
+  explicit empty and `[0 127 128 255]` boundary witnesses; and
+- semantic role classification is **assumption-backed and monitored** by loud
+  completion failures, positive participation counts, and exact release
+  evidence; the run does not prove the classifier for arbitrary application
+  changes.
+
+Every executed case still checks exact application results, the fixture's
+result-producing SQLite statement script, routes, fault firings, capacities,
+and cleanup. That exact statement script supplies query results to unchanged
+application code; it is not a claim of general SQLite protocol conformance.
+The retry lane additionally injects one receiver-port-scoped read reset,
+requires the first connection to cleanly close before retry, proves the row
+unchanged through the still-open SQLite connection, and observes attempts 1
+and 2 with a correlated second acknowledgement. Completed child artifacts
+survive until the parent verdict, while passing cases clean them up. The
+current slices do not prove close/reopen persistence, crash durability,
+delivery marking, exactly-once behavior, real-kernel reset parity, or extreme
+one- and two-byte HTTP fragmentation.
 
 ### Composing handler packs
 
