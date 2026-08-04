@@ -73,6 +73,7 @@ The complete current tally of claims this document made and then refuted:
 | 40 ◆ | E16 nonclaim 2: "0 attributable syscalls" is **attribution by instrument** — a sixth path would be invisible — and `RUNTIME-OBLIGATION-BRIEF`'s monitor-soundness premise built on that sampled window | refuted **by construction**. `jolt.sim.runtime` fails *closed*: an intercepted descriptor with no registered handler throws before any OS access, and the failure is **latched in run state so application code cannot catch it and make the run succeed**. Boundary completeness becomes a per-run invariant, not a measurement, and the enumerated-declared-bindings blind spot disappears. perturb forked its runtime, so this is available to it | E26 |
 | 41 ◆ | §5: "**perturb has no code**", and ladder step 1 (jolt-tcp connection lifecycle) is the first checkable target | both false at HEAD. `perturb/src/` is 14,248 lines across 26 namespaces including the checker §5 called "the next step"; and step 1's contract is sourced from the jolt-tcp README, which is the **server handler** contract — the shape E24 proved unexpressible on all four axes at once. §5 was never revised after E15 | E26 |
 | 42 † | E26 finding 8: `MUST_CLOSE`-as-a-**state** is a cheaper substitute for Fowler's `cancel` **term** | **half right, and the half matters.** Fowler §1.4 names *two* quandaries of silent discard: a developer gets no feedback for an unfinished protocol, **and** "the peer may be left waiting forever". A state discharges the first — an unfinished protocol is not at a terminal state — and cannot touch the second, because a state is a fact about the holder. `E-Cancel` creates a zapper thread, `E-Zap` propagates transitively, and `E-ReceiveZap`/`E-CloseZap` **raise in the peer**, which T-Cancel's note says is what stops cancellation violating progress. The mechanism is strictly weaker, with a sharp sufficiency condition: **no peer whose progress depends on being told**. True of db's transaction, false of `perturb.http`'s `ServerConn` | E27 |
+| 43 | §1.1: the four host ops `:host`/`:host-static`/`:host-new`/`:host-call` **should be replaced by a single `:extern` carrying a declared effect row and signature** | **descriptive half confirmed, prescriptive half refuted.** Measured over 62706 IR nodes: there are **three** ops, not four (`:host` is unreachable on the Chez host — a bare unresolvable name is refused at compile time), and **three distinct key sets**, not one shape with a tag. Re-tagging is cheap and buys nothing; the row and signature are the whole value and are neither in the IR nor derivable from it — no arity is fixed per name, receivers are arbitrary nodes, and the escape surface is wider than these ops. Jolt's one signature-carrying op takes its signature from **surface syntax**. The open item is a declaration language, not an IR edit | E28 |
 
 ‡ Eight rows are the exception the sentence above does not cover: 17 and 18
 arrived from re-examining the argument and from the literature; 27–29 came from
@@ -105,7 +106,7 @@ worse ratio than E20's literature survey achieved and was obtained for a
 fraction of the effort. The standing commitment covers rows 1–26 and 33–35.
 
 **How to read this document.** §1 is the settled design, stated once in final
-corrected form. §2 is the divergence register. §3 is the findings E1–E27, each
+corrected form. §2 is the divergence register. §3 is the findings E1–E28, each
 stated as currently believed rather than as first written. §4 is the open
 questions. §5 is the v0 ladder. §6 is the nonclaims. Appendix A is the
 correction history, Appendix B holds the superseded ladders in full,
@@ -148,14 +149,31 @@ bytes per element. Neither fact is visible from timing.
 Required IR changes, from inspection of `jolt-core/jolt/ir.clj`:
 `:local` carries a name, not binding identity — linearity checking needs
 alpha-conversion or a `:binding-id`. The `:host`/`:host-static`/`:host-new`/
-`:host-call` ops are untyped, un-effected escapes and should be replaced by a
-single `:extern` carrying a declared effect row and signature. Note charter
+`:host-call` ops are untyped, un-effected escapes. Note charter
 rejected-alternative A1 ("annotate optimization IR: identity not durable through
 passes") applies: the effect boundary's `site-id` must come from a durable
 identity spine, not a pass-attached annotation.
 
-Both IR claims are inferences from source reading and are **untested**; §4.6
-records why that matters and what tests them.
+**Both IR claims have now been measured** (`-M:extern`, E28; `report-local-claim`,
+E15) and neither survived intact as written:
+
+- `:local` — **confirmed**. Names, no binding identity, no `:binding-id`, no
+  alpha-renaming.
+- The host ops — the *descriptive* half is confirmed more tightly than stated
+  above: across 327 nodes there is exactly one key set per op and **not one type
+  hint, numeric kind, effect or position is ever attached by any pass**. The
+  *prescriptive* half — this section's original "should be replaced by a single
+  `:extern` carrying a declared effect row and signature" — is **withdrawn**.
+  There are **three** ops, not four (`:host` is unreachable on the Chez host),
+  they are three distinct shapes rather than one with a tag, and the row and
+  signature are neither in the IR nor derivable from it. Collapsing the tags is
+  cheap and buys nothing; the real work is a **declaration language and a place
+  to write it**, with the IR node as its consumer. Jolt's one signature-carrying
+  op, `:ffi-fn`, gets its signature from surface syntax the programmer writes.
+
+  E28 also measured something this section asserts on its own account: **0 of
+  327 host nodes carry `:pos`**, against 9465 of 11174 `:invoke` nodes. The
+  durable-spine requirement above is not met by these ops today.
 
 ### 1.2 Typing — two tiers, four axes
 
@@ -4579,6 +4597,91 @@ merely unnoticed by this document.
    whether perturb's checker could identify "all endpoints in the enclosing pure
    context" at all — which finding 2 above suggests it currently cannot.
 
+### E28 — the last untested §1.1 inference, measured: three ops, three shapes, and the value is not in the IR
+
+§1.1 made two claims about Jolt's IR from reading `jolt-core/jolt/ir.clj`. E15
+measured the first (`:local` carries a name, not binding identity — confirmed).
+The second had sat untested since it was written: that
+`:host`/`:host-static`/`:host-new`/`:host-call` **should be replaced by a single
+`:extern` carrying a declared effect row and signature**.
+
+`perturb.externprobe` (`-M:extern`) walks real IR under `perturb.ir`'s tap over
+50 namespaces — Jolt's stdlib plus all of perturb — using `jolt.ir`'s own
+`reduce-ir-children` so the child layout is upstream's, cross-checked by a
+second shape-agnostic sweep that agrees exactly. **1196 `:def` nodes, 62706 IR
+nodes.**
+
+**Three ops occur, not four.** `:host` appears **zero** times, and cannot occur
+here: on the Chez host `hc-resolve-global` returns only `:var`, `:class` or
+`:unresolved`, so the analyzer's `:host` arm is unreachable. A bare unresolvable
+name is *refused at compile time*, not lowered to a host escape. The probe
+exercises this rather than concluding from absence, which is the discipline E20's
+"could not obtain" rows exist to enforce.
+
+**They are three shapes, not one shape with a tag.** Exact key sets, zero
+variation across 327 nodes, no two shared:
+
+```
+:host-static  178×  [:op :class :member]
+:host-new      43×  [:op :class :args]
+:host-call    106×  [:op :target :method :args]
+```
+
+`:host-static` further splits **146 as an `:invoke` head against 32 in value
+position** — the same node, its meaning fixed by the parent — and `:host-call`
+already hides a field-read/method-call distinction behind a leading `"-"` in a
+string.
+
+**The descriptive half is confirmed, more tightly than §1.1 stated it.** Not one
+type hint, numeric kind, effect or position is ever attached by any pass.
+
+**The prescriptive half is refuted as stated.** Re-tagging is the cheap part and
+buys nothing on its own; the **row and the signature are the entire value**, and
+neither is in the IR nor derivable from it:
+
+- no arity is fixed per name — 7 `Class/member` names are applied at more than
+  one arity (`Long/parseLong` at 1 and 2, `System/getenv` at 0 and 1, …);
+- a `:host-call` receiver is an arbitrary node (`:local` 75, `:invoke` 27,
+  `:host-call` 4), and only **5 of 106** carry any hint;
+- the escape surface is not confined to these ops at all — 25 `:var` references
+  into `jolt.ffi`, 16 into `jolt.host` (a class literal lowers to
+  `jolt.host/jolt-class-for`), plus 11 `:ffi-fn` and 10 `:regex`.
+
+The op in the same IR that *does* carry a signature is the model, and it settles
+the question: `:ffi-fn` carries `{:csym :argtypes :rettype :blocking
+:capture-native-error}` — **from surface syntax the programmer writes**. So the
+real problem is a declaration language and a place to write it, with the IR node
+as its consumer. That is a different and larger cost than "an IR change", and
+§1.1's framing hid it.
+
+**One measurement §1.1 needed on its own account.** §1.1 requires the effect
+boundary's `site-id` to come from a durable identity spine rather than a
+pass-attached annotation. **0 of 327 host nodes carry `:pos`**, against 9465 of
+11174 `:invoke` nodes — so an *applied* static borrows a site from its parent
+while `:host-call` and `:host-new` have none at all.
+
+**perturb does not currently depend on the distinction.** All of perturb contains
+22 `:host-static` and **zero** `:host-call`/`:host-new`; `check.clj` names only
+`:host-call`, and `w-invoke` branches on a `:var` head, so the rest fall to
+OPAQUE.
+
+#### E28's own nonclaims
+
+1. **One corpus, one host, one checkout.** A JVM or JS back end resolves host
+   names differently and `:host` may well be live there. The unreachability
+   result is about the Chez host contract, not about Jolt.
+2. **`clojure.core` is invisible to it.** Namespaces already loaded when the tap
+   goes in are not counted, and `clojure.core` is the largest body of host
+   interop in the system. Every proportion here is a proportion of *this* corpus.
+3. **`:def` only, and post-const-fold.** A top-level `:defmacro` node and its
+   body are not walked, and this is the IR the back end receives, not what the
+   analyzer emitted (`perturb.ir`'s documented limit).
+4. **Frequency is not importance.** 327 host nodes in 62706 is a small share, and
+   it means nothing about danger: `perturb.posix` reaches the network through
+   `:ffi-fn`, not through any of the three.
+5. **Nothing was run.** This is a read of trees, not an execution of the code
+   they describe.
+
 ## 4. Open questions
 
 Q1–Q5 are §4.1–§4.5; §4.6 collects open items that never carried a Q number.
@@ -4876,14 +4979,30 @@ Recorded here so they are not lost between sections. None of these is decided.
   - And a third corroboration, in a Lisp: Turnstile's `linear/lin.rkt` raises
     `"linear variable may be unused in certain branches"` from a macro-hosted
     linear type checker (E21).
-- **~~`:local`~~ and `:extern`.** §1.1's two IR claims were inferences from
-  source reading. **`:local` is now settled**: a checker walked real IR and the
-  claim holds — names, no binding identity, no `:binding-id` key, no
-  alpha-renaming (E15). `:extern` is still untested, and the standing pessimism
-  applies to it: this session's record on inferences from source reading is
-  poor. The `jolt-array` survey was wrong on scale *and* kind (E12), E3's
-  central finding was sample-biased, three performance hypotheses died to
-  measurement (E1, E7), and I11's `defcfn` premise was wrong (E16).
+- **~~`:local`~~ and ~~`:extern`~~ — both now measured, and what remains is a
+  different item.** §1.1's two IR claims were inferences from source reading.
+  **`:local` is settled**: a checker walked real IR and the claim holds — names,
+  no binding identity, no `:binding-id` key, no alpha-renaming (E15).
+  **`:extern` is settled too** (E28, `-M:extern`): descriptive half confirmed,
+  prescriptive half refuted as stated — three ops rather than four, three shapes
+  rather than one, and the effect row and signature are not in the IR and not
+  derivable from it. The standing pessimism was warranted for the second time:
+  the `jolt-array` survey was wrong on scale *and* kind (E12), E3's central
+  finding was sample-biased, three performance hypotheses died to measurement
+  (E1, E7), and I11's `defcfn` premise was wrong (E16).
+
+  **What is actually open, in its real shape:** *design the surface syntax and
+  declaration language for host effects, then decide what the IR node consumes.*
+  Two things it must account for that the original framing did not. The escape
+  surface is **wider than these three ops** — 25 `:var` references into
+  `jolt.ffi` and 16 into `jolt.host` in the same corpus (a class literal lowers
+  to `jolt.host/jolt-class-for`), plus `:ffi-fn` and `:regex`. And no arity is
+  fixed per name: 7 `Class/member` names are applied at more than one arity, and
+  a `:host-call` receiver is an arbitrary node of which only 5 of 106 carry any
+  hint. Note this item is now **coupled to the `defsys` residual** from E26
+  finding 3, which is the same question one layer down: perturb gates the
+  bindings it wraps, and a declaration language for host effects is what would
+  make an unwrapped binding unrepresentable rather than merely absent.
 - **~~Positioned capability specs~~ DONE** (E17). Replaced at the top of the
   §1.2 queue by:
 - **A module boundary.** `:perturb.cap/representation` names the operations
