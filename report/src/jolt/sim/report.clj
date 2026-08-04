@@ -22,9 +22,13 @@
                        monitor decisions to data.
     case-outcome->html validate + view model + render in one call.
     -main              ordinary-use entry point: jolt -M:trace-report
-                       INPUT.edn [OUTPUT.html]. Reads exactly one trace
-                       document via jolt.sim.trace/read-edn, fails closed, and
-                       refuses to overwrite the input file.
+                       INPUT.edn [OUTPUT.html] or jolt -M:case-report
+                       INPUT.edn [OUTPUT.html]. The default path reads exactly
+                       one trace document via jolt.sim.trace/read-edn; a
+                       leading --case-outcome selector (supplied by the
+                       :case-report alias) reads exactly one Case/Outcome
+                       document via jolt.sim.case-outcome/read-edn. Both paths
+                       fail closed and refuse to overwrite the input file.
 
   The trace and Case/Outcome paths are deliberately separate: the two
   documents are distinct versioned contracts, and each renderer rejects the
@@ -462,37 +466,76 @@
                  (fs/same-file? input output)))
     (throw
      (ex-info
-      "Refusing to overwrite the trace input file"
+      "Refusing to overwrite the input file"
       {:type invalid-arguments
        :reason :input-output-alias
        :input input
        :output output}))))
 
+(def case-outcome-selector
+  "Explicit `-main` selector that routes to the Case/Outcome renderer. The
+  `:case-report` alias passes this as its first main option so the CLI never
+  guesses which schema an input file uses."
+  "--case-outcome")
+
+(defn- parse-arguments
+  "Splits `args` into an explicit report selector and the remaining
+  input/output arguments. A leading `--case-outcome` selects the Case/Outcome
+  renderer; any other leading `--` option is rejected as an unknown selector
+  rather than being guessed at. Without a selector the default trace path is
+  used, preserving `jolt -M:trace-report` behavior."
+  [args]
+  (let [selector (first args)]
+    (if (and (string? selector)
+             (string/starts-with? selector "--"))
+      (do
+        (when-not (= case-outcome-selector selector)
+          (throw
+           (ex-info
+            "Unknown report selector"
+            {:type invalid-arguments
+             :reason :unknown-selector
+             :selector selector})))
+        [selector (rest args)])
+      [nil args])))
+
 (defn -main
-  "Writes a static HTML report for one trace EDN file.
+  "Writes a static HTML report for one EDN file.
 
   Usage: jolt -M:trace-report INPUT.edn [OUTPUT.html]
+         jolt -M:case-report INPUT.edn [OUTPUT.html]
 
-  Reads exactly one trace document through `jolt.sim.trace/read-edn` (which
-  validates the complete document fail-closed), renders it, and writes the
-  report. Without OUTPUT.html the output path is INPUT with the .edn suffix
-  replaced by .html. Refuses to write when the resolved output path aliases the
-  input file, and never touches the output when the input is invalid. Prints
-  the final output path on success."
+  The default path reads exactly one trace document through
+  `jolt.sim.trace/read-edn` (which validates the complete document
+  fail-closed), renders it, and writes the report. A leading `--case-outcome`
+  selector (supplied by the `:case-report` alias) reads exactly one
+  Case/Outcome document through `jolt.sim.case-outcome/read-edn` and renders
+  it through `case-outcome->html`; the two schemas are never guessed at.
+  Without OUTPUT.html the output path is INPUT with the .edn suffix replaced
+  by .html. Refuses to write when the resolved output path aliases the input
+  file, and never touches the output when the input is invalid. Prints the
+  final output path on success."
   [& args]
-  (let [[input output]
+  (let [[selector args] (parse-arguments args)
+        case-outcome? (= case-outcome-selector selector)
+        usage (if case-outcome?
+                "Usage: jolt -M:case-report INPUT.edn [OUTPUT.html]"
+                "Usage: jolt -M:trace-report INPUT.edn [OUTPUT.html]")
+        [input output]
         (case (count args)
           1 [(first args) (default-output-path (first args))]
           2 [(first args) (second args)]
           (throw
            (ex-info
-            "Usage: jolt -M:trace-report INPUT.edn [OUTPUT.html]"
+            usage
             {:type invalid-arguments
              :reason :wrong-argument-count
              :args (vec args)})))]
     (ensure-distinct-paths! input output)
-    (let [doc (trace/read-edn (slurp input))
-          html (trace->html doc)]
+    (let [read-doc (if case-outcome? case-outcome/read-edn trace/read-edn)
+          render (if case-outcome? case-outcome->html trace->html)
+          doc (read-doc (slurp input))
+          html (render doc)]
       (spit output html)
       (println (str "wrote " output))
       (flush))))
