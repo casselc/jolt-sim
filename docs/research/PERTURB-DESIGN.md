@@ -63,12 +63,17 @@ The complete current tally of claims this document made and then refuted:
 | 30 ‡ | E20: §1.4's no-resumption rule places perturb **outside** the linearity/handler tension | reading Tang et al.: the mismatch has two halves — continuations *discarded* and continuations *multi-invoked*. `abort!` is the discard half. perturb is outside one half of two | E21 |
 | 31 ‡ | E20: exceptions require weakening linearity to **affinity** plus cancellation, and "perturb has the affinity" | reading Fowler et al.: §1.3 rejects affinity **by name** (silent discard is the defect); §1.4 is "**Linear** Types with Explicit Cancellation". E6's affine binding is the rejected option, not half the fix | E21 |
 | 32 ‡ | E20: "grades count uses of a binder, not octets", so no graded system can state the Content-Length obligation | Doré, *Dependent Multiplicities* (2507.08759) — multiplicities **can** depend on run-time values. The conclusion (row 28) survives; the reason does not. The barrier is undecidability and hand-written proof terms, not expressiveness | E21 |
+| 33 | `report-limits` item 8: destructuring / `peek` / `last` / a computed index lose a capability **silently**, the likeliest false accept | probing all four: nothing is silent, every case draws two diagnostics. The real defect was a **false reject on idiomatic Clojure**, caused by an arity check | E22 |
+| 34 | E15/E17/E18's blind-spot lists are the checker's limits | they omit **higher-order capability passing** entirely — `(f c)` has no annotation, which is `with-open` and every reactor callback | E23, E24 |
+| 35 | a pure `(state, event) -> [state', effects]` shape collapses the capability cost into one component | it **relocates** the obligations rather than removing them: 2 of 4 wrong applications accepted, and the working app's `/wait` route breaks the declared machine and reaches the wire | E24 |
+| 36 † | §1.2's **reason** for dropping locality, and D.8's escape from it | two defects in one sentence. (a) Yarrow's objection is to *stack-disciplined* memory regions; Milano's are a **domination-induced heap partition with no scope at all**, so it does not apply. (b) D.8's "D4's no-resumption may remove the reason" fails under row 30 — non-local control **is** the discard half, which D4 keeps. The conclusion may stand; neither the reason nor the escape does, and the region question is **harder** than D.8 states | E25 |
+| 37 † | D.8: Flo's **bounded/unbounded** typing is the principled form of E23's `recv` defect | it is one level too high. Flo distinguishes a stream **value** carrying the terminator `⊗` from one that does not, and `fixed(c)` is a predicate on values; boundedness is the *type-level* prediction that `fixed` will eventually hold. E23's defect is the value-level collapse of `∅` into `fix(∅)` | E25 |
 
 ‡ Eight rows are the exception the sentence above does not cover: 17 and 18
 arrived from re-examining the argument and from the literature; 27–29 came from
 a **literature survey** (E20) rather than from an artifact built to attack the
 claim; and 30–32 came from **reading E20's own sources** (E21). The commitment
-is stated of the other twenty-four, which came from a measurement, a probe, an
+is stated of the other twenty-seven, which came from a measurement, a probe, an
 independent model, a delegated verification, or — for 24–26 — from building the
 fix and finding the premise wrong. Rows 6–9 and 16 are cases where the claim had
 already **passed its spot checks** and failed a probe designed to attack it,
@@ -78,8 +83,14 @@ accordingly: nothing in E20 or E21 was executed. Note the shape of 30–32: E20
 refuted four of my claims from abstracts, and reading the papers refuted three
 of E20's — two of them in the direction of *more* work, not less.
 
+† Rows 36–37 are the same case one step further out: E25 read the two papers
+that *were* in hand and refuted a reason recorded in §1.2 and a hypothesis
+recorded in Appendix D.8. Like 27–32, no artifact produced them. Rows 33–35, by
+contrast, came from running code (E22, E23, E24) and are covered by the standing
+commitment.
+
 **How to read this document.** §1 is the settled design, stated once in final
-corrected form. §2 is the divergence register. §3 is the findings E1–E21, each
+corrected form. §2 is the divergence register. §3 is the findings E1–E25, each
 stated as currently believed rather than as first written. §4 is the open
 questions. §5 is the v0 ladder. §6 is the nonclaims. Appendix A is the
 correction history, Appendix B holds the superseded ladders in full,
@@ -163,6 +174,26 @@ discipline; multi-shot handlers break exit-at-most-once). Escape safety for
 loans, handler scope, and task containment follows from uniqueness plus
 linearity alone, so dropping regions avoids the unsolved interaction at no cost
 to the properties E2 needs. E6 re-checked this and locality stays dropped.
+
+**E25 corrects the reason, and the decision is now genuinely open.** Yarrow's
+objection is to *region-based memory management* — regions with a lexical scope
+and a stack lifetime, which non-local control can skip. Milano, Turcotti & Myers
+(PLDI 2022, Appendix D.8, read in full) use "region" for something else entirely:
+a partition of the heap induced by domination, which "can grow and shrink
+dynamically as threads exchange portions of the object graph" and has no scope
+for control to escape. Their regions deliver exactly what E23 and E24 found
+missing — a connection table is an arbitrary intra-region object graph — so the
+sentence above rules out, by a reason that does not apply to it, the one
+published system that answers §4.6's root cause. What genuinely does transfer is
+**not** Yarrow's objection but E21's: a non-local exit that skips the discharge
+of a focus leaves the domination exemption outstanding, which is the `abort!`
+gap again. Note also that E20's suggested escape — that D4's no-resumption rule
+removes the reason regions were dropped — does **not** hold: non-local control is
+the *discard* half of the handler/linearity mismatch, and D4 removes only the
+multi-shot half (tally row 30). Locality stays dropped as a decision, but the
+recorded argument for it does not support the decision, and the prerequisite for
+reopening it is the `abort!` cancellation work, not a new region theory
+(tally row 36).
 
 E3 is the justification for the tier split: refinements confined to capabilities
 cover the existing proof surface without dependent types over ordinary values
@@ -505,6 +536,9 @@ at `1dd068b`):
 | --- | --- | --- |
 | `-M:selftest` | codec/octet self-tests, no socket | the run |
 | `-M:refine` | the refinement decision procedure alone, 18 cases, with the ones it must REFUSE recorded as first-class expectations | the run (E19) |
+| `-M:stream` | a port of `teensyp.stream` by an agent forbidden to read the rules; frames lines under one-octet-per-`recv`, all 91 chunk boundaries, and a real loopback socket | the run (E23) |
+| `-M:streamcheck` | that port, checked against a declaration written from outside. **Not a gate** — no recorded expectations, because the point was to learn the verdicts | the run (E23) |
+| `-M:evt` | an event-driven driver holding two live connections, a pure application, both under a scripted network and a real socket; prints the checker's verdicts on both. **Not a gate** | the run (E24) |
 | `-M:check` | 10 declaration fixtures + 55 corpus programs across TWO corpora (nREPL 25, HTTP 30) get their recorded verdicts, AND every accepted one is executed under a scripted handler; `perturb.nrepl` and `perturb.http` are checked and reported, not gated | `report-limits`, 13 items (E15, E17, E18, E19) |
 | `-M:oracle` | perturb's bencode against `jolt.nrepl`'s over their shared profile | the run |
 | `-M:demo` | one session var under a real socket and two in-memory handlers; sent octets identical | the transcript |
@@ -766,12 +800,15 @@ Each should get its register row when decided, not retrospectively.
 
 ## 3. Findings
 
-E1–E20, each stated as currently believed. What each said first, and what
+E1–E24, each stated as currently believed. What each said first, and what
 corrected it, is in Appendix A. E1–E13 are measurements and prototypes; E14 is
 a source-and-history survey of the v0.5.17 branch lane and is `assumed`
 throughout — it qualifies §1.4 and §2 row 3 without settling either. E15–E19 are
 the running artifact: a checker that rejects real programs, and the four rounds
-of failure and repair it went through. **E20 is different in kind from every
+of failure and repair it went through. E22–E24 are the first measurements taken
+against code **not written by someone who knew the rules** — a probe of a claim
+nobody had tested, an unbiased port, and an architecture experiment whose
+positive controls it failed. **E20 is different in kind from every
 other finding here** — a literature survey, `assumed` throughout, in which
 nothing was executed and no paper was read in full text. It refutes four claims
 this document made and is itself the weakest evidence in it; Appendix D exists
@@ -3614,8 +3651,8 @@ not resolved and remain open.
 
 #### E21's own nonclaims
 
-1. **Nineteen documents, not the whole bibliography.** Appendix D has roughly
-   ninety entries. What was read is marked ✔✔; everything unmarked remains
+1. **Nineteen documents, not the whole bibliography** (twenty-one counting the
+   two D.8 papers, which E25 read). Appendix D has roughly ninety entries. What was read is marked ✔✔; everything unmarked remains
    verified-for-existence only, and E20's method limitation continues to bound
    it. The selection was the brief's eleven claims, not a sample of the field.
 2. **Reading a paper is not running one.** Nothing here was executed. E21 is a
@@ -3640,6 +3677,414 @@ not resolved and remain open.
    mode a second source is supposed to catch.
 
 ---
+
+> **E21 is reserved** for the verification of E20 against the actual papers,
+> commissioned in `docs/research/E20-VERIFICATION-BRIEF.md` and running
+> elsewhere. E22–E24 were recorded while it was outstanding.
+
+---
+
+### E22 — `report-limits` item 8 was wrong in both halves
+
+Item 8 said: *"Destructuring, `peek`, `last`, or a computed index lose the
+capability to OPAQUE — which is silent, not a diagnostic. This is the most
+likely place for a FALSE ACCEPT to hide today."* Never tested. One probe program
+per eliminator, with a correct-disposal and a drop variant of each.
+
+**Nothing was silent.** Every case drew `no-signature` at the callee — the tuple
+holding a live capability was passed to a function with no capability signature —
+and `dangling` at scope exit. Five rejections, zero acceptances, four diagnostics
+on the destructuring case alone. There was no false accept to find.
+
+**The real defect was the opposite one, and worse in practice: a false reject on
+idiomatic Clojure.** `(let [[c frames] r] …)` lowers to `(nth G__287 0 nil)` —
+three arguments, the third a not-found default — and `projection-index` demanded
+exactly two. Every destructuring bind of a capability was refused on arity, not
+analysis. One-line fix; the not-found default is sound to ignore because an index
+past the end of the abstract tuple already yields OPAQUE.
+
+`perturb.corpus` gains `destructure-and-close` and `uses-destructuring-in-a-loop`
+(both accept, both run) and the drop variant as a rejection.
+
+**Why item 8 was wrong in this particular direction matters.** A self-authored
+corpus cannot contain this bug, because the author knew destructuring would not
+check and therefore never wrote it. The claim was not merely unverified — it was
+*unfalsifiable from inside the corpus*.
+
+---
+
+### E23 — checking code perturb did not write
+
+Every artifact checked through E19 was authored by someone who already knew the
+rules. E15 nonclaim 3 says why that is dangerous and E22 shows it concretely.
+This is the first artifact without that defect.
+
+An agent ported `teensyp.stream` — a blocking line-oriented connection adapter
+from `casselc/jolt-tcp` — into perturb, **forbidden to read** `cap.clj`,
+`check.clj`, either corpus, `refine.clj`, the README, or this document. The
+capability declaration was then written **from outside**, in `perturb.streamcap`,
+leaving the port unmodified. The port runs: `-M:stream` exits 0, including
+against a real loopback socket. Every rejection below is the checker refusing a
+program that works. `-M:streamcheck` reproduces it.
+
+**Round 1** — capability and lifecycle annotated: **7 of 8 rejected**, almost all
+`untracked-borrow` / `untracked-consume` on ordinary helpers taking a connection.
+Interprocedural flow is by annotation only, so an unannotated function's
+parameters are opaque.
+
+**Round 2** — four helper annotations added: **5 of 8 pass**, including
+`line-client`, the whole client lifecycle. So the rule set's cost on real code is
+**measurable, not fatal**: eight annotations for eight functions in a 250-line
+namespace. That distinction is the reason for running two rounds.
+
+#### Three survive, and one of them is new
+
+**`with-conn` is `with-open`, and it cannot be expressed.** It takes `[c f]` and
+calls `(f c)`. A higher-order function handing a capability to a function-valued
+**parameter** has no signature to check against, so no annotation describes it;
+its teardown is in a `finally`, which is `unsupported-construct` on top. This
+appears in **none** of E15's blind spots, E17's or E18's nonclaims, or E20's
+survey. E24 shows it is not merely an idiom: it is the shape of every reactor
+callback.
+
+**`read-lines` draws `join`** — the third data point for E6 probe 1, with the
+finest cause yet. Not "conditional close": it **borrows** on the complete-reply
+path and **consumes** on the truncated one. *"Borrows, except on the branch that
+aborts"* is unsayable. §4.6's count is now zero on `perturb.nrepl`, fires on the
+first HTTP keep-alive driver anyone would write, fires here.
+
+**`serve-lines`** — `try`/`catch` again.
+
+#### What the port cost, in the porter's own words
+
+Recorded because it is independent evidence about perturb rather than about the
+checker: `perturb.wire` has **no half-close**, so the very regression
+`teensyp.stream`'s reactor arity exists to fix can be neither expressed nor
+reproduced; `perturb.script` has no client-side handler taking arbitrary octets,
+so the demo fabricates a posix transcript of a session that never happened;
+`w/recv`'s empty view means both "end of stream" and "nothing queued", which the
+original distinguished; `close!` is idempotent and unchecked in both directions,
+so a double close and a missing close are equally silent; and `oconcat`/`osub`
+make buffer compaction O(n) per chunk, quadratic in line length.
+
+---
+
+### E24 — the event-driven boundary: the guarantees moved, they did not survive
+
+The hypothesis, from E23's fallout and from `echo-response` checking because it
+is pure: *if every capability stays in a driver and application code is a pure
+`(state, event) -> [state', effects]`, then user code checks clean with no
+annotations and the whole cost of the capability discipline collapses into one
+component.* Built as `perturb.evt` (driver, holding **two live connections at
+once**), `perturb.evtapp` (pure application), `perturb.evtcheck`. `-M:evt` runs
+both drivers under the scripted handler and over a real loopback socket, octets
+identical. No rule was weakened; `check.clj` and `cap.clj` untouched; **zero
+axioms and zero `:perturb.cap/representation` entries in either namespace.**
+
+#### The hypothesis half-held, and the half that held is nearly vacuous
+
+The pure application functions check clean with no annotations, as predicted. But
+of four deliberately-wrong applications the checker **rejects two and accepts
+two**:
+
+| control | verdict |
+| --- | --- |
+| stashes the connection in app state | rejected — `escape`, `dangling` |
+| returns the connection in an effect | rejected — `escape` at `ServerConn@:reading[1][0][1]`, followed through two nested vector literals |
+| **two responses for one request** | **ACCEPTED** — and the run puts **139 octets, two complete responses, on the wire for one request** |
+| **responds after closing** | **ACCEPTED** — the analogue of `write-after-move`, except the thing reused is an integer id |
+
+And the two that *are* rejected have to **mint their own connection**, because an
+unannotated function's parameters are opaque. There is no way to write "an
+application that was handed a connection and misused it" — only "an application
+that opened a socket." **The boundary is enforced by absence, not by a rule.**
+
+#### The strongest result was not a control
+
+`perturb.evtapp`'s `/wait` route defers a response by one round — the most
+ordinary event-driven move there is, in the **working** application. Underneath,
+it makes the driver read a second request from a connection that still owes a
+response: `perturb.httpcorpus/read-twice-without-responding`, a recorded
+`:typestate` rejection. Here it is accepted, it runs, and the only trace is that
+the ledger stops joining up:
+
+```
+{:id "perturb-sconn-8", :was :responding, :claims :reading, :site :perturb.http/read-request}
+{:id "perturb-sconn-8", :was :reading, :claims :responding, :site :perturb.http/respond}
+```
+
+**The capability discipline collapsed into one component and the protocol
+obligations leaked into the other one, unguarded.** The pure-handler shape does
+not remove typestate obligations; it relocates them somewhere nothing enforces
+them — and where `perturb.http`'s own ledger cannot see them either, because
+`respond!` records its `:from` as the literal `:responding`, so a violated edge
+still reports the state it was supposed to start in. The contradiction is visible
+only *between* consecutive entries.
+
+#### What a connection table costs, measured
+
+**A fixed-arity register file checks.** Two `ServerConn`s at `:arg 0`/`:arg 1`,
+returned at `:at [0]`/`:at [1]`, carried through a loop at every back edge, live
+alongside a `Listener`. **Two instances of the same capability alive at once had
+never been checked before.** 47 lines, all clean.
+
+**A map keyed by connection id — what a server actually needs — is rejected
+function by function**, 38 lines across four functions (`no-signature`,
+`untracked-consume` ×4, `dangling`). And the diagnostics say something worse than
+"wrong state": once the capability enters the map the typestate axis is not
+violated, it is **absent**. The checker does not know a connection is there.
+
+Three isolation programs pin down the rules:
+
+- **`accept-into-vector` draws the same diagnostics as the map version,
+  character for character.** Choosing the composite the abstract domain models
+  buys nothing: what it models is the vector **literal node**, not the vector.
+  `conj` is an ordinary function and draws `no-signature`. The sharpest single
+  fact in the experiment.
+- **`table-grows-in-a-loop`** — `loop-not-preserving`. **A capability table
+  cannot grow**; its arity must be a source constant, because the only way to add
+  a slot is to write a wider literal.
+- **`honour-close-effect`** — `join` ×2 plus `produces-mismatch`. **A value
+  cannot select a capability.** Every effect is a decision made in data about a
+  capability held elsewhere, so a checked driver structurally cannot honour
+  `[:close id]`.
+
+**Two clean verdicts that should be read as failures.** `serve-table-with-listener`
+and `serve-table` check — *because every `ServerConn` became opaque inside
+`accept-into-table` before control reached them*. A clean verdict on the function
+that composes a driver is exactly what a hidden boundary looks like from above.
+
+#### One root cause behind E23 and E24 both
+
+A capability may only live in a `let`/`loop` binding **whose shape is known at
+compile time**. Passing it to a function-valued parameter, storing it in a
+collection, growing a collection of them, or selecting one with a runtime value
+are all outside that, and an event-driven application needs all four.
+
+#### E24's own nonclaims
+
+1. **Nothing here says the architecture is wrong**, only that it does not
+   preserve the guarantees it appears to. An instrumented driver (see
+   `RUNTIME-OBLIGATION-BRIEF.md`) is a coherent answer; this measures the size of
+   what would need instrumenting.
+2. **No escape hatch was used, and one would have hidden everything.** A
+   `ConnTable` capability with two `:perturb.cap/representation` entries makes all
+   seven rejections vanish by making the bodies unread — the move
+   `report-limits` item 1 calls gameable, producing a clean report about nothing.
+3. **Single-threaded throughout.** Two connections held at once is not
+   concurrency; the contention axis remains untested (I20).
+4. The driver carries one hand-written runtime guard (`(nil? c)`) that makes
+   `responds-after-closing` a no-op instead of a write to a closed socket. It is
+   the only reason that accepted-wrong control does not reach the wire, and it is
+   a use-after-close check implemented by hand because the static one stops at
+   the map.
+
+---
+
+### E25 — the two papers in hand, read; and the reason §1.2 dropped regions does not apply to them
+
+E20-VERIFICATION-BRIEF item 12. Both PDFs are committed under
+`docs/research/papers/`, both CC-BY 4.0, and unlike the rest of Appendix D they
+were readable without network. Both were read in full text. D.8 recorded two
+mappings **as hypotheses**; both are substantially right and **both name the
+wrong construct**, which changes what perturb would adopt.
+
+#### Milano, Turcotti, Myers — *A Flexible Type System for Fearless Concurrency*, PLDI 2022
+
+**(1) Yes, a region gives a connection table — and not for the reason D.8 gave.**
+D.8 attributed it to tempered domination. The mechanism is simpler and stronger,
+§1:
+
+> intra-region references may freely link objects within the same region,
+> **allowing programmers to easily form arbitrary object graphs**, while
+> inter-region references are tracked by the type system and stored in
+> appropriately annotated isolated fields.
+
+A table of N connections held in **one** region needs no tracking at all —
+intra-region references are unconstrained. That is the direct answer to
+`accept-into-vector` and to the map version: the composite stops being something
+the abstract domain must model, because the *region*, not the binding, is the
+unit of ownership. **Tempered domination buys something else** — it relaxes
+domination for *tracked* `iso` fields, which is what the doubly-linked-list
+examples need, i.e. moving things *between* regions. The distinction matters
+because it says what perturb would have to build first: a region discipline, of
+which tempered domination is a later refinement, not the entry price.
+
+**(2) Growth and reassignment: yes, explicitly, and with no annotation.** §4.4:
+
+> This tracking context also allows iso fields to be **freely reassigned, even
+> if doing so would create cycles** in the object graph. This is safe because
+> tempered domination requires domination only on untracked iso fields; fields
+> explicitly mentioned in H are exempt. ... T7 - Isolated-Field-Assignment ...
+> **places no restrictions on 𝑒** beyond ensuring that it type-checks.
+
+And §1: the guarantee holds "without requiring any annotations from the
+programmer **except at function boundaries**". `table-grows-in-a-loop` was
+rejected because "the only way to add a slot is to write a wider literal"; here
+the loop body is ordinary intra-region mutation.
+
+**(3) `Send`/`Receive` and the contention axis — the most transferable result in
+the paper.** §4.4:
+
+> empty tracking contexts prove that **every iso field within that region
+> contains a dominating reference**, and thus is safe to transmit between
+> threads via **T16 - Send (which requires an empty context)** and **T17 -
+> Receive (which assumes one)**.
+
+That is a precise statement of the question §1.2's contention axis asks and has
+never tested (I20): *does an owner survive a thread fork?* The answer is **iff,
+at the fork, nothing it transitively owns is focused** — no borrow, no
+outstanding exemption. perturb's universal `:thread-confined` is the degenerate
+instance where the answer is fixed at "no". The typing rules are the shape a real
+answer would take, and they cost a notion of region perturb does not have.
+
+**(4) `if disconnected` is a runtime test discharging a static property — and it
+is weaker than `RUNTIME-OBLIGATION-BRIEF.md` needs, in an instructive way.**
+The dynamic rules (Fig. 7, E15a/E15b) test
+`tracked-set(x) ∩ tracked-set(y) = ∅` and branch on it. The typing rule T15
+(Fig. 10) is where the work happens: in the **success** branch `x` and `y` are
+retyped into **two distinct regions** `r_x` and `r_y`; in the **failure** branch
+both remain in the single region `r`. A run-time check splits a region, statically.
+
+Two qualifications the brief should carry:
+
+- **Nothing is accepted that would otherwise be rejected.** Both branches are
+  well-typed and both must be written; the dynamic test only selects which
+  well-typed continuation runs, and it **fails conservatively** ("conservatively
+  assuming that they remain connected if the counts do not match"). That is a
+  *refinement of a static approximation with a total fallback*, which is
+  materially weaker than the brief's second row — "accepted, carrying a residual
+  obligation the runtime discharges". **The design lesson is the fallback**: a
+  runtime test may license a stronger static conclusion only if the negative
+  branch is itself typable and written. Applied to `RUNTIME-OBLIGATION-BRIEF`,
+  that is an argument for the *third* row (instrument the axioms) and against the
+  second (accept the refused programs) — the refused Content-Length program has
+  no typable else-branch to fall into.
+- **The cost is argued, not measured.** §5 says "we **propose** a two-step
+  process", the check is a reference-count-plus-interleaved-traversal, and the
+  worst case is explicit: "in the worst case, this check may involve traversing
+  an entire region of arbitrary size." No benchmark is reported. Under this
+  document's standing method commitment that is `assumed`, not `measured`, and
+  D.8 should not be read as supplying a cost datum.
+- Incidentally, T15's two premises share one conclusion context — both branches
+  must produce the same `H′; Γ′`. That is **a fourth independent instance of the
+  linear join rule** (E21 claim 1), in a system that is not linear.
+
+**(5) The decisive question — does D4's no-resumption argument extend to regions?
+The paper cannot answer it, and §1.2's stated reason is inapplicable anyway.**
+
+The paper offers no evidence, because its core language has **no non-local
+control of any kind**. The syntax (Fig. 6) is locations, variables, sequencing,
+field read/assign, assignment, calls, binary ops, `new`, `declare`, `if`,
+`while`, `send`/`recv`, `if disconnected`, and the `maybe` forms. No exceptions,
+no handlers, no continuations. Whatever the interaction is, this system does not
+exhibit it.
+
+**But §1.2's reason for dropping locality does not apply to a region system of
+this kind, and that is a correction rather than a quibble.** §1.2 says regions
+are "the specific feature that makes effects unsound (cf. Yarrow: **non-local
+control breaks stack discipline**; multi-shot handlers break exit-at-most-once)".
+That objection is about *region-based memory management* in the Tofte–Talpin
+sense, where a region has a **lexical scope and a stack lifetime** that a
+non-local exit can skip. Milano's regions have no scope at all: they are a
+partition of the heap induced by domination, and §1 states that they "can grow
+and shrink dynamically as threads exchange portions of the object graph". There
+is no region frame for control to escape. Two systems, one word. **New tally row
+36:** §1.2's conclusion may still stand, but the reason recorded for it does not
+transfer — the same shape as row 5.
+
+**And D.8's escape hatch does not exist, by the mechanism E21 had just
+corrected.** D.8's tension paragraph says "E20 found that D4's no-resumption rule
+may remove the reason regions were dropped". Read that against tally row 30.
+Yarrow's objection is that **non-local control** breaks stack discipline — and a
+non-local exit *is* a discarded continuation, which is precisely the half of the
+handler/linearity mismatch that D4 **does not** remove. D4 removes multi-shot
+resumption; `abort!` is retained by design (§1.4). So the argument D.8 leans on
+would not have licensed regions even if Yarrow's objection did apply. Two
+independent defects in one sentence: the cited objection targets a different kind
+of region, *and* the offered escape from it covers the wrong half. **The region
+question is harder than D.8 states, not easier.**
+
+**What *does* transfer is E21's problem, not Yarrow's — and it is the same
+problem.** The tracking context H is flow-sensitive; function requirements are
+"only checked at the beginning and end of each function body", and `Send`
+requires emptiness. A non-local exit that skips the point where a focus is
+discharged leaves `iso` fields tracked and the domination exemption outstanding.
+That is the discarded-continuation failure of E21 rows 30 and 31 in a third
+setting — linear contexts, tracking contexts and typestate all being
+flow-sensitive state that a non-local exit can strand. **So adopting regions
+would not introduce a new soundness problem; it would enlarge the one §4.6
+already has open on the `abort!` path**, and it would enlarge it in the one
+direction perturb has no mechanism for. That makes the region item and the
+cancellation item **one item, and the cancellation item is the prerequisite** —
+E21's claim 3 work (a `cancel` form, a live set at each `abort!`, propagation)
+is what a region discipline would need in order to be sound in a language that
+keeps exceptions. Sequencing recorded: **`abort!` first, regions after.**
+
+#### Laddad, Cheung, Hellerstein, Milano — *Flo*, POPL 2025
+
+**The mapping is right and D.8 named the wrong level.** Flo has three, and E23's
+defect is at the bottom one, which D.8 did not mention:
+
+1. **Values.** §6: `S<V> ≜ {[v₁,…,vₙ]} ∪ {[⊗, v₁,…,vₙ]}`, where "the terminator
+   symbol ⊗ indicates the end of a stream", with the laws
+   `[⊗,…] ++ x = [⊗,…]` (absorbing) and `c ++ ∅ = c`. **An empty stream and a
+   terminated stream are different values.**
+2. **A predicate.** §3.2: `fixed(c) ≜ ∀c′ ∈ C. c ++ c′ = c` — "identifies a
+   collection value such that **no more data can be added to it**".
+3. **A type.** §3.3: a boundedness flag, `Bounded | Unbounded`, capturing
+   "whether a collection value will **eventually** become fixed, or if it may
+   never become that".
+
+E23 found that `perturb.wire`'s `recv` returns an empty octet view for both
+end-of-stream and nothing-queued. That is a collapse of `∅` into `fix(∅)` at
+**level 1**. The principled form of the fix is a sum on `recv`'s result and the
+`⊗`-absorbing algebra — not the boundedness flag, which is a separate and later
+discipline. **New tally row 37.**
+
+**Boundedness is still worth having, for a different job**, stated in §1:
+
+> Operators can only **block** on bounded streams, and must always make progress
+> with respect to unbounded streams.
+
+That is a licence-to-block discipline, and it maps onto perturb cleanly: a
+**Content-Length body is Bounded**, a **keep-alive connection is Unbounded**.
+Note where that lands — E19's `(= written declared)` refinement on
+`ResponseBody`'s terminal edge is precisely a witness that the body stream
+becomes fixed, so §1.3's arithmetic and Flo's boundedness flag are the same
+obligation stated twice. That is a genuine unification and it was not visible
+from either side alone.
+
+**Nested graphs with cycles do cover the keep-alive shape**, and Flo's own
+motivating example is the same shape: §2 introduces `nest` exactly because "if
+input is unbounded, each inner argument to nest is bounded, and hence can be
+passed into fold". An HTTP server is an **unbounded** stream of connections, each
+carrying a **bounded** stream of request bodies — outer U, inner B, which is
+`nest`'s signature. The composition law perturb would adopt for framing layers is
+therefore not new machinery; it is that a layer is an operator whose input and
+output boundedness flags compose, with `nest` the constructor that re-bounds an
+unbounded stream.
+
+#### E25's own nonclaims
+
+1. **Nothing was executed and nothing was built.** This is a reading of two
+   papers against E23/E24's measurements, in the E21 mould. Whether a region
+   discipline is implementable over Jolt IR is untested, and §1.1's `:extern`
+   pessimism applies with full force to a claim this large.
+2. **The region result is about *expressiveness*, not about perturb's checker.**
+   Milano's system admits a connection table because ownership is per-region;
+   nothing here says perturb's `[capability operation]` machinery could be
+   retrofitted onto regions, or what it would cost to try.
+3. **No cost number was obtained for `if disconnected`.** See above: the paper
+   proposes an implementation and argues its complexity. `RUNTIME-OBLIGATION-BRIEF`
+   item 5's cost question is **not** answered by this paper.
+4. **Flo is a semantics, not an implementation perturb can adopt.** It is
+   parameterised over collections and operators; instantiating it for octet
+   streams over a descriptor is the work, and the paper's instantiations are
+   Flink, LVars and DBSP, none of which is a byte-oriented transport.
+5. **The `nest` mapping is structural, not verified.** That HTTP keep-alive has
+   the shape `nest` is built for is an observation about signatures. No Flo
+   program was written and no property was checked.
 
 ## 4. Open questions
 
@@ -3846,11 +4291,46 @@ Recorded here so they are not lost between sections. None of these is decided.
 - **Agreement/consensus.** Multi-node safety, refinement against a spec, and
   liveness under partition remain untested by the current ladder. Still only a
   ladder entry (§5, step 5).
+- **A capability may only live in a binding of statically-known shape.** The
+  single root cause behind E23 and E24, measured from four directions: it cannot
+  be passed to a **function-valued parameter** (`with-conn`, and every reactor
+  callback), stored in a **collection** (map and vector are identical here — the
+  abstract domain models the vector *literal node*, not the vector), held in a
+  collection that **grows** (arity must be a source constant), or **selected by a
+  runtime value** (`join`). An event-driven application needs all four, so this
+  now sits above the module boundary in the queue. Whether the answer is a
+  language feature (handle table, existentials, capability regions) or a
+  permanently instrumented trusted core is **undecided** and is the live fork.
+
+  **E25 read the candidate and the language-feature arm now has a concrete
+  design.** Milano, Turcotti & Myers (PLDI 2022) admit all four shapes, and the
+  mechanism is not the one D.8 guessed: **intra-region references are untracked
+  altogether** — "intra-region references may freely link objects within the
+  same region, allowing programmers to easily form arbitrary object graphs" —
+  so a connection table is one region and needs no annotation. Growth and
+  reassignment are explicit (T7 places "no restrictions on 𝑒"), including
+  cycles. Tempered domination is a *later* refinement for moving objects between
+  regions, not the entry price. Two things this costs, both now named rather
+  than guessed: a region discipline is a second ownership notion beside §1.2's
+  four axes, and its `Send`/`Receive` rules are the first precise statement
+  anything has offered of the contention axis (I20) — an owner survives a fork
+  **iff its region's tracking context is empty**. And one objection is now known
+  to be the wrong objection: §1.2 ruled regions out citing Yarrow's stack
+  discipline, which is about *memory* regions and does not apply here (tally row
+  36). The real hazard is the `abort!` gap, which is already on this list, so
+  the two items are one.
+- **Higher-order capability passing has no notation at all.** Not in E15's blind
+  spots, not in E17's or E18's nonclaims, not in E20's survey — found only by
+  checking code perturb did not write (E23). `(f c)` cannot be annotated because
+  the callee is a parameter.
 - **The join-rule usability risk.** E6 probe 1's rejection of
   `if (c) { b = detach_result(b) }; use(b)` is a real usability risk for §1.2,
   and how often it fires on real programs is argued rather than measured. Two
   data points now exist and they disagree: zero times on `perturb.nrepl` (E15),
-  and on the first driver anyone would write for HTTP keep-alive (E18). The
+  on the first driver anyone would write for HTTP keep-alive (E18), on
+  `read-lines` in code perturb did not write (E23, cause: borrows on one path and
+  consumes on the other), and on `honour-close-effect` in an event-driven driver
+  (E24, cause: a value selecting a capability). The
   accepted rewrite — close inside the branch, `recur` in the other, so one arm
   is bottom — works and is not discoverable from the diagnostic.
   **E20 corrects the framing and confirms the rule.** Session types do NOT
@@ -4515,7 +4995,8 @@ blocked every scholarly host: `dl.acm.org`, `arxiv.org`, `link.springer.com`,
 layer. Reachable: `github.com`, `raw.githubusercontent.com`, and search-engine
 extractions. **Every reference below was verified for existence, venue, authors
 and year; none was read in full text**, except the items marked ✔, which were
-fetched directly. This list is kept complete so the sources can be obtained when
+fetched directly, and the two in **D.8**, which were supplied as PDFs and are
+committed under `docs/research/papers/`. This list is kept complete so the sources can be obtained when
 access allows, and so any claim resting on one can be re-checked against the
 paper rather than against a summary of it.
 
@@ -4680,6 +5161,72 @@ from arXiv, LIPIcs, author pages, institutional repositories, `web.archive.org`
 | Culpepper, Tobin-Hochstadt, Flatt, *Advanced Macrology and the Implementation of Typed Scheme*, Scheme Workshop 2007 | blame across macroexpansion is open (Q4) |
 | ✔ Clojure reference: *Vars and the Global Environment* | `:private` is intent; `@#'ns/private-var` works — **perturb cannot get sealing from the host** |
 
+---
+
+### D.8 Full text actually in hand — the only two
+
+Everything in D.1–D.7 was verified for existence, venue, authors and year and
+**not read**. These two are different: they were supplied as PDFs, both are
+**CC-BY 4.0**, and both are committed under `docs/research/papers/`. They are
+also the two that bear most directly on the live fork in §4.6 — whether a
+dynamically-sized capability collection becomes a language feature or stays in
+an instrumented trusted core.
+
+| ref | where | why it is here |
+| --- | --- | --- |
+| ✔✔ Milano, Turcotti, Myers, *A Flexible Type System for Fearless Concurrency*, PLDI 2022 | [10.1145/3519939.3523443](https://doi.org/10.1145/3519939.3523443) · `papers/PLDI22-flexible-type-system-for-fearless-concurrency.pdf` | **A candidate answer to E23/E24's root cause.** Its typing rules use *regions*, *isolated fields*, *tracked vs untracked*, **tempered domination**, `if disconnected`, and `Send`/`Receive` gated on an **empty tracking context**. |
+| ✔✔ Laddad, Cheung, Hellerstein, Milano, *Flo: A Semantic Foundation for Progressive Stream Processing*, POPL 2025 | [10.1145/3704845](https://doi.org/10.1145/3704845) · `papers/flo-semantic-foundation-progressive-stream-processing.pdf` | **A candidate semantic foundation for the layered-event architecture.** Two properties — *streaming progress* and *eager execution* — a type system distinguishing **bounded** streams (operators may block on termination) from **unbounded**, dataflow composition, and **nested graphs with cycles**. Models Flink, LVars and DBSP. |
+
+**✔✔ Both have since been read in full text — see E25.** The hypotheses below are
+kept verbatim as written, because both were **substantially right and both named
+the wrong construct**, and that is exactly the failure mode this document keeps a
+tally of. Read E25 before acting on anything below it. In short: the connection
+table comes from *intra-region references being untracked*, not from tempered
+domination; and E23's `recv` defect is at Flo's **value** level (the terminator
+`⊗`, and the `fixed` predicate), not at its bounded/unbounded **type** level
+(tally rows 36–37). The paragraph below on Yarrow is the one that changed a
+decision: the objection it cites is to stack-disciplined *memory* regions and
+does not apply to these regions at all — **and** the escape it offers from that
+objection ("D4's no-resumption may remove the reason regions were dropped") is
+unavailable under tally row 30, because non-local control is the *discard* half
+of the handler/linearity mismatch and D4 removes only the multi-shot half. The
+region question is harder than the paragraph below states.
+
+**What each would answer, stated as a hypothesis rather than a result — neither
+has been read end to end, only the abstract of Flo and the typing-rule section
+of the PLDI paper, via a crude PDF extraction.**
+
+*Fearless Concurrency → the §4.6 root cause.* Our wall is that a capability may
+live only in a binding of statically-known shape. A **region** holds an arbitrary
+object graph and is owned as a unit, which is what a connection table is and what
+a fixed-arity register file is not. **Tempered domination** relaxes global
+domination for tracked isolated fields, permitting cycles and free field
+reassignment — the property `table-grows-in-a-loop` failed to have.
+`Send`/`Receive` on an empty tracking context is a discipline for moving a whole
+region between threads, which is the contention axis nothing has tested (I20).
+And `if disconnected` is a **runtime test establishing a static property**, which
+is the hybrid posture `RUNTIME-OBLIGATION-BRIEF.md` argues for, already
+load-bearing in a published system. The paper is pitched as *more flexible than
+Rust*; perturb's problem is that it refuses code that runs.
+
+**The tension this creates, and it is the important part.** §1.2 dropped
+**locality — regions — by design**, citing Yarrow: regions are the specific
+feature that makes effects unsound, because non-local control breaks stack
+discipline and multi-shot handlers break exit-at-most-once. This is a region
+system that delivers what §4.6 says is missing. E20 found that D4's
+no-resumption rule may remove the reason regions were dropped — that was an
+argument; this is a concrete instance of what the argument would license, and it
+should be settled by reading rather than by inference.
+
+*Flo → the layered-event architecture.* Its **bounded vs unbounded** distinction
+is the principled form of a defect E23 found independently: `perturb.wire`'s
+`recv` returns an empty octet view for **both** "end of stream" and "nothing
+queued", a distinction `teensyp.stream` had and perturb cannot express. "Bounded
+streams allow operators to block on termination" is exactly the property that
+makes that distinction matter. Nested graphs with cycles is the keep-alive loop
+and the layer stack; determinism is what perturb and jolt-sim both exist for.
+
+---
 ---
 
 ## 7. Scoping correction — jolt-sim is input, not authority

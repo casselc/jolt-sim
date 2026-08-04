@@ -18,6 +18,11 @@
   ;; Codec/octet self-tests that need no server and no socket.
   :selftest {:main-opts ["-m" "perturb.selftest"]}
 
+  ;; The blocking-connection adapter ported from teensyp.stream, run against
+  ;; the scripted handler at every chunk boundary from one octet upward.
+  ;; No server and no socket.
+  :stream {:main-opts ["-m" "perturb.streamdemo"]}
+
   ;; The refinement decision procedure, alone, with its boundary as a table:
   ;; every case that must be decided and every case that must be REFUSED.
   ;; `perturb.check` is the consumer; this runs the arithmetic on its own.
@@ -29,6 +34,14 @@
   ;; `-M:noio --touch-native` is the positive control.
   :noio   {:main-opts ["-m" "perturb.noio"]}
 
+  ;; The measurement of code perturb did NOT write: perturb.stream, ported from
+  ;; teensyp.stream by an agent forbidden to read the rules, checked against a
+  ;; declaration written from outside. Not a gate — it records no expectations,
+  ;; because the point was to find out the verdicts rather than assert them.
+  ;; (This alias was missing when the measurement landed, which made it
+  ;; unreachable from the documented interface; found by the -M:evt work.)
+  :streamcheck {:main-opts ["-m" "perturb.streamcheck"]}
+
   ;; The static capability checker. Reads perturb.cap's declarations as a
   ;; SPECIFICATION and real Jolt IR as the program, and rejects. No socket and
   ;; no server; nothing in the corpus is ever called.
@@ -38,4 +51,10 @@
   ;; the scripted network (one octet per recv) and under a real POSIX listening
   ;; socket, with the response octets compared. Takes a port; needs no server,
   ;; because it is both ends.
-  :http   {:main-opts ["-m" "perturb.httpdemo"]}}}
+  :http   {:main-opts ["-m" "perturb.httpdemo"]}
+
+  ;; The event-driven experiment: a driver that owns every capability and an
+  ;; application that is a pure (state, event) -> [state', effects]. Checks
+  ;; both namespaces and then RUNS both drivers, scripted and over a real
+  ;; loopback socket. NOT a gate — it records no expectations. Takes a port.
+  :evt    {:main-opts ["-m" "perturb.evtcheck"]}}}
