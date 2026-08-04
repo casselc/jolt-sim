@@ -193,7 +193,137 @@ suite, and production.** A production incident loads into the REPL and replays
 under the simulator. A simulator run diffs against a production one. The CI
 monitor is the same code as the prod monitor; only the budget differs.
 
-### 3.4 `unknown` as a value
+### 3.4 Cells, flows, interceptors and subscriptions
+
+**Revision note.** §§1–3 as first drafted dropped the cell/flow line entirely —
+Mycelium, `core.async.flow`, re-frame — which `PROGRESSIVE-ASSURANCE-ARCHITECTURE.md`
+§"borrows two ideas" had already put on the table. Some of it *is* present under
+other names and should have been labelled; some was genuinely lost and is real;
+one part is refuted and must not return uncritically. All three, separated.
+
+Sources read 2026-08-04: `mycelium-clj/mycelium` README @ `main`;
+`PROGRESSIVE-ASSURANCE-ARCHITECTURE.md` §§ on `core.async.flow`. re-frame is
+cited from general knowledge, not from anything in this record.
+
+#### (a) Present, but unnamed — my error
+
+| idea | where it already is |
+| --- | --- |
+| cell step `(state, event) -> [state', effects]` | §3.3, effects as data; §6.1's projected endpoints |
+| Mycelium's explicit input/output schemas, graph-owned routing | `defspec`'s `:over`/`:domain`; `defsession`'s projection |
+| Mycelium's *"schema/graph validation is evidence of declared shape/path compatibility, not a proof of handler semantics"* | **an evidence value with capped `:strength`.** The architecture document phrased this correctly before this design existed |
+| re-frame's effects and coeffects as data | effect requests as data; `defforeign` |
+| `core.async.flow`'s **static `datafy` view vs. dynamic process inspection**, which must not be conflated | §5.5's three fact sources, and the rule that a query must name which it used |
+| **re-frame's subscription graph** | **§5's evidence invalidation graph is the same mechanism** — a deduplicating reactive graph keyed on content, with `:as-of` hashes where re-frame has ratom equality. Different payload, identical shape. I did not notice this until asked |
+
+#### (b) Genuinely dropped, and each is a real gap
+
+1. **Interceptors.** re-frame's bidirectional before/after chain around a handler
+   is *structurally the same thing* as a rung, and B6 is the invariant about
+   stacking them. perturb has the mechanism and **no notation** — interceptors
+   are the ergonomic form, and adopting them costs nothing conceptually.
+2. **Subscriptions as materialized views with dedup.** This is the brief's
+   work-queue item 5 (`view = V(cursor)`), and **E35 finding 3 is precisely the
+   bug the discipline prevents** — the credit fold had to follow reply order
+   rather than request order, "the kind of bug that makes a checker look correct
+   while measuring the wrong thing", found by hand. Rebuild at a boundary, not
+   per event (row 38's cost line). Dropped from the design entirely; restored
+   here.
+3. **Lifecycle and supervision.** `core.async.flow` separates step logic from
+   *lifecycle, monitoring and error handling* — `:describe`/`:init`/`:transition`/
+   `:transform`, pause, resume, ping, an admin channel. **This design has no
+   story at all for controlling a running process graph**: start, pause, drain,
+   resume, stop. That is a serious omission for something whose pitch includes
+   production monitoring and an attachable prod REPL, and the architecture
+   document already recorded the matching gap on the other side — jolt-sim's
+   process explorer "has no live-process ping surface."
+4. **Topology as a separate data artifact.** Mycelium's manifest, with
+   `enumerate-paths` and `compile-workflow` validating *before any code runs*:
+   cell existence, edge targets, reachability from `:start`, dispatch coverage
+   both ways, schema chain, path constraints. This is **the concrete answer to
+   §13 nonclaim 9** — the complaint that perturb's declarations are scattered
+   across five namespaces. A manifest is where they go.
+5. **Mycelium's `:constraints` vocabulary** — `:must-follow`, `:must-precede`,
+   `:never-together`, `:always-reachable` — *checked against all enumerated
+   paths*. That is a declaration-sourced `:exhausted` query with a real
+   denominator, and it is a better starting vocabulary than §5.7 invented.
+6. **Resilience policies as declared data** (retry, backoff, timeout-ms). §9's
+   CTMC needs exactly these as parameters; Mycelium already declares them, so
+   the metastability lane's inputs are a manifest read rather than a
+   hand-written model.
+7. **Halt & resume with a persistent store.** Human-in-the-loop, operator-gated,
+   long-running flows — the shape the brief named as the honest UI target (an
+   a1s mutation lifecycle: confirm → request → poll → terminal). Absent here.
+8. **Join nodes with output-key conflict detection.** Fork-join at the
+   application level, with disjointness checked at compile time. §6.1 handles
+   concurrency at the protocol level and says nothing about this.
+
+**And one point of genuine kinship worth recording.** Mycelium's README
+documents that `:always-reachable` *"passes vacuously if no paths reach
+`:end`."* The vacuity is **known and written down in prose** — which is exactly
+one step short of E40. The contribution this design makes is not noticing the
+problem; it is that **the vacuity becomes a value the tool emits** rather than a
+caveat the reader must remember to apply.
+
+#### (c) Refuted — and this part must not come back uncritically
+
+The load-bearing claim was that if user code holds no capability, *"the whole
+cost of the capability discipline collapses into ONE component."* **It was
+built, measured, and it failed.** Tally row 35: the shape **relocates**
+obligations rather than removing them — 2 of 4 wrong applications accepted, and
+the working app's `/wait` route broke the declared machine and reached the wire.
+
+`perturb.evt` is the measurement, and it was written to make the cost visible
+rather than small. Two drivers, on purpose:
+
+- **Driver A, the register file** — the connection table is a *literal 2-tuple*,
+  every position written down in the annotation. It holds a Listener and two
+  ServerConns live in one scope. **It checks.**
+- **Driver B, the table** — a map from id to ServerConn, *"which is what anyone
+  would write"*, servicing N connections and honouring `[:close id]`. **It is
+  rejected, function by function, and the rejections are the measurement.**
+
+`CELLULAR-UI`'s containment rule — *"capability state remains outside cell
+input, output, state, trace, export, and effect-request data"* — excludes the
+one shape perturb can check and routes authority into all four E24 shapes at
+once.
+
+#### (d) The synthesis: regions are the notation driver B was missing
+
+Driver B is rejected because a map keyed by runtime id, that grows, dispatched
+by runtime value, behind a function-valued parameter, is E24's four unexpressible
+shapes in one data structure. **That is the exact shape `with-region` exists to
+express** (§3.2).
+
+> The cell architecture did not fail. Its **relocation target** was
+> unexpressible, and regions are the expression. Driver B becomes a region with
+> `:exit :must-be-empty`: identity given up, obligation kept, checked at
+> `:monitored` with a named residual — instead of rejected function by function.
+
+**This is a decidable experiment and it is cheaper than §11.** `perturb.evt`
+already exists, both drivers already run under `perturb.script` and over a real
+loopback socket, and `perturb.evtcheck` already compares the octets.
+
+> **Prediction, falsifiable:** under regions, driver B's `accept-into-table`,
+> `read-round`, `apply-effect`, `apply-effects` and `close-table` move from
+> *rejected* to *accepted at `:monitored`*, the emitted octets remain identical
+> to driver A's, and a leaked connection is reported as a **non-empty region
+> exit with a count** rather than as a name the checker cannot track. If the
+> rejections survive, regions do not solve §4.6 and §3.2 is wrong.
+
+### 3.5 Lifecycle: the gap this revision opened
+
+§3.4(b)3 is not repairable by citation. Naming it as work rather than papering
+over it: a running flow needs **declared lifecycle states of its own** — an
+obligation-bearing typestate over the *process graph*, not over one capability —
+with `:draining` and `:paused` as real states, `:resume` as an edge that may be
+refused, and supervision (ping, report, admin) as an **effect** so it is
+budgeted, traced and exportable like everything else. It is the natural home for
+`core.async.flow`'s admin channel and for the live-process ping surface
+jolt-sim's process explorer is recorded as lacking. Nothing in this design does
+it, and §9.3(d)'s adaptive controller is a special case of it.
+
+### 3.6 `unknown` as a value
 
 Every monitor predicate returns `true | false | (unknown "why")`, and
 aggregation propagates it. `unknown` at top level is not a pass.
@@ -949,6 +1079,11 @@ Maelstrom `echo` + `broadcast-a` nodes as the first `:native` lane.
 | **OTel exporter, budgets, tail sampling** | **new**, mechanical once Merge 1 lands |
 | **CTMC generation + calibration + spectral analysis** | **new**, and the only piece needing numerics we do not have |
 | **indexed fact store + graph algorithms** | **new**, small; facts come from declarations and the trace, both of which exist |
+| **a manifest: topology as one data artifact, with path enumeration** | **new** here, but **not new work** — Mycelium's manifest + `enumerate-paths` + `compile-workflow` is a working design to adopt |
+| **interceptors as the notation for rungs** | **new** notation over an **existing** mechanism (`perturb.effect`) |
+| **subscriptions / materialized views with dedup** | **new**; brief work-queue item 5, and E35 finding 3 is the bug it prevents |
+| **flow lifecycle and supervision (pause/drain/resume/ping)** | **new**, and §3.5 records it as an outright gap on both sides |
+| **cells over regions (driver B)** | **existing code, new primitive** — `perturb.evt` + `evtcheck` already run both drivers and compare octets |
 | **a small Datalog (semi-naive, stratified negation)** | **new**, low hundreds of lines |
 | **SMT escalation past `refine`'s fragment** | **new**; Z3 already a toolchain dependency via `bin/verify-models` |
 
