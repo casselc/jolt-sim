@@ -54,6 +54,21 @@ The design is wrong if the ladder is not free. Concretely:
 > that takes three rewrites in three notations, the thesis is false and no
 > amount of architecture repairs it.
 
+> **CORRECTED — the criterion as written is false, and the correction is not
+> cosmetic.** A review pointed out that a common predicate still needs an
+> **explicit observation adapter**: for the exhaustive consumer you *construct*
+> the arguments; for the monitor you must *find* them in a trace. That adapter
+> is not `:domain` and is not free. Verified by inspection of §3.1's own
+> example. The honest criterion is:
+>
+> > **`:holds` is unchanged.** What changes is the domain declaration and a
+> > **declared observation adapter** per consumer. **A trace lacking the
+> > observations an adapter requires yields `:inconclusive`, never a pass.**
+>
+> That is weaker than the sentence it replaces and still much stronger than four
+> rewrites in four notations — but the original was a marketing claim and is
+> struck.
+
 §11 is the build that tests exactly this.
 
 ---
@@ -693,10 +708,36 @@ checker with no runtime of its own.** They are the two halves of the design in
 
 ### 7.2 The merge, concretely
 
-**Merge 1 — one trace. `jolt.sim.trace` wins.**
-`perturb.effect` keeps its own effect log and `perturb.cap/transition!` keeps
-its own ledger. Both become **event kinds in `jolt.sim.trace`**, validated by
-`kernel/validate-trace!`. Cost: a projection layer and a schema extension.
+> **STRUCK — Merge 1 as written is factually wrong.** Verified against source
+> on 2026-08-04, after a review challenged it:
+>
+> - `kernel/validate-trace!` checks **every event's fixed-position shape** and
+>   requires a non-empty vector beginning with exactly one `:run/initial`. It
+>   would **reject** perturb's events, not absorb them.
+> - `kernel/replay` compares the **full recorded sequence**
+>   (`first-difference-index expected-trace (:trace result)`) and throws
+>   `replay-diverged` on the first difference. Adding events **breaks exact
+>   replay of every existing trace.**
+> - `README.md:416` already says it: *"A unified causal trace remains later
+>   work… lifecycle events remain a separate ordered log; correlating a future's
+>   task id across both logs is the caller's responsibility today."*
+>
+> The kernel trace is a **scheduler artifact**, not a semantic log. So:
+>
+> > **one trace must begin as a NEW, separately versioned semantic-event
+> > document that REFERENCES the replay trace — not by widening it.** The
+> > kernel trace stays byte-identical.
+>
+> This is exactly the error §13 nonclaim 2 predicted: the exists-map was written
+> from docstrings, and the one merge everything else depended on was the one it
+> got wrong. The corrected version follows.
+
+**Merge 1 — one SEMANTIC EVENT DOCUMENT, versioned separately; the kernel trace
+is untouched.**
+`perturb.effect`'s log and `perturb.cap/transition!`'s ledger project into a new
+document with canonical payloads only and explicit run / task / operation /
+source-site / causal-correlation fields. **Missing correlation is
+`:inconclusive`, never a pass.** Cost: a projection layer and a new schema.
 Buys, immediately:
 - **exact replay of a B6 check**, which today has none;
 - **schedule exploration over B6** via `sim.explore` — E35 nonclaim 2's "no
@@ -732,6 +773,63 @@ dynamically. `with-region` is the declaration for what those already do.
 `gatecheck`, `layercheck`, `sharecheck`, `octetcheck` and the sim's monitor
 outcomes each print their own verdict shape. One evidence value, one renderer,
 one `(gaps)`.
+
+### 7.2a Ownership boundary, and the scope of the merge
+
+**Conditional go for a narrow shared-assurance seam; no-go for a wholesale
+merge.** Adopted from the same review, and it is a correction to §7's framing:
+five merges were proposed and only the seam is warranted now.
+
+| owner | owns |
+| --- | --- |
+| **jolt-sim** | semantic projection, simulation, replay witnesses, the monitor runner, evidence rendering |
+| **perturb** | declarations, the static checker, capability/region research |
+| **Jolt core** | only minimal, **disabled-by-default** hooks, and stable causal/site identities *when proven necessary* |
+| extensions | optional handler packs and scenario harnesses |
+
+**No production API may depend on the simulator.** §8's "the trace is the
+telemetry" therefore binds production to the **semantic-event document schema**
+only — never to `jolt.sim.kernel`. That is a real constraint on §8 and it was
+not stated there.
+
+The shared name (`perturb`, per §"On the name") is a naming convenience and does
+**not** imply one runtime, one trace schema, or one language project. Those
+remain separate, and §7.2's other four merges are deferred behind the seam.
+
+### 7.2b The convergence slice, revised
+
+Replaces §11's first slice, which was scoped to all six B6 clauses and to a
+merge that does not work.
+
+1. **`evidence-v1` as a value** — `:strength :scope :source :basis :units
+   :residual :as-of`. Reject nonzero strength with zero checked units unless
+   explicitly `:inconclusive`. **Plus the converse, which the review's
+   formulation omits:** zero checked units **while holding violations** is
+   itself a violation (E40's `:vacuity-accounting`) — otherwise a checker may
+   report findings with an empty denominator.
+2. **A separate versioned semantic-event document** (§7.2 Merge 1, corrected).
+   The kernel trace stays unchanged.
+3. **ONE B6 clause** — not six. Project its event log into semantic events,
+   re-express it as a `jolt.sim.monitor` fold, and **differential-test the old
+   checker against the new monitor on pass, violation, and vacuity controls.**
+   E40 supplies the `:inconclusive` controls already: B6.3 on the known-good,
+   C/B6.5, D/B6.2.
+4. **Run that property under one bounded schedule / process-explorer case**,
+   keeping the schedule witness and canonical result **separate from host
+   supervision facts**. A timeout is not a deadlock proof; native execution is
+   not replay.
+
+**Acceptance gate.** Proceed only if the monitor logic is unchanged across the
+old log and the semantic projection, the evidence is **byte-stable**, known
+failures are preserved, and the monitor returns `:inconclusive` when its
+required observations are absent.
+
+**Deferred behind the gate:** regions and static capability enforcement (but see
+E41 — already run as a falsification experiment, not as a solution),
+`defspec`/`defsession` syntax, the full causal DAG, the production REPL and OTel
+export, and CTMC/stability claims. One constraint on the deferred OTel item: the
+semantic-event field set should be chosen so that export is a **projection**
+rather than a rework.
 
 ### 7.3 What does *not* merge, and why
 
