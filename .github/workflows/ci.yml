@@ -205,8 +205,11 @@ jobs:
       - name: Run Hegel schedule exploration
         if: matrix.hegel
         # A hung worker must not consume the job-level deadline before the two
-        # always() forensic-retention steps can start.
-        timeout-minutes: 25
+        # always() forensic-retention steps can start. The terminal-boundary
+        # campaign adds 18 fresh worker cases to a gate whose prior hosted
+        # runtime was about 22 minutes, so retain bounded headroom beneath the
+        # unchanged 60-minute job ceiling.
+        timeout-minutes: 35
         shell: bash
         env:
           JOLT_AOT_CACHE: "0"

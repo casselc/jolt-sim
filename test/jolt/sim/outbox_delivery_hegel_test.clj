@@ -200,8 +200,10 @@
 ;; ---- Worker/case budgets and serial ownership -----------------------------
 ;; Nominal initial-case ceilings are:
 ;;
-;;   boundary witness   2 * (60000 + 500) = 121000 ms
-;;   generated lane    15 * (20000 + 500) = 307500 ms
+;;   ordinary boundary witness   2 * (60000 + 500) = 121000 ms
+;;   ordinary generated lane    15 * (20000 + 500) = 307500 ms
+;;   terminal boundary witness   6 * (60000 + 500) = 363000 ms
+;;   terminal generated lane    12 * (20000 + 500) = 246000 ms
 ;;
 ;; Every process-explorer call owns its child deadline and termination/reap
 ;; path. Test vars run synchronously: an outer future watchdog followed by
