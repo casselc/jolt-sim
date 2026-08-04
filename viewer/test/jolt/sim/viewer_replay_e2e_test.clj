@@ -68,16 +68,18 @@
         journal (str artifact-root "/viewer-replay-progress.edn")
         server* (atom nil)
         primary* (atom nil)]
-    (append-phase! journal {:phase :started})
+    (append-phase-best-effort! journal {:phase :started})
     (try
       (let [bin (required-environment "JOLT_SIM_BIN")
             project-dir (required-environment "JOLT_SIM_PROJECT_DIR")
             document-path (required-environment
                            "JOLT_SIM_VIEWER_DOCUMENT")
             document (case-outcome/read-edn (slurp document-path))
-            _ (append-phase! journal {:phase :document-validated
-                                      :scenario replay-scenario
-                                      :document-path document-path})
+            _ (append-phase-best-effort!
+               journal
+               {:phase :document-validated
+                :scenario replay-scenario
+                :document-path document-path})
             server
             (viewer/start!
              {:port 0
@@ -95,17 +97,20 @@
              {:render-document report/case-outcome->html
               :replay-document
               (fn [document runtime]
-                (append-phase! journal {:phase :replay-delegated})
+                (append-phase-best-effort! journal
+                                           {:phase :replay-delegated})
                 (let [outcome (sim-repl/replay-document! document runtime)]
-                  (append-phase! journal
-                                 {:phase :replay-service-returned
-                                  :status (:status outcome)
-                                  :exit (:exit outcome)
-                                  :artifact-dir (:artifact-dir outcome)})
+                  (append-phase-best-effort!
+                   journal
+                   {:phase :replay-service-returned
+                    :status (:status outcome)
+                    :exit (:exit outcome)
+                    :artifact-dir (:artifact-dir outcome)})
                   outcome))})
             _ (reset! server* server)
             port (:port server)
-            _ (append-phase! journal {:phase :viewer-started :port port})
+            _ (append-phase-best-effort! journal
+                                         {:phase :viewer-started :port port})
             raw
             (viewer-test/request-over-loopback!
              port "POST" "/api/replay"
@@ -115,7 +120,7 @@
              120000)
             body (response-body raw)
             outcome (edn/read-string body)]
-        (append-phase!
+        (append-phase-best-effort!
          journal
          {:phase :replay-returned
           :status (:status outcome)
