@@ -81,6 +81,11 @@ The complete current tally of claims this document made and then refuted:
 | 48 | E26 finding 7: the declaration gap is on the **`:to` side**, and `:from` collections already work | true only when every source shares one destination. `check-annotation-consistency!` groups declared edges by `[capability :from]` and compares every group against the same single annotation, so an operation with distinct `:from`s and correspondingly distinct `:to`s must fail all but one. E26's sum handles a **nondeterministic** destination; this is the **deterministic** case. The gap is the **pairing** | E30 |
 | 49 | E23/E24/E26: a capability may only live in a binding of statically known shape, the **single root cause** behind every rejection measured | measured against a library with a test suite rather than a corpus this project shaped: **4 of 23 substantive rejections, 17%**. Twelve are **in-place typestate** (a stable name over a mutable atom — not a binding-shape problem at all) and six are the `:from`/`:to` pairing. **78% of rejections have causes that were never on the list**, and the density of the known `try` limit is now a number too: one `unsupported-construct` per `clojure.test/is` | E30 |
 | 50 | `:arg` on a `:produces` entry is part of the declaration language | it is **accepted and silently ignored** — no `annotation-unsupported`, no declaration diagnostic, and the capability lands on the result anyway. A key the language takes and does not implement, which is the in-place fix already having a syntax that does nothing | E30 |
+| 51 | E30: the §4.6 root cause is a **minority** of what the checker rejects on jolt-tcp (4 of 23 substantive) | it was a minority only because two causes that were **not** on the list dominated. With in-place typestate and from-to pairing repaired, substantive rejections are 22 → 7 and the root cause is **4 of 7 — 57%** | E34 |
+| 52 | E29 control 2: "the record layer catches `:handler-abort` from the rung below and answers `[:ok empty]`" | the fixture never produced a refusal. `perturb.script/server-session` answers a dry connection `[:ok empty]`, so the catch was **dead code** — it laundered an **EOF**. The hole is real; the control as built did not reach it | E35 |
+| 53 | the sans-io `:need-more` contract's cost is **retention** — "arbitrary backtracking retains all prior input" (SOTA round 2) | false for this representation. One-octet delivery retains **32 bytes more** than whole delivery against a 48-byte floor, because Jolt's `subvec` copies. The cost is CPU and garbage: 1220× and 800× at 4 KB | E36 |
+| 54 | replacing the trichotomy with a resumable continuation would remove the one-octet-delivery cost | it removes **45%** of it. The refill arithmetic with the parse deleted is 55% and is quadratic on its own, because `:need-more` resets `pos` to 0 and `odrop` copies the whole buffer every refill | E36 |
+| 55 | §1.5's "unsigned bytes, bytevector-backed" describes the window perturb has | the reachable representation is a tagged **map** over a **persistent vector** of exact integers, at **8.84 B/octet** — worse than the 8.03 B/element byte array E11 criticised — plus ~280 B of wrapper per view and ~16 B of allocation per `oref` | E36 |
 | 51 † | §1.4's **"no resumption"**, and every argument resting on it | a misclassification. A handler that supplies a validated result after which the caller continues is an **implicit tail resumption** — the case the handler literature singles out as efficiently compilable — and only the failure path is abortive. D4 occupies two points on the control axis rather than a point below it, and the property that actually buys the resource reasoning is **no first-class continuation** | E31 |
 | 52 † | `SOTA-POSITIONING-BRIEF` and E27 finding 3: Fowler's "linear effect handlers … left as future work" means we may be standing in an **open gap** | **partly** closed — E31 recorded "closed" from one survey and E32's second, independent reading of the full text (now in `papers/`) narrows it: control-flow linearity gives a direct theory for continuation/resource integrity, and **cancellation protocol obligations remain separate**; it proves nothing about our checker, external declarations, refined typestate, native resources or `abort!` cleanup. Tang et al. (POPL 2024) give control-flow linearity with an inference calculus and repair the Links bug; Brachthäuser & Leijen classify control flow as linear/affine/abortive/unrestricted; van Rooij & Krebbers (*Affect*, POPL 2025) track continuations through mutable references. The 2019 sentence can no longer be cited. My stated prediction — "still open but narrower" — was wrong in degree | E31 |
 | 53 † | E29: handler-over-handler layering as a result in itself | generic composition and outward forwarding are standard, and scoped-effect calculi formalise them. The narrow obligation — same-effect forwarding through several protocol layers **preserving typestate-linear obligations** — was not found, and is sharpened rather than answered. Separately, the nearest formal family for D4 is **runners** (Ahman & Bauer, ESOP 2020), not a handler calculus | E31 |
@@ -5606,6 +5611,272 @@ implementation.
    (Tang, Runners, Yarrow among them) exist so claims can be checked against text
    rather than against a summary.
 
+### E34 — the declaration repair: three notions separated, the acid test passed, and E30's conclusion inverted
+
+E33's sentence was the whole design: *a stable shared handle, its current
+protocol state, and the obligation to discharge the underlying resource are
+three different things*. `:linearity :once` treated them as one. They are now
+three separate things to write, and each means one thing alone.
+
+| notion | written as | what it says **alone** |
+| --- | --- | --- |
+| protocol state | `:to` on a transition | which operations are legal next — nothing more |
+| obligation | `:obligation` on a transition (`:acquire`/`:retain`/`:discharge`), tracked as `owes` | whether the resource still needs its destructor |
+| the name | the *shape of the annotation* — `:borrows` / `:produces … :at` / `:produces … :arg n` | may the caller's binding be mentioned after this call |
+
+**The third is deliberately not a key on the machine, and that is the
+load-bearing call.** A machine is a property of the *resource*; whether a
+binding survives is a property of *one operation's calling convention*.
+`close!` moving the handle in one API and mutating it in place in another is
+the same machine. That is exactly what `:linearity :once` collapsed, and it is
+why the fix is a decomposition rather than a fifth axis.
+
+**Backward compatibility is by derivation, not by a flag.** An edge with no
+`:obligation` discharges iff every member of `:to` is terminal — precisely the
+test `check-scope-exit` already applied to the state. Nothing moved:
+`dbtx.clj`, `http.clj`, `nrepl.clj` and `streamcap.clj` are **unchanged**,
+which is the compatibility claim in its strongest available form.
+
+**Result labels are primary, and the mechanism is a subtraction.** The relation
+is now `(capability, operation, source-state, result-label) -> destination +
+obligation delta`. What makes it usable is that an annotation entry may **omit
+`:state`**, and the machine then answers at each call site from the state the
+capability is actually in. The destination becomes a function of the *source*,
+so E30's `from-to-pairing` defect (tally row 48) disappears by **removing** a
+comparison rather than adding one — the annotation stops repeating the machine.
+Labels from one source sharing a destination *and* a delta collapse (that is
+`close!`'s `:won`/`:lost`, the race witness); labels that disagree produce the
+sum, and the sum + discriminator machinery is unchanged as the **fallback**.
+
+**Absorbing terminal states needed no new rule to exist** — which is the
+argument that the decomposition is right. The name survives because the
+annotation says so; the obligation stays discharged because `owes` is a fact
+about the resource rather than a re-derivation from the state at scope exit.
+`:closed -> :closed` is an ordinary edge, exactly as `shutdown-write!`'s
+`:write-shut` self-loop always was. They need **one** rule to be safe, and it is
+E33's side condition, now `check-absorbing-declarations!`: refuse any edge whose
+`:from` admits a terminal state and whose delta is not `:discharge`. An observer
+self-loop must not re-acquire the discharged resource.
+
+**`:arg` on `:produces` is implemented** (tally row 50 closed) as an in-place
+produce that keeps the **same binding id**. Minting a fresh one would take the
+capability off the enclosing scope's leak list and turn a leak into a silent
+accept. Two things are refused loudly rather than resolved: `:arg` with `:at`,
+and `:arg n` where argument *n* is not a plain local (`in-place-unnamed`,
+because the obligation would otherwise vanish silently).
+
+#### The acid test
+
+`perturb.tcpcap` variant 5, against jolt-tcp's real client and real test suite:
+
+```
+    [ok  ] the compare-and-set second `close!`   (client_test.clj:638)
+    [ok  ] `closed?` on a closed connection      (client_test.clj:639)
+    [ok  ] `connection-info` after close         (client_test.clj:640)
+
+    0  use-after-move over BOTH namespaces
+    0  dangling
+```
+
+The leak half is intact: a connection that never reaches its destructor is
+still rejected. Substantive rejections **22 → 7**; `annotation-inconsistent`
+6→0, `use-after-move` 11→0, `dangling` 1→0, `no-signature` 2→0, against
+`capture` 3→4, `typestate` 0→2, `state-unresolved` 0→1.
+
+#### E30's conclusion inverts
+
+| bucket | v1 (E30) | v5 |
+| --- | ---: | ---: |
+| root-cause-4.6 (closures) | 4 | **4** |
+| in-place typestate | 12 | **0** |
+| from-to pairing | 6 | **0** |
+| sum unresolved | 0 | 1 |
+| typestate proper | 0 | 2 |
+
+Of the 7 that remain, **4 are §4.6's root cause — 57%, up from 17%**. E30
+concluded that the root cause E23/E24/E26 converged on was a *minority* of what
+the checker rejects. That conclusion followed from two causes that were not on
+the list; with those removed it is the **dominant** remaining cause on this
+corpus. The two smallest residuals are honest: one `state-unresolved` is E30
+finding 5 alive (the `[:write-shut :half-closed]` sum is decided by the *peer*
+and resolved by a key read on a returned map, which no discriminator can
+express), and two `typestate` are the checker correctly refusing calls the
+library's own tests make **in order to assert that they throw**.
+
+#### Controls
+
+Six, each broken deliberately and restored. The one worth naming reproduces
+E30's finding *inside the gate*: dropping `:arg 0` from a `:produces` brings
+back three `use-after-move`, one of them on a pure observer.
+
+#### E34's nonclaims
+
+1. **This is value threading with an in-place presentation, not alias control.**
+   One name is tracked; a second name for the same object is still an affine
+   move. E33's identity-indexed caveat survives verbatim: E30's 12-of-23 shape
+   is not shown to disappear under *permissions* — it disappeared under a
+   presentation change, on one corpus, which is weaker.
+2. **Calling the boolean a race witness reads jolt-tcp's contract; it does not
+   model it.** `:contention` is still `:thread-confined` everywhere (I20), and
+   E33's open question — a typed account of CAS-based discharge among an
+   *unknown alias set* — is untouched.
+3. **`:obligation` is an axiom, like `:from` and `:to`.** The only thing checked
+   about it is the absorbing side condition. Nothing checks a transition body.
+4. **A result label is never *read*** — it is a grouping key and documentation,
+   not evidence. `report-limits` 17(d).
+
+### E35 — B6 made executable, and the mechanism that makes self-interception unrepresentable
+
+E33 recorded the invariant twice and said to take the executable framing.
+`perturb.layer` implements it as a **trace-level** checker over the effect
+log and the capability ledger — it shares no code with `perturb.check` and reads
+no IR — and `perturb.layercheck` gates it. Six clauses: correlated forwarding,
+protocol-trace projection, error mapping, outward-operation admissibility, plus
+§A3's finalisation and route integrity.
+
+**The survey's caution was real, and the record layer is a live counterexample
+to a literal reading.** One 121-octet `send` becomes **eight** forwards, and
+eight of fourteen upper `recv`s are answered from the reassembly buffer with
+**zero**. "Exactly one correlated forward" rejects the known-good on both
+counts. The line drawn rests on one principle:
+
+> an operation whose result **mints or retires a handle in the lower layer's
+> namespace** must correlate one-to-one, because the layer cannot manufacture
+> that handle; an operation that only **moves octets** may be reframed, or
+> served out of a buffer the layer filled by forwarding earlier.
+
+So `connect`/`listen`/`accept`/`close` are `:mandatory-forward` (with *declared*
+ancillary forwards permitted — the handshake, the close-notify alert); `send` is
+`:fan-out`; `recv` is `:demand-driven` under a **credit** rule, where a local
+answer is legal only if cumulative octets received from below cover cumulative
+octets delivered upward. That asymmetry is also what makes call-over-call a
+violation rather than a curiosity.
+
+**The mechanism.** §A3 superseded a working implementation and was right to.
+The first build made self-interception a *reported* violation; the audit
+prescribed explicit rung identity with a named outer instance and forwarding as
+a distinct operation. E29 finding 1's residual was "a layer that forgot would
+loop rather than be refused", and detection after the fact does not close that:
+**there is nothing to forget when the outer is named**, and naming yourself is a
+latched refusal. Two mechanisms, because the clause is two questions — the rung
+instance answers *who*, the outward instance answers *which forward*, which is
+what Tang's zero/many-shot conditions need and no layer label can express.
+
+**Results.** Known-good passes every clause (711 events, 184 attempted
+operations, 14 `:perform` and 170 `:forward`). Abort-laundering is detected as
+`b6.3 unmapped-refusal` **and** the same trace passes once an error-mapping edge
+is declared — the clause is testable in both directions. Call-over-call produces
+**16 violations while emitting identical octets**. Multi-shot outward is caught
+three ways. Four runtime refusals abort *and* latch; five forged projections
+each fail replay coherence.
+
+#### E35's corrections and findings
+
+1. **E29's control 2 never exercised a refusal.** `perturb.script/server-session`
+   answers a dry connection `[:ok empty]`, not `[:abort …]`, so the laundering
+   handler's catch was dead code on that fixture — **it laundered an EOF, not a
+   `:handler-abort`**. The hole is real; the control as built did not reach it.
+   E29's write-up overstates what that fixture did.
+2. **A finalizer cannot discharge the one obligation it exists for.**
+   Close-notify-before-close is exactly what a layer author would finalise on the
+   abort path, and `forward-in-finalizer` refuses it. That is §A3 working as
+   specified, and it means finalisation here is **reporting only**.
+3. **The credit fold must follow reply order, not request order** — a child's id
+   exceeds its parent's, so id-order debits before it credits and the known-good
+   fails its first `recv`. Recorded because it is the kind of bug that makes a
+   checker look correct while measuring the wrong thing.
+4. **Four of nine `perturb.http` ledger site labels do not name their declared
+   op** (`respond`/`respond!`, `close`/`close-conn!`, `shutdown`/`shutdown!`,
+   `body-finish`/`body-finish!`). The projection is legal; the labels are wrong.
+
+#### E35's nonclaims
+
+1. **`monitored`, and nothing higher.** Every clause is a fact about one recorded
+   trace. Two rungs, one thread, one scripted transport, one connection; `-M:layer`
+   runs no socket.
+2. **No third rung.** B6.1 is stated per adjacent pair; whether the relation
+   *composes* is E29's open question and is untouched.
+3. **Wrong-thread is an owner *token*, not a thread.** perturb has never run on
+   two, and manufacturing threading to make a control green would be worse than
+   saying so.
+4. **The operation-class line is drawn by hand for one effect.** Nothing derives
+   it, and nothing checks that a layer declares its own classes honestly.
+5. **E33's label is kept verbatim: a testable design hypothesis, not a theorem.**
+   E29 finding 4 is *qualified, not reversed* — call-over-call is now detected,
+   not refused. Using the boundary remains voluntary.
+
+### E36 — the byte window: the retention question is answered NO, the CPU question YES, and the contract is not the expensive thing
+
+Item 1 of `STRUCTURAL-TIER-BRIEF.md`, and the input SOTA round 2 asked for
+before changing the sans-io contract. `-M:winbench` is **not a gate**: no
+expectations, no thresholds, nothing can fail.
+
+**The finding that reframes the question.** The window is not a deftype and not
+a byte array. `perturb.octet` is a tagged **map** over a **persistent vector** of
+exact integers, and `clojure.core/subvec` in Jolt
+(`jolt-core/clojure/core/00-kernel.clj:26`) is a **copying loop**, not an O(1)
+view. So the survey's premise — "arbitrary backtracking retains all prior input"
+— **is false for this representation**, and the interesting measurement is CPU
+and garbage rather than retention.
+
+**Retention: refuted.** One-octet delivery retains 36,232 B against 36,200 for
+whole delivery — a 32-byte difference against a 48-byte instrument floor. Eight
+octets sliced out of a 262,144-octet view retain **352 B**, not 2.3 MB.
+Exact-cursor rollback retains nothing extra, because `subvec` copies.
+
+**CPU: confirmed, severely.** 1220–1260× at 4 KB, growth exponent 1.90–2.00,
+and 793–803× the garbage — **4.2 GB for one 4 KB request**. The maximum legal
+8192-octet head: 5.4–8.8 ms whole, **13.25–16.14 seconds** one octet at a time.
+
+**But a continuation fixes less than half of it**, which is why the verdict is
+*keep exact-cursor rollback for v0*. The refill arithmetic with the parse
+**deleted** is 55% of the total at 4096 octets and is quadratic on its own:
+`read-request`'s `:need-more` arm resets `pos` to 0, so `odrop` copies the whole
+buffer on every refill. Swapping the trichotomy for a continuation removes the
+re-parse and leaves that untouched. **The contract is not the expensive thing;
+the representation is, and it is cheaper to fix.** Two changes that do not touch
+the trichotomy: return the receiver when a slice covers the whole view, and
+carry a resumption hint so the head scan does not restart. An O(1)
+offset-and-shared-backing window would remove the copy entirely — and would
+*reintroduce* the retention risk that currently does not exist. That trade
+should be stated, not assumed away.
+
+**E10 and E11 both need amending** — see Appendix A rows 36 and 37. E10's 24×
+re-measures at **3.6×**; E11's `aget` lowering is upheld statically and both
+array kinds measure 8.03 B/element exactly as recorded, but the byte array is
+**2.5× faster** per access than a persistent vector, so the slow thing is the
+trie walk rather than generic dispatch. Neither finding was about the
+representation perturb actually uses, which costs **8.84 B/octet — worse than
+the 8.03 byte array E11 criticised** — plus ~280 B of wrapper per view and ~16 B
+of allocation per `oref`.
+
+**Method.** Four independent process runs including one AOT `--opt
+--direct-link` binary; 5 samples per figure with `(max−min)/median` printed
+beside each; a repeat arm as internal control agreeing to 0.2–1.0%; and a
+disabled-instrument control whose sign is **mostly negative**, so the timer is
+not the measurement.
+
+#### E36's nonclaims
+
+1. One host, one Chez (10.4.1), one Jolt commit, one corpus — HTTP/1.1 GET
+   frames, one padded header, no body in the chunking curve, no pipelining, no
+   TLS layering, no socket, no concurrency. `perturb.bencode` is unmeasured.
+2. The `parse` column is a **subtraction**, not an independent measurement.
+3. The AOT arm is one cross-check, not a portability claim: it moved every
+   absolute by 15–25% and no ratio by more than ~3%.
+4. The deftype arm is a **reconstruction** of E10's shape, not `jolt.bytes/Window`,
+   which is not in this tree. Either the gap closed or `Window` did more per
+   access than a forwarding `nth`; this measurement cannot say which.
+5. E4's `bounded-complete` **correctness** verdict on the trichotomy is
+   untouched. What it gains is a *cost* line beside it: the contract is correct
+   and the driver around it is quadratic.
+
+**Cross-repo defect found, upstream, not fixed:**
+`host/chez/natives-misc.ss:131` documents `bytes-allocated` as "cumulative for
+the process; take a difference around the work under test". It is not —
+`rt.ss:505` has it right, it is the live heap. A difference across a collecting
+workload came out **−1,180,160 bytes**.
+
 ## 4. Open questions
 
 Q1–Q5 are §4.1–§4.5; §4.6 collects open items that never carried a Q number.
@@ -6446,6 +6717,11 @@ rejected alternatives and superseded verdicts rather than deleting them (see
 | 31 | charter non-goal 13's "runtime seams are *requested* … never assumed", relied on by §1.4 | §2.4, now §1.4 | E14 — seven unmerged branches carry a complete lifecycle/FFI/clock controller overlay at ABI 6, plus tests and a bounded proof note. The companion artifact's items 7–9 are all present | E14. The factual half ("none exists at the v0.5.17 baseline") is **unchanged and still true** |
 | 32 | "**perturb has no code.** What exists is this record, the Python prototypes modelling rule sets (`prototypes/`, gated by `verify-capability-rules`), and seven commits of Jolt improvements that came out of measuring rather than designing" — and therefore that the largest untested claim is "any of this can be built" | §5, "Where this stands, and the next step" | E26 — false at HEAD and false since E15: `perturb/src/` is 14,248 lines across 26 namespaces, including the checker the same section nominates as the next step. The section was never revised as the findings accumulated | §5, rewritten; tally row 41 |
 | 33 | ladder step 1: jolt-tcp's connection lifecycle is checkable because "the contract exists" in the README | §5, ladder and coverage table | E26 — that README states the **server handler** contract, and `teensyp.server`'s connection table is all four E24 shapes at once. E24 had already proved the shape unexpressible; §5 was not updated to notice | §5 step 1a/1b; tally row 41 |
+| 34 | `:linearity :once` is one axis describing one property | E33 — it conflates a stable handle's identity, its protocol state, and the obligation to discharge the resource. Now three separate things to write, and the third is deliberately **not** a key on the machine | §1.2; E34 |
+| 35 | E30's buckets show the §4.6 root cause is a minority of jolt-tcp rejections (17%) | E34 — the two dominant causes were repairable defects, not the root cause. At 22 → 7 substantive rejections the root cause is **57%**, the dominant remaining cause on this corpus | E34; tally row 51 |
+| 36 | `nth` on a deftype is ~24× a persistent vector (2,061 vs 86 ns/byte), a gap that "survived three rounds of fixes" | E36 — re-measures at **3.6×** (184 vs 51 ns/octet). Different host and commit, so absolutes are not comparable by E10's own rule; the **ratio**, which E10 presented as the surviving finding, moved ~7×. The arm is a reconstruction of E10's shape, not `jolt.bytes/Window` | E36; E10 left standing as recorded, with this amendment |
+| 37 | E11's `aget → jolt-nth` lowering means generic dispatch is the slow path | E36 — upheld statically, and 8.03 B/element confirmed exactly; but the byte array is **2.5× faster** per access than a persistent vector (20.7 vs 51.1 ns/octet), so the slow thing is the **trie walk**. `(aget ^doubles a i)` lowers to `jolt-flaget` and runs at 10.8 ns even under `jolt run` | E36; §1.1 |
+| 38 | E29 finding 4: the effect boundary as a seam is "failed" | E35 — **qualified, not reversed**. Call-over-call is now *detected* (16 B6.1 violations while emitting identical octets) but still not *refused*. Using the boundary remains voluntary | E29; E35 |
 
 ### A.2 The method notes, in order
 
@@ -6461,6 +6737,7 @@ as a numbered series because the numbering is itself the record.
 | fourth | E11 | `aget` is an array read → it is generic dispatch; and the array is 8x larger than assumed. Neither is visible from timing, "which is why ten sections of timing did not surface them" |
 | fifth | E12 | delegation is not exempt: **a brief is a specification, and its examples are not its semantics** |
 | sixth | E13 | the fresh-window/`Step` incomparability case, refuted by the solver in the small |
+| seventh | E36 | two findings recorded from *static* reading (E11) and from *timing* (E10) were each half-right, and in opposite directions: the static one held and its implication did not, the timed one's absolutes were unusable by its own rule and its **ratio** — the part presented as durable — moved ~7×. A measurement's stated caveat does not tell you which half will fail |
 
 ---
 
