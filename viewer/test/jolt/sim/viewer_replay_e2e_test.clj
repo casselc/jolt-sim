@@ -11,6 +11,8 @@
             [clojure.string :as string]
             [clojure.test :as test :refer [deftest is]]
             [jolt.sim.case-outcome :as case-outcome]
+            [jolt.sim.repl :as sim-repl]
+            [jolt.sim.report :as report]
             [jolt.sim.trace :as trace]
             [jolt.sim.viewer :as viewer]
             [jolt.sim.viewer-test :as viewer-test]))
@@ -89,7 +91,18 @@
                :startup-timeout-ms 30000
                :kill-grace-ms 500
                :temp-dir artifact-root
-               :retain-completed-artifacts? true}})
+               :retain-completed-artifacts? true}}
+             {:render-document report/case-outcome->html
+              :replay-document
+              (fn [document runtime]
+                (append-phase! journal {:phase :replay-delegated})
+                (let [outcome (sim-repl/replay-document! document runtime)]
+                  (append-phase! journal
+                                 {:phase :replay-service-returned
+                                  :status (:status outcome)
+                                  :exit (:exit outcome)
+                                  :artifact-dir (:artifact-dir outcome)})
+                  outcome))})
             _ (reset! server* server)
             port (:port server)
             _ (append-phase! journal {:phase :viewer-started :port port})

@@ -331,17 +331,25 @@
            (error-response 404 :not-found nil)))))))
 
 (defn start!
-  "Starts the loopback viewer and returns the jolt-http server handle."
-  [config]
-  (let [config (validate-config! config)]
-    (http/run-server (make-handler config)
-                     :port (:port config)
-                     ;; One handler means at most one fresh-process replay can
-                     ;; run even when several browser tabs share the token.
-                     ;; The viewer favors bounded resource use over serving an
-                     ;; inspection request concurrently with a replay.
-                     :pool-size 1
-                     :reuse-address? true)))
+  "Starts the loopback viewer and returns the jolt-http server handle.
+
+  The optional services arity is the same narrow embedding/test seam accepted
+  by `make-handler`; ordinary callers always use the real report and replay
+  services."
+  ([config]
+   (start! config
+           {:render-document report/case-outcome->html
+            :replay-document sim-repl/replay-document!}))
+  ([config services]
+   (let [config (validate-config! config)]
+     (http/run-server (make-handler config services)
+                      :port (:port config)
+                      ;; One handler means at most one fresh-process replay can
+                      ;; run even when several browser tabs share the token.
+                      ;; The viewer favors bounded resource use over serving an
+                      ;; inspection request concurrently with a replay.
+                      :pool-size 1
+                      :reuse-address? true))))
 
 (defn stop!
   "Stops a viewer returned by `start!`."
