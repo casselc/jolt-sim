@@ -14,7 +14,11 @@
 
 (def ^:dynamic *process-config* nil)
 
-(def ^:private scenario-timeout-ms 5000)
+;; Completion includes a cold launcher, dependency resolution, and namespace
+;; loading on hosted runners; it is not an application deadline. Keep the
+;; intentionally blocked control on its shorter, discriminating budget below.
+(def ^:private completion-timeout-ms 20000)
+(def ^:private expected-block-timeout-ms 5000)
 (def ^:private kill-grace-ms 500)
 
 (defn- required-environment [name]
@@ -113,7 +117,7 @@
            (explore-config
             'jolt.sim.fixtures.explore-scenarios/independent
             schedules
-            scenario-timeout-ms))]
+            completion-timeout-ms))]
       (is (= [[0 1] [1 0]] schedules))
       (is (= schedules (mapv :schedule outcomes)))
       (is (= [:completed :completed] (mapv :status outcomes)))
@@ -131,7 +135,7 @@
            (explore-config
             'jolt.sim.fixtures.explore-scenarios/dependent
             schedules
-            scenario-timeout-ms))
+            expected-block-timeout-ms))
           completed (nth outcomes 0)
           timed-out (nth outcomes 1)
           artifacts-ok?
@@ -159,7 +163,7 @@
            (run-config
             'jolt.sim.fixtures.explore-scenarios/fails
             [0]
-            scenario-timeout-ms))
+            completion-timeout-ms))
           artifacts-ok?
           (retained-artifacts-match?
            outcome
@@ -198,7 +202,7 @@
            (run-config
             'jolt.sim.fixtures.explore-scenarios/noncanonical
             [0]
-            scenario-timeout-ms))
+            completion-timeout-ms))
           artifacts-ok?
           (retained-artifacts-match?
            outcome
@@ -257,7 +261,7 @@
             (run-config
              'jolt.sim.fixtures.explore-scenarios/independent
              [0]
-             scenario-timeout-ms)
+             completion-timeout-ms)
             ;; The supervisor appends request and result paths. `sh -c` places
             ;; them at $1 and $2 after this explicit argument zero.
             :worker-command
@@ -380,7 +384,7 @@
           (process-explorer/run-case
            (case-config
             'jolt.sim.fixtures.explore-scenarios/echoes-input
-            scenario-timeout-ms
+            completion-timeout-ms
             {:input {:answer 42 :label "ok"}}))]
       (is (= :completed (:status outcome)))
       (is (nil? (:schedule outcome)))
@@ -395,7 +399,7 @@
           (process-explorer/run-case
            (case-config
             'jolt.sim.fixtures.explore-scenarios/scheduled-echoes-input
-            scenario-timeout-ms
+            completion-timeout-ms
             {:schedule [1 0]
              :input input}))
           body (body-result outcome)]
@@ -415,7 +419,7 @@
           (process-explorer/run-case
            (case-config
             'jolt.sim.fixtures.explore-scenarios/echoes-input
-            scenario-timeout-ms))]
+            completion-timeout-ms))]
       (is (= :completed (:status outcome)))
       (is (= {:echoed nil} (body-result outcome)))))
 
@@ -424,7 +428,7 @@
           (process-explorer/run-case
            (case-config
             'jolt.sim.fixtures.explore-scenarios/independent
-            scenario-timeout-ms
+            completion-timeout-ms
             {:input :unexpected}))
           artifacts-ok?
           (retained-artifacts-match?
@@ -443,7 +447,7 @@
           (process-explorer/run-case
            (case-config
             'jolt.sim.fixtures.explore-scenarios/rejection-keyword-collision
-            scenario-timeout-ms
+            completion-timeout-ms
             {:input {:workload :collision-control}}))
           artifacts-ok?
           (retained-artifacts-match?

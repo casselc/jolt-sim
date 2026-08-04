@@ -139,6 +139,15 @@ jobs:
           JOLT_SIM_BIN="$sim" JOLT_SIM_PROJECT_DIR="$PWD" \
             "$sim" -M:explore-process-test
 
+      - name: Preserve retained process-explorer artifacts
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: process-explorer-${{ matrix.toolchain }}
+          path: ${{ runner.temp }}/jolt-tmp/jolt-sim-explore-*/
+          if-no-files-found: ignore
+          retention-days: 14
+
       - name: Run real SQLite post-COMMIT crash recovery
         if: matrix.name == 'Linux x86_64'
         timeout-minutes: 10
