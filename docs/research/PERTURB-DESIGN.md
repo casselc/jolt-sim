@@ -68,6 +68,10 @@ The complete current tally of claims this document made and then refuted:
 | 35 | a pure `(state, event) -> [state', effects]` shape collapses the capability cost into one component | it **relocates** the obligations rather than removing them: 2 of 4 wrong applications accepted, and the working app's `/wait` route breaks the declared machine and reaches the wire | E24 |
 | 36 † | §1.2's **reason** for dropping locality, and D.8's escape from it | two defects in one sentence. (a) Yarrow's objection is to *stack-disciplined* memory regions; Milano's are a **domination-induced heap partition with no scope at all**, so it does not apply. (b) D.8's "D4's no-resumption may remove the reason" fails under row 30 — non-local control **is** the discard half, which D4 keeps. The conclusion may stand; neither the reason nor the escape does, and the region question is **harder** than D.8 states | E25 |
 | 37 † | D.8: Flo's **bounded/unbounded** typing is the principled form of E23's `recv` defect | it is one level too high. Flo distinguishes a stream **value** carrying the terminator `⊗` from one that does not, and `fixed(c)` is a predicate on values; boundedness is the *type-level* prediction that `fixed` will eventually hold. E23's defect is the value-level collapse of `∅` into `fix(∅)` | E25 |
+| 38 ◆ | E15: a ledger either **observes only**, or validates and becomes "a dynamic checker wearing a static checker's clothes" — the dichotomy on which `cap/transition!` validating nothing rests | not exhaustive. `jolt.sim`'s `replay-history!` is a third posture: it validates the history's **internal coherence** — every entry re-derivable by re-stepping a *pure* transition function from the initial state — while validating no protocol legality and discharging no static obligation. The entry price is a pure transition function, which `cap/transition!` is not | E26 |
+| 39 ◆ | `perturb.cap`'s stated rationale: a runtime guard is always a deferred static check in disguise | `casselc/db`'s R6 pre-probe reads SQLite's `sqlite3_get_autocommit` **before** issuing `BEGIN`, to detect that the library's own depth bookkeeping has diverged from the engine. No static checker of the Clojure program can know that flag. There is a class of runtime guard that is not a deferred static check, and the rationale does not distinguish it | E26 |
+| 40 ◆ | E16 nonclaim 2: "0 attributable syscalls" is **attribution by instrument** — a sixth path would be invisible — and `RUNTIME-OBLIGATION-BRIEF`'s monitor-soundness premise built on that sampled window | refuted **by construction**. `jolt.sim.runtime` fails *closed*: an intercepted descriptor with no registered handler throws before any OS access, and the failure is **latched in run state so application code cannot catch it and make the run succeed**. Boundary completeness becomes a per-run invariant, not a measurement, and the enumerated-declared-bindings blind spot disappears. perturb forked its runtime, so this is available to it | E26 |
+| 41 ◆ | §5: "**perturb has no code**", and ladder step 1 (jolt-tcp connection lifecycle) is the first checkable target | both false at HEAD. `perturb/src/` is 14,248 lines across 26 namespaces including the checker §5 called "the next step"; and step 1's contract is sourced from the jolt-tcp README, which is the **server handler** contract — the shape E24 proved unexpressible on all four axes at once. §5 was never revised after E15 | E26 |
 
 ‡ Eight rows are the exception the sentence above does not cover: 17 and 18
 arrived from re-examining the argument and from the literature; 27–29 came from
@@ -89,8 +93,18 @@ recorded in Appendix D.8. Like 27–32, no artifact produced them. Rows 33–35,
 contrast, came from running code (E22, E23, E24) and are covered by the standing
 commitment.
 
+◆ Rows 38–41 are a fourth case, and the cheapest of the four. They came from
+reading **neighbouring code that perturb did not write and did not influence** —
+the `casselc/jolt-sim` integration stack, `casselc/db`, `casselc/jolt-net`,
+`casselc/jolt-tcp`, and `casselc/jolt`'s application-core charter lane (E26).
+No artifact of perturb's produced them and nothing of perturb's was executed;
+unlike 27–37 they did not come from the literature either. Four teams solving
+adjacent problems refuted four claims of this document in one pass, which is a
+worse ratio than E20's literature survey achieved and was obtained for a
+fraction of the effort. The standing commitment covers rows 1–26 and 33–35.
+
 **How to read this document.** §1 is the settled design, stated once in final
-corrected form. §2 is the divergence register. §3 is the findings E1–E25, each
+corrected form. §2 is the divergence register. §3 is the findings E1–E26, each
 stated as currently believed rather than as first written. §4 is the open
 questions. §5 is the v0 ladder. §6 is the nonclaims. Appendix A is the
 correction history, Appendix B holds the superseded ladders in full,
@@ -4090,6 +4104,289 @@ unbounded stream.
    the shape `nest` is built for is an observation about signatures. No Flo
    program was written and no property was checked.
 
+### E26 — the neighbouring lanes: four refutations from code perturb did not write and did not influence
+
+E23 and E24 established that the only evidence about the rule set that is not
+self-fulfilling comes from code written by someone who did not know the rules.
+Both were still *commissioned* — a port, and an application, written to be
+measured. E26 removes even that: four teams have been building, in public, on
+the same substrate, for reasons of their own, and none of them has read this
+document.
+
+**What was read.** `casselc/jolt-sim` PRs #24, #26–#32 (the outbox integration
+stack, Hegel exploration, semantic FFI schedule selectors, scoped fault
+injection); `casselc/db` PRs #1–#3 (transaction hardening; "prove clean or
+poison" SQLite begin recovery); `casselc/jolt-net` #2 and `casselc/jolt-tcp` #2
+(the real transports §5's ladder sits on); and `casselc/jolt`'s
+`APPLICATION-CORE-SEMANTIC-CHARTER.md` research lane. Method: four agents,
+read-only, each given §4.6's open items and asked what **refutes** a claim.
+Nothing of perturb's was executed and nothing was built.
+
+#### 1. The ledger dichotomy is not exhaustive (row 38)
+
+E15 recorded, and `perturb.cap` states in its docstring, that a ledger has two
+available postures: observe only, or validate — where validating makes it "a
+dynamic checker wearing a static checker's clothes" and papers over the static
+gap. `cap/transition!` recording without checking is a deliberate choice made on
+that dichotomy.
+
+`jolt.sim`'s `posix_fault.clj:215-247` is a third posture. `replay-history!`
+re-derives the entire evidence history by re-stepping a **pure** director from
+its initial state, with sequential per-operation ordinals, and rejects a history
+that is not so derivable. It validates *internal coherence* — forged entries,
+incoherent counters — while validating no protocol legality whatever. It catches
+a class of defect the observe-only ledger cannot, and discharges no static
+obligation, so it does not paper over anything.
+
+Two things follow. The posture is available to perturb, and the entry price is
+named: **the transition function must be pure**, which `cap/transition!`'s
+process-global atom (INHERITED I10) is not. And it supplies the first real datum
+for `RUNTIME-OBLIGATION-BRIEF` item 5 — the cost question that survey could not
+answer: `read-hot-state!` (`posix_fault.clj:279-285`) declines full replay per
+call because that "would make N calls quadratic and can consume an application's
+real monotonic deadline". **O(1) per call, O(N) at construction and snapshot
+boundaries.** Coherence replay is affordable at boundaries and unaffordable per
+operation.
+
+#### 2. A runtime guard that is not a deferred static check (row 39)
+
+`casselc/db`'s `verified-sqlite-begin!` resolves an uncertainty that is
+unresolvable in principle from the program text: when `execute! "BEGIN"` throws,
+the physical transaction may or may not have opened. Eight outcomes, three
+probes of `sqlite3_get_autocommit`, and a **poison** disposition on five of them.
+
+Of those, **R6** is the one that bears on §1.2. The *pre*-probe fires before
+`BEGIN` is issued at all: `ac = 0` means someone else's transaction holds
+unknown work, so the library's own depth-0 bookkeeping has diverged from the
+engine. That is not a protocol check and it is not a deferred static check. No
+checker of the Clojure program can know SQLite's autocommit flag. perturb's
+stated rationale for a validating ledger being illegitimate does not distinguish
+this class, and with row 38 that is two independent hits on one paragraph.
+
+#### 3. Fail closed beats measuring — E16 nonclaim 2 refuted by construction (row 40)
+
+This is the most useful finding in E26 and it points at work, not at a
+correction.
+
+E16 measured zero syscalls attributable to perturb outside its effect handler,
+with a positive control (`-M:noio --touch-native`) proving the instrument was
+live. E16 nonclaim 2 conceded the limit honestly: attribution is by instrument,
+over enumerated declared bindings, and a sixth path would be invisible.
+`RUNTIME-OBLIGATION-BRIEF` then built monitor soundness on that window — "a
+runtime monitor at an effect boundary is only sound if nothing can bypass that
+boundary. E16 is the measurement that says nothing does."
+
+`jolt.sim.runtime:1085-1135` does not measure. An intercepted descriptor with no
+registered handler throws `:jolt.sim.runtime/unhandled-native-effect` **before
+any OS access**, and the failure is latched in run state so that application
+code cannot catch the thrown exception and make the run succeed. Each case then
+asserts `:all-handled?` over the effect trace plus a required-symbol set.
+
+Boundary completeness stops being a sampled measurement and becomes a **per-run
+invariant**. The enumerated-declared-bindings blind spot does not need closing;
+it stops existing. perturb forked its runtime (§8), so this is a lever available
+to it rather than a property to admire in someone else's.
+
+Two costs, both stated by the source rather than guessed: it requires a
+controller ABI compiled into the image, and jolt-sim itself **withholds** the
+complete-route claim for unmanaged threads outliving the body
+(`runtime.clj:55, 1605-1608`).
+
+#### 4. §5 is stale, and its first rung was never reachable (row 41)
+
+§5 says "**perturb has no code**". `perturb/src/` is 14,248 lines across 26
+namespaces at HEAD, including the checker §5 nominates as "the next step". The
+section was never revised after E15.
+
+The substantive half is worse. Ladder step 1 is "jolt-tcp connection lifecycle —
+typestate and the serial-per-connection guarantee, **already stated in the README
+so the contract exists to check**", and the coverage table sources it from that
+README. The README contract is the *server handler* contract — accept first,
+close last, reads sequential. `teensyp.server`'s `(:conns srv)` is an `(atom {})`
+grown by `swap! assoc` on accept, read by runtime-computed generation, iterated
+by `vals`, with a caller-supplied handler function. That is all four E24 shapes
+at once. **Step 1 as written cannot be built with the current checker**, and this
+document asserted it could for as long as §5 has existed.
+
+The *client* is a different matter and is nearly annotatable today:
+`send-all!`, `receive-into!`, `close!` and `shutdown-write!` are real vars taking
+the connection at argument 0, and the lifecycle atom
+`{:phase :read-eof? :write-shutdown?}` (`client.clj:516`) is a typestate product.
+The closure-map indirection would put those four names on
+`:perturb.cap/representation` — E18's gameable list, but only four names.
+
+#### 5. Two contracts the real transport requires and perturb refuses
+
+**Idempotent close.** `jolt-net`'s `close!` is idempotent by design, returning
+`false` on the second call, and `handle.clj:8-13` justifies it as the fix for
+aggressive descriptor reuse; `client_test.clj` asserts
+`(is (false? (client/close! connection)))`. Under `:linearity :once` with a
+terminal typestate that is `write-after-move`. perturb must statically reject the
+library's own documented, deliberate contract — and this is the invariant the
+handle abstraction exists to protect, not a corner case.
+
+**Shared handles.** `jolt.net.handle/own` returns a map whose `acquire!` /
+`release!` hand short leases to *concurrent threads*. `perturb.streamcap`
+declares `:thread-confined`. The axis the real transport actually needs is I20,
+the one nothing has ever exercised.
+
+#### 6. The bottom rung of §5's ladder is not a portable event vocabulary
+
+The architectural goal — events over HTTP over TCP over a descriptor — assumes
+the descriptor layer emits uniform events. It does not. The same TCP fact, a peer
+FIN with no pending data, surfaces as a readable event on Linux and as
+**`:hangup` alone** on Winsock (`jolt-net`'s `PLATFORM-COVERAGE.md`), and
+`teensyp.server:1120-1122` dispatches on both. Whatever perturb declares over the
+bottom rung is target-dependent. Nothing in §5 or in the layering goal accounts
+for that.
+
+#### 7. The gap in the declaration language is the `:to` side, not the `:from` side
+
+`verified-sqlite-begin!` is a typestate machine written by hand in another
+language:
+
+```clojure
+{:states  [:idle :open :pending-cleanup :poisoned :closed]
+ :initial :idle
+ :terminal [:poisoned :closed]
+ :transitions
+ [{:op 'begin :from :idle :to :open}        ; R0  — BEGIN took effect
+  {:op 'begin :from :idle :to :idle}        ; R1,R2 — proven not to have
+  {:op 'begin :from :idle :to :poisoned}    ; R3–R7 — unresolvable
+  …]}
+```
+
+An edge out of *any* state was assumed to be the missing feature. It is not:
+`state-ok?` (`check.clj:165-172`) already accepts `:any` or a collection, and
+`perturb.http/close-conn!` already ships `:from [:reading :responding :writing]`.
+
+The gap is that **one operation has three destinations chosen at run time**.
+`check-annotation-consistency!` (`check.clj:1340-1347`) reads a single `:state`
+out of `:produces` and compares it syntactically against a single `:to`; there is
+no `state-ok?` on the produced side, and rule 4 refuses an operation that names
+one capability twice. perturb cannot declare `begin` at all.
+
+The minimum extension is a **sum `:to` that forces a case-split at the call
+site** — which is §4.6's own join-rule item, "§1.2's own unexplored option, the
+session-typed answer". It is now wanted for two independent reasons, and this is
+the first evidence for it from code this project did not write.
+
+#### 8. A fifth piece for the `abort!` specification, and the cheapest one
+
+§4.6's cancellation list has four pieces, all built on Fowler's `cancel` **term**
+typed as a consuming use. `casselc/db` discharges the same obligation with **no
+cancel operation at all**: the resource moves to `:poisoned`, `ensure-transaction-usable!`
+rejects every operation except cleanup inspection and `close`, and
+`sqlite3_close_v2` disposes of the stranded transaction. The obligation is
+discharged by *entering a state whose only legal outgoing edge is the
+destructor*.
+
+That is h11's `MUST_CLOSE`, which §4.6 names only as a join-rule mitigation and
+never for cancellation. It needs no new term and no live-capability set
+enumerated at abort sites, and it is the shape the drop-flag item asks for: a
+**state**, not a term. Whether it is sound where Fowler's `cancel` is sound is
+exactly what the newly-acquired POPL 2019 text can now be read against.
+
+#### 9. Both arms of §4.6's live fork are already built, by other people
+
+§4.6 records the choice between making a dynamically-sized capability collection
+a language feature and confining it to a permanently instrumented trusted core as
+**undecided — the live fork**. Both arms exist in code:
+
+- **The instrumented-core arm, built out.** `APPLICATION-CORE-SEMANTIC-CHARTER.md`
+  makes an effect descriptor *data* —
+  `{family, operation, canonical-args, operation-id, resource-id, site-id, assumptions}` —
+  with handlers dynamically scoped innermost-first strict-LIFO and "**no
+  continuations exist at this layer**". It has no linearity, no uniqueness and no
+  typestate. Because `resource-id` and per-instance `operation-id` are runtime
+  identities, **a table of N live sockets is ordinary**; it lands at `monitored`
+  rather than `proved`. It also narrows a registered callback out of
+  `Dynamic-opaque` once its thread, lifetime and ownership contract is
+  *declared* — E24's four holes, answered by declaration plus monitoring.
+- **The obligation-check arm, in miniature.** `posix_loopback.clj:1371`'s
+  `clean?` is an end-of-scope obligation check over a genuinely dynamic
+  collection — memory, sockets, pipes, listeners, addrinfo and waiters all empty
+  — asserted per generated case. It cost one function.
+
+The two lanes converge on the problem and diverge on the answer; they share
+`jolt.host/mono-nanos`; and both treat handlers as substitutable with no
+continuations, which is §1.4's D4 with D3 deferred, arrived at independently.
+Nothing indicates either team knows the other exists.
+
+#### What perturb has that these lanes would benefit from
+
+- **Typestate machines instead of transcript equality.** jolt-sim pins SQLite
+  protocol conformance by exact FIFO transcript — the assertion is literally
+  `{:plan-index 15 :plan-count 15 :open-dbs 0 :active-stmts 0}`. That rejects
+  legal reorderings along with illegal ones and must be re-pinned per payload and
+  per adapter edit. `:transitions` state the same obligation over edges, so
+  evidence generalises across the input domain. Falsifiable swap: replace the
+  15-plan transcript with a declared machine and check the same bug class is
+  still caught.
+- **The evidence lattice as vocabulary.** A green Hegel run is `bounded-complete`
+  on the three finite axes, `sampled` on the payload axis, and `assumed` on the
+  classification invariant. Saying so stops a large assertion count reading as
+  `proved`.
+- **`:init` on a refinement.** `casselc/db`'s `:cleanup-errors` is a ghost
+  variable in all but name — cleared at attempt start, appended on failure, and
+  the poison exception's `(:error (first errors))` is a `:requires` on the
+  terminal edge. That `:requires` was **false** until independent review caught
+  a missing clear, so a stale prior-attempt error could be reported as the poison
+  cause. That is precisely the defect E19's `:init` key exists to prevent, found
+  in shipped code by people who have never seen E19.
+- **The positive-control rule.** `casselc/db` records that outcome R3 "is
+  defensive coverage, not exercised by an executed test" — a well-formed branch
+  that has never fired. The mechanism that would supply the control already
+  exists next door: jolt-sim's `:tx-effect :when :always` applies the physical
+  transition *even when the step reports its error*, which is an uncertain BEGIN
+  on demand. `RUNTIME-OBLIGATION-BRIEF`'s "every monitor needs a positive
+  control" is best served by a **simulated driver**, not an injected wrapper.
+
+#### Two corrections in the other direction
+
+**E25 item 4 is confirmed from production code.** The `sqlite3_get_autocommit`
+interrogation is a static uncertainty discharged by a runtime observation, and
+both branches are written and both are well-formed — the poison branch is a
+complete, typable continuation with its own legal operation set. Nothing is
+accepted that would otherwise be rejected. It is `RUNTIME-OBLIGATION-BRIEF`'s
+**third** row (instrument the axioms), not its second (accept refused programs),
+exactly as E25 argued from Milano's `if disconnected`.
+
+**Substitutable handlers do not buy replay determinism.** jolt-sim's loopback
+runs on real threads, real locks and real monotonic timeouts — "virtual time is
+not modeled here" — which is why its capacity counters can only be asserted
+nonnegative. Any expectation that `perturb.script/replay-handler` re-derives a
+ledger *under concurrency* is unestablished, and that is a caveat on the
+out-of-process half of `RUNTIME-OBLIGATION-BRIEF`.
+
+#### E26's own nonclaims
+
+1. **Nothing was executed and nothing was built.** Four agents read diffs. Every
+   claim here about perturb's behaviour is inherited from E15–E25, not re-run.
+2. **The fail-closed result is an existence proof in another runtime, not a
+   port.** That `jolt.sim.runtime` fails closed says nothing about what it costs
+   to make perturb's handler do so, and jolt-sim itself withholds the claim for
+   unmanaged threads outliving the body.
+3. **I20 does not fall out of this.** Hegel explores permutations of *future-body
+   admission order* with at most one body running at a time, in a fresh
+   subprocess per schedule; that is sequentialisation, not contention. The
+   transferable machinery is `ffi_schedule`'s coordinator, which interleaves at
+   the effect boundary — and it carries two conditions that are load-bearing:
+   release must be driven by **arrival, never completion**, and supervision must
+   be **external**, because `future_schedule.clj:47-54` states that an
+   incompatible order simply never returns and is not detectable in-process.
+4. **The scoped fault edge is unit-tested only.** PR #32's recv-reset injection
+   touches no Hegel lane; it is `monitored`, not explored.
+5. **The Windows ARM64 failure was not diagnosed.** The x86-64 hypothesis — a
+   live `WSAPOLLFD` with `events == 0`, which `teensyp.server/interest` produces
+   for every connection while its handler runs, against a `readiness.clj`
+   assertion that relies on POSIX reporting POLLHUP/POLLERR regardless of
+   `events` — is argued from source and is unconfirmed. CI logs were not
+   reachable. ARM64 has no hypothesis at all.
+6. **"Neither team knows the other exists" is an inference from absence.** No
+   cross-reference was found in either lane's documents; that is not the same as
+   having asked.
+
 ## 4. Open questions
 
 Q1–Q5 are §4.1–§4.5; §4.6 collects open items that never carried a Q number.
@@ -4305,6 +4602,20 @@ Recorded here so they are not lost between sections. None of these is decided.
   now sits above the module boundary in the queue. Whether the answer is a
   language feature (handle table, existentials, capability regions) or a
   permanently instrumented trusted core is **undecided** and is the live fork.
+
+  **E26: both arms are already built, by other people, on this substrate.** The
+  instrumented-core arm is `casselc/jolt`'s `APPLICATION-CORE-SEMANTIC-CHARTER.md`
+  — effect descriptors as data carrying `resource-id` and per-instance
+  `operation-id`, which makes a table of N live sockets ordinary and lands it at
+  `monitored`; it also narrows a registered callback out of `Dynamic-opaque`
+  once its thread/lifetime/ownership contract is *declared*, which is E24's four
+  holes answered by declaration plus monitoring. The obligation-check half exists
+  in miniature as `jolt.sim`'s `clean?`, an end-of-scope check over a genuinely
+  dynamic collection, asserted per generated case, costing one function. Neither
+  was written with any knowledge of this document. **This does not decide the
+  fork** — the charter has no linearity, uniqueness or typestate at all, and
+  cannot say a program *cannot* violate a protocol — but it removes "can the
+  instrumented arm be built" from the list of unknowns.
 
   **E25 read the candidate and the language-feature arm now has a concrete
   design.** Milano, Turcotti & Myers (PLDI 2022) admit all four shapes, and the
@@ -4555,7 +4866,16 @@ which makes them better targets than the two earlier ladders (Appendix B).
 ### The ladder
 
 1. **jolt-tcp connection lifecycle** — typestate and the serial-per-connection
-   guarantee, already stated in the README so the contract exists to check.
+   guarantee. **Revised by E26: split in two, because the original step was not
+   reachable.** The README contract this step cited is the *server handler*
+   contract, and `teensyp.server`'s connection table exhibits all four E24 shapes
+   at once (a growing collection, runtime-value selection, collection storage, a
+   function-valued handler parameter). Step 1a is the **client** connection —
+   four real vars taking the connection at argument 0 and a lifecycle atom that
+   is already a typestate product — which is reachable now, at the cost of four
+   names on `:perturb.cap/representation` and of confronting jolt-net's
+   deliberately **idempotent close**, which `:linearity :once` rejects. Step 1b
+   is the server, and it is gated on §4.6's live fork, not on effort.
 2. **jolt-http keep-alive/pipelining** — ordering, exactly-once, no-leftover,
    against the existing RFC-derived oracle.
 3. **SSE** — liveness, resumption, reconnect faults.
@@ -4572,7 +4892,7 @@ Gate architecture for all of it is §1.7.
 
 | property | where | class |
 | --- | --- | --- |
-| per-connection serial order — "accept first, close last, reads sequential", writes ordered | jolt-tcp README contract | resource safety + **temporal** |
+| per-connection serial order — "accept first, close last, reads sequential", writes ordered | jolt-tcp README contract — **but this is the server handler contract; see step 1b and E26** | resource safety + **temporal** |
 | connection lifecycle, `stop-server`/`with-open` | jolt-tcp | typestate on a real resource |
 | **keep-alive and pipelining** — N requests in, N responses out, in order, exactly once, nothing left over | jolt-http + its RFC-9112 oracle | **temporal**, strongest available |
 | chunked and streaming bodies | jolt-http | framing with termination |
@@ -4629,15 +4949,28 @@ inherited convention. §1.5's decision is corroborated by code that predates it.
 
 ### Where this stands, and the next step
 
-**perturb has no code.** What exists is this record, the Python prototypes
+**Rewritten by E26. The paragraph that stood here was false at HEAD**, and had
+been since E15; it is preserved as tally row 41 and reproduced in Appendix A.1.
+It read "perturb has no code. What exists is this record, the Python prototypes
 modelling rule sets (`prototypes/`, gated by `verify-capability-rules`), and
 seven commits of Jolt improvements that came out of measuring rather than
-designing.
+designing" — and concluded that the largest untested claim was **"any of this can
+be built"**.
 
-That is a defensible position — the record has corrected itself repeatedly
-against evidence, which is cheaper than building the wrong thing — but the
-largest untested claim is now **"any of this can be built"**, and this document's
-own standing commitment says untested claims are the ones that turn out wrong.
+What exists now: `perturb/src/` is 14,248 lines across 26 namespaces — the
+capability declaration language (`cap.clj`), the checker over real Jolt IR
+(`check.clj`), two protocols on the ladder (`nrepl.clj`, `http.clj`), an
+unbiased port and its externally-written declaration (`stream.clj`,
+`streamcap.clj`), an event-driven driver and application (`evt.clj`,
+`evtapp.clj`), and the gate stages that execute every accept. "Any of this can be
+built" is answered: the checker walks real IR and E15–E24 are measurements taken
+with it.
+
+The largest untested claim is now a different one. **The checker rejects
+programs that work** — E23 and E24 both converge on a single root cause, and E26
+confirms it from a third direction: a capability may live only in a `let`/`loop`
+binding of statically known shape. Every artifact that has failed has failed
+there, and §4.6's live fork is the decision that governs it.
 
 Settled enough to build on: the substrate (§1.1), the two tiers and their four
 axes (§1.2, as corrected by E5/E6/E13), the capability-tier proof approach
@@ -4649,30 +4982,34 @@ Open and undesigned: the **structural/inductive tier**, **liveness**, **Q3**
 (`unique` × multi-shot, not load-bearing while D3 is deferred), **Q4** (macro
 blame), and **agreement/consensus** — all in §4.
 
-**The next step: run the capability checker over Jolt's IR.**
+**The step this section used to nominate — "run the capability checker over
+Jolt's IR" — is done.** `check.clj` walks real IR through `perturb.ir/capture!`,
+§1.1's `:local` claim was measured rather than inferred (`report-local-claim`,
+`check.clj:1827-1851`: three capability instances, one node shape, no
+`:binding-id`), and E15–E24 are the findings that came out of it. Of the two IR
+claims, `:local` is confirmed on real IR and **`:extern` remains untested**;
+§4.6 carries it.
 
-Every prototype so far models a rule set in Python; none has touched a real
-program. §1.1 makes two specific claims from reading `jolt-core/jolt/ir.clj`,
-both untested:
+**The next steps, in the order E26 leaves them:**
 
-1. `:local` carries a name, not binding identity, so linearity checking needs
-   alpha-conversion or a `:binding-id`.
-2. `:host`/`:host-static`/`:host-new`/`:host-call` should collapse into one
-   `:extern` carrying a declared effect row and signature.
+1. **`abort!` first, regions after** (E25). Cancellation is the prerequisite for
+   the region question, not a parallel track, because a non-local exit that
+   skips a discharge point strands obligations in exactly the direction regions
+   would enlarge. E26 adds a fifth candidate mechanism to §4.6's four —
+   `MUST_CLOSE` as a *state* rather than a `cancel` *term* — and the POPL 2019
+   text needed to judge it is now in `docs/research/papers/`.
+2. **Fail closed at the effect boundary** (E26 finding 3), which converts E16's
+   sampled window into a per-run invariant and is the strongest available upgrade
+   to `RUNTIME-OBLIGATION-BRIEF`'s weakest premise.
+3. **A sum `:to` with a call-site case-split** (E26 finding 7), wanted
+   independently by the join-rule item and by any attempt to declare a real
+   recovery protocol.
+4. **Ladder step 1a — the jolt-tcp client**, which is reachable now, unlike the
+   step this section used to name.
 
-Those are inferences from source reading. This session's record on inferences
-from source reading is poor: the `jolt-array` survey was wrong on scale *and*
-kind (E12), E3's central finding was sample-biased, and three performance
-hypotheses died to measurement (E1, E7). Assume at least one of the two is wrong
-until a checker walks real IR.
-
-It is also **step zero of ladder step 1**: jolt-tcp's connection typestate
-cannot be checked without a checker that reads real code. And it answers E6's
-open usability question empirically — how often the join rule actually fires on
-real programs — which is the largest unquantified risk to §1.2 and is currently
-argued rather than measured.
-
-Corpus: Jolt's own stdlib. Real, Clojure-shaped, already exists.
+E6's open usability question — how often the join rule actually fires on real
+programs — is still argued rather than measured, and is still the largest
+unquantified risk to §1.2.
 
 ---
 
@@ -4810,6 +5147,8 @@ rejected alternatives and superseded verdicts rather than deleting them (see
 | 29 | "hash values are not observable through any specified interface"; the only law is hash-consistency | §15.4, now §2 row 3 | E14 — `host/chez/hasheq.ss` is a JVM-exact Murmur3 port; the CHANGELOG specifies vector/map/set hashes as "value-identical to the JVM"; `.hashCode` and `hasheq` are two separately-specified surfaces; the new concurrency gate's oracle is a per-object value equation | E14. **Left open**: the perturb decision may stand, but as a choice not to expose, not as a finding that nothing exposes |
 | 30 | "Effects substitute a validated result or abort" as an exhaustive dispatch algebra | §2.4, now §1.4 | E14 — the delivered v0.5.17 sim controller dispatches substitute / abort / **proceed-once**, handing the handler a one-shot native `proceed` thunk | E14. **Left open** — including whether one-shot resumption counts as a continuation, which §1.4 and the seams request answer differently |
 | 31 | charter non-goal 13's "runtime seams are *requested* … never assumed", relied on by §1.4 | §2.4, now §1.4 | E14 — seven unmerged branches carry a complete lifecycle/FFI/clock controller overlay at ABI 6, plus tests and a bounded proof note. The companion artifact's items 7–9 are all present | E14. The factual half ("none exists at the v0.5.17 baseline") is **unchanged and still true** |
+| 32 | "**perturb has no code.** What exists is this record, the Python prototypes modelling rule sets (`prototypes/`, gated by `verify-capability-rules`), and seven commits of Jolt improvements that came out of measuring rather than designing" — and therefore that the largest untested claim is "any of this can be built" | §5, "Where this stands, and the next step" | E26 — false at HEAD and false since E15: `perturb/src/` is 14,248 lines across 26 namespaces, including the checker the same section nominates as the next step. The section was never revised as the findings accumulated | §5, rewritten; tally row 41 |
+| 33 | ladder step 1: jolt-tcp's connection lifecycle is checkable because "the contract exists" in the README | §5, ladder and coverage table | E26 — that README states the **server handler** contract, and `teensyp.server`'s connection table is all four E24 shapes at once. E24 had already proved the shape unexpressible; §5 was not updated to notice | §5 step 1a/1b; tally row 41 |
 
 ### A.2 The method notes, in order
 
