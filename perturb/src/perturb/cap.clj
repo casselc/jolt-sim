@@ -191,6 +191,117 @@
 
 (def cancelled-key :perturb.cap/cancelled)
 
+;; --- THREE NOTIONS, THREE KEYS (E33's conceptual correction) ----------------
+;;
+;; PERTURB-DESIGN E33 states the whole finding in one sentence:
+;;
+;;   > A stable shared handle, its current protocol state, and the obligation to
+;;   > discharge the underlying resource are THREE DIFFERENT THINGS.
+;;
+;; `:linearity :once` treated them as one, and E30's failures follow directly:
+;; the double `close!`, the rejected `closed?`/`connection-info`, and the
+;; 12-of-23 in-place bucket are one conflation seen three ways.
+;;
+;; They are now three separate things to write down, and each means exactly one
+;; thing ON ITS OWN:
+;;
+;;   1. THE PROTOCOL STATE — `:to` on a transition.
+;;      ALONE IT SAYS: which operations are legal next, and nothing else. It says
+;;      nothing about whether the resource is still owed a destructor and nothing
+;;      about whether the binding may be mentioned again. Unchanged in meaning
+;;      from the day it was written; what changed is that it no longer implies
+;;      the other two.
+;;
+;;   2. THE OBLIGATION — `:obligation` on a transition, one of
+;;      `:acquire` / `:retain` / `:discharge`.
+;;      ALONE IT SAYS: whether, after this edge, the resource still owes its
+;;      destructor. `:acquire` starts owing, `:retain` (the default) leaves it as
+;;      it was, `:discharge` ends it. NOT DECLARED IS NOT THE SAME AS `:retain`:
+;;      an edge that declares nothing is DERIVED exactly as the checker has
+;;      always derived it — discharged iff every member of `:to` is terminal —
+;;      which is what makes every declaration written before this key existed
+;;      behave identically. The key exists for the two shapes derivation cannot
+;;      reach: a destructor that hands back a REUSABLE handle (terminal-state
+;;      arithmetic says it still owes; the resource says it does not), and an
+;;      operation that re-acquires (`:acquire`), which the absorbing-state rule
+;;      then refuses where it must be refused.
+;;
+;;   3. THE NAME — the SHAPE OF THE ANNOTATION, not a key on the machine.
+;;      ALONE IT SAYS: may the caller's binding be mentioned after this call.
+;;      Three shapes and only three:
+;;
+;;        :borrows [{:cap C … :arg 0}]                 the name lives, no edge
+;;        :consumes [{… :arg 0}] :produces [{… :at 0}]  the name DIES and the
+;;                                                      capability reappears in
+;;                                                      the RESULT (value
+;;                                                      threading — unchanged)
+;;        :consumes [{… :arg 0}] :produces [{… :arg 0}] the name LIVES and
+;;                                                      changes state WHERE IT
+;;                                                      STANDS (in place)
+;;
+;;      The third is E30 finding 2 and §4.6's in-place item. Its syntax already
+;;      existed and was ACCEPTED AND SILENTLY IGNORED (tally row 50); it is
+;;      implemented now, and `:arg` together with `:at` on one entry is refused
+;;      rather than resolved.
+;;
+;; WHY THE THIRD IS NOT A KEY ON THE MACHINE. A machine is a property of the
+;; RESOURCE; whether a particular call site's binding survives is a property of
+;; the CALLING CONVENTION of one operation. `close!` moving the handle in one
+;; API and mutating it in place in another is the same machine either way. That
+;; is exactly the distinction `:linearity :once` collapsed.
+
+(def obligation-key :obligation)
+
+(def obligation-values
+  "The three obligation deltas an edge may declare. `nil` means DERIVE, and
+  derivation reproduces the pre-E33 behaviour byte for byte."
+  #{:acquire :retain :discharge})
+
+;; --- RESULT-LABELLED TRANSITIONS (E33: the established syntax) ---------------
+;;
+;; Both round-2 surveys independently name the same primitive relation, and it
+;; is NOT the operation-keyed one perturb had:
+;;
+;;   (capability, operation, source-state, result-label)
+;;       -> destination-state + obligation delta
+;;
+;; Mungo/StMungo spells it directly — `Status open(): <OK: Open, ERROR: end>`,
+;; `BooleanEnum hasNext(): <TRUE: Read, FALSE: Close>` — Vault keys transitions
+;; by source AND destination, and Fugue computes postconditions from receiver,
+;; state, arguments and results. A transition may therefore carry a `:result`:
+;;
+;;   {:op 'lib/close! :from [:open :half-closed] :result :won  :to :closed}
+;;   {:op 'lib/close! :from :closed              :result :lost :to :closed}
+;;
+;; WHAT THE LABEL IS FOR, AND WHAT IT IS NOT FOR. It is not a value the checker
+;; can observe: there is no result domain here and a label is never READ off a
+;; call. What it does is make the relation a FUNCTION of `(operation, source,
+;; label)` where before it had to be a function of the operation alone, and that
+;; buys three things:
+;;
+;;   - a destination that DEPENDS ON THE SOURCE is now sayable, because the
+;;     annotation stops repeating the machine (see `:state` omission below).
+;;     E30 finding 3's `from-to-pairing` defect — 6 diagnostics, an operation
+;;     with distinct `:from`s and correspondingly distinct `:to`s failing all
+;;     groups but one — is that gap;
+;;   - two labels from ONE source that share a destination and an obligation
+;;     delta are NOT a sum. That is `close!` exactly: `:won` and `:lost` both
+;;     land in `:closed` and both discharge, so the boolean is a RACE WITNESS
+;;     and not a second close (E33, confirmed);
+;;   - two labels from one source that DIFFER are a sum, and the sum `:to` plus
+;;     `:perturb.cap/discriminator` machinery is the FALLBACK for it. Correctly
+;;     implemented, wrongly prioritised — E33's words, and `report-limits` 14(f)
+;;     was right to be uneasy.
+;;
+;; SOURCE COLLECTIONS ARE SUGAR, AND ONLY WHERE THEY ARE SUGAR. `:from [:a :b]`
+;; expands to two edges sharing a destination and an obligation delta. If the
+;; same operation ALSO declares an edge from `:a` with a different destination,
+;; the collection is not sugar any more — it is hiding a source-dependent
+;; destination behind a shorthand. `perturb.check/check-edge-overlap!` refuses
+;; that where it is written.
+
+(def result-key :result)
+
 (defn refinements
   "[capability operation] -> a VECTOR of that operation's refinement-carrying
   transitions, each entry being the transition's `:perturb.cap/refine` map with

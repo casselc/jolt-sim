@@ -20,10 +20,19 @@
   program at all and are rejected where the annotation is WRITTEN, one for
   under-covering the declared destinations and one for over-covering them.
 
+  AND SINCE E33, THE THREE-NOTION MODEL. `Sock` is a second machine in this file
+  and a different subject: a stable handle with an IDEMPOTENT compare-and-set
+  destructor, an ABSORBING terminal state, observers legal after close, and a
+  destination that depends on its SOURCE. It is `teensyp.client/Connection`'s
+  shape in miniature, so the four things E30 measured `:linearity :once` failing
+  at are gated here on perturb's own source rather than only reported against a
+  library. `machine-corpus` is the declaration-level half: two well-formed
+  controls and four machines that contradict their own claims.
+
   WHAT NONE OF THIS ESTABLISHES. Nothing here reads `perturb.dbtx`'s bodies: the
   transitions are axioms, the discriminator is an axiom, and an accept means the
   program is consistent with a declaration nobody checked. See
-  `perturb.check/report-limits` items 1 and 14."
+  `perturb.check/report-limits` items 1, 14 and 16-18."
   (:require [perturb.dbtx :as db]
             [perturb.cap :as cap]))
 
@@ -472,6 +481,389 @@
     :expect [:cancelled-state-unsound]}])
 
 ;; ===========================================================================
+;; THE THREE NOTIONS, SEPARATED — a handle, its state, and its obligation
+;; ===========================================================================
+;;
+;; PERTURB-DESIGN E33's conceptual correction, and E30's measurement of what
+;; conflating them costs, as PROGRAMS rather than as fixtures. `Sock` is a
+;; miniature of `teensyp.client/Connection` — the jolt-tcp client connection
+;; §5 step 1a checks — reduced to the four shapes E30 says `:linearity :once`
+;; cannot express, and written in perturb's own source so the gate can both
+;; CHECK it and RUN it:
+;;
+;;   1. AN IDEMPOTENT DESTRUCTOR AT A TERMINAL STATE. `sock-close!` is legal
+;;      from `:closed` again and returns a RACE WITNESS, not a second close.
+;;      Two result labels, `:won` and `:lost`, sharing one destination and one
+;;      obligation delta — which is why this is not a sum and needs no case
+;;      split (E33: "the boolean is a race witness selecting the one logical
+;;      transition", confirmed by both surveys).
+;;   2. OBSERVERS LEGAL IN THE TERMINAL STATE. `sock-closed?` and `sock-info`
+;;      borrow at `:state :any` and are legal after the destructor, because the
+;;      NAME is alive — that being a different axis from the STATE and from the
+;;      OBLIGATION. Under `:linearity :once` they drew `use-after-move`, and
+;;      E30 records that no `:state` value could rescue them.
+;;   3. A DESTINATION THAT DEPENDS ON ITS SOURCE. `sock-shutdown!` has four
+;;      `:from`s with four correspondingly different `:to`s — exactly
+;;      `teensyp.client/shutdown-write!`'s shape, which E30 finding 3 measured
+;;      as 6 `annotation-inconsistent` diagnostics because one annotation had to
+;;      be compared against every group. Its annotation now OMITS `:state` and
+;;      the machine answers, so there is nothing left to disagree with.
+;;   4. IN-PLACE TYPESTATE. Every transition here is `:consumes … :arg 0` plus
+;;      `:produces … :arg 0`: the handle is a stable name and changes state
+;;      where it stands. That key used to be accepted and silently ignored
+;;      (tally row 50).
+;;
+;; AND THE OBLIGATION IS STILL LOAD-BEARING, which is the half that has to keep
+;; working: `sock-never-closed` and `sock-observed-but-never-closed` are
+;; `dangling`, because an absorbing terminal state discharges the debt only when
+;; the destructor is actually reached. Observing a handle is not disposing of it.
+
+(def sock-capability
+  (cap/declare-capability!
+    (cap/capability
+      {:perturb.cap/name       'perturb.dbtxcorpus/Sock
+       :perturb.cap/doc
+       "A stable handle with an idempotent destructor and an absorbing terminal
+        state — teensyp.client/Connection's shape, in miniature."
+       :perturb.cap/uniqueness :unique
+       :perturb.cap/linearity  :once
+       :perturb.cap/contention :thread-confined
+       :perturb.cap/typestate
+       {:states   [:open :read-done :half :half-done :closed]
+        :initial  :open
+        :terminal [:closed]
+        :transitions
+        [{:op 'perturb.dbtxcorpus/sock-connect :from nil :to :open}
+
+         ;; reading to EOF: one source, one destination, no label needed.
+         {:op 'perturb.dbtxcorpus/sock-drain! :from :open :to :read-done}
+
+         ;; THE SOURCE-DEPENDENT DESTINATION (E30 finding 3). Four edges, four
+         ;; sources, four destinations, and two result labels — `:first` for the
+         ;; call that performed the half-close and `:again` for one that found it
+         ;; already done. The labels do not partition the destination here; the
+         ;; SOURCE does, and that is the case the operation-keyed relation could
+         ;; not state.
+         {:op 'perturb.dbtxcorpus/sock-shutdown! :from :open      :result :first
+          :to :half}
+         {:op 'perturb.dbtxcorpus/sock-shutdown! :from :read-done :result :first
+          :to :half-done}
+         {:op 'perturb.dbtxcorpus/sock-shutdown! :from :half      :result :again
+          :to :half}
+         {:op 'perturb.dbtxcorpus/sock-shutdown! :from :half-done :result :again
+          :to :half-done}
+
+         ;; THE ABSORBING TERMINAL STATE. `:won` is the caller that began the
+         ;; close; `:lost` is one that found another had. Both land in `:closed`
+         ;; and both discharge, so the two labels COLLAPSE and the second call is
+         ;; not a sum, not a second close, and not a use-after-move.
+         {:op 'perturb.dbtxcorpus/sock-close! :from [:open :read-done :half :half-done]
+          :result :won  :to :closed}
+         {:op 'perturb.dbtxcorpus/sock-close! :from :closed
+          :result :lost :to :closed}]}
+       :perturb.cap/representation
+       ['perturb.dbtxcorpus/sock 'perturb.dbtxcorpus/sock-state]
+       :perturb.cap/locality :dropped-by-design})))
+
+(def ^:private S 'perturb.dbtxcorpus/Sock)
+
+(defn sock
+  "The concrete handle. Inside the representation."
+  [state] {:perturb.cap/capability S :perturb.dbtxcorpus/state state})
+
+(defn sock-state
+  {:perturb.cap/op {:borrows [{:cap 'perturb.dbtxcorpus/Sock :state :any :arg 0}]}}
+  [s] (:perturb.dbtxcorpus/state s))
+
+(defn sock-connect
+  {:perturb.cap/op {:consumes []
+                    :produces [{:cap 'perturb.dbtxcorpus/Sock :state :open}]}}
+  [] (sock :open))
+
+(defn sock-drain!
+  "A transition whose annotation writes NEITHER state: both are read off the
+  machine. One source, one destination, so this is the degenerate case of the
+  same mechanism `sock-shutdown!` needs four edges for."
+  {:perturb.cap/op {:consumes [{:cap 'perturb.dbtxcorpus/Sock :arg 0}]
+                    :produces [{:cap 'perturb.dbtxcorpus/Sock :arg 0}]}}
+  [s] (sock :read-done))
+
+(defn sock-shutdown!
+  "IDEMPOTENT, AND NOT AT A TERMINAL STATE — which is the shape that was always
+  expressible (E30's own corroboration: `shutdown-write!` is a self-loop on
+  `:write-shut` and perfectly declarable). What was NOT expressible is the
+  source-dependent destination beside it, and that is what omitting `:state`
+  buys."
+  {:perturb.cap/op {:consumes [{:cap 'perturb.dbtxcorpus/Sock :arg 0}]
+                    :produces [{:cap 'perturb.dbtxcorpus/Sock :arg 0}]}}
+  [s] (sock (if (= :read-done (sock-state s)) :half-done :half)))
+
+(defn sock-close!
+  "THE COMPARE-AND-SET DESTRUCTOR. Returns the handle unchanged in the concrete
+  world — the real one returns a BOOLEAN, and the annotation no longer has to
+  lie about that, because `:produces … :arg 0` says the capability stays where
+  it is instead of claiming it is the return value."
+  {:perturb.cap/op {:consumes [{:cap 'perturb.dbtxcorpus/Sock :arg 0}]
+                    :produces [{:cap 'perturb.dbtxcorpus/Sock :arg 0}]}}
+  [s] (sock :closed))
+
+(defn sock-closed?
+  "A pure OBSERVER, legal in every state INCLUDING the terminal one. It borrows,
+  so it neither moves the machine nor touches the obligation — and it must not,
+  which is E33's side condition on the absorbing state."
+  {:perturb.cap/op {:borrows [{:cap 'perturb.dbtxcorpus/Sock :state :any :arg 0}]}}
+  [s] (= :closed (sock-state s)))
+
+(defn sock-send!
+  "The guard that IS statically checkable: illegal once the write side is shut,
+  and illegal after close. `:borrows` with a state set, costing nothing."
+  {:perturb.cap/op {:borrows [{:cap 'perturb.dbtxcorpus/Sock
+                               :state [:open :read-done] :arg 0}]}}
+  [s _] :sent)
+
+(cap/annotate-op! (var sock-state)    (:perturb.cap/op (meta (var sock-state))))
+(cap/annotate-op! (var sock-connect)  (:perturb.cap/op (meta (var sock-connect))))
+(cap/annotate-op! (var sock-drain!)   (:perturb.cap/op (meta (var sock-drain!))))
+(cap/annotate-op! (var sock-shutdown!) (:perturb.cap/op (meta (var sock-shutdown!))))
+(cap/annotate-op! (var sock-close!)   (:perturb.cap/op (meta (var sock-close!))))
+(cap/annotate-op! (var sock-closed?)  (:perturb.cap/op (meta (var sock-closed?))))
+(cap/annotate-op! (var sock-send!)    (:perturb.cap/op (meta (var sock-send!))))
+
+;; --- ACCEPT ----------------------------------------------------------------
+
+(defn sock-close-twice-then-observe
+  "ACCEPT, AND IT RUNS. THE ACID TEST, in perturb's own source.
+
+  This is `teensyp.client-test/public-client-loopback-contract`'s `finally`
+  block, which E30 measured as FOUR `use-after-move` diagnostics against a
+  program the library's own suite runs against a real loopback socket:
+
+    (is (true?  (client/close! connection)))
+    (is (false? (client/close! connection)))
+    (is (client/closed? connection))
+    (is (= :closed (:state (client/connection-info connection))))
+
+  Every one of those four was refused, and E30's decisive point is that
+  `closed?` and `connection-info` are declared legal in EVERY state and were
+  refused anyway — because `use-after-move` is about the NAME being dead, not
+  about the state. Separating the name from the state from the obligation is the
+  whole of what makes this accept."
+  []
+  (let [s (sock-connect)]
+    (sock-close! s)
+    (sock-close! s)
+    (sock-closed? s)
+    (sock-state s)
+    :done))
+
+(defn sock-shutdown-twice-then-close
+  "ACCEPT, AND IT RUNS. Idempotence AWAY from the terminal state — the half that
+  was always expressible — followed by the destructor. `:open -> :half` then
+  `:half -> :half`, two different result labels, one annotation."
+  []
+  (let [s (sock-connect)]
+    (sock-send! s "before")
+    (sock-shutdown! s)
+    (sock-shutdown! s)
+    (sock-close! s)
+    :done))
+
+(defn sock-drain-then-shutdown-then-close
+  "ACCEPT, AND IT RUNS. THE OTHER SOURCE. `sock-shutdown!` here runs from
+  `:read-done` and lands in `:half-done`, not in `:half` — the same operation,
+  a different source, a different destination. Under the old rule the single
+  annotation had to name ONE `:from`/`:to` pair and therefore had to disagree
+  with three of this operation's four groups (E30 finding 3, 6 diagnostics)."
+  []
+  (let [s (sock-connect)]
+    (sock-drain! s)
+    (sock-shutdown! s)
+    (sock-close! s)
+    :done))
+
+;; --- REJECT ----------------------------------------------------------------
+
+(defn sock-never-closed
+  "REJECT, `dangling`. THE GENUINE LEAK, AND THE REASON THE OTHER HALF OF THIS
+  WORK CANNOT BE A WEAKENING. An absorbing terminal state discharges the
+  obligation only when the destructor is REACHED. A handle that never reaches it
+  is owed one, whatever else was done to it."
+  []
+  (let [s (sock-connect)]
+    (sock-send! s "hello")
+    :done))
+
+(defn sock-observed-but-never-closed
+  "REJECT, `dangling`. OBSERVING IS NOT DISPOSING. `sock-closed?` is legal in
+  every state and moves nothing, so a program that asks a handle whether it is
+  closed and then drops it still owes a close. This is E33's side condition seen
+  from the program side: an observer must not re-acquire the resource, and it
+  must not discharge it either."
+  []
+  (let [s (sock-connect)]
+    (sock-closed? s)
+    (sock-state s)
+    :done))
+
+(defn sock-send-after-close
+  "REJECT, `typestate`. AN ABSORBING TERMINAL STATE ADMITS ITS DESTRUCTOR AND ITS
+  OBSERVERS AND NOTHING ELSE. `sock-send!` borrows at `[:open :read-done]`, so
+  after the close it is refused — and it is refused for the RIGHT REASON, with
+  the state named, rather than as a use-after-move about a name that is
+  demonstrably still usable two lines later."
+  []
+  (let [s (sock-connect)]
+    (sock-close! s)
+    (sock-send! s "too late")
+    :done))
+
+(defn sock-peek
+  "REJECT, `annotation-underived-state`. `:state` MAY ONLY BE OMITTED WHERE THERE
+  IS A MACHINE TO READ IT OFF. This function is not a declared transition of
+  `Sock`, so `[Sock sock-peek]` has no edges and there is no destination and no
+  admissible source to derive. Omitting `:state` here is not `any state`, it is a
+  question with no answer, and it is refused where it is written."
+  {:perturb.cap/op {:borrows [{:cap 'perturb.dbtxcorpus/Sock :arg 0}]}}
+  [s] (sock-state s))
+
+(cap/annotate-op! (var sock-peek) (:perturb.cap/op (meta (var sock-peek))))
+
+;; ===========================================================================
+;; REJECT — the two E33 MACHINE rules
+;; ===========================================================================
+;;
+;; PERTURB-DESIGN E33 separates three things `:linearity :once` treated as one:
+;; the stable handle, its protocol state, and the obligation to discharge the
+;; resource. Two of the rules that separation makes possible are claims about a
+;; MACHINE and are therefore checkable without reading a body, exactly as the
+;; cancelled-state rule is:
+;;
+;;   (a) THE ABSORBING TERMINAL STATE'S SIDE CONDITION. A terminal state may now
+;;       admit its own destructor and its observers as self-loops — obligation
+;;       discharged, NAME STILL ALIVE. E33 attaches one condition, and it is the
+;;       one the first survey omitted: an observer self-loop MUST NOT RE-ACQUIRE
+;;       the discharged resource. An edge out of a discharged state whose
+;;       obligation delta is not `:discharge` does exactly that.
+;;   (b) SOURCE COLLECTIONS AS SUGAR. `:from [:a :b]` is one edge per member and
+;;       is legal only where every member shares a destination and a delta. A
+;;       collection that overlaps a differently-sourced edge of the same
+;;       operation hides a source-dependent destination behind a shorthand.
+;;
+;; Two WELL-FORMED controls first, because a rule that rejected every absorbing
+;; state or every collection would pass the four negatives and be worthless. The
+;; first control is the shape the whole of E30's rung is about: a terminal state
+;; with its destructor as a self-loop and an observer beside it.
+
+(defn- plain-machine
+  [nm ts]
+  {:perturb.cap/name       nm
+   :perturb.cap/uniqueness :unique
+   :perturb.cap/linearity  :once
+   :perturb.cap/contention :thread-confined
+   :perturb.cap/typestate  ts
+   :perturb.cap/representation []
+   :perturb.cap/locality :dropped-by-design})
+
+(def machine-corpus
+  "Six machines. `:expect` is the exact SET of diagnostic kinds."
+  [{:name 'absorbing-terminal-done-right
+    :declarations
+    {'fixture/Absorbing
+     (plain-machine 'fixture/Absorbing
+                    {:states   [:open :closed]
+                     :initial  :open
+                     :terminal [:closed]
+                     :transitions
+                     ;; The shape E30 finding 1 named and could not express: the
+                     ;; destructor is legal from the terminal state AGAIN, with
+                     ;; two result labels that share one destination, so the
+                     ;; boolean is a RACE WITNESS and not a second close.
+                     [{:op 'fixture/connect :from nil    :to :open}
+                      {:op 'fixture/close!  :from :open   :result :won  :to :closed}
+                      {:op 'fixture/close!  :from :closed :result :lost :to :closed}]})}
+    :expect []}
+
+   {:name 'source-collection-that-is-really-sugar
+    :declarations
+    {'fixture/Sugar
+     (plain-machine 'fixture/Sugar
+                    {:states   [:a :b :closed]
+                     :initial  :a
+                     :terminal [:closed]
+                     ;; every member of the collection shares a destination and a
+                     ;; delta, which is what makes it sugar and makes it legal.
+                     :transitions [{:op 'fixture/open   :from nil     :to :a}
+                                   {:op 'fixture/step   :from :a      :to :b}
+                                   {:op 'fixture/close! :from [:a :b] :to :closed}]})}
+    :expect []}
+
+   {:name 'observer-self-loop-reacquires-the-resource
+    :declarations
+    {'fixture/Reopening
+     (plain-machine 'fixture/Reopening
+                    {:states   [:open :closed]
+                     :initial  :open
+                     :terminal [:closed]
+                     :transitions
+                     [{:op 'fixture/connect :from nil     :to :open}
+                      {:op 'fixture/close!  :from :open   :to :closed}
+                      ;; THE LIE E33's side condition names. An edge out of a
+                      ;; DISCHARGED state that lands somewhere non-terminal puts
+                      ;; the resource back in debt, and nobody owes it.
+                      {:op 'fixture/reopen! :from :closed :to :open}]})}
+    :expect [:absorbing-state-unsound]}
+
+   {:name 'terminal-self-loop-that-retains-the-obligation
+    :declarations
+    {'fixture/Retaining
+     (plain-machine 'fixture/Retaining
+                    {:states   [:open :closed]
+                     :initial  :open
+                     :terminal [:closed]
+                     :transitions
+                     [{:op 'fixture/connect :from nil     :to :open}
+                      {:op 'fixture/close!  :from :open   :to :closed}
+                      ;; The destination IS terminal, so derivation would have
+                      ;; said `:discharge`; the declaration overrides it and says
+                      ;; the obligation is retained. That is a self-loop on a
+                      ;; discharged state that leaves it owing, which is the same
+                      ;; fault stated through the obligation axis instead of the
+                      ;; state axis — and catching it is the evidence that the
+                      ;; two axes really are separate.
+                      {:op 'fixture/peek    :from :closed :to :closed
+                       :obligation :retain}]})}
+    :expect [:absorbing-state-unsound]}
+
+   {:name 'collection-hides-a-source-dependent-destination
+    :declarations
+    {'fixture/Hiding
+     (plain-machine 'fixture/Hiding
+                    {:states   [:a :b :closed]
+                     :initial  :a
+                     :terminal [:closed]
+                     :transitions
+                     [{:op 'fixture/open  :from nil     :to :a}
+                      ;; `:from [:a :b] :to :closed` overlaps `:from :b :to :a`:
+                      ;; state :b has two destinations under one operation and the
+                      ;; shorthand is what conceals it.
+                      {:op 'fixture/step! :from [:a :b] :to :closed}
+                      {:op 'fixture/step! :from :b      :to :a}]})}
+    :expect [:edge-source-overlap]}
+
+   {:name 'any-overlaps-a-named-source-with-another-destination
+    :declarations
+    {'fixture/Wildcard
+     (plain-machine 'fixture/Wildcard
+                    {:states   [:a :b :closed]
+                     :initial  :a
+                     :terminal [:closed]
+                     :transitions
+                     [{:op 'fixture/open  :from nil  :to :a}
+                      {:op 'fixture/wipe! :from :any :to :closed}
+                      {:op 'fixture/wipe! :from :a   :to :b}]})}
+    :expect [:edge-source-overlap]}])
+
+;; ===========================================================================
 ;; what the checker must say — and, for every accept, that it RUNS
 ;; ===========================================================================
 
@@ -509,4 +901,15 @@
 
    ;; the last table that still had E26 finding 7's defect.
    {:var 'perturb.dbtxcorpus/meter-split-refutes-one-summand :expect :reject
-    :kind :refinement}])
+    :kind :refinement}
+
+   ;; E33 — the three notions separated. THE ACID TEST AND ITS CONTROLS.
+   {:var 'perturb.dbtxcorpus/sock-close-twice-then-observe :expect :accept :run []}
+   {:var 'perturb.dbtxcorpus/sock-shutdown-twice-then-close :expect :accept :run []}
+   {:var 'perturb.dbtxcorpus/sock-drain-then-shutdown-then-close :expect :accept :run []}
+   {:var 'perturb.dbtxcorpus/sock-never-closed :expect :reject :kind :dangling}
+   {:var 'perturb.dbtxcorpus/sock-observed-but-never-closed :expect :reject
+    :kind :dangling}
+   {:var 'perturb.dbtxcorpus/sock-send-after-close :expect :reject :kind :typestate}
+   {:var 'perturb.dbtxcorpus/sock-peek :expect :reject
+    :kind :annotation-underived-state}])

@@ -30,6 +30,22 @@
                capability in a sum state may be used only by an operation that
                admits EVERY member, or after a declared discriminator has
                eliminated it at an `if` (E26 finding 7; report-limits item 14)
+    OBLIGATION the debt to run a destructor is TRACKED SEPARATELY from the
+               state and from the name. A transition may declare an
+               `:obligation` delta; with none declared it is derived from `:to`
+               being terminal, which is what the leak rule used to test
+               directly. So a TERMINAL state may be ABSORBING — obligation
+               discharged, NAME STILL ALIVE, only the destructor and the
+               observers legal — and an edge out of a discharged state that does
+               not discharge is refused where it is written (E30 finding 1,
+               E33's conceptual correction and its side condition; items 16, 18)
+    RESULT     the transition relation is
+               `(capability, operation, source-state, result-label) ->
+                destination + obligation delta`. An annotation that OMITS
+               `:state` is READ OFF that relation at each call site, so a
+               destination may depend on its SOURCE — which the
+               operation-keyed relation could not express (E30 finding 3, E33;
+               item 17)
     CANCELLED  a capability may declare one of its own states CANCELLED; from
                it the DESTRUCTOR is the only legal operation, and reaching it
                discharges NOTHING — a cancelled capability that never reaches
@@ -260,6 +276,106 @@
 
 (defn- want-str [want] (if (coll? want) (str (vec want)) (str want)))
 
+;; --- THE OBLIGATION, SEPARATED FROM THE STATE (E33) --------------------------
+;;
+;; `terminal?` above answers "is this state one the machine calls terminal". It
+;; used to be asked as if it also answered "does this capability still owe its
+;; destructor", and E33 is that those are two questions. They are now asked
+;; separately: a live capability carries `:owes`, an edge carries an obligation
+;; DELTA, and `terminal?` is only the DERIVATION for an edge that declares none.
+;;
+;; DERIVATION IS EXACTLY THE OLD BEHAVIOUR. An edge with no `:obligation`
+;; discharges iff every member of its `:to` is terminal, which is the test
+;; `check-scope-exit` used to apply to the state directly. So every declaration
+;; written before this key existed produces the same verdicts, and that is
+;; checked by three corpora rather than asserted.
+
+(defn- edge-delta
+  "The obligation delta of one declared edge: `:acquire`, `:retain` or
+  `:discharge`. Declared if `:obligation` is present, DERIVED from `:to` being
+  terminal otherwise."
+  [sp c t]
+  (or (get t cap/obligation-key)
+      (if (terminal? sp c (norm-state (:to t))) :discharge :retain)))
+
+(defn- apply-delta
+  "One delta against a capability's current `:owes`."
+  [owes d]
+  (cond (= :discharge d) false
+        (= :acquire d)   true
+        :else            owes))
+
+(defn- owes?
+  "Does this live capability still owe its destructor? Falls back to the state
+  test for a capability minted before `:owes` was recorded, so the two can never
+  disagree about a declaration that says nothing."
+  [sp lc]
+  (if (contains? lc :owes)
+    (:owes lc)
+    (not (terminal? sp (:cap lc) (:state lc)))))
+
+;; --- (capability, operation, source-state, result-label) -> to + delta --------
+;;
+;; E33's primitive relation, read off the machine at a CALL SITE. This is what
+;; makes the destination a function of the SOURCE rather than of the operation
+;; alone, and it is the whole of E30 finding 3's fix: the annotation no longer
+;; has to repeat a `:to` that depends on a `:from` it cannot see.
+
+(defn- edges-applicable
+  "The declared edges of `[cap opsym]` whose `:from` admits the state the
+  capability is ACTUALLY in. `state-ok?` and not `admits?`, so a capability in a
+  sum state selects only edges that admit every member."
+  [sp c opsym state]
+  (vec (filter (fn [t] (state-ok? (:from t) state))
+               (get (:primitives sp) [c opsym]))))
+
+(defn- machine-destination
+  "Where the machine says `[cap opsym]` lands a capability that is ACTUALLY in
+  `state`, or nil if no declared edge applies.
+
+  RESULT LABELS COLLAPSE WHEN THEY AGREE. Every applicable edge is a
+  `(source, label)` pair; the destination is the union of their `:to`s, so two
+  labels sharing one destination produce a SINGLE state and no sum at all —
+  which is `close!`'s `:won`/`:lost` and why an idempotent close is not a
+  second close. Labels that disagree produce the sum, and the sum machinery is
+  the fallback exactly as E33 says it should be.
+
+  THE DELTA IS THE CONSERVATIVE MEET: `:discharge` only when every applicable
+  edge discharges, `:acquire` if any acquires. The call takes one edge and which
+  one is not knowable until run time, so a capability is discharged only if it
+  is discharged whichever label came back."
+  [sp c opsym state]
+  (let [es (edges-applicable sp c opsym state)]
+    (when (seq es)
+      (let [ds (set (map (fn [t] (edge-delta sp c t)) es))]
+        {:to        (norm-state (vec (mapcat (fn [t] (sum-members (:to t))) es)))
+         :delta     (cond (= ds #{:discharge}) :discharge
+                          (contains? ds :acquire) :acquire
+                          :else :retain)
+         :declared? (boolean (some (fn [t] (contains? t cap/obligation-key)) es))
+         :labels    (vec (distinct (remove nil? (map (fn [t] (get t cap/result-key)) es))))
+         :edges     (vec es)}))))
+
+(defn- derived-state?
+  "A `:consumes` / `:borrows` / `:produces` entry that OMITS `:state` asks the
+  machine instead of repeating it. That is the opt-in: every entry written
+  before this existed carries a `:state` and is read exactly as before."
+  [entry] (not (contains? entry :state)))
+
+(defn- in-place?
+  "A `:produces` entry carrying `:arg` is an IN-PLACE produce: the capability
+  does not travel in the result, it changes state where the named argument
+  stands. §4.6's in-place item, E30 finding 2, tally row 50."
+  [entry] (contains? entry :arg))
+
+(defn- declared-sources
+  "Every source state an operation declares an edge from, for one capability,
+  with `:from` collections FLATTENED — a source collection is sugar for one edge
+  per member, so this is the set of states the operation is legal in."
+  [sp c opsym]
+  (vec (distinct (mapcat (fn [t] (sum-members (:from t)))
+                         (get (:primitives sp) [c opsym])))))
+
 (defn- produced-ok?
   "The `:produces` side of a comparison, where a collection means a SUM and not
   `any of`. Two sums agree when their members agree as a SET; a sum never
@@ -384,8 +500,12 @@
   (cond
     ;; REFINEMENT: :refine / :rlog ride along with the capability wherever it
     ;; goes. They are empty for every capability that declares no refinement.
-    (= :fresh (:v val)) {:bid nil :cap (:cap val) :state (:state val) :name nil
-                         :refine (:refine val) :rlog (:rlog val)}
+    ;; `:owes` rides along only when it was actually recorded. It is never
+    ;; assoc'd as nil, because `owes?` distinguishes "recorded as discharged"
+    ;; from "not recorded, derive it from the state" by `contains?`.
+    (= :fresh (:v val)) (let [m {:bid nil :cap (:cap val) :state (:state val) :name nil
+                                 :refine (:refine val) :rlog (:rlog val)}]
+                          (if (contains? val :owes) (assoc m :owes (:owes val)) m))
     (= :cap (:v val))   (let [b (:bid val)]
                           (when (and (contains? (:caps st) b)
                                      (not (contains? (:moved st) b)))
@@ -633,8 +753,7 @@
   capability in a sum state selects only edges that admit every member — the
   same rule that lets a `:from :any` destructor consume a sum."
   [sp cap-name opsym state]
-  (vec (filter (fn [t] (state-ok? (:from t) state))
-               (get (:primitives sp) [cap-name opsym]))))
+  (edges-applicable sp cap-name opsym state))
 
 (defn- applicable-refinements
   "The refinements on those edges. NO FALLBACK: if the call typechecked through
@@ -938,8 +1057,16 @@
                        (str "              — one operation declared several `:to`s and"
                             " which one it took")
                        (str "                is not knowable until run time")
-                       (str "not admitted  " (want-str (unadmitted (:state entry) (:state lc)))
-                            "   of " (want-str (:state lc)))
+                       (if (:derived-machine entry)
+                         ;; A DERIVED entry admits a state iff the machine has an
+                         ;; edge from it, and a SUM iff ONE edge admits every
+                         ;; member. Printing `unadmitted` here would say `[]` and
+                         ;; be actively misleading: each member is fine on its
+                         ;; own, and no single edge covers them together.
+                         (str "no single declared edge of " opsym " admits every member"
+                              " at once")
+                         (str "not admitted  " (want-str (unadmitted (:state entry) (:state lc)))
+                              "   of " (want-str (:state lc))))
                        (str "at            " (pir/site (:pos st)))]
                       (discriminator-lines sp (:cap entry))
                       [(str "in            " (:in st))])})
@@ -999,11 +1126,25 @@
   annotation (E18 finding 1(d)). An entry without `:arg` is now refused here and
   at the annotation's own declaration.
 
+  A `:state` MAY BE OMITTED, AND THEN THE MACHINE ANSWERS (E33). An entry that
+  writes no `:state` admits exactly the states for which the machine declares an
+  edge of `[cap opsym]` — the `:from` side of E33's primitive relation, read
+  rather than repeated. That is what lets an operation whose destination depends
+  on its source be annotated ONCE instead of once per source, and it is opt-in:
+  every entry written before this existed carries a `:state` and takes the same
+  path it always did.
+
   This does NOT establish that the argument really holds what the entry says —
   the callee's body is an axiom or is checked separately."
-  [st sp opsym entry vals nodes move?]
+  [st sp opsym entry vals nodes move? keep-name?]
   (let [want-cap   (:cap entry)
-        want-state (:state entry)
+        ;; `move?` still says what the entry IS, for the diagnostics; `moves?`
+        ;; says whether the NAME dies, which an in-place produce overrides.
+        moves?     (and move? (not keep-name?))
+        derived?   (derived-state? entry)
+        want-state (if derived?
+                     (norm-state (declared-sources sp want-cap opsym))
+                     (:state entry))
         path       (entry-path entry)
         i          (:arg entry)
         hit (when i
@@ -1013,7 +1154,16 @@
         dead-leaf (when i
                     (let [leaf (val-at (nth' vals i) path)]
                       (when (and (= :dead (:v leaf)) (= want-cap (:cap leaf))) leaf)))
-        dead-here? (not (nil? dead-leaf))]
+        dead-here? (not (nil? dead-leaf))
+        ;; ADMISSION. For a written `:state` this is `state-ok?` and nothing has
+        ;; changed. For an omitted one it is "the machine declares an edge of
+        ;; this operation from the state the capability is actually in" — the
+        ;; same totality rule, since `edges-applicable` selects with `state-ok?`
+        ;; and therefore admits a sum only when EVERY member is admitted.
+        admits-actual?
+        (fn [got] (if derived?
+                    (seq (edges-applicable sp want-cap opsym got))
+                    (state-ok? want-state got)))]
     (cond
       (nil? i)
       (do (report-unpositioned! st opsym entry move?)
@@ -1038,20 +1188,26 @@
                                (str "in            " (:in st))]}))
           {:st st :used nil :ok false :lc nil})
 
-      (not (state-ok? want-state (:state (:lc hit))))
+      (not (admits-actual? (:state (:lc hit))))
       (do (cond
             (sum? (:state (:lc hit)))
             ;; A SUM that is not admitted in full. Its own diagnostic kind, and
             ;; the abstract state moves exactly as a typestate rejection does —
             ;; the difference is what the reader is told, not what is tracked.
-            (report-state-unresolved! st sp opsym entry (:lc hit))
+            ;; A DERIVED entry is shown the machine's own `:from`s, since that
+            ;; is what it asked to be compared against.
+            (report-state-unresolved! st sp opsym
+                                      (assoc entry :state want-state
+                                             :derived-machine derived?)
+                                      (:lc hit))
 
             ;; THE CANCELLED STATE. Same treatment, third kind: the state is
             ;; known and it is the one the capability was cancelled into, so the
             ;; useful thing to say is that the protocol was abandoned and only
             ;; the destructor is left — not that `:open` was wanted.
             (= (:state (:lc hit)) (cancelled-state-of sp want-cap))
-            (report-cancelled-use! st sp opsym entry (:lc hit))
+            (report-cancelled-use! st sp opsym (assoc entry :state want-state)
+                                   (:lc hit))
 
             :else
             (report! {:kind :typestate :cap want-cap :op opsym
@@ -1062,14 +1218,58 @@
                                     "is in state " (:state (:lc hit)))
                                (str "at            " (pir/site (:pos st)))
                                (str "in            " (:in st))]}))
-          {:st (if move? (mark-moved st (:bid (:lc hit)) {:by opsym :pos (:pos st)}) st)
+          {:st (if moves? (mark-moved st (:bid (:lc hit)) {:by opsym :pos (:pos st)}) st)
            :used (:i hit) :ok false :lc (:lc hit)})
 
       :else
       ;; REFINEMENT: `:lc` is returned so the caller can discharge a side
       ;; condition against the ghost state of the capability just consumed.
-      {:st (if move? (mark-moved st (:bid (:lc hit)) {:by opsym :pos (:pos st)}) st)
+      {:st (if moves? (mark-moved st (:bid (:lc hit)) {:by opsym :pos (:pos st)}) st)
        :used (:i hit) :ok true :lc (:lc hit)})))
+
+(defn- resolve-produced
+  "THE `:produces` SIDE OF E33's PRIMITIVE RELATION, resolved at one call site.
+
+  Returns {:state s :owes b :ok true} or {:ok false :why lines}.
+
+  Two sources for the destination, and the first is the whole of the E33 change:
+
+    - `:state` OMITTED — ask the MACHINE. `(capability, operation, source-state)`
+      selects the applicable edges; their result labels are collapsed by
+      `machine-destination`, which is where two labels that share a destination
+      stop being a sum. The source is the state the CONSUMED capability of the
+      same name is actually in at this call, so the destination is a function of
+      the SOURCE and E30 finding 3's from-to pairing gap closes.
+    - `:state` WRITTEN — exactly as before, believed, not compared here.
+
+  And the OBLIGATION is resolved separately from the state, which is the point:
+  an explicitly declared `:obligation` on any applicable edge is applied as a
+  DELTA to what the capability already owed; with none declared it is derived
+  from the destination being terminal, which is the pre-E33 behaviour."
+  [st sp opsym entry lcs]
+  (let [c   (:cap entry)
+        lc  (get lcs c)
+        src (when lc (:state lc))
+        md  (machine-destination sp c opsym src)
+        settle
+        (fn [s]
+          {:ok true :state s
+           :owes (if (and md (:declared? md))
+                   (apply-delta (if lc (owes? sp lc) true) (:delta md))
+                   (not (terminal? sp c s)))})]
+    (if (derived-state? entry)
+      (if (nil? md)
+        {:ok false
+         :why [(str "operation     " opsym " produces " c
+                    " and writes no `:state`, so the destination must be read")
+               (str "              off the machine — but " c
+                    " declares no edge of " opsym)
+               (str "from          " (if lc (str "state " (want-str src))
+                                         "no consumed capability of that name"))
+               (str "declared      " (pr-str (declared-sources sp c opsym)))
+               (str "at            " (pir/site (:pos st)))]}
+        (settle (:to md)))
+      (settle (norm-state (:state entry))))))
 
 (defn- produced-value
   "Build the abstract result of an annotated call from its :produces entries.
@@ -1077,15 +1277,21 @@
   An entry with no `:at` produces the capability BARE — the result is the
   capability itself. An entry with `:at [i]` puts it at position i of a tuple.
   Mixing the two in one annotation is a contradiction and is refused; so is a
-  path deeper than one level, which this checker does not implement."
-  [st opsym prod]
-  (let [paths (map entry-path prod)]
+  path deeper than one level, which this checker does not implement.
+
+  IN-PLACE ENTRIES ARE NOT HERE. An entry carrying `:arg` does not travel in the
+  result at all — see `w-annotated-invoke` — so it is filtered out before this
+  runs and cannot make the result a tuple it is not."
+  [st opsym prod states]
+  (let [paths (map entry-path prod)
+        leaf  (fn [p] {:v :fresh :cap (:cap p) :state (:state (get states p))
+                       :owes (:owes (get states p))})]
     (cond
       (empty? prod) OPAQUE
 
       (every? empty? paths)
       (if (= 1 (count prod))
-        (let [p (first prod)] {:v :fresh :cap (:cap p) :state (norm-state (:state p))})
+        (leaf (first prod))
         (do (report! {:kind :annotation-unsupported :op opsym
                       :detail [(str "operation     " opsym " declares " (count prod)
                                     " produced capabilities, none of them positioned")
@@ -1115,16 +1321,82 @@
             n    (inc (apply max (map first paths)))]
         (tuple (map (fn [i]
                       (let [p (get by-i i)]
-                        (if p {:v :fresh :cap (:cap p) :state (norm-state (:state p))} OPAQUE)))
+                        (if p (leaf p) OPAQUE)))
                     (range n)))))))
+
+;; --- IN PLACE: the name lives and the state moves (E30 finding 2, row 50) ----
+;;
+;; `:arg n` on a `:produces` entry used to be ACCEPTED AND SILENTLY IGNORED: no
+;; diagnostic, and the capability landed in the result anyway, so variant 4 of
+;; `perturb.tcpcap` got a `no-signature` because `clojure.core/true?` received a
+;; `Connection@:closed`. A declaration language that takes a key it does not
+;; implement is a false-silence hole; the key is implemented here.
+;;
+;; WHAT IT DOES. The capability at argument n does NOT move. Its binding keeps
+;; its identity — the SAME binding id, deliberately — and only its state and its
+;; obligation change. Keeping the id is what keeps every other rule working
+;; unchanged: `check-scope-exit` still sees the binding the enclosing `let`
+;; recorded, `shape-of` still describes it at a loop back edge, and the join rule
+;; still compares the same `:moved` sets. Minting a fresh id here would have
+;; taken the capability off the enclosing scope's list and turned a leak into a
+;; silent accept.
+;;
+;; WHAT IT REFUSES, LOUDLY, rather than resolving:
+;;   - `:arg` together with `:at` on one entry — a capability cannot both stay
+;;     where it is and land in the result;
+;;   - `:arg n` where argument n is not a plain local NAME. There is nothing to
+;;     rebind, so the produced capability would vanish and its obligation with
+;;     it. That is the false accept this whole mechanism exists to avoid.
+
+(defn- apply-in-place
+  "Land one in-place `:produces` entry on the argument it names."
+  [st sp opsym entry nodes lcs states]
+  (let [c    (:cap entry)
+        i    (:arg entry)
+        node (nth' nodes i)
+        lc   (get lcs c)
+        res  (get states entry)]
+    (cond
+      (seq (entry-path entry))
+      (do (report! {:kind :annotation-unsupported :op opsym :cap c
+                    :detail [(str "operation     " opsym " declares a :produces entry with"
+                                  " BOTH `:arg " i "` and `:at " (pr-str (entry-path entry)) "`")
+                             "`:arg` is an IN-PLACE produce — the capability stays where it is —"
+                             "and `:at` is a position in the RESULT. It cannot be both."
+                             (str "at            " (pir/site (:pos st)))]})
+          st)
+
+      (or (nil? node) (not= :local (:op node)) (nil? lc) (nil? (:bid lc)))
+      (do (report! {:kind :in-place-unnamed :op opsym :cap c
+                    :detail [(str "operation     " opsym " declares :produces " c
+                                  " IN PLACE at `:arg " i "`")
+                             (str "argument " i "      " (describe-node node))
+                             "an in-place produce rebinds the NAME the argument is; there is no"
+                             "name here, so the produced capability — and the obligation it"
+                             "carries — would simply vanish. Refused rather than lost."
+                             (str "at            " (pir/site (:pos st)))
+                             (str "in            " (:in st))]})
+          st)
+
+      :else
+      (let [bid (:bid lc)
+            old (get (:caps st) bid)
+            u   (when (seq (:refine lc)) (refine-update st sp c opsym lc nodes))]
+        ;; THE SAME BINDING ID, deliberately. The name did not move, so nothing
+        ;; about which scope owes this capability changes; only its state and
+        ;; its obligation do.
+        (bind-cap st bid (merge (or old {})
+                                {:cap c :state (:state res) :owes (:owes res)}
+                                (if u {:refine (:refine u) :rlog (:rlog u)} {})))))))
 
 (defn- w-annotated-invoke [st sp node opsym ann]
   (let [r     (w-seq (assoc st :use-ctx opsym) (:args node))
         st1   (assoc (:st r) :use-ctx nil)
         vals  (:vals r)
         nodes (:args node)
-        step  (fn [acc entry move?]
-                (let [rr (consume-arg (:st acc) sp opsym entry vals nodes move?)]
+        step  (fn [acc entry move? keep-name?]
+                (let [rr (consume-arg (:st acc) sp opsym entry vals nodes
+                                      move? keep-name?)]
                   ;; REFINEMENT: discharge this edge's side condition, if it has
                   ;; one, against the ghost state of the capability consumed
                   ;; here. Only when the typestate half succeeded — a refinement
@@ -1135,15 +1407,43 @@
                   {:st (:st rr)
                    :ok (and (:ok acc) (:ok rr))
                    :lcs (if (:ok rr) (assoc (:lcs acc) (:cap entry) (:lc rr)) (:lcs acc))}))
-        a1    (reduce (fn [acc e] (step acc e false))
+        prod  (vec (:produces ann))
+        ;; THE THIRD NOTION, DECIDED HERE AND NOWHERE ELSE (E33). A capability
+        ;; the annotation produces back IN PLACE does not move: the caller's
+        ;; binding is alive after this call whatever the call does. So its
+        ;; `:consumes` entry is checked for TYPESTATE but does not kill the
+        ;; name — including when the typestate check FAILS, because "the
+        ;; operation was illegal here" and "the name is dead" are exactly the
+        ;; two things `:linearity :once` conflated. Without this, one rejected
+        ;; call cascades into a `use-after-move` on every later mention of a
+        ;; connection that is demonstrably still usable.
+        in-place-caps (set (map :cap (filter in-place? prod)))
+        a1    (reduce (fn [acc e] (step acc e false false))
                       {:st st1 :ok true :lcs {}} (:borrows ann))
-        a2    (reduce (fn [acc e] (step acc e true))  a1 (:consumes ann))
+        a2    (reduce (fn [acc e]
+                        (step acc e true (contains? in-place-caps (:cap e))))
+                      a1 (:consumes ann))
         st2   (:st a2)]
     ;; the operation did not type-check, so its result has no capability type
     (if (not (:ok a2))
       {:st st2 :val OPAQUE}
-      {:st st2 :val (with-refinements st2 sp opsym nodes (:lcs a2) (:produces ann)
-                                      (produced-value st2 opsym (:produces ann)))})))
+      ;; E33's relation, resolved once per produced entry: destination AND
+      ;; obligation delta, from the source state the consumed capability is in.
+      (let [states (reduce (fn [m e] (assoc m e (resolve-produced st2 sp opsym e (:lcs a2))))
+                           {} prod)
+            bad    (filter (fn [e] (not (:ok (get states e)))) prod)]
+        (if (seq bad)
+          (do (doseq [e bad]
+                (report! {:kind :annotation-underived-state :op opsym :cap (:cap e)
+                          :detail (:why (get states e))}))
+              {:st st2 :val OPAQUE})
+          (let [inp  (filter in-place? prod)
+                outp (vec (remove in-place? prod))
+                st3  (reduce (fn [s e] (apply-in-place s sp opsym e nodes (:lcs a2) states))
+                             st2 inp)]
+            {:st st3
+             :val (with-refinements st3 sp opsym nodes (:lcs a2) outp
+                                    (produced-value st3 opsym outp states))}))))))
 
 (defn- report-no-signature! [st callee vals nodes]
   (doseq [i (range (count vals))]
@@ -1227,7 +1527,12 @@
         (if (or (nil? c)
                 (contains? (:moved s) bid)
                 (contains? escaping bid)
-                (terminal? sp (:cap c) (:state c)))
+                ;; THE LEAK RULE NOW ASKS ABOUT THE OBLIGATION, NOT THE STATE.
+                ;; For every declaration that names no `:obligation` the two
+                ;; are the same question and the answer is identical; the
+                ;; separation is what lets an absorbing terminal state keep the
+                ;; NAME alive without keeping the DEBT alive (E33).
+                (not (owes? sp c)))
           s
           (do (report! {:kind :dangling :cap (:cap c)
                         :detail (concat
@@ -1235,7 +1540,7 @@
                                         "@" (:state c))
                                    (str "bound at      " (pir/site (:pos c)))
                                    (str "goes out of scope at " where
-                                        " without reaching a terminal state")]
+                                        " still owing its destructor")]
                                   ;; CANCELLED IS NOT DISCHARGED. The verdict and
                                   ;; the kind are the ordinary leak's — what is
                                   ;; added is why the program's author may have
@@ -1266,13 +1571,18 @@
                                                    "` (affine move)")
                                           :pos pos})
                              s)
-                        b  (fresh-bid)]
-                    {:st (bind-cap s1 b {:cap (:cap lc) :state (:state lc)
-                                         :name (str nm (path-str path))
-                                         :pos pos :fn-depth (:fn-depth s)
-                                         ;; REFINEMENT: an affine move carries the
-                                         ;; ghost state with the capability.
-                                         :refine (:refine lc) :rlog (:rlog lc)})
+                        b  (fresh-bid)
+                        m  {:cap (:cap lc) :state (:state lc)
+                            :name (str nm (path-str path))
+                            :pos pos :fn-depth (:fn-depth s)
+                            ;; REFINEMENT: an affine move carries the
+                            ;; ghost state with the capability.
+                            :refine (:refine lc) :rlog (:rlog lc)}
+                        ;; and so does the OBLIGATION, which is a different
+                        ;; thing from the state and travels with the resource
+                        ;; rather than with the name (E33).
+                        m  (if (contains? lc :owes) (assoc m :owes (:owes lc)) m)]
+                    {:st (bind-cap s1 b m)
                      :val {:v :cap :bid b}})))))]
     {:st (:st r) :val (:val r) :bids (vec (map (fn [l] (:bid (:val l)))
                                                (cap-leaves (:val r))))}))
@@ -1614,7 +1924,7 @@
                             (doseq [e (live-caps (:st rr) (:val rr))]
                               (let [lc (:lc e)]
                                 (when (and (nil? (:bid lc))
-                                           (not (terminal? sp (:cap lc) (:state lc))))
+                                           (owes? sp lc))
                                   (report! {:kind :dangling :cap (:cap lc)
                                             :detail [(str "capability    " (:cap lc) "@" (:state lc)
                                                           (path-str (:path e)))
@@ -1753,9 +2063,35 @@
   the terminal exemption generalises the way the leak rule does: a sum need not
   be produced at all when EVERY member is terminal.
 
+  RULE 2 HAS A THIRD HALF SINCE E33, AND IT IS A SUBTRACTION. An entry that
+  OMITS `:state` is not repeating the machine — it is asking to be read off it —
+  so there is nothing to compare and the comparison is SKIPPED for that side.
+  That is the whole of E30 finding 3's fix: `shutdown-write!` has four `:from`s
+  with four correspondingly different `:to`s, and under the old rule its one
+  annotation had to disagree with three of the four groups. With `:state`
+  omitted there are no groups to disagree with, because the annotation no longer
+  states a destination the machine already states better.
+
   It does NOT establish that the operation's body performs the transition. Every
   transition body is an axiom, unchanged since `mode_checker.py`."
   [sp opsym ann]
+  ;; A `:state` MAY ONLY BE OMITTED WHERE THERE IS A MACHINE TO READ IT OFF.
+  ;; A derived operation — one that is not a declared transition of the
+  ;; capability — has no edges, so "ask the machine" has no answer and the
+  ;; entry is refused where it is written rather than silently admitting
+  ;; everything.
+  (doseq [e (concat (:borrows ann) (:consumes ann) (:produces ann))]
+    (when (and (derived-state? e)
+               (empty? (get (:primitives sp) [(:cap e) opsym])))
+      (report! {:kind :annotation-underived-state :op opsym :cap (:cap e)
+                :detail [(str "operation     " opsym " names " (:cap e)
+                              " and writes no `:state`")
+                         (str "but " (:cap e) " declares no transition edge for " opsym
+                              ", so there is no")
+                         "machine to read the state off. `:state` may be omitted ONLY on an"
+                         "operation that IS a declared transition of that capability — that is"
+                         "what makes the omission a READ of E33's relation rather than a blank"
+                         "cheque (E33; report-limits item 16)"]})))
   (let [ts (get (:transitions-of sp) opsym)]
     (when (seq ts)
       (let [declared (set (map :cap ts))]
@@ -1791,6 +2127,13 @@
                                "there is no single pair to compare it against"]})
             (let [from (:state (first cs))
                   to   (:state (first ps))
+                  ;; E33: an entry that OMITS `:state` is READ OFF the machine
+                  ;; at each call site, so there is nothing here to compare and
+                  ;; the corresponding half of the rule is skipped. Both halves
+                  ;; are independent — an operation may state its source and
+                  ;; derive its destination, which is the common shape.
+                  from-derived? (and (seq cs) (derived-state? (first cs)))
+                  to-derived?   (and (seq ps) (derived-state? (first ps)))
                   many? (> (count tos) 1)
                   to-decl (norm-state tos)
                   dropped-at-terminal?
@@ -1801,8 +2144,9 @@
                   missing (vec (remove (fn [d] (contains? (set (sum-members to)) d)) tos))
                   extra   (vec (remove (fn [d] (contains? (set tos) d))
                                        (if (nil? to) [] (sum-members to))))]
-              (when (or (not= from from-decl)
-                        (and (not agree?) (not dropped-at-terminal?)))
+              (when (or (and (not from-derived?) (not= from from-decl))
+                        (and (not to-derived?)
+                             (not agree?) (not dropped-at-terminal?)))
                 (report! {:kind :annotation-inconsistent :op opsym :cap c
                           :detail
                           (concat
@@ -1925,6 +2269,130 @@
 
             :else nil))))))
 
+;; --- THE ABSORBING TERMINAL STATE, AND ITS ONE SIDE CONDITION ---------------
+;;
+;; PERTURB-DESIGN E30 finding 1 names the missing concept and E33 supplies the
+;; side condition that makes it safe:
+;;
+;;   > an ABSORBING terminal state — a terminal state that admits its own
+;;   > destructor and its observers as SELF-LOOPS. Not "terminal" in the current
+;;   > sense (obligation discharged, name dead), but OBLIGATION DISCHARGED, NAME
+;;   > STILL ALIVE, ONLY THESE OPERATIONS LEGAL.
+;;
+;;   > an observer self-loop must not re-acquire the discharged resource.
+;;
+;; The first half needs no rule at all once the three notions are separate: the
+;; name stays alive because the annotation says `:produces … :arg 0` (in place)
+;; or `:borrows` rather than `:consumes`, and the obligation stays discharged
+;; because `:owes` is a fact about the resource rather than a re-derivation from
+;; the state. `:closed -> :closed` is then an ordinary edge, exactly as
+;; `shutdown-write!`'s `:write-shut -> :write-shut` self-loop already was — which
+;; is E30's own corroboration that idempotence is not what `:linearity :once`
+;; rejects, idempotence AT A TERMINAL STATE is.
+;;
+;; The SECOND half is a rule, and it is the load-bearing one. Nothing in the
+;; machinery above stops a declaration writing an edge out of a discharged state
+;; that lands somewhere non-terminal — `:closed -> :open`, a "reopen" — and such
+;; an edge silently RE-ACQUIRES a resource the checker has already been told is
+;; disposed of. Every program holding it would then be accepted on the strength
+;; of an obligation nothing owes. So: an edge whose `:from` admits a terminal
+;; state must DISCHARGE. A declaration that means to re-acquire must say
+;; `:obligation :acquire`, in which case the state it lands in owes a destructor
+;; again and the leak rule is back on — which is the honest encoding, and is
+;; refused HERE only when it is written as an accident instead.
+
+(defn check-absorbing-declarations!
+  "Refuse an edge out of a discharged state that does not leave it discharged.
+
+  Read off the machine, no body involved, one diagnostic per offending edge.
+  `:terminal` is the declaration's own word for `nothing further is owed`, so an
+  operation legal from a terminal state is by construction an operation on an
+  already-disposed resource: an observer, or the destructor again. Either is
+  fine. What is not fine is one that quietly puts the resource back in debt,
+  because the obligation was already accounted for and there is nobody left to
+  discharge it a second time."
+  [sp]
+  (doseq [e (sort-by (fn [x] (str (first x))) (seq (:declarations sp)))]
+    (let [c    (first e)
+          ts   (:perturb.cap/typestate (second e))
+          term (let [t (:terminal ts)] (if (coll? t) (vec t) [t]))]
+      (doseq [t (sort-by (fn [x] (str (:op x) (:from x) (:to x))) (edges-of sp c))]
+        (let [srcs (vec (filter (fn [s] (and (not (nil? s)) (admits? (:from t) s))) term))
+              d    (edge-delta sp c t)]
+          (when (and (seq srcs) (not= :discharge d))
+            (report! {:kind :absorbing-state-unsound :cap c :op (:op t)
+                      :detail
+                      [(str "capability    " c " declares :terminal " (pr-str term))
+                       (str "edge          " (:op t) "   " (want-str (:from t))
+                            " -> " (want-str (:to t))
+                            (if (contains? t cap/result-key)
+                              (str "   (result " (get t cap/result-key) ")") ""))
+                       (str "              admits the DISCHARGED state(s) " (want-str srcs)
+                            " and its obligation")
+                       (str "              delta is " d ", not :discharge")
+                       "an absorbing terminal state admits its destructor and its observers"
+                       "as SELF-LOOPS: obligation discharged, name still alive, only these"
+                       "operations legal. An edge out of it that does not discharge"
+                       "RE-ACQUIRES a resource this declaration has already accounted for,"
+                       "and every program holding it would be accepted on an obligation"
+                       "nobody owes (PERTURB-DESIGN E30 finding 1, E33's side condition)."
+                       "Write `:obligation :acquire` if re-acquisition is really meant — the"
+                       "leak rule then applies to the reacquired handle, which is the honest"
+                       "encoding and is what this refuses to infer on your behalf."]})))))))
+
+;; --- SOURCE COLLECTIONS ARE SUGAR, AND ONLY WHERE THEY ARE SUGAR ------------
+;;
+;; E33: "with source collections as sugar ONLY where every source shares a
+;; destination and obligation delta." `:from [:a :b] :to :x` expands to two
+;; edges; that is sugar and it is fine. What is not sugar is a collection that
+;; OVERLAPS another edge of the same operation with a different source, because
+;; then one state has two destinations that the shorthand hides — and the reader
+;; of the declaration cannot tell whether the author meant a sum or forgot the
+;; overlap.
+;;
+;; TWO EDGES WITH THE *SAME* `:from` ARE NOT THIS. That is an honest sum (E26
+;; finding 7's `begin`, three entries, one `:from :idle`), or a result-labelled
+;; family (E33's `close!`, `:won` and `:lost`), and both are declared on purpose.
+;; The rule fires only when the sources DIFFER and still overlap.
+
+(defn check-edge-overlap!
+  "Refuse a `:from` collection that overlaps a differently-sourced edge of the
+  same operation with a different destination or obligation delta."
+  [sp]
+  (doseq [e (sort-by (fn [x] (str (first x))) (seq (:declarations sp)))]
+    (let [c  (first e)
+          es (edges-of sp c)
+          by (reduce (fn [acc t] (update acc (:op t) (fn [v] (conj (or v []) t)))) {} es)]
+      (doseq [g (sort-by (fn [x] (str (first x))) (seq by))]
+        (let [op (first g)
+              ts (second g)]
+          (doseq [i (range (count ts))]
+            (doseq [j (range (inc i) (count ts))]
+              (let [a (nth ts i) b (nth ts j)]
+                (when (and (not= (:from a) (:from b))
+                           (or (= :any (:from a)) (= :any (:from b))
+                               (seq (filter (fn [s] (admits? (:from b) s))
+                                            (sum-members (:from a)))))
+                           (or (not= (norm-state (:to a)) (norm-state (:to b)))
+                               (not= (edge-delta sp c a) (edge-delta sp c b))))
+                  (report! {:kind :edge-source-overlap :cap c :op op
+                            :detail
+                            [(str "capability    " c)
+                             (str "edge          " op "   " (want-str (:from a))
+                                  " -> " (want-str (:to a))
+                                  "   (obligation " (edge-delta sp c a) ")")
+                             (str "edge          " op "   " (want-str (:from b))
+                                  " -> " (want-str (:to b))
+                                  "   (obligation " (edge-delta sp c b) ")")
+                             "their sources OVERLAP and are not the same source, and their"
+                             "destinations or obligation deltas differ. A `:from` collection is"
+                             "sugar for one edge per member and is legal ONLY where every member"
+                             "shares a destination and a delta (E33); here it hides a"
+                             "source-dependent destination behind a shorthand, and a reader"
+                             "cannot tell an intended sum from a forgotten overlap."
+                             "Write the sources out, or give the two edges the SAME `:from` and a"
+                             "`:result` label each, which is how a genuine sum is declared."]}))))))))))
+
 (defn check-def!
   "Check one captured :def node. Returns the number of diagnostics it produced."
   [sp node]
@@ -1955,7 +2423,15 @@
                 ;; `ann-ok` above guarantees `:arg` is present on all of them:
                 ;; the in-order fallback is gone.
                 specs (vec (concat (:borrows ann) (:consumes ann)))
-                spec-for (fn [i] (first (filter (fn [e] (= i (:arg e))) specs)))]
+                spec-for (fn [i] (first (filter (fn [e] (= i (:arg e))) specs)))
+                ;; IN-PLACE `:produces` ENTRIES, BY ARGUMENT. A parameter that is
+                ;; consumed and produced back IN PLACE stays the caller's — the
+                ;; name it was passed under is still alive at the call site — so
+                ;; it is not this function's to dispose of, exactly as a borrowed
+                ;; parameter is not. What this function DOES owe is the state
+                ;; transition it declared, and that is checked below.
+                in-place-at (reduce (fn [m e] (if (in-place? e) (assoc m (:arg e) e) m))
+                                    {} (:produces ann))]
             (let [r0  (reduce
                         (fn [acc i]
                           (let [s   (:st acc)
@@ -1997,13 +2473,21 @@
                                  ;; a BORROWED parameter is not this function's
                                  ;; to consume: the caller keeps it, so it must
                                  ;; not be required to reach a terminal state
-                                 ;; here. Only consumed parameters are.
-                                 :bids (if (some (fn [b] (= b e)) (:borrows ann))
+                                 ;; here. Only consumed parameters are — and an
+                                 ;; IN-PLACE produced one is not consumed either,
+                                 ;; because the caller's name survives the call.
+                                 :bids (if (or (some (fn [b] (= b e)) (:borrows ann))
+                                               (contains? in-place-at i))
                                          (:bids acc)
-                                         (conj (:bids acc) bid))})
+                                         (conj (:bids acc) bid))
+                                 :in-place (if (contains? in-place-at i)
+                                             (assoc (:in-place acc) i
+                                                    {:bid bid :entry (get in-place-at i)
+                                                     :param p})
+                                             (:in-place acc))})
                               {:st (bind-name s p {:bid (fresh-bid) :val OPAQUE})
-                               :bids (:bids acc)})))
-                        {:st st0 :bids []} (range (count (:params ar))))
+                               :bids (:bids acc) :in-place (:in-place acc)})))
+                        {:st st0 :bids [] :in-place {}} (range (count (:params ar))))
                   st1 (:st r0)
                   rb  (w st1 (:body ar))
                   stb (:st rb)
@@ -2012,11 +2496,34 @@
               ;; positions it declares. This is where `ping-tuple` stops being a
               ;; rejection: [conn :pinged] with `:produces [{… :at [0]}]` now
               ;; matches, and [:pinged conn] does not.
+              ;; AN IN-PLACE PRODUCE ON A DERIVED OPERATION IS CHECKED, NOT
+              ;; BELIEVED. The parameter is still bound at the end of the body,
+              ;; so the state it ended in is observable here — unlike a declared
+              ;; transition, whose body is an axiom. If the body did not move it
+              ;; where the annotation says, that is a `produces-mismatch` about
+              ;; a name rather than about a result position.
+              (when ann
+                (doseq [k (sort (keys (:in-place r0)))]
+                  (let [ip  (get (:in-place r0) k)
+                        c   (get (:caps stb) (:bid ip))
+                        wnt (norm-state (:state (:entry ip)))]
+                    (when (and c (not (contains? (:moved stb) (:bid ip)))
+                               (not (derived-state? (:entry ip)))
+                               (not (produced-ok? wnt (:state c))))
+                      (report! {:kind :produces-mismatch :op opsym :cap (:cap (:entry ip))
+                                :detail [(str "operation     " opsym " declares :produces "
+                                              (:cap (:entry ip)) "@" (want-str wnt)
+                                              " IN PLACE at `:arg " k "`")
+                                         (str "parameter     `" (:param ip) "` ends the body in "
+                                              (want-str (:state c)))
+                                         "an in-place produce is a promise about the argument the"
+                                         "caller still holds, and the body did not keep it"
+                                         (str "at            " (pir/site (:pos stb)))]})))))
               (when ann
                 (let [want (vec (sort-by (fn [e] (str (:path e)))
                                          (map (fn [p] {:path (entry-path p) :cap (:cap p)
                                                        :state (:state p)})
-                                              (:produces ann))))]
+                                              (remove in-place? (:produces ann)))))]
                   (cond
                     (not= (map :path want) (map :path got))
                     (report! {:kind :produces-mismatch :op opsym
@@ -2350,7 +2857,156 @@
    "     edge which is not a destructor. That is the one declaration key in"
    "     perturb the checker will not believe, because unlike `:from`/`:to` it"
    "     is a claim about what is IMPOSSIBLE, and the machine written beside it"
-   "     settles that claim without reading any body."])
+   "     settles that claim without reading any body."
+   ""
+   " 16. THE THREE NOTIONS ARE NOW THREE THINGS, AND HERE IS WHAT EACH ONE"
+   "     MEANS ALONE. PERTURB-DESIGN E33: a stable shared handle, its current"
+   "     protocol state, and the obligation to discharge the underlying resource"
+   "     are THREE DIFFERENT THINGS. `:linearity :once` treated them as one, and"
+   "     E30 measured the bill: an idempotent compare-and-set `close!` drew"
+   "     `use-after-move`, so did `closed?` and `connection-info` — pure"
+   "     observers declared legal in EVERY state — and 12 of 23 substantive"
+   "     rejections were in-place typestate. They are separated as follows."
+   ""
+   "       (a) THE PROTOCOL STATE is `:to` on a transition. ALONE it says which"
+   "           operations are legal next. It no longer implies anything about"
+   "           the obligation or about whether the name survives."
+   "       (b) THE OBLIGATION is `:obligation` on a transition — `:acquire`,"
+   "           `:retain` or `:discharge` — and it is carried on the capability"
+   "           as `owes`. ALONE it says whether the resource still needs its"
+   "           destructor. AN EDGE THAT DECLARES NOTHING IS DERIVED exactly as"
+   "           before: discharged iff every member of `:to` is terminal. That"
+   "           derivation is why no pre-existing verdict moved."
+   "       (c) THE NAME is the SHAPE OF THE ANNOTATION, not a key on the"
+   "           machine. `:borrows` keeps it and moves nothing;"
+   "           `:consumes` + `:produces … :at` kills it and hands the capability"
+   "           back in the RESULT; `:consumes` + `:produces … :arg n` keeps it"
+   "           and changes the state WHERE IT STANDS. Whether a binding survives"
+   "           is a property of one operation's calling convention, not of the"
+   "           resource — which is exactly the distinction that was collapsed."
+   ""
+   "     WHAT THIS DOES NOT DO."
+   "       (d) IT IS NOT ALIAS CONTROL. E33's own caution: identity-indexed"
+   "           protocol state needs an alias policy, tracked keys and pre/post"
+   "           specifications, and `E30's 12-of-23 shape is not shown to"
+   "           disappear under permissions`. What is here is value threading"
+   "           internally with an in-place PRESENTATION on top. One name is"
+   "           tracked; a second name for the same runtime object is still an"
+   "           affine move and still kills the first."
+   "       (e) NOTHING VERIFIES AN `:obligation`. It is an axiom like `:from`"
+   "           and `:to` (item 1). A transition that declares `:discharge` and"
+   "           does not close anything is believed, and every program holding"
+   "           that capability is accepted on it. The ONE thing that is checked"
+   "           is the absorbing-state side condition below, and it is checked"
+   "           for the same reason the cancelled state is: it is a claim about"
+   "           what is impossible, settled by the machine beside it."
+   "       (f) THERE IS NO CAS, NO RACE AND NO THREAD HERE. Calling the boolean"
+   "           a `race witness` is reading the LIBRARY's contract, not modelling"
+   "           it. `:contention` is still `:thread-confined` everywhere (I20),"
+   "           and E33's open question — a typed account of CAS-based discharge"
+   "           among an UNKNOWN ALIAS SET — is untouched by any of this. Both"
+   "           round-2 surveys record it as an absence and neither claims it as"
+   "           novelty; nor does this."
+   ""
+   " 17. RESULT LABELS ARE THE PRIMARY MECHANISM AND THE SUM IS THE FALLBACK —"
+   "     WHICH IS AN ORDERING, NOT A NEW SOLVER. E33: both round-2 surveys"
+   "     independently name the same primitive relation, and it is the"
+   "     established syntax (Mungo/StMungo `Status open(): <OK: Open, ERROR:"
+   "     end>`; Vault keys by source AND destination; Fugue computes"
+   "     postconditions from receiver, state, arguments and results):"
+   ""
+   "       (capability, operation, source-state, result-label)"
+   "           -> destination-state + obligation delta"
+   ""
+   "     WHAT IT DOES."
+   "       (a) A TRANSITION MAY CARRY `:result`. Two edges from ONE source with"
+   "           different labels that share a destination AND an obligation delta"
+   "           COLLAPSE: there is no sum and no case split. That is the"
+   "           compare-and-set `close!` — `:won` and `:lost` both land in"
+   "           `:closed` and both discharge — and it is why an idempotent close"
+   "           is not a second close."
+   "       (b) AN ANNOTATION MAY OMIT `:state`, and then the MACHINE answers, at"
+   "           each call site, from the state the capability is ACTUALLY in. The"
+   "           transition relation is therefore a function of (operation,"
+   "           SOURCE) where it used to have to be a function of the operation"
+   "           alone. That is the whole of E30 finding 3: `shutdown-write!` has"
+   "           four sources with four correspondingly different destinations,"
+   "           and one annotation had to be compared against every group, so it"
+   "           had to disagree with all but one — 6 diagnostics."
+   "       (c) SOURCE COLLECTIONS ARE SUGAR ONLY WHERE THEY ARE SUGAR."
+   "           `check-edge-overlap!` refuses a `:from` collection that overlaps"
+   "           a differently-sourced edge of the same operation with a different"
+   "           destination or delta. Two edges with the SAME `:from` are"
+   "           untouched — that is an honest sum, or a labelled family."
+   ""
+   "     WHAT IT DOES NOT DO, AND THIS IS THE PART TO READ."
+   "       (d) A RESULT LABEL IS NEVER READ. There is no result domain here and"
+   "           no call site observes which label came back. Where labels from"
+   "           one source DISAGREE the destination is their UNION — a sum — and"
+   "           item 14's discriminator machinery is the fallback, unchanged."
+   "           The labels are documentation to a human and a grouping key to the"
+   "           checker; they are not evidence."
+   "       (e) THE OBLIGATION DELTA OVER SEVERAL APPLICABLE EDGES IS THE"
+   "           CONSERVATIVE MEET: discharged only if every applicable edge"
+   "           discharges, acquiring if any acquires. A capability is never"
+   "           assumed disposed of because one possible label would have"
+   "           disposed of it."
+   "       (f) `:state` MAY ONLY BE OMITTED ON A DECLARED TRANSITION of that"
+   "           capability. Anywhere else there is no machine to read and the"
+   "           entry is refused (`annotation-underived-state`) rather than"
+   "           silently admitting every state."
+   "       (g) IT DOES NOT MAKE A DECLARATION TRUE. Item 13 is unchanged: that"
+   "           an operation declares an edge is not evidence it takes it, and a"
+   "           `:result` label is one more thing nothing checks."
+   ""
+   " 18. AN ABSORBING TERMINAL STATE, AND THE ONE RULE THAT MAKES IT SAFE."
+   "     E30 finding 1 named the missing concept: a terminal state that admits"
+   "     its own destructor and its observers as SELF-LOOPS — obligation"
+   "     discharged, NAME STILL ALIVE, only these operations legal. It is §4.6"
+   "     piece 5's `MUST_CLOSE` shifted one step past the end."
+   ""
+   "     IT NEEDS NO NEW RULE TO EXIST, which is the argument that it is the"
+   "     right decomposition: the name survives because the annotation says"
+   "     `:produces … :arg n` or `:borrows`, and the obligation stays discharged"
+   "     because `owes` is a fact about the resource rather than a re-derivation"
+   "     from the state at scope exit. `:closed -> :closed` is then an ordinary"
+   "     edge, exactly as `shutdown-write!`'s `:write-shut -> :write-shut`"
+   "     self-loop always was — E30's own corroboration that idempotence is not"
+   "     what `:linearity :once` rejects, idempotence AT A TERMINAL STATE is."
+   ""
+   "     IT NEEDS ONE RULE TO BE SAFE, and E33 supplies it: AN OBSERVER SELF-LOOP"
+   "     MUST NOT RE-ACQUIRE THE DISCHARGED RESOURCE."
+   "     `check-absorbing-declarations!` refuses any edge whose `:from` admits a"
+   "     terminal state and whose obligation delta is not `:discharge`. Without"
+   "     it a declaration could write `:closed -> :open` and every program"
+   "     holding that capability would be accepted on a debt nobody owes. Like"
+   "     the cancelled-state rule, this is a claim about what is IMPOSSIBLE and"
+   "     is settled by the machine written beside it, so it is CHECKED rather"
+   "     than believed."
+   ""
+   "     WHAT IT DOES NOT DO."
+   "       (h) IT DOES NOT DISCHARGE ANYTHING BY ITSELF. A capability that never"
+   "           reaches the destructor is still `dangling`, whatever observers"
+   "           were called on it. `perturb.dbtxcorpus/sock-never-closed` and"
+   "           `sock-observed-but-never-closed` are the gated controls, and both"
+   "           are REJECTS."
+   "       (i) `:any` COUNTS AS ADMITTING THE TERMINAL STATE. A `:from :any`"
+   "           destructor makes its own terminal state absorbing whether the"
+   "           author meant it to be or not. That is sound — the edge"
+   "           discharges — but it is not a decision anyone wrote down, and it"
+   "           is the reason `perturb.dbtx/Tx` reports as absorbing."
+   "       (j) IN-PLACE IS ONE LEVEL AND ONE NAME. `:arg n` requires argument n"
+   "           to be a plain local; anything else is `in-place-unnamed` and is"
+   "           refused, because the produced capability — and its obligation —"
+   "           would otherwise vanish silently. `:arg` together with `:at` is"
+   "           `annotation-unsupported`."
+   "       (k) AN IN-PLACE PRODUCE ON A DECLARED TRANSITION IS STILL AN AXIOM"
+   "           (item 1). On a DERIVED operation it is CHECKED — the parameter is"
+   "           still bound at the end of the body, so the state it ended in is"
+   "           observable and a body that did not move it draws"
+   "           `produces-mismatch`. That is a small enlargement of what is"
+   "           checked rather than of what is trusted, and it is the only one"
+   "           here."])
 
 (def ^:private line
   "========================================================================")
@@ -2481,6 +3137,78 @@
                   " cancellation declaration fixtures decided as recorded"
                   (if (empty? fails) "" (str "; FAILED " (vec fails)))))
     fails))
+
+(defn- run-machine-corpus
+  "Gate the two E33 MACHINE rules against hand-built machines: the absorbing
+  terminal state's side condition, and the source-collection overlap rule.
+
+  Same posture as `run-cancellation-corpus` — no program, no body, no
+  annotation. A machine and its own claims about obligations. The two well-formed
+  controls are here so neither rule can pass by rejecting everything, and one of
+  them is an ABSORBING state done right: a terminal state with a destructor
+  self-loop and an observer, which must draw nothing."
+  [corpus-sym banner]
+  (println (str "== the MACHINE rules (E33): " corpus-sym " ================"))
+  (println (str "   " banner))
+  (println)
+  (let [fixtures (deref (resolve corpus-sym))
+        fails
+        (reduce
+          (fn [acc f]
+            (let [sp     (spec-from {:perturb.cap/declarations (:declarations f)
+                                     :perturb.cap/operations   {}})
+                  before (count @diagnostics)]
+              (check-absorbing-declarations! sp)
+              (check-edge-overlap! sp)
+              (let [ds  (vec (drop before @diagnostics))
+                    got (set (map :kind ds))
+                    ok  (= got (set (:expect f)))]
+                (println (str "  [" (if ok "ok  " "FAIL") "] " (:name f)
+                              "  expected " (pr-str (vec (sort (map name (:expect f)))))
+                              ", got " (pr-str (vec (sort (map name got))))))
+                (when (not ok) (println (render ds)))
+                (if ok acc (conj acc (:name f))))))
+          [] fixtures)]
+    (println)
+    (println (str "  " (- (count fixtures) (count fails)) "/" (count fixtures)
+                  " machine fixtures decided as recorded"
+                  (if (empty? fails) "" (str "; FAILED " (vec fails)))))
+    fails))
+
+(defn- run-real-machine-declarations
+  "The same two rules over the declarations perturb ACTUALLY ships. A fixture
+  corpus that passes while a real declaration re-acquires a discharged resource
+  would be a gate measuring itself."
+  [sp]
+  (println)
+  (println "== the E33 machine rules, over perturb's OWN declarations =============")
+  (let [before (count @diagnostics)]
+    (check-absorbing-declarations! sp)
+    (check-edge-overlap! sp)
+    (let [ds  (vec (drop before @diagnostics))
+          bad (set (map :cap ds))]
+      (println "   (a) no edge out of a DISCHARGED state may fail to leave it discharged;")
+      (println "   (b) a `:from` collection may not overlap a differently-sourced edge of")
+      (println "       the same operation with a different destination or delta.")
+      (println)
+      (doseq [e (sort-by (fn [x] (str (first x))) (seq (:declarations sp)))]
+        (let [c    (first e)
+              ts   (:perturb.cap/typestate (second e))
+              term (let [t (:terminal ts)] (if (coll? t) (vec t) [t]))
+              abs  (vec (filter (fn [t] (some (fn [s] (and (not (nil? s))
+                                                           (admits? (:from t) s)))
+                                              term))
+                                (edges-of sp c)))]
+          (println (str "  [" (if (contains? bad c) "NO  " "ok  ") "] " c
+                        "   terminal " (pr-str term)
+                        (if (seq abs)
+                          (str ", ABSORBING: " (count abs) " edge(s) legal from it — "
+                               (str/join ", " (sort (distinct (map (fn [t] (str (:op t))) abs)))))
+                          ", no edge is legal from it")))))
+      (when (seq ds) (println) (print (render ds)))
+      (println)
+      (println (str "  " (count ds) " unsound machine declaration(s)"))
+      (vec bad))))
 
 (defn- run-real-cancellation-declarations
   "The same rule, over the declarations perturb ACTUALLY ships. A fixture corpus
@@ -2867,6 +3595,10 @@
                     'perturb.dbtxcorpus/cancellation-corpus
                     "a machine against its own claim about what is impossible")
           cxfails (run-real-cancellation-declarations sp)
+          mdfails (run-machine-corpus
+                    'perturb.dbtxcorpus/machine-corpus
+                    "the absorbing terminal state, and source collections as sugar")
+          mxfails (run-real-machine-declarations sp)
           fails  (run-corpus sp "perturb.corpus" 'perturb.corpus/expectations
                              "nREPL: one capability, a straight-line typestate")
           rfails (run-accepts 'perturb.corpus/expectations)
@@ -2897,14 +3629,16 @@
       (doseq [l (report-limits)] (println (str "  " l)))
       (println)
       (println line)
-      (let [all (concat dfails cdfails cxfails fails rfails hfails hrfails sfails srfails)]
+      (let [all (concat dfails cdfails cxfails mdfails mxfails
+                        fails rfails hfails hrfails sfails srfails)]
         (if (empty? all)
-          (do (println "CHECK OK — every declaration fixture (annotation AND cancelled-state),")
-              (println "           every corpus verdict in ALL THREE corpora, and every")
-              (println "           accepted program's run, is the recorded one")
+          (do (println "CHECK OK — every declaration fixture (annotation, cancelled-state AND")
+              (println "           machine), every corpus verdict in ALL THREE corpora, and")
+              (println "           every accepted program's run, is the recorded one")
               (System/exit 0))
           (do (println (str "CHECK FAILED — declarations " (vec dfails)
                             "  cancelled-state " (vec (concat cdfails cxfails))
+                            "  machine " (vec (concat mdfails mxfails))
                             "  verdicts " (vec (concat fails hfails sfails))
                             "  runs " (vec (concat rfails hrfails srfails))))
               (System/exit 1)))))))

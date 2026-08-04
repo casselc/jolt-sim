@@ -16,7 +16,7 @@
   somebody else's repository, written for reasons that have nothing to do with
   this project, and NOTHING HERE MAY CHANGE IT. The library is the artifact.
 
-  FOUR DECLARATIONS, NOT ONE. §5 step 1a exists to force one collision:
+  FIVE DECLARATIONS, NOT ONE. §5 step 1a exists to force one collision:
   `jolt-net`'s `close!` is idempotent by design — `handle.clj:8-13` justifies it
   as the fix for aggressive descriptor reuse, and jolt-tcp's own loopback test
   asserts `(is (false? (client/close! connection)))`. Under `:linearity :once`
@@ -35,9 +35,17 @@
        unremarkable — and nothing reaches a terminal state, so every program
        leaks.
     4  THE ENCODING NEITHER CAN WRITE. `close!` consumes at argument 0 and
-       produces BACK AT argument 0. `:arg` on a `:produces` entry is not part
-       of the language; what the checker does with it is the measurement, not
-       a bug report.
+       produces BACK AT argument 0. `:arg` on a `:produces` entry WAS not part
+       of the language — it was accepted and silently ignored — and what the
+       checker did with it was the measurement, not a bug report.
+    5  THE ANSWER, ADDED AFTER E33. The same machine as variant 1, said under
+       the three-notion model: `:result` labels on the transitions, `:arg 0` on
+       the produced entries so the NAME survives, `:state` omitted so the
+       DESTINATION is read off the machine per source, and `:closed` as an
+       ABSORBING terminal state so the obligation is discharged while the
+       observers stay legal. Variants 1-4 are preserved unchanged, because they
+       are the measurement E30 recorded; this one is what the measurement was
+       for.
 
   THIS IS NOT A GATE. It records no expectations. Whatever the verdicts are is
   what they are, and they are evidence about THE RULES, not about jolt-tcp."
@@ -348,9 +356,30 @@
 ;;
 ;; `:consumes` at argument 0 and `:produces` BACK AT ARGUMENT 0: the connection
 ;; does not move, it changes state where it stands. `:produces` entries are
-;; positioned with `:at`, a path into the RESULT; `:arg` on a produced entry is
+;; positioned with `:at`, a path into the RESULT; `:arg` on a produced entry was
 ;; not part of the language. This variant exists to find out what the checker
 ;; does with a key it does not implement, which is a question about the rules.
+;;
+;; ITS ANSWER HAS CHANGED, DELIBERATELY, AND IT IS THE ONE VERDICT THIS WORK
+;; MOVED. E30 recorded that the key drew no diagnostic, was silently ignored,
+;; left the four `use-after-move` in place, and added a NEW `no-signature`
+;; because the produced capability landed on the return value and
+;; `clojure.core/true?` received a `Connection@:closed`. That is tally row 50 —
+;; a declaration language accepting a key it does not implement — and E33's
+;; instruction was to implement it or refuse it, because silently ignoring a
+;; declared key is not an option. It is IMPLEMENTED, so this variant now reports
+;;
+;;   4 use-after-move -> 0        the name survives the close, which is what
+;;                                `:arg 0` on the produced entry says
+;;   1 no-signature   -> 0        nothing lands in the result, so nothing
+;;                                downstream receives a Connection
+;;   0 typestate      -> 1        `receive-at-most!` after the close, which
+;;                                variant 4's TWO-STATE machine has no edge for
+;;                                and the library's own test asserts throws
+;;
+;; The declaration below is unchanged from the one E30 ran; only what the
+;; checker does with it has changed, which is the measurement being answered
+;; rather than repeated.
 
 ;; The edge is declared `:from :any` so that the annotation and the declaration
 ;; agree at the DECLARATION level and the only thing this variant measures is
@@ -363,6 +392,147 @@
 (def in-place-close-ops
   (reduced-ops {:consumes [{:cap C :state :any :arg 0}]
                 :produces [{:cap C :state :closed :arg 0}]}))
+
+;; ---------------------------------------------------------------------------
+;; VARIANT 5 — THE DECLARATION THE THREE-NOTION MODEL CAN WRITE
+;; ---------------------------------------------------------------------------
+;;
+;; Variants 1-4 are preserved EXACTLY as E30 ran them, because they are the
+;; measurement. This one is the answer to it, and it is written against
+;; PERTURB-DESIGN E33's correction rather than against `:linearity :once`:
+;;
+;;   > A stable shared handle, its current protocol state, and the obligation to
+;;   > discharge the underlying resource are three different things.
+;;
+;; So it says all three separately, and it says nothing else that variant 1 did
+;; not say. The MACHINE is variant 1's machine — five states, multiplied out of
+;; `client.clj:516`'s phase atom, nothing deleted and nothing invented — with two
+;; additions:
+;;
+;;   * `:result` LABELS. E33's primitive relation is
+;;     `(capability, operation, source-state, result-label) -> destination +
+;;     obligation delta`, and both round-2 surveys name it independently as the
+;;     established syntax (Mungo/StMungo `Status open(): <OK: Open, ERROR: end>`).
+;;     `close!` is `:won` from a live state and `:lost` from `:closed`, and BOTH
+;;     land in `:closed` and BOTH discharge — so the two labels collapse, there
+;;     is no sum, and the boolean is a RACE WITNESS rather than a second close.
+;;     That is exactly what `handle.clj:8-13` documents and what jolt-tcp's own
+;;     loopback test asserts.
+;;   * THE `:closed` SELF-LOOP, which variant 1 also wrote. What has changed is
+;;     downstream: `:closed` is now an ABSORBING TERMINAL STATE — obligation
+;;     discharged, NAME STILL ALIVE, only the destructor and the observers legal
+;;     — so the second `close!`, `closed?` and `connection-info` are all reached.
+;;
+;; And the ANNOTATIONS stop repeating the machine. Every state-changing operation
+;; is `:consumes … :arg 0` + `:produces … :arg 0` with NO `:state` on either
+;; side, which says three things at once and each of them separately:
+;;
+;;   the NAME survives   — `:produces … :arg 0` is an IN-PLACE produce; the
+;;                         connection is a stable name over a mutable atom and
+;;                         does not travel in the result. E30 finding 2's
+;;                         12-of-23 bucket is this line;
+;;   the STATE moves     — read off the machine at each call site from the state
+;;                         the connection is actually in, so `shutdown-write!`'s
+;;                         four sources with four destinations need ONE
+;;                         annotation instead of contradicting three groups
+;;                         (E30 finding 3's 6 diagnostics);
+;;   the OBLIGATION      — derived from the destination, and therefore discharged
+;;                         by `close!` from either source and by nothing else.
+;;
+;; IT ALSO STOPS LYING, WHICH E30 LISTED AS A FINDING OF ITS OWN. Variant 1 had
+;; to declare that `receive-into!` and `close!` RETURN the connection, because
+;; `:consumes`+`:produces` was the only way to advance a machine; they return an
+;; integer and a boolean. `:arg 0` on the produced entry says the connection
+;; stays where it is, so nothing here claims anything about a return value.
+;;
+;; WHAT IS STILL NOT SAYABLE, AND IS REPORTED RATHER THAN PAPERED OVER: the
+;; `[:open :read-eof]` and `[:write-shut :half-closed]` sums are decided BY THE
+;; PEER, and the library resolves them with `(:read-eof? (connection-info c))` —
+;; a key read on a map returned by an operation, which no `:perturb.cap/
+;; discriminator` can express. E30 finding 5 said so and it is still true.
+
+(def correct-transitions
+  [{:op 'teensyp.client/connect-endpoint :from nil :to :open}
+   {:op 'teensyp.client/connect          :from nil :to :open}
+
+   ;; The peer half-closing under a read. TWO RESULT LABELS PER SOURCE, and here
+   ;; they do NOT collapse — `:data` and `:eof` have different destinations — so
+   ;; this is a genuine sum and the fallback machinery applies to it, which is
+   ;; E33's ordering: result labels first, sum + discriminator as the fallback.
+   {:op 'teensyp.client/receive-into!    :from :open        :result :data :to :open}
+   {:op 'teensyp.client/receive-into!    :from :open        :result :eof  :to :read-eof}
+   {:op 'teensyp.client/receive-into!    :from :read-eof    :result :eof  :to :read-eof}
+   {:op 'teensyp.client/receive-into!    :from :write-shut  :result :data :to :write-shut}
+   {:op 'teensyp.client/receive-into!    :from :write-shut  :result :eof  :to :half-closed}
+   {:op 'teensyp.client/receive-into!    :from :half-closed :result :eof  :to :half-closed}
+   {:op 'teensyp.client/receive-at-most! :from :open        :result :data :to :open}
+   {:op 'teensyp.client/receive-at-most! :from :open        :result :eof  :to :read-eof}
+   {:op 'teensyp.client/receive-at-most! :from :read-eof    :result :eof  :to :read-eof}
+   {:op 'teensyp.client/receive-at-most! :from :write-shut  :result :data :to :write-shut}
+   {:op 'teensyp.client/receive-at-most! :from :write-shut  :result :eof  :to :half-closed}
+   {:op 'teensyp.client/receive-at-most! :from :half-closed :result :eof  :to :half-closed}
+
+   ;; Half-close, idempotent, with a SOURCE-DEPENDENT destination. Four sources,
+   ;; four destinations, two labels. This is the shape E30 finding 3 measured as
+   ;; six `annotation-inconsistent` diagnostics under one annotation that had to
+   ;; name one pair.
+   {:op 'teensyp.client/shutdown-write!  :from :open        :result :first :to :write-shut}
+   {:op 'teensyp.client/shutdown-write!  :from :read-eof    :result :first :to :half-closed}
+   {:op 'teensyp.client/shutdown-write!  :from :write-shut  :result :again :to :write-shut}
+   {:op 'teensyp.client/shutdown-write!  :from :half-closed :result :again :to :half-closed}
+
+   ;; THE COMPARE-AND-SET CLOSE. `:won` is the caller whose CAS succeeded and
+   ;; `:lost` is the caller who found another had begun the close. One
+   ;; destination, one obligation delta, so the labels collapse and the second
+   ;; call is an ordinary self-loop on an absorbing terminal state.
+   {:op 'teensyp.client/close! :from open-states :result :won  :to :closed}
+   {:op 'teensyp.client/close! :from :closed     :result :lost :to :closed}])
+
+(def correct-declaration
+  (cap/capability
+    (assoc (axes)
+           :perturb.cap/doc
+           "teensyp.client's lifecycle under E33's three-notion model: the name,
+            the protocol state and the discharge obligation said separately."
+           :perturb.cap/typestate
+           {:states   [:open :read-eof :write-shut :half-closed :closed]
+            :initial  :open
+            :terminal [:closed]
+            :transitions correct-transitions}
+           :perturb.cap/discriminator discriminators)))
+
+(def correct-ops
+  "Nothing here writes a `:state` for an operation that is a transition, and
+  nothing here claims a return value it does not have."
+  {'teensyp.client/connect-endpoint {:produces [{:cap C :state :open}]}
+   'teensyp.client/connect          {:produces [{:cap C :state :open}]}
+
+   ;; IN PLACE, and the state read off the machine at each call site.
+   'teensyp.client/receive-into!
+   {:consumes [{:cap C :arg 0}] :produces [{:cap C :arg 0}]}
+   'teensyp.client/receive-at-most!
+   {:consumes [{:cap C :arg 0}] :produces [{:cap C :arg 0}]}
+   'teensyp.client/shutdown-write!
+   {:consumes [{:cap C :arg 0}] :produces [{:cap C :arg 0}]}
+   'teensyp.client/close!
+   {:consumes [{:cap C :arg 0}] :produces [{:cap C :arg 0}]}
+
+   ;; THE GUARD THAT IS EXPRESSIBLE AND IS KEPT. `send-fn` throws once
+   ;; `:write-shutdown?` is set and once the phase leaves `:open`, so a borrow
+   ;; with a state set enforces `no send-all! after shutdown-write!` statically
+   ;; and costs nothing. Keeping it is a decision: it is what makes the library's
+   ;; own NEGATIVE test — `send-all!` after half-close, asserted to throw — draw
+   ;; a `typestate`, which is the checker agreeing with the library about the
+   ;; protocol and disagreeing about whether a test may provoke a violation.
+   'teensyp.client/send-all!
+   {:borrows [{:cap C :state [:open :read-eof] :arg 0}]}
+
+   ;; Pure OBSERVERS, legal in every state including the absorbing terminal one.
+   ;; They borrow, so they move nothing and — E33's side condition — re-acquire
+   ;; nothing.
+   'teensyp.client/connection-info {:borrows [{:cap C :state :any :arg 0}]}
+   'teensyp.client/closed?         {:borrows [{:cap C :state :any :arg 0}]}
+   'teensyp.client/connection?     {:borrows [{:cap C :state :any :arg 0}]}})
 
 ;; ---------------------------------------------------------------------------
 
@@ -397,4 +567,7 @@
     :decl idempotent-close-declaration :ops idempotent-close-ops}
    {:label "4"
     :title "THE ENCODING NEITHER CAN WRITE — `:produces` back at `:arg 0`"
-    :decl in-place-close-declaration :ops in-place-close-ops}])
+    :decl in-place-close-declaration :ops in-place-close-ops}
+   {:label "5"
+    :title "THE THREE NOTIONS SEPARATED — result labels, in place, absorbing"
+    :decl correct-declaration :ops correct-ops}])

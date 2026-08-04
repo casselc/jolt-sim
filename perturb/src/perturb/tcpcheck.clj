@@ -158,8 +158,16 @@
           "its declaration forbids."]}
    {:name :declaration-refused
     :kinds #{:annotation-unpositioned :annotation-duplicates-capability
-             :annotation-unsupported}
+             :annotation-unsupported :annotation-underived-state
+             :in-place-unnamed}
     :why ["The annotation itself was refused before any body was read."]}
+   {:name :machine-unsound
+    :kinds #{:absorbing-state-unsound :edge-source-overlap
+             :cancelled-state-unsound}
+    :why ["The MACHINE contradicts one of its own claims about what is"
+          "impossible — an edge out of a discharged state that re-acquires, a"
+          "source collection hiding a source-dependent destination, or a"
+          "cancelled state with an ordinary way out."]}
    {:name :refinement
     :kinds #{:refinement :refinement-undischarged}
     :why ["The refinement tier."]}])
@@ -287,6 +295,76 @@
           (doseq [e (sort-by (fn [e] (- (second e))) (seq t))]
             (println (str "      " (format "%4d" (second e)) "  " (first e)))))))))
 
+;; ---------------------------------------------------------------------------
+;; THE ACID TEST
+;; ---------------------------------------------------------------------------
+;;
+;; E30's decisive evidence was four diagnostics in one `finally` block of
+;; `public-client-loopback-contract` — a program the library's own suite runs
+;; against a real loopback socket and passes:
+;;
+;;     (is (true?  (client/close! connection)))
+;;     (is (= ::client/closed … (client/receive-at-most! connection 1 …)))
+;;     (is (false? (client/close! connection)))
+;;     (is (client/closed? connection))
+;;     (is (= :closed (:state (client/connection-info connection))))
+;;
+;; The second `close!`, the `closed?` and the `connection-info` all drew
+;; `use-after-move`, and E30's point is that `closed?` and `connection-info` are
+;; declared legal in EVERY state and were refused anyway — because
+;; `use-after-move` is about the NAME, not about the state. This checks, from
+;; the diagnostics the run above actually raised, that each of those is gone and
+;; that the leak rule is still live.
+
+(def acid-test-var 'teensyp.client-test/public-client-loopback-contract)
+
+(defn- acid-lines
+  "Every line of every diagnostic raised against the acid-test function, EXCEPT
+  `unsupported-construct`. That kind names the `try`/`catch` that `clojure.test/is`
+  expands to and says nothing about the capability at all — E23's limit, whose
+  DENSITY (one per assertion) E30 measured and which no declaration can change.
+  Counting it here would report every assertion in the block as a failure."
+  [r]
+  (let [x (first (filter (fn [x] (= acid-test-var (:var x)))
+                         (get (:results r) "teensyp.client-test")))]
+    (mapcat :detail (remove (fn [d] (= :unsupported-construct (:kind d)))
+                            (:diagnostics x)))))
+
+(defn- mentions? [ls needle]
+  (some (fn [l] (and (string? l) (str/includes? l needle))) ls))
+
+(defn- acid-row [ls label needle]
+  (let [hit (mentions? ls needle)]
+    (println (str "    [" (if hit "NO  " "ok  ") "] " label))))
+
+(defn- print-acid-test [r]
+  (let [ls  (acid-lines r)
+        all (all-results r)
+        ds  (mapcat :diagnostics all)
+        uam (filter (fn [d] (= :use-after-move (:kind d))) ds)
+        dng (filter (fn [d] (= :dangling (:kind d))) ds)]
+    (println)
+    (println "  THE ACID TEST — the finally block of public-client-loopback-contract.")
+    (println "  Each row is `no CAPABILITY diagnostic names this site`, read off the run")
+    (println "  above. `unsupported-construct` is excluded and only that: it names the")
+    (println "  try/catch `(is …)` expands to, not the connection.")
+    (println)
+    (acid-row ls "the compare-and-set second `close!`   (client_test.clj:638)"
+              "client_test.clj:638")
+    (acid-row ls "`closed?` on a closed connection      (client_test.clj:639)"
+              "client_test.clj:639")
+    (acid-row ls "`connection-info` after close         (client_test.clj:640)"
+              "client_test.clj:640")
+    (println)
+    (println (str "    " (count uam)
+                  "  use-after-move over BOTH namespaces (E30's variant 2 reported 4"))
+    (println "       in this one function alone, and 11 under variant 1)")
+    (println (str "    " (count dng)
+                  "  dangling — a connection that never reaches the destructor is STILL"))
+    (println "       a leak, which is the half of this that must not have been weakened;")
+    (println "       `perturb.dbtxcorpus/sock-never-closed` is the gated control for it")
+    (println "       and it is a REJECT.")))
+
 (defn- banner [s]
   (println)
   (println (str "== " s " " (apply str (repeat (max 0 (- 74 (count s))) "=")))))
@@ -354,10 +432,36 @@
       (print-summary v2)
 
       ;; --- variants 3 and 4, as deltas against variant 2 -------------------
-      (doseq [r (drop 2 runs)]
+      (doseq [r (subvec runs 2 4)]
         (banner (str "VARIANT " (:label (:v r)) " — " (:title (:v r))))
+        (when (= "4" (:label (:v r)))
+          (println "   THIS VARIANT'S VERDICTS CHANGED, AND THAT IS THE POINT. E30 ran it")
+          (println "   against a checker that ACCEPTED `:arg` on a `:produces` entry and")
+          (println "   SILENTLY IGNORED it — tally row 50 — and recorded 4 use-after-move")
+          (println "   plus one new no-signature, because the produced capability landed on")
+          (println "   the return value and clojure.core/true? received a Connection@:closed.")
+          (println "   The key is implemented now. The DECLARATION is byte-for-byte the one")
+          (println "   E30 ran; only what the checker does with it has changed."))
         (print-delta v2 r)
-        (print-summary r)))
+        (print-summary r))
+
+      ;; --- variant 5, in full, against variant 1 ---------------------------
+      (let [v5 (nth runs 4)]
+        (banner (str "VARIANT 5 — " (:title (:v v5))))
+        (println "   E33's conceptual correction, implemented: a stable shared handle, its")
+        (println "   current protocol state, and the obligation to discharge the underlying")
+        (println "   resource are THREE DIFFERENT THINGS, and this declaration says all")
+        (println "   three separately. The MACHINE is variant 1's machine — nothing deleted,")
+        (println "   nothing invented — plus `:result` labels; the ANNOTATIONS stop repeating")
+        (println "   it and stop claiming return values these operations do not have.")
+        (print-lines v5)
+        (println)
+        (print-diagnostics v5)
+        (print-summary v5)
+        (println)
+        (println "  --- against VARIANT 1, which is the same machine under `:linearity :once`:")
+        (print-delta v1 v5)
+        (print-acid-test v5)))
 
     (banner "READ THESE AS EVIDENCE ABOUT THE RULES")
     (println "   jolt-tcp's client works. Its own suite exercises this exact lifecycle")
