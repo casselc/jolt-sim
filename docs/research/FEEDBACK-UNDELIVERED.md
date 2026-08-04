@@ -21,7 +21,7 @@ Notes from the `perturb` research lane in `casselc/jolt-sim` (`docs/research/PER
 
 `docs/findings/begin-boundary-recovery-evidence.md` records honestly that **R3** — rollback claims success but `sqlite3_get_autocommit` still reports `ac = 0` — "is defensive coverage, not exercised by an executed test". R4, R5 and R7 are in the same position, and those are the *poison* branches.
 
-`jolt-sim`'s SQLite model has the lever: `:tx-effect :when :always` (`src/jolt/sim/sqlite.clj:704-717`) applies the physical transition **even when the step reports its error**, and `:never` withholds it. That is an uncertain `BEGIN` on demand — exactly the state a real engine will not produce for you. Driving this contract from the simulated adapter and asserting each of R1–R7 is reached looks like the cheapest positive control available to either repo, and needs no new machinery on either side.
+`jolt-sim`'s SQLite model has the lever: `:tx-effect :when :always` applies the physical transition **even when the step reports its error**, and `:never` withholds it. It lives on the integration stack — PRs #26/#29/#32, docstring at `src/jolt/sim/sqlite.clj:706-708`, validated at `:283` and `:300` — and **not** on the perturb research branch, so cite the PR revision when quoting it. That is an uncertain `BEGIN` on demand — exactly the state a real engine will not produce for you. Driving this contract from the simulated adapter and asserting each of R1–R7 is reached looks like the cheapest positive control available to either repo, and needs no new machinery on either side.
 
 Our version of the rule, for what it is worth: a monitor that has never fired is not evidence, and every monitor needs a positive control.
 

@@ -67,8 +67,12 @@ defensive coverage, not exercised by an executed test". R4, R5 and R7 are in the
 same position. These are the *poison* branches — the ones that matter.
 
 `jolt-sim`'s SQLite model already has the lever: `:tx-effect :when :always`
-(`src/jolt/sim/sqlite.clj:704-717`) applies the physical transition **even when
-the step reports its error**, and `:never` withholds it. That is an uncertain
+applies the physical transition **even when the step reports its error**, and
+`:never` withholds it. **Revision matters and the original citation omitted it:**
+the seam is on the integration stack (`refs/pull/26`, `29`, `32` — the docstring
+at `src/jolt/sim/sqlite.clj:706-708`, validated at `:283`/`:300`). It does **not**
+exist on the perturb research branch, where those lines are cleanup/snapshot
+material — which is what a later audit checked, and why it read as stale. That is an uncertain
 `BEGIN` on demand — precisely the state db cannot reach with a real engine.
 
 **Suggested cross-repo move:** drive db's recovery contract from the simulated
