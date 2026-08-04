@@ -1,0 +1,39 @@
+{:paths ["src" "resources"]
+
+ :deps
+ {;; Keep presentation dependencies out of the simulator kernel coordinate.
+  ;; The local parent is the same checkout when this subproject is selected by
+  ;; a git dependency with `:deps/root "report"`.
+  io.github.casselc/jolt-sim-core
+  {:local/root ".."}
+
+  ;; Selmer's namespaces load java.time/Locale and MessageDigest eagerly on
+  ;; Jolt. These exact pins are the set exercised by upstream's Ring example.
+  jolt-lang/time
+  {:git/url "https://github.com/jolt-lang/time.git"
+   :git/sha "70dfb7981ef4ed70c5d142109d56a90edfb79cef"}
+
+  jolt-lang/jolt-crypto
+  {:git/url "https://github.com/jolt-lang/jolt-crypto"
+   :git/sha "0adae49db6064180374ffdcfc72b5b9ac01888cd"}
+
+  yogthos/selmer
+  {:git/url "https://github.com/yogthos/Selmer"
+   :git/sha "fa4a42e77b48905f87b3bf0dc1c698f2c329c722"}}
+
+ :aliases
+ {:test
+  {:extra-paths ["test"]
+   :main-opts ["-m" "jolt.sim.report-test"]}
+
+  ;; Usage from this project root:
+  ;;   jolt -M:trace-report INPUT.edn [OUTPUT.html]
+  :trace-report
+  {:main-opts ["-m" "jolt.sim.report"]}
+
+  ;; Usage from this project root:
+  ;;   jolt -M:case-report INPUT.edn [OUTPUT.html]
+  ;; The explicit --case-outcome selector routes -main to the Case/Outcome
+  ;; renderer; the trace and Case/Outcome schemas are never guessed at.
+  :case-report
+  {:main-opts ["-m" "jolt.sim.report" "--case-outcome"]}}}

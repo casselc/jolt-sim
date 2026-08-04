@@ -1,11 +1,11 @@
 (ns jolt.sim.explore
-  "Pure, deterministic schedule-plan enumeration for the cooperative simulator.
+  "Pure, deterministic top-level future-admission plan enumeration.
 
   A schedule plan is an exact permutation of the ordinals 0..N-1: the admission
   order in which `jolt.sim.future-schedule` runs N spawned bodies one at a time.
-  Enumerating candidate plans in a stable order is what lets a deterministic
-  search explore scheduling alternatives without depending on host thread
-  interleavings.
+  Enumerating candidate plans in a stable order supplies controlled-execution
+  cases without depending on host thread interleavings. It does not traverse
+  the state graph of an arbitrary Jolt program or make a completeness claim.
 
   `schedule-plans` returns the first `:max-schedules` plans in lexicographic
   order. It walks permutations one at a time with Narayana Pandita's

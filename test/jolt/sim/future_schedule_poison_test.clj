@@ -9,7 +9,7 @@
             [jolt.sim.runtime :as rt]))
 
 (deftest incompatible-order-reaches-a-gate-and-makes-no-bounded-progress
-  (is (= 5 (:abi-version (rt/capabilities))))
+  (is (= 6 (:abi-version (rt/capabilities))))
   (let [first-spawned (promise)
         outcome (promise)
         runner

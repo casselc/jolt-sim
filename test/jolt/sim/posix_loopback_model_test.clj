@@ -1,5 +1,6 @@
 (ns jolt.sim.posix-loopback-model-test
   (:require [clojure.test :refer [deftest is]]
+            [jolt.sim.clock :as clock]
             [jolt.sim.ffi-memory :as memory]
             [jolt.sim.net.posix-loopback :as posix]))
 
@@ -43,8 +44,10 @@
   ([descriptor]
    (harness descriptor nil))
   ([descriptor config]
+   (harness descriptor config nil))
+  ([descriptor config virtual-clock]
    (let [mem (memory/world)
-         world (posix/world mem descriptor config)]
+         world (posix/world mem descriptor config virtual-clock)]
      {:memory mem
       :world world
       :handlers (posix/handlers world)})))
@@ -71,6 +74,7 @@
       :return-type (nth key 3)
       :blocking? blocking?
       :capture-native-error? (nth key 5)
+      :varargs-after (get key 6)
       :arguments (vec arguments)})))
 
 (defn- ex-data-of [f]
@@ -125,8 +129,8 @@
         (set (filter #(= :native-operation (first %)) (keys handlers)))]
     (is (= 21 (count (posix/handler-keys linux-descriptor))))
     (is (= (set (posix/handler-keys linux-descriptor)) foreign-keys))
-    (is (= 15 (count native-keys)))
-    (is (= 36 (count handlers)))
+    (is (= 16 (count native-keys)))
+    (is (= 37 (count handlers)))
     (is (contains? foreign-keys
                   [:foreign-function "pipe" [:pointer] :int false true]))
     (is (contains? foreign-keys
@@ -142,6 +146,22 @@
            (set (map #(nth % 4)
                      (filter #(= "connect" (nth % 1))
                              (posix/handler-keys linux-descriptor))))))))
+
+(deftest fcntl-handler-key-carries-varargs-after-boundary
+  ;; fcntl is variadic: the third argument onward is a variadic position.
+  ;; The modeled handler key carries the exact boundary (2) so unchanged
+  ;; jolt-net code routes to this handler instead of native fallback.
+  (doseq [descriptor [linux-descriptor darwin-descriptor]]
+    (is (contains? (set (posix/handler-keys descriptor))
+                   [:foreign-function "fcntl" [:int :int :int]
+                    :int false true 2]))
+    ;; No other foreign-function key carries a boundary; every other raw key
+    ;; remains the six-element shorthand.
+    (let [bounded (filter #(and (= :foreign-function (nth % 0 nil))
+                                (< 6 (count %)))
+                          (posix/handler-keys descriptor))]
+      (is (= [[:foreign-function "fcntl" [:int :int :int] :int false true 2]]
+             bounded)))))
 
 (deftest unbound-socket-name-is-wildcard-port-zero
   (doseq [descriptor [linux-descriptor darwin-descriptor]]
@@ -520,6 +540,15 @@
     (is (= :jolt.sim.net.posix-loopback/invalid-target
            (:type (ex-data-of #(posix/world (memory/world) descriptor)))))))
 
+(deftest optional-virtual-clock-fails-closed
+  (is (= :not-a-virtual-clock
+         (:reason (ex-data-of
+                   #(posix/world (memory/world) linux-descriptor nil false)))))
+  (let [w (posix/world (memory/world) linux-descriptor)]
+    (is (= :not-a-virtual-clock
+           (:reason
+            (ex-data-of #(posix/validate-world (assoc w :clock false))))))))
+
 (deftest poll-ignores-negative-slots-and-flags-unknown-positive-fds
   (let [h (harness linux-descriptor)
         pollin (get-in linux-descriptor [:const :pollin])
@@ -739,6 +768,66 @@
         (native h :free (:cell p))))
     (is (true? (posix/clean? (:world h))))))
 
+(deftest virtual-time-advance-wakes-finite-poll-without-host-time
+  (let [virtual-clock (clock/virtual-clock 100)
+        h (harness darwin-descriptor nil virtual-clock)
+        p (open-pipe h)
+        pollin (get-in darwin-descriptor [:const :pollin])
+        entry (alloc-poll-entries h [[(:reader p) pollin]])
+        waiting (future (foreign h "poll" true [entry 1 60000]))]
+    (try
+      (is (true? (wait-for-waiter-count (:world h) 1 2000)))
+      (is (= [{:id 0 :deadline-nanos 60000000100}]
+             (:alarms (clock/snapshot virtual-clock))))
+      (is (= :still-waiting (deref waiting 0 :still-waiting)))
+      (is (= 0 (clock/advance-by! virtual-clock 59999999999)))
+      (is (= :still-waiting (deref waiting 0 :still-waiting)))
+      (is (= 1 (clock/advance-by! virtual-clock 1)))
+      (is (= [0 0] (deref waiting 2000 :host-timeout)))
+      (is (zero? (poll-revents h entry 0)))
+      (is (= [] (:alarms (clock/snapshot virtual-clock))))
+      (is (zero? (:waiter-count (posix/readiness-snapshot (:world h)))))
+      (finally
+        (foreign h "close" false [(:reader p)])
+        (foreign h "close" false [(:writer p)])
+        (let [joined (deref waiting 2000 :host-timeout)]
+          (is (not= :host-timeout joined)
+              "a failed virtual poll must join after terminal readiness")
+          (when-not (= :host-timeout joined)
+            (native h :free entry)))
+        (native h :free (:cell p))))
+    (is (true? (posix/clean? (:world h))))))
+
+(deftest readiness-before-virtual-deadline-cancels-the-alarm
+  (let [virtual-clock (clock/virtual-clock 200)
+        h (harness linux-descriptor nil virtual-clock)
+        p (open-pipe h)
+        pollin (get-in linux-descriptor [:const :pollin])
+        entry (alloc-poll-entries h [[(:reader p) pollin]])
+        payload (native h :alloc 1)
+        waiting (future (foreign h "poll" true [entry 1 100]))]
+    (try
+      (is (true? (wait-for-waiter-count (:world h) 1 2000)))
+      (is (= 1 (count (:alarms (clock/snapshot virtual-clock)))))
+      (native h :write-array payload (byte-array [42]))
+      (is (= [1 0] (foreign h "write" false [(:writer p) payload 1])))
+      (is (= [1 0] (deref waiting 2000 :host-timeout)))
+      (is (= pollin (poll-revents h entry 0)))
+      (is (= [] (:alarms (clock/snapshot virtual-clock))))
+      (is (= 0 (clock/advance-by! virtual-clock 100000000)))
+      (is (zero? (:waiter-count (posix/readiness-snapshot (:world h)))))
+      (finally
+        (foreign h "close" false [(:reader p)])
+        (foreign h "close" false [(:writer p)])
+        (native h :free payload)
+        (let [joined (deref waiting 2000 :host-timeout)]
+          (is (not= :host-timeout joined)
+              "a failed readiness poll must join after terminal readiness")
+          (when-not (= :host-timeout joined)
+            (native h :free entry)))
+        (native h :free (:cell p))))
+    (is (true? (posix/clean? (:world h))))))
+
 (deftest unrelated-readiness-wakes-recompute-and-repark-other-polls
   (let [h (harness linux-descriptor)
         p1 (open-pipe h)
@@ -770,3 +859,390 @@
         (doseq [ptr [payload e1 e2 (:cell p1) (:cell p2)]]
           (native h :free ptr))))
     (is (true? (posix/clean? (:world h))))))
+
+;; ---- per-socket receive FIFO stream capacity ---------------------------
+
+(defn- connected-pair [h descriptor]
+  (let [listener (open-listener h descriptor)
+        target (alloc-sockaddr h descriptor (:port listener))
+        [client _] (foreign h "socket" false [2 1 0])]
+    (is (= [0 0] (foreign h "connect" true [client target 16])))
+    (let [[server accept-error]
+          (foreign h "accept" false [(:fd listener) 0 0])]
+      (is (zero? accept-error))
+      {:listener listener :target target
+       :client client :server server})))
+
+(defn- snap-by-fd [world fd]
+  (some #(when (= (:fd %) fd) %) (posix/snapshot world)))
+
+(defn- close-pair [h pair]
+  (foreign h "close" false [(:client pair)])
+  (foreign h "close" false [(:server pair)])
+  (foreign h "close" false [(:fd (:listener pair))])
+  (native h :free (:target pair))
+  (native h :free (:address (:listener pair))))
+
+(deftest stream-capacity-default-is-finite-and-invalid-values-fail-closed
+  (is (= {:stream-capacity 65536
+          :stream-would-blocks 0
+          :stream-capacity-limited-writes 0
+          :max-stream-recv-bytes 0}
+         (posix/capacity-summary
+          (posix/world (memory/world) linux-descriptor))))
+  (is (= {:stream-capacity 3
+          :stream-would-blocks 0
+          :stream-capacity-limited-writes 0
+          :max-stream-recv-bytes 0}
+         (posix/capacity-summary
+          (posix/world (memory/world) linux-descriptor
+                       {:stream-capacity 3}))))
+  (doseq [bad [0 -1 nil "3" 3.0]]
+    (is (= :jolt.sim.net.posix-loopback/invalid-config
+           (:type (ex-data-of
+                   #(posix/world (memory/world) linux-descriptor
+                                 {:stream-capacity bad}))))
+        (str "capacity " (pr-str bad) " must be rejected"))))
+
+(deftest stream-capacity-limits-nonblocking-sends-and-poll-readiness
+  (let [h (harness linux-descriptor {:stream-capacity 3 :progress-limit 2})
+        pair (connected-pair h linux-descriptor)
+        client (:client pair)
+        server (:server pair)
+        pollout (get-in linux-descriptor [:const :pollout])
+        eagain (get-in linux-descriptor [:errno :eagain])
+        payload (native h :alloc 5)
+        received (native h :alloc 5)
+        entries (alloc-poll-entries h [[client pollout]])]
+    (try
+      (native h :write-array payload (byte-array [0 1 2 3 4]))
+      (make-nonblocking! h linux-descriptor client)
+      ;; The client is writable while room == capacity.
+      (is (= [1 0] (foreign h "poll" true [entries 1 0])))
+      (is (= pollout (poll-revents h entries 0)))
+      ;; Send 1: progress-limit 2 caps progress, room 3 allows both bytes.
+      (is (= [2 0] (foreign h "send" false [client payload 5 0])))
+      (is (= 2 (:recv-bytes (snap-by-fd (:world h) server))))
+      (is (= 3 (:recv-capacity (snap-by-fd (:world h) server))))
+      (is (= 1 (:recv-available (snap-by-fd (:world h) server))))
+      ;; Still writable: one byte of room remains.
+      (is (= [1 0] (foreign h "poll" true [entries 1 0])))
+      (is (= pollout (poll-revents h entries 0)))
+      ;; Send 2: room 1 reduces progress below min(3, 2) = 2.
+      (is (= [1 0] (foreign h "send" false [client (+ payload 2) 3 0])))
+      (is (= 3 (:recv-bytes (snap-by-fd (:world h) server)))
+          "the receive queue never exceeds capacity")
+      (is (= 0 (:recv-available (snap-by-fd (:world h) server))))
+      ;; POLLOUT clears once the peer FIFO is full.
+      (is (= [0 0] (foreign h "poll" true [entries 1 0])))
+      (is (zero? (poll-revents h entries 0)))
+      ;; Send 3: full FIFO, nonblocking descriptor captures EAGAIN.
+      (is (= [-1 eagain] (foreign h "send" false [client payload 1 0])))
+      (is (= 3 (:recv-bytes (snap-by-fd (:world h) server)))
+          "a would-block leaves the queue at capacity")
+      ;; A recv on the server publishes readiness and frees one byte of room.
+      (is (= [1 0] (foreign h "recv" false [server received 1 0])))
+      (is (= 2 (:recv-bytes (snap-by-fd (:world h) server))))
+      (is (= 1 (:recv-available (snap-by-fd (:world h) server))))
+      ;; POLLOUT reappears once capacity returns.
+      (is (= [1 0] (foreign h "poll" true [entries 1 0])))
+      (is (= pollout (poll-revents h entries 0)))
+      ;; Capacity evidence is exact after this transition sequence.
+      (is (= {:stream-capacity 3
+              :stream-would-blocks 1
+              :stream-capacity-limited-writes 1
+              :max-stream-recv-bytes 3}
+             (posix/capacity-summary (:world h))))
+      (finally
+        (native h :free payload)
+        (native h :free received)
+        (native h :free entries)
+        (close-pair h pair)))
+    (is (true? (posix/clean? (:world h))))))
+
+(deftest blocking-stream-send-into-full-fifo-fails-closed
+  (let [h (harness linux-descriptor {:stream-capacity 1})
+        pair (connected-pair h linux-descriptor)
+        client (:client pair)
+        payload (native h :alloc 1)]
+    (try
+      ;; The client is blocking by default. Fill the single-byte FIFO.
+      (is (= [1 0] (foreign h "send" false [client payload 1 0])))
+      ;; A blocking send into the now-full FIFO cannot wait inside the model
+      ;; and fails closed with the typed transition.
+      (let [data (ex-data-of #(foreign h "send" false [client payload 1 0]))]
+        (is (= :jolt.sim.net.posix-loopback/blocking-stream-send-unsupported
+               (:type data)))
+        (is (= 1 (:capacity data))))
+      ;; Evidence records the would-block even on the closed failure path.
+      (is (= 1 (:stream-would-blocks
+                (posix/capacity-summary (:world h)))))
+      (finally
+        (native h :free payload)
+        (close-pair h pair)))
+    (is (true? (posix/clean? (:world h))))))
+
+(deftest parked-write-poll-wakes-when-recv-releases-capacity
+  (let [h (harness linux-descriptor {:stream-capacity 1 :progress-limit 2})
+        pair (connected-pair h linux-descriptor)
+        client (:client pair)
+        server (:server pair)
+        pollout (get-in linux-descriptor [:const :pollout])
+        payload (native h :alloc 1)
+        received (native h :alloc 1)
+        entry (alloc-poll-entries h [[client pollout]])]
+    (try
+      (make-nonblocking! h linux-descriptor client)
+      ;; Fill the single-byte FIFO; POLLOUT then clears.
+      (is (= [1 0] (foreign h "send" false [client payload 1 0])))
+      (is (= [0 0] (foreign h "poll" true [entry 1 0])))
+      (is (zero? (poll-revents h entry 0)))
+      ;; Park a blocking poll for write readiness on the full socket.
+      (let [waiting (future (foreign h "poll" true [entry 1 3000]))]
+        (is (true? (wait-for-waiter-count (:world h) 1 2000)))
+        ;; A recv on the server publishes readiness and must wake the parked
+        ;; writer even though it was already parked while capacity was zero.
+        (is (= [1 0] (foreign h "recv" false [server received 1 0])))
+        (is (= [1 0] (deref waiting 3000 :timeout)))
+        (is (= pollout (poll-revents h entry 0))))
+      (finally
+        (native h :free payload)
+        (native h :free received)
+        (native h :free entry)
+        (close-pair h pair)))
+    (is (true? (posix/clean? (:world h))))))
+
+(deftest epipe-precedence-beats-stream-capacity
+  (let [h (harness linux-descriptor {:stream-capacity 1})
+        shut-rd (get-in linux-descriptor [:const :shut-rd])
+        epipe (get-in linux-descriptor [:errno :epipe])]
+    ;; Case 1: peer read-shutdown. Fill the FIFO, then the peer stops reading.
+    (let [pair (connected-pair h linux-descriptor)
+          client (:client pair)
+          server (:server pair)
+          payload (native h :alloc 1)]
+      (try
+        (make-nonblocking! h linux-descriptor client)
+        (is (= [1 0] (foreign h "send" false [client payload 1 0])))
+        (is (= [0 0] (foreign h "shutdown" false [server shut-rd])))
+        (is (= [-1 epipe]
+               (foreign h "send" false [client payload 1 0]))
+            "EPIPE beats capacity when the peer read half is shut down")
+        (finally
+          (native h :free payload)
+          (close-pair h pair))))
+    ;; Case 2: peer gone (closed). Fill the FIFO, then the peer retires.
+    (let [pair (connected-pair h linux-descriptor)
+          client (:client pair)
+          server (:server pair)
+          payload (native h :alloc 1)]
+      (try
+        (make-nonblocking! h linux-descriptor client)
+        (is (= [1 0] (foreign h "send" false [client payload 1 0])))
+        (is (= 0 (foreign h "close" false [server])))
+        (is (= [-1 epipe]
+               (foreign h "send" false [client payload 1 0]))
+            "EPIPE beats capacity when the peer is gone")
+        (finally
+          (native h :free payload)
+          (close-pair h pair))))
+    (is (true? (posix/clean? (:world h))))))
+
+;; ---- self-pipe FIFO capacity -------------------------------------------
+
+(defn- pipe-by-role [world role]
+  (some #(when (= role (:role %)) %) (posix/pipe-snapshot world)))
+
+(deftest pipe-capacity-default-is-finite-and-invalid-values-fail-closed
+  (is (= {:pipe-capacity 65536
+          :pipe-would-blocks 0
+          :max-pipe-fifo-bytes 0}
+         (posix/pipe-capacity-summary
+          (posix/world (memory/world) linux-descriptor))))
+  (is (= {:pipe-capacity 4
+          :pipe-would-blocks 0
+          :max-pipe-fifo-bytes 0}
+         (posix/pipe-capacity-summary
+          (posix/world (memory/world) darwin-descriptor
+                       {:pipe-capacity 4}))))
+  (doseq [bad [0 -1 nil "3" 3.0]]
+    (is (= :jolt.sim.net.posix-loopback/invalid-config
+           (:type (ex-data-of
+                   #(posix/world (memory/world) linux-descriptor
+                                 {:pipe-capacity bad}))))
+        (str "pipe-capacity " (pr-str bad) " must be rejected"))))
+
+(deftest pipe-capacity-limits-nonblocking-writes-poll-and-evidence
+  (doseq [descriptor [linux-descriptor darwin-descriptor]]
+    (let [h (harness descriptor {:pipe-capacity 3})
+          cell (native h :alloc 8)]
+      (foreign h "pipe" false [cell])
+      (let [rfd (native h :read cell :int 0)
+            wfd (native h :read cell :int 4)
+            pollout (get-in descriptor [:const :pollout])
+            eagain (get-in descriptor [:errno :eagain])
+            payload (native h :alloc 4)
+            received (native h :alloc 3)
+            entries (alloc-poll-entries h [[wfd pollout]])]
+        (try
+          (make-nonblocking! h descriptor wfd)
+          (native h :write-array payload (byte-array [0 1 2 3]))
+          ;; The writer is writable while the reader FIFO has room, and the
+          ;; snapshot reports the configured capacity against both ends.
+          (is (= [1 0] (foreign h "poll" true [entries 1 0])))
+          (is (= pollout (poll-revents h entries 0)))
+          (is (= 3 (:channel-capacity (pipe-by-role (:world h) :reader))))
+          (is (= 3 (:channel-capacity (pipe-by-role (:world h) :writer))))
+          (is (= 3 (:channel-available (pipe-by-role (:world h) :reader))))
+          (is (= 3 (:channel-available (pipe-by-role (:world h) :writer))))
+          ;; A positive write that fits copies all bytes into the reader FIFO.
+          (is (= [3 0] (foreign h "write" false [wfd payload 3])))
+          (is (= 3 (:fifo-bytes (pipe-by-role (:world h) :reader))))
+          (is (= 0 (:channel-available (pipe-by-role (:world h) :writer)))
+              "the writer end shares the reader FIFO's room")
+          ;; POLLOUT clears once the reader FIFO is full.
+          (is (= [0 0] (foreign h "poll" true [entries 1 0])))
+          (is (zero? (poll-revents h entries 0)))
+          ;; Zero length remains a successful no-op for a live reader even
+          ;; when the FIFO is full.
+          (is (= [0 0] (foreign h "write" false [wfd payload 0])))
+          ;; A write that does not fit captures EAGAIN and moves no bytes.
+          (is (= [-1 eagain] (foreign h "write" false [wfd payload 1])))
+          (is (= 3 (:fifo-bytes (pipe-by-role (:world h) :reader)))
+              "a would-block leaves the FIFO at capacity with no overflow")
+          ;; A read on the reader publishes readiness and frees one byte.
+          (is (= [1 0] (foreign h "read" false [rfd received 1])))
+          (is (= 0 (unsigned (first (vec (native h :read-array received 1))))))
+          ;; POLLOUT reappears once capacity returns.
+          (is (= [1 0] (foreign h "poll" true [entries 1 0])))
+          (is (= pollout (poll-revents h entries 0)))
+          ;; The remaining bytes retain their exact order.
+          (is (= [2 0] (foreign h "read" false [rfd (+ received 1) 2])))
+          (is (= [0 1 2]
+                 (mapv unsigned (vec (native h :read-array received 3)))))
+          ;; Exact pipe-capacity evidence after this transition sequence.
+          (is (= {:pipe-capacity 3
+                  :pipe-would-blocks 1
+                  :max-pipe-fifo-bytes 3}
+                 (posix/pipe-capacity-summary (:world h))))
+          (finally
+            (foreign h "close" false [rfd])
+            (foreign h "close" false [wfd])
+            (native h :free received)
+            (native h :free payload)
+            (native h :free entries))))
+      (native h :free cell)
+      (is (true? (posix/clean? (:world h)))))))
+
+(deftest blocking-pipe-write-into-full-fifo-fails-closed
+  (doseq [descriptor [linux-descriptor darwin-descriptor]]
+    (let [h (harness descriptor {:pipe-capacity 1})
+          cell (native h :alloc 8)]
+      (foreign h "pipe" false [cell])
+      (let [rfd (native h :read cell :int 0)
+            wfd (native h :read cell :int 4)
+            payload (native h :alloc 1)]
+        (try
+          (native h :write-array payload (byte-array [42]))
+          ;; The writer is blocking by default. Fill the single-byte FIFO.
+          (is (= [1 0] (foreign h "write" false [wfd payload 1])))
+          ;; A blocking write that does not fit cannot wait inside the model
+          ;; and fails closed with the typed transition and exact evidence.
+          (let [data (ex-data-of #(foreign h "write" false [wfd payload 1]))]
+            (is (= :jolt.sim.net.posix-loopback/blocking-pipe-write-unsupported
+                   (:type data)))
+            (is (= 1 (:capacity data)))
+            (is (= 1 (:length data))))
+          ;; Evidence records the would-block on the closed failure path too.
+          (is (= 1 (:pipe-would-blocks
+                    (posix/pipe-capacity-summary (:world h)))))
+          (is (= 1 (:max-pipe-fifo-bytes
+                    (posix/pipe-capacity-summary (:world h)))))
+          (finally
+            (foreign h "close" false [rfd])
+            (foreign h "close" false [wfd])
+            (native h :free payload))))
+      (native h :free cell)
+      (is (true? (posix/clean? (:world h)))))))
+
+(deftest pipe-capacity-epipe-precedence-beats-would-block
+  (doseq [descriptor [linux-descriptor darwin-descriptor]]
+    (let [h (harness descriptor {:pipe-capacity 1})
+          cell (native h :alloc 8)]
+      (foreign h "pipe" false [cell])
+      (let [rfd (native h :read cell :int 0)
+            wfd (native h :read cell :int 4)
+            epipe (get-in descriptor [:errno :epipe])
+            pollout (get-in descriptor [:const :pollout])
+            pollerr (get-in descriptor [:const :pollerr])
+            payload (native h :alloc 1)
+            entry (alloc-poll-entries h [[wfd pollout]])]
+        (try
+          (native h :write-array payload (byte-array [9]))
+          ;; Fill the single-byte FIFO at the capacity bound.
+          (is (= [1 0] (foreign h "write" false [wfd payload 1])))
+          ;; Close the reader; a subsequent write reveals EPIPE rather than
+          ;; the capacity would-block path, and the closed reader still
+          ;; exposes POLLOUT alongside POLLERR so the write can observe it.
+          (is (= 0 (foreign h "close" false [rfd])))
+          (is (= [-1 epipe]
+                 (foreign h "write" false [wfd payload 0]))
+              "terminal EPIPE also precedes the live-reader zero-length case")
+          (is (= [-1 epipe]
+                 (foreign h "write" false [wfd payload 1]))
+              "EPIPE beats capacity once the reader is gone")
+          (is (= [1 0] (foreign h "poll" true [entry 1 0])))
+          (is (= (bit-or pollout pollerr) (poll-revents h entry 0))
+              "terminal readiness preserves POLLOUT and adds POLLERR")
+          ;; The would-block counter must not advance on the EPIPE path.
+          (is (zero? (:pipe-would-blocks
+                      (posix/pipe-capacity-summary (:world h)))))
+          (finally
+            (foreign h "close" false [wfd])
+            (native h :free payload)
+            (native h :free entry))))
+      (native h :free cell)
+      (is (true? (posix/clean? (:world h)))))))
+
+(deftest parked-pipe-write-poll-wakes-when-read-releases-capacity
+  (let [h (harness linux-descriptor {:pipe-capacity 1})
+        cell (native h :alloc 8)]
+    (foreign h "pipe" false [cell])
+    (let [rfd (native h :read cell :int 0)
+          wfd (native h :read cell :int 4)
+          pollout (get-in linux-descriptor [:const :pollout])
+          payload (native h :alloc 1)
+          received (native h :alloc 1)
+          entry (alloc-poll-entries h [[wfd pollout]])
+          poll-future (atom nil)]
+      (try
+        (make-nonblocking! h linux-descriptor wfd)
+        ;; Fill the single-byte FIFO; POLLOUT then clears.
+        (is (= [1 0] (foreign h "write" false [wfd payload 1])))
+        (is (= [0 0] (foreign h "poll" true [entry 1 0])))
+        (is (zero? (poll-revents h entry 0)))
+        ;; Park a blocking poll for write readiness on the full pipe.
+        (let [waiting (future (foreign h "poll" true [entry 1 3000]))]
+          (reset! poll-future waiting)
+          (is (true? (wait-for-waiter-count (:world h) 1 2000)))
+          ;; A read on the reader publishes readiness and must wake the
+          ;; parked writer even though it parked while capacity was zero.
+          (is (= [1 0] (foreign h "read" false [rfd received 1])))
+          (is (= [1 0] (deref waiting 3000 :timeout)))
+          (is (= pollout (poll-revents h entry 0))))
+        (finally
+          (foreign h "close" false [rfd])
+          (foreign h "close" false [wfd])
+          (native h :free received)
+          (native h :free payload)
+          ;; If the primary assertion timed out, terminal close above must wake
+          ;; and join the poll before its native entry is released.
+          (if-let [waiting @poll-future]
+            (let [joined (deref waiting 3000 :timeout)]
+              (is (not= :timeout joined)
+                  "a timed-out poll must join after terminal readiness")
+              (when-not (= :timeout joined)
+                (native h :free entry)))
+            (native h :free entry))
+          (native h :free cell)))
+      (is (true? (posix/clean? (:world h)))))))

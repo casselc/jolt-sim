@@ -7,9 +7,18 @@
             [hegel.core :as h]
             [jolt.sim.explore :as explore]
             [jolt.sim.hegel :as sim-hegel]
+            [jolt.sim.ffi-admission-hegel-test :as ffi-admission]
             [jolt.sim.hegel-adapter-test]))
 
 (def ^:dynamic *process-config* nil)
+
+;; This bounds the launcher, dependency resolution, namespace loading, and the
+;; tiny scenario together; it is not a simulated application deadline. Keep it
+;; aligned with the cold-worker completion budget in explore_process_test.
+;; A deliberately blocked scenario belongs in a separate test with a shorter,
+;; discriminating timeout.
+(def ^:private completion-timeout-ms 20000)
+(def ^:private kill-grace-ms 500)
 
 (defn- required-environment [name]
   (let [value (System/getenv name)]
@@ -49,8 +58,8 @@
                     (process-config)
                     {:scenario
                      'jolt.sim.fixtures.explore-scenarios/independent-three
-                     :timeout-ms 5000
-                     :kill-grace-ms 500})
+                     :timeout-ms completion-timeout-ms
+                     :kill-grace-ms kill-grace-ms})
                    plans))
                  schedule (:schedule outcome)
                  start-order
@@ -109,8 +118,8 @@
                     (process-config)
                     {:scenario
                      'jolt.sim.fixtures.explore-scenarios/independent-three
-                     :timeout-ms 5000
-                     :kill-grace-ms 500})
+                     :timeout-ms completion-timeout-ms
+                     :kill-grace-ms kill-grace-ms})
                    3))
                  schedule (:schedule outcome)
                  start-order
@@ -145,12 +154,16 @@
 (defn -main [& _]
   (let [bin (required-environment "JOLT_SIM_BIN")
         project-dir (required-environment "JOLT_SIM_PROJECT_DIR")
+        process-config
+        {:worker-command [bin "-M:explore-worker-test"]
+         :dir project-dir
+         :startup-timeout-ms 120000}
         result
-        (binding [*process-config*
-                  {:worker-command [bin "-M:explore-worker-test"]
-                   :dir project-dir}]
+        (binding [*process-config* process-config
+                  ffi-admission/*process-config* process-config]
           (test/run-tests 'jolt.sim.hegel-adapter-test
-                          'jolt.sim.hegel-explore-test))
+                          'jolt.sim.hegel-explore-test
+                          'jolt.sim.ffi-admission-hegel-test))
         failures (+ (:fail result) (:error result))]
     (println (str (:test result) " tests, "
                   (:pass result) " assertions passed"))

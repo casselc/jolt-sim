@@ -241,6 +241,29 @@
           (is (= :malformed-trace (:reason data)))
           (is (= expected-index (:event-index data))))))))
 
+(deftest kernel-replay-rejects-the-same-malformed-initial-tag-monitor-rejects
+  ;; jolt.sim.monitor's malformed-events-are-rejected-before-monitor-callbacks
+  ;; test corrupts an event's tag the same way; both consumers share one
+  ;; jolt.sim.trace schema check and must reject it identically.
+  (let [events (:trace (kernel/run (countdown-config 5)))
+        bad-events (assoc events 0 (assoc (first events) 0 :unknown/event))
+        data (caught-data
+              #(kernel/replay (countdown-config 5) bad-events))]
+    (is (= kernel/replay-diverged (:type data)))
+    (is (= :malformed-trace (:reason data)))
+    (is (= 0 (:event-index data)))))
+
+(deftest trace-validate-trace-rejects-malformed-shapes-directly
+  ;; jolt.sim.trace owns complete event-schema validation independently of
+  ;; kernel; this exercises it with no kernel/replay in the call path.
+  (let [events (:trace (kernel/run (countdown-config 5)))
+        bad-events (assoc events 0 (assoc (first events) 0 :unknown/event))
+        data (caught-data #(trace/validate-trace! bad-events))]
+    (is (= trace/replay-diverged (:type data)))
+    (is (= kernel/replay-diverged (:type data)))
+    (is (= :malformed-trace (:reason data)))
+    (is (= 0 (:event-index data)))))
+
 (deftest replay-distinguishes-truncation-missing-and-unused-choices
   (let [result (kernel/run (countdown-config 19))
         events (:trace result)

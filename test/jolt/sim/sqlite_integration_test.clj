@@ -12,7 +12,7 @@
    :inserted 1
    :empty-inserted 1
    :row {:id 1
-         :payload [0 127 128 255]}
+         :payload [0 127 -128 -1]}
    :empty-row {:id 2
                :payload []}})
 
@@ -118,33 +118,55 @@
              (:symbol effect)))
          effects)))
 
-(deftest unchanged-db-code-runs-against-real-and-simulated-sqlite
+(defn- foreign-routes [effect-trace symbol]
+  (filter #(= symbol (:symbol (:descriptor %))) effect-trace))
+
+(deftest unchanged-db-code-runs-against-real-hermetic-and-hybrid-sqlite
   (let [real-result (when-not *sim-only?*
                       (fixture/exercise-sqlite))
         memory-world (memory/world)
-        sqlite-world (sqlite/world memory-world (statement-plans))
-        controlled
+        hermetic-world (sqlite/world memory-world (statement-plans))
+        hermetic-controlled
         (runtime/run-controlled
-         {:ffi-handlers (sqlite/handlers sqlite-world)}
+         {:ffi-handlers (sqlite/handlers hermetic-world)}
          fixture/exercise-sqlite)
-        simulated-result (:result controlled)
-        snapshot (sqlite/snapshot sqlite-world)]
+        hybrid-world (sqlite/world (statement-plans))
+        hybrid-controlled
+        (runtime/run-controlled
+         {:ffi-mode :hybrid
+          :ffi-handlers (sqlite/hybrid-handlers hybrid-world)}
+         fixture/exercise-sqlite)
+        hermetic-result (:result hermetic-controlled)
+        hybrid-result (:result hybrid-controlled)
+        blob-routes
+        (foreign-routes (:effect-trace hybrid-controlled)
+                        "sqlite3_column_blob")]
     (when-not *sim-only?*
       (is (= expected real-result))
-      (is (= real-result simulated-result)))
-    (is (= expected simulated-result))
-    (is (= expected-foreign-symbols
-           (foreign-symbols (:effects controlled))))
-    (is (= expected-foreign-sequence
-           (foreign-sequence (:effects controlled))))
-    (is (= {:plan-index 6
-            :plan-count 6
-            :open-dbs 0
-            :active-stmts 0}
-           (sqlite/summary sqlite-world)))
-    (is (seq snapshot))
-    (is (every? :freed? snapshot))
-    (is (true? (sqlite/clean? sqlite-world)))))
+      (is (= real-result hermetic-result))
+      (is (= real-result hybrid-result)))
+    (is (= expected hermetic-result))
+    (is (= expected hybrid-result))
+    (doseq [controlled [hermetic-controlled hybrid-controlled]]
+      (is (= expected-foreign-symbols
+             (foreign-symbols (:effects controlled))))
+      (is (= expected-foreign-sequence
+             (foreign-sequence (:effects controlled)))))
+    ;; This is the public end-to-end hybrid classification witness. The body is
+    ;; ordinary db code. A positive BLOB pointer classified as substitute would
+    ;; fail run-controlled validation; a wrong span would corrupt these bytes.
+    (is (= 2 (count blob-routes)))
+    (is (every? #(= :handler (:route %)) blob-routes))
+    (doseq [world [hermetic-world hybrid-world]]
+      (is (= {:plan-index 6
+              :plan-count 6
+              :open-dbs 0
+              :active-stmts 0}
+             (sqlite/summary world)))
+      (let [snapshot (sqlite/snapshot world)]
+        (is (seq snapshot))
+        (is (every? :freed? snapshot)))
+      (is (true? (sqlite/clean? world))))))
 
 (defn -main [& args]
   (let [sim-only? (= ["--sim-only"] (vec args))

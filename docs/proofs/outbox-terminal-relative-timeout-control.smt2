@@ -1,0 +1,27 @@
+(declare-datatypes ((Kind 0)) (((deadline) (cancel))))
+(declare-datatypes ((Boundary 0)) (((post_commit) (pre_ack) (pre_mark))))
+(declare-const kind Kind)
+(declare-const boundary Boundary)
+(declare-const offset Int)
+(declare-const expired Bool)
+(declare-const committed Bool)
+(declare-const ack_validated Bool)
+(declare-const mark_count Int)
+(declare-const pending Bool)
+(declare-const delivered Bool)
+(declare-const violation Bool)
+
+(assert (= kind deadline))
+(assert (= boundary pre_ack))
+(assert (= offset 0))
+(assert (= expired (and (= kind deadline) (>= offset 0))))
+(assert (= committed true))
+
+; Buggy control: each lower-level call resets a relative timeout, so the
+; operation continues through acknowledgement and marking after D.
+(assert (= ack_validated true))
+(assert (= mark_count 1))
+(assert (= delivered true))
+(assert (= pending false))
+(assert (= violation (and expired (> mark_count 0))))
+(assert violation)

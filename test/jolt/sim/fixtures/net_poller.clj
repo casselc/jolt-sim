@@ -126,27 +126,83 @@
         (when-let [client @client*] (net/close! client))
         (net/close! listener)))))
 
+(defn- stable-error-summary [error]
+  {:class (str (class error))
+   :message (or (ex-message error) (str error))
+   :data (ex-data error)})
+
+(defn- cleanup-attempt [operation thunk]
+  (try
+    (thunk)
+    nil
+    (catch :default error
+      {:operation operation :error error})))
+
+(defn- cleanup-summaries [cleanup-errors]
+  (mapv (fn [{:keys [operation error]}]
+          (assoc (stable-error-summary error) :operation operation))
+        cleanup-errors))
+
+(defn throw-with-cleanup!
+  "Fixture cleanup policy, public only so its failure composition is testable."
+  [primary cleanup-errors]
+  (if primary
+    (if (seq cleanup-errors)
+      (throw
+       (ex-info
+        (or (ex-message primary) (str primary))
+        (assoc (or (ex-data primary) {})
+               :jolt.sim.fixtures.net-poller/primary-error
+               (stable-error-summary primary)
+               :jolt.sim.fixtures.net-poller/cleanup-errors
+               (cleanup-summaries cleanup-errors))
+        primary))
+      (throw primary))
+    (when (seq cleanup-errors)
+      (let [first-error (:error (first cleanup-errors))]
+        (throw
+         (ex-info
+          "public poller fixture cleanup failed"
+          {:type :jolt.sim.fixtures.net-poller/cleanup-failure
+           :jolt.sim.fixtures.net-poller/cleanup-errors
+           (cleanup-summaries cleanup-errors)}
+          first-error))))))
+
 (defn exercise-active-poller-close
   "Park an ordinary public await, then close its poller from the owning thread.
 
-  `await-parked!` is a generic test barrier supplied by the caller. It returns
-  only after the await has entered the native boundary; the fixture itself still
-  imports no simulator namespace and uses no simulator value."
+  `await-parked!` is a generic test barrier supplied by the caller. It receives
+  the future parked in the await plus the ordinary public poller value, and
+  returns only after the await has entered the native boundary; the fixture
+  itself still imports no simulator namespace and uses no simulator value."
   [await-parked!]
   (let [poller (net/open-poller)
         cursor (net/wake-cursor poller)
         waiting (future (net/await-ready poller 5000 cursor))]
-    (try
-      (when-not (await-parked!)
-        (throw (ex-info "public poller await did not reach its native wait"
-                        {:timeout-ms 5000})))
-      (let [first-close (net/close! poller)
-            awaited (deref waiting 5000 ::await-timeout)
-            second-close (net/close! poller)]
-        {:parked? true
-         :awaited awaited
-         :await-completed? (not= ::await-timeout awaited)
-         :close-results [first-close second-close]})
-      (finally
-        (net/close! poller)
-        (future-cancel waiting)))))
+    (let [body
+          (try
+            (when-not (await-parked! waiting poller)
+              (throw (ex-info "public poller await did not reach its native wait"
+                              {:timeout-ms 5000})))
+            (let [first-close (net/close! poller)
+                  awaited (deref waiting 5000 ::await-timeout)
+                  second-close (net/close! poller)]
+              {:value
+               {:parked? true
+                :awaited awaited
+                :await-completed? (not= ::await-timeout awaited)
+                :close-results [first-close second-close]}})
+            (catch :default error
+              {:error error}))
+          ;; Run both operations independently: close is the await completion
+          ;; boundary, while deref joins the future's subsequent terminal
+          ;; publication. Capturing each error keeps cleanup from masking a rich
+          ;; barrier/body failure and still reports cleanup when the body passed.
+          cleanup-errors
+          (vec
+           (keep
+            identity
+            [(cleanup-attempt :poller-close #(net/close! poller))
+             (cleanup-attempt :await-join #(deref waiting))]))]
+      (throw-with-cleanup! (:error body) cleanup-errors)
+      (:value body))))

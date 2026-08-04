@@ -1,5 +1,8 @@
 {:paths ["src"]
 
+ ;; Hegel aliases below may launch a second alias in a fresh child. Run them
+ ;; through script/run-hegel-gates.sh so both dependency graphs are prepared
+ ;; before generation and infrastructure failures retain one bounded bundle.
  :aliases
  {:test {:extra-paths ["test"]
          :main-opts ["-m" "jolt.sim.test-main"]}
@@ -10,19 +13,11 @@
   {:extra-paths ["test"]
    :main-opts ["-m" "jolt.sim.runtime-poison-test"]}
 
-  ;; Custom-image integration gate for the descriptor-v4 scoped byte-array
-  ;; pointer loan. Kept separate from :test so the compatibility suite remains
-  ;; loadable on released Jolt images that do not yet expose this fork API.
+  ;; Custom-image integration gate for the descriptor-v6 scoped byte-array
+  ;; pointer loan. Kept separate from :test because it requires the sim image.
   :ffi-pointer-loan-test
   {:extra-paths ["test"]
    :main-opts ["-m" "jolt.sim.ffi-pointer-loan-test-main"]}
-
-  ;; Custom-image integration gate for descriptor-v4 recursive aggregate
-  ;; identity. The fixture is ordinary jolt.ffi code and intentionally cannot
-  ;; load on a released image that lacks by-value aggregate arguments.
-  :ffi-aggregate-test
-  {:extra-paths ["test"]
-   :main-opts ["-m" "jolt.sim.ffi-aggregate-test-main"]}
 
   ;; Process-isolated because the scheduler makes no deadlock-recovery claim:
   ;; this deliberately leaves a thread blocked forever and relies on process
@@ -33,8 +28,14 @@
 
   ;; One request/result protocol worker per exact future schedule. The parent
   ;; process supplies the request and result paths after these main options.
+  ;; The reviewed terminal-wake pin lets a resolved scenario (for example,
+  ;; ffi-schedule-scenarios) load unchanged jolt.net code in this child.
   :explore-worker-test
   {:extra-paths ["test"]
+   :extra-deps
+   {io.github.casselc/jolt-net
+    {:git/url "https://github.com/casselc/jolt-net.git"
+     :git/sha "699b908ffb4eb79ad35055cdc20866bb504e6932"}}
    :main-opts ["-m" "jolt.sim.explore-worker"]}
 
   ;; Process-isolated integration gate for worker completion, timeout,
@@ -54,26 +55,344 @@
      :git/sha "ffe523023437862c7e474dc216346426318754c6"}}
    :main-opts ["-m" "jolt.sim.hegel-explore-test"]}
 
-  ;; Workspace integration lanes: the canonical db checkout is ../db.
+  ;; Hegel-owned, shrinkable capacities and poll-fault ordinals drive the
+  ;; unchanged HTTP + SQLite application in a fresh worker for every case.
+  :http-sqlite-hegel-test
+  {:extra-paths ["test"]
+   :extra-deps
+   {io.github.chucklehead-dev/jolt-hegel
+    {:git/url "https://github.com/chucklehead-dev/jolt-hegel.git"
+     :git/sha "ffe523023437862c7e474dc216346426318754c6"}}
+   :main-opts ["-m" "jolt.sim.http-sqlite-hegel-test"]}
+
+  ;; Child side of :http-sqlite-hegel-test. Loading db from source keeps the
+  ;; hermetic worker from initializing the real SQLite library before control.
+  :http-sqlite-explore-worker
+  {:extra-paths ["test"]
+   :extra-deps
+   {io.github.casselc/db
+    {:git/url "https://github.com/casselc/db.git"
+     :git/sha "df8f434f7ebf5e63b3f52ab6c5c2a2b2c92d3a6d"
+     :deps/root "clj"}
+    io.github.casselc/jolt-http
+    {:git/url "https://github.com/casselc/jolt-http.git"
+     :git/sha "96bd0fc93f1a2c77128d06f74802dd2a4631c0d4"}
+    io.github.casselc/jolt-tcp
+    {:git/url "https://github.com/casselc/jolt-tcp.git"
+     :git/sha "0ceaa900bfca11933d35831d7697c7e2c5b22f04"}
+    io.github.casselc/jolt-net
+    {:git/url "https://github.com/casselc/jolt-net.git"
+     :git/sha "699b908ffb4eb79ad35055cdc20866bb504e6932"}}
+   :main-opts ["-m" "jolt.sim.explore-worker"]}
+
+  ;; Real SQLite lane: use the complete public DB coordinate so its native
+  ;; library declaration is available to the launcher.
   :sqlite-test
   {:extra-paths ["test"]
-   :extra-deps {local/db {:local/root "../db"}}
+   :extra-deps
+   {io.github.casselc/db
+    {:git/url "https://github.com/casselc/db.git"
+     :git/sha "df8f434f7ebf5e63b3f52ab6c5c2a2b2c92d3a6d"}}
    :main-opts ["-m" "jolt.sim.sqlite-integration-test"]}
 
   :sqlite-sim-test
-  {:extra-paths ["test" "../db/clj"]
+  {:extra-paths ["test"]
+   :extra-deps
+   {io.github.casselc/db
+    {:git/url "https://github.com/casselc/db.git"
+     :git/sha "df8f434f7ebf5e63b3f52ab6c5c2a2b2c92d3a6d"
+     :deps/root "clj"}}
    :main-opts ["-m" "jolt.sim.sqlite-integration-test" "--sim-only"]}
 
+  ;; Independent literal wire vectors and every-boundary fragmentation checks
+  ;; for the ordinary TCP + bencode fixture.
+  :tcp-bencode-framing-test
+  {:extra-paths ["test"]
+   :extra-deps
+   {io.github.casselc/jolt-tcp
+    {:git/url "https://github.com/casselc/jolt-tcp.git"
+     :git/sha "0ceaa900bfca11933d35831d7697c7e2c5b22f04"}
+    io.github.casselc/jolt-net
+    {:git/url "https://github.com/casselc/jolt-net.git"
+     :git/sha "699b908ffb4eb79ad35055cdc20866bb504e6932"}
+    io.github.casselc/jolt-bencode
+    {:git/url "https://github.com/casselc/jolt-bencode.git"
+     :git/sha "6c68bf2a1dbd7e438923ce38252c2abbdcb1643f"}
+    io.github.casselc/jolt-bytes
+    {:git/url "https://github.com/casselc/jolt-bytes.git"
+     :git/sha "9c3280eb49c00d0373e32ee6cae74f961a254712"}}
+   :main-opts ["-m" "jolt.sim.tcp-bencode-framing-test"]}
+
+  ;; Fresh-worker lane for the TCP + bencode length-framed request/reply
+  ;; example: unchanged teensyp.server/client/buffer, jolt.bytes, and
+  ;; jolt.bencode application code resolved from jolt.sim.explore-worker.
+  ;; jolt-bytes is pinned directly (rather than left to jolt-bencode's own
+  ;; transitive pin) so this exact commit wins by dependency depth. The
+  ;; scenario imports jolt.net directly for target facts, so its reviewed
+  ;; ecosystem commit is direct rather than an accidental transitive detail.
+  :tcp-bencode-explore-worker
+  {:extra-paths ["test"]
+   :extra-deps
+   {io.github.casselc/jolt-tcp
+    {:git/url "https://github.com/casselc/jolt-tcp.git"
+     :git/sha "0ceaa900bfca11933d35831d7697c7e2c5b22f04"}
+    io.github.casselc/jolt-net
+    {:git/url "https://github.com/casselc/jolt-net.git"
+     :git/sha "699b908ffb4eb79ad35055cdc20866bb504e6932"}
+    io.github.casselc/jolt-bencode
+    {:git/url "https://github.com/casselc/jolt-bencode.git"
+     :git/sha "6c68bf2a1dbd7e438923ce38252c2abbdcb1643f"}
+    io.github.casselc/jolt-bytes
+    {:git/url "https://github.com/casselc/jolt-bytes.git"
+     :git/sha "9c3280eb49c00d0373e32ee6cae74f961a254712"}}
+   :main-opts ["-m" "jolt.sim.explore-worker"]}
+
+  ;; Hegel-owned, shrinkable capacities, poll-fault ordinal, and request-text
+  ;; domain drive the unchanged TCP + bencode application in a fresh worker
+  ;; for every case. This parent alias intentionally carries no teensyp/
+  ;; bencode/bytes dependency; only :tcp-bencode-explore-worker resolves the
+  ;; scenario namespace, in a fresh child process per case.
+  :tcp-bencode-hegel-test
+  {:extra-paths ["test"]
+   :extra-deps
+   {io.github.chucklehead-dev/jolt-hegel
+    {:git/url "https://github.com/chucklehead-dev/jolt-hegel.git"
+     :git/sha "ffe523023437862c7e474dc216346426318754c6"}}
+   :main-opts ["-m" "jolt.sim.tcp-bencode-hegel-test"]}
+
   ;; Unchanged public jolt.net application code over the deterministic POSIX
-  ;; loopback FFI pack.  Pin the reviewed v0.5.12 integration checkpoint so
-  ;; public CI never depends on a sibling checkout or a moving branch.
+  ;; loopback FFI pack. Pin the reviewed terminal-wake correction so public CI
+  ;; never depends on a sibling checkout or a moving branch.
   :posix-loopback-test
   {:extra-paths ["test"]
    :extra-deps
    {io.github.casselc/jolt-net
     {:git/url "https://github.com/casselc/jolt-net.git"
-     :git/sha "f2648525f08a7fbef5b82b4a11268b76f3984155"}}
-   :main-opts ["-m" "jolt.sim.posix-loopback-test-main"]}}
+     :git/sha "699b908ffb4eb79ad35055cdc20866bb504e6932"}}
+   :main-opts ["-m" "jolt.sim.posix-loopback-test-main"]}
+
+  ;; Unchanged public jolt-http (README Hello World) application code over the
+  ;; deterministic POSIX loopback FFI pack. Override jolt-http's historical
+  ;; transport pins with the reviewed Jolt 0.5.20 clock-compatible jolt-tcp and
+  ;; jolt-net commits, so CI needs no sibling checkout or moving branch.
+  :http-hello-test
+  {:extra-paths ["test"]
+   :extra-deps
+   {io.github.casselc/jolt-http
+    {:git/url "https://github.com/casselc/jolt-http.git"
+     :git/sha "96bd0fc93f1a2c77128d06f74802dd2a4631c0d4"}
+    io.github.casselc/jolt-tcp
+    {:git/url "https://github.com/casselc/jolt-tcp.git"
+     :git/sha "0ceaa900bfca11933d35831d7697c7e2c5b22f04"}
+    io.github.casselc/jolt-net
+    {:git/url "https://github.com/casselc/jolt-net.git"
+     :git/sha "699b908ffb4eb79ad35055cdc20866bb504e6932"}}
+   :main-opts ["-m" "jolt.sim.posix-loopback-http-test-main"]}
+
+  ;; Ordinary jolt-http and db application code exercised first against real
+  ;; sockets/SQLite, then unchanged over one shared simulated native boundary.
+  ;; The db checkout is local until the reviewed fork commits are published.
+  :http-sqlite-test
+  {:extra-paths ["test"]
+   :extra-deps
+   {io.github.casselc/db
+    {:git/url "https://github.com/casselc/db.git"
+     :git/sha "df8f434f7ebf5e63b3f52ab6c5c2a2b2c92d3a6d"}
+    io.github.casselc/jolt-http
+    {:git/url "https://github.com/casselc/jolt-http.git"
+     :git/sha "96bd0fc93f1a2c77128d06f74802dd2a4631c0d4"}
+    io.github.casselc/jolt-tcp
+    {:git/url "https://github.com/casselc/jolt-tcp.git"
+     :git/sha "0ceaa900bfca11933d35831d7697c7e2c5b22f04"}
+    io.github.casselc/jolt-net
+    {:git/url "https://github.com/casselc/jolt-net.git"
+     :git/sha "699b908ffb4eb79ad35055cdc20866bb504e6932"}}
+   :main-opts ["-m" "jolt.sim.http-sqlite-test-main"]}
+
+  ;; Hermetic SQLite variant: load only db's source path so its native-library
+  ;; metadata cannot initialize the real SQLite library before control begins.
+  :http-sqlite-sim-test
+  {:extra-paths ["test"]
+   :extra-deps
+   {io.github.casselc/db
+    {:git/url "https://github.com/casselc/db.git"
+     :git/sha "df8f434f7ebf5e63b3f52ab6c5c2a2b2c92d3a6d"
+     :deps/root "clj"}
+    io.github.casselc/jolt-http
+    {:git/url "https://github.com/casselc/jolt-http.git"
+     :git/sha "96bd0fc93f1a2c77128d06f74802dd2a4631c0d4"}
+    io.github.casselc/jolt-tcp
+    {:git/url "https://github.com/casselc/jolt-tcp.git"
+     :git/sha "0ceaa900bfca11933d35831d7697c7e2c5b22f04"}
+    io.github.casselc/jolt-net
+    {:git/url "https://github.com/casselc/jolt-net.git"
+     :git/sha "699b908ffb4eb79ad35055cdc20866bb504e6932"}}
+   :main-opts ["-m" "jolt.sim.http-sqlite-test-main" "--sim-only"]}
+
+  ;; Simulator-free pure application core: the canonical HTTP command ->
+  ;; SQLite transaction -> TCP bencode delivery slice in jolt.example.outbox.
+  ;; No external dependencies and no sim image required.
+  :application-core-test
+  {:extra-paths ["test"]
+   :main-opts ["-m" "jolt.example.outbox-test-main"]}
+
+  ;; Simulator-free transactional outbox adapter gate: the pure
+  ;; jolt.example.outbox core over real system SQLite through public jdbc.core,
+  ;; proving atomic outer-COMMIT visibility, exact replay, and guarded durable
+  ;; delivery marking. Uses the complete public DB coordinate
+  ;; so its native library declaration is available to the launcher.
+  ;; Sequential, single-owner, fresh in-memory database per test; no sim image
+  ;; required.
+  :outbox-sqlite-test
+  {:extra-paths ["test"]
+   :extra-deps
+   {io.github.casselc/db
+    {:git/url "https://github.com/casselc/db.git"
+     :git/sha "df8f434f7ebf5e63b3f52ab6c5c2a2b2c92d3a6d"}}
+   :main-opts ["-m" "jolt.example.outbox-sqlite-test-main"]}
+
+  ;; Real/hermetic/hybrid parity gate for the unchanged jolt.example.outbox
+  ;; SQLite adapter: one ordinary jdbc.core scenario run against real SQLite
+  ;; and under the hermetic and hybrid SQLite handler worlds with an exact
+  ;; 28-statement row-effect plan world. Uses the complete public DB coordinate
+  ;; so its native library declaration is available to the launcher. Keep this
+  ;; focused alias separate from the dependency-light aggregate suite.
+  :outbox-sqlite-parity-test
+  {:extra-paths ["test"]
+   :extra-deps
+   {io.github.casselc/db
+    {:git/url "https://github.com/casselc/db.git"
+     :git/sha "df8f434f7ebf5e63b3f52ab6c5c2a2b2c92d3a6d"}}
+   :main-opts ["-m" "jolt.sim.outbox-sqlite-integration-test-main"]}
+
+  ;; First ordinary whole-application witness: one bencoded HTTP command,
+  ;; post-COMMIT SQLite outbox reload, one later framed TCP/bencode delivery
+  ;; with an ack, and the ack-gated durable delivery marking plus final reload
+  ;; on the same open connection. Direct pins keep the DB/HTTP/TCP/net/codec/
+  ;; bytes stack exact.
+  :outbox-delivery-test
+  {:extra-paths ["test"]
+   :extra-deps
+   {io.github.casselc/db
+    {:git/url "https://github.com/casselc/db.git"
+     :git/sha "df8f434f7ebf5e63b3f52ab6c5c2a2b2c92d3a6d"}
+    io.github.casselc/jolt-http
+    {:git/url "https://github.com/casselc/jolt-http.git"
+     :git/sha "96bd0fc93f1a2c77128d06f74802dd2a4631c0d4"}
+    io.github.casselc/jolt-tcp
+    {:git/url "https://github.com/casselc/jolt-tcp.git"
+     :git/sha "0ceaa900bfca11933d35831d7697c7e2c5b22f04"}
+    io.github.casselc/jolt-net
+    {:git/url "https://github.com/casselc/jolt-net.git"
+     :git/sha "699b908ffb4eb79ad35055cdc20866bb504e6932"}
+    io.github.casselc/jolt-bencode
+    {:git/url "https://github.com/casselc/jolt-bencode.git"
+     :git/sha "6c68bf2a1dbd7e438923ce38252c2abbdcb1643f"}
+    io.github.casselc/jolt-bytes
+    {:git/url "https://github.com/casselc/jolt-bytes.git"
+     :git/sha "9c3280eb49c00d0373e32ee6cae74f961a254712"}}
+   :main-opts ["-m" "jolt.sim.outbox-delivery-integration-test-main"]}
+
+  ;; Real-native child side of the post-COMMIT process-exit/recovery witness.
+  ;; The complete db coordinate supplies SQLite's native metadata; the other
+  ;; exact pins match :outbox-delivery-test because the worker executes that
+  ;; same ordinary HTTP -> SQLite -> TCP/bencode application stack.
+  :outbox-crash-worker
+  {:extra-paths ["test"]
+   :extra-deps
+   {io.github.casselc/db
+    {:git/url "https://github.com/casselc/db.git"
+     :git/sha "df8f434f7ebf5e63b3f52ab6c5c2a2b2c92d3a6d"}
+    io.github.casselc/jolt-http
+    {:git/url "https://github.com/casselc/jolt-http.git"
+     :git/sha "96bd0fc93f1a2c77128d06f74802dd2a4631c0d4"}
+    io.github.casselc/jolt-tcp
+    {:git/url "https://github.com/casselc/jolt-tcp.git"
+     :git/sha "0ceaa900bfca11933d35831d7697c7e2c5b22f04"}
+    io.github.casselc/jolt-net
+    {:git/url "https://github.com/casselc/jolt-net.git"
+     :git/sha "699b908ffb4eb79ad35055cdc20866bb504e6932"}
+    io.github.casselc/jolt-bencode
+    {:git/url "https://github.com/casselc/jolt-bencode.git"
+     :git/sha "6c68bf2a1dbd7e438923ce38252c2abbdcb1643f"}
+    io.github.casselc/jolt-bytes
+    {:git/url "https://github.com/casselc/jolt-bytes.git"
+     :git/sha "9c3280eb49c00d0373e32ee6cae74f961a254712"}}
+   :main-opts ["-m" "jolt.sim.explore-worker"]}
+
+  ;; Parent supervisor for two fresh real-native workers: the first exits 86
+  ;; after COMMIT, and the second reopens the retained database and delivers.
+  :outbox-crash-recovery-test
+  {:extra-paths ["test"]
+   :main-opts ["-m" "jolt.sim.outbox-crash-recovery-test"]}
+
+  ;; System-SQLite-library-free child/CI form of the same whole-application
+  ;; gate. Only db's source root is loaded so real SQLite cannot initialize
+  ;; before the hermetic controller is installed.
+  :outbox-delivery-sim-test
+  {:extra-paths ["test"]
+   :extra-deps
+   {io.github.casselc/db
+    {:git/url "https://github.com/casselc/db.git"
+     :git/sha "df8f434f7ebf5e63b3f52ab6c5c2a2b2c92d3a6d"
+     :deps/root "clj"}
+    io.github.casselc/jolt-http
+    {:git/url "https://github.com/casselc/jolt-http.git"
+     :git/sha "96bd0fc93f1a2c77128d06f74802dd2a4631c0d4"}
+    io.github.casselc/jolt-tcp
+    {:git/url "https://github.com/casselc/jolt-tcp.git"
+     :git/sha "0ceaa900bfca11933d35831d7697c7e2c5b22f04"}
+    io.github.casselc/jolt-net
+    {:git/url "https://github.com/casselc/jolt-net.git"
+     :git/sha "699b908ffb4eb79ad35055cdc20866bb504e6932"}
+    io.github.casselc/jolt-bencode
+    {:git/url "https://github.com/casselc/jolt-bencode.git"
+     :git/sha "6c68bf2a1dbd7e438923ce38252c2abbdcb1643f"}
+    io.github.casselc/jolt-bytes
+    {:git/url "https://github.com/casselc/jolt-bytes.git"
+     :git/sha "9c3280eb49c00d0373e32ee6cae74f961a254712"}}
+    :main-opts ["-m" "jolt.sim.outbox-delivery-integration-test-main"
+                "--sim-only"]}
+
+  ;; Child side of :outbox-delivery-hegel-test. Only db's source root is loaded
+  ;; so real SQLite cannot initialize before the hermetic controller is
+  ;; installed; the remaining pins match :outbox-delivery-sim-test exactly.
+  :outbox-delivery-explore-worker
+  {:extra-paths ["test"]
+   :extra-deps
+   {io.github.casselc/db
+    {:git/url "https://github.com/casselc/db.git"
+     :git/sha "df8f434f7ebf5e63b3f52ab6c5c2a2b2c92d3a6d"
+     :deps/root "clj"}
+    io.github.casselc/jolt-http
+    {:git/url "https://github.com/casselc/jolt-http.git"
+     :git/sha "96bd0fc93f1a2c77128d06f74802dd2a4631c0d4"}
+    io.github.casselc/jolt-tcp
+    {:git/url "https://github.com/casselc/jolt-tcp.git"
+     :git/sha "0ceaa900bfca11933d35831d7697c7e2c5b22f04"}
+    io.github.casselc/jolt-net
+    {:git/url "https://github.com/casselc/jolt-net.git"
+     :git/sha "699b908ffb4eb79ad35055cdc20866bb504e6932"}
+    io.github.casselc/jolt-bencode
+    {:git/url "https://github.com/casselc/jolt-bencode.git"
+     :git/sha "6c68bf2a1dbd7e438923ce38252c2abbdcb1643f"}
+    io.github.casselc/jolt-bytes
+    {:git/url "https://github.com/casselc/jolt-bytes.git"
+     :git/sha "9c3280eb49c00d0373e32ee6cae74f961a254712"}}
+   :main-opts ["-m" "jolt.sim.explore-worker"]}
+
+  ;; Hegel-owned, shrinkable command payload, capacities, and poll-fault
+  ;; ordinal drive the unchanged outbox-delivery application in a fresh worker
+  ;; for every case. This parent alias intentionally carries no
+  ;; db/http/tcp/codec dependency; only :outbox-delivery-explore-worker
+  ;; resolves the scenario namespace, in a fresh child process per case.
+  :outbox-delivery-hegel-test
+  {:extra-paths ["test"]
+   :extra-deps
+   {io.github.chucklehead-dev/jolt-hegel
+    {:git/url "https://github.com/chucklehead-dev/jolt-hegel.git"
+     :git/sha "ffe523023437862c7e474dc216346426318754c6"}}
+   :main-opts ["-m" "jolt.sim.outbox-delivery-hegel-test"]}}
 
  :tasks
  {check "jolt -M:test"}}
