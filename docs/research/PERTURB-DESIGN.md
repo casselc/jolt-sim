@@ -4310,6 +4310,55 @@ site** — which is §4.6's own join-rule item, "§1.2's own unexplored option, 
 session-typed answer". It is now wanted for two independent reasons, and this is
 the first evidence for it from code this project did not write.
 
+**Built, and building it corrected this section twice.** `perturb.dbtx` /
+`perturb.dbtxcorpus` declare the machine above and gate six programs; the
+mechanism is opt-in per operation and no existing corpus verdict moved.
+
+1. **"The gap in the declaration language" was the wrong diagnosis.**
+   `perturb.cap` never rejected several transitions sharing `:op` and `:from` —
+   it validates only that the four axes are present. What lost them was one line
+   in `check.clj`'s `spec-from`: the primitive table was
+   `[capability operation] -> entry`, built with `assoc`, so the **second edge of
+   a group silently overwrote the first**. The language needed one collection and
+   one optional key; the rest of the gap was a checker *index*. This is the same
+   shape as E19's two-machine defect and it survived in the same table.
+2. **The price is higher than "a case-split".** A case-split needs a *declared
+   discriminator*, and a discriminator is **a new class of axiom**: nothing
+   checks that `autocommit?` returns true exactly when the handle is `:idle`. A
+   discriminator that lies narrows to the wrong state and buys a false accept —
+   E15's class, at a new key. `report-limits` item 14(f) states it.
+
+   Two further limits, both measured: a **sum cannot cross a function boundary**,
+   because a collection in `:consumes` already means *any of* and a parameter is
+   bound in the first member, so a sum must be eliminated in the function that
+   produced it (14(i)); and a sum for which **no** discriminator is declared
+   makes a state silently unusable — such a capability can only be consumed by a
+   totally-admitting operation, and if the machine has none, every program
+   holding it leaks, with no warning at the declaration (14(e)).
+3. **The one table that still has the old defect** is `cap/refinements`, keyed
+   `[capability operation]` with `assoc`. Two summands of one group each carrying
+   a `:perturb.cap/refine` would silently collide. Nothing declares such a pair
+   today; recorded as 14(j) rather than left hidden.
+
+**A contradiction between this section and finding 8, which E27 settles.** The
+machine printed above marks `:terminal [:poisoned :closed]`. Finding 8 argues the
+obligation is discharged *by entering a state whose only legal outgoing edge is
+the destructor* — under which `:poisoned` is emphatically **not** terminal, since
+the resource must still be closed. Finding 8 is right and this section's sketch is
+wrong: `casselc/db` keeps `close` legal on a poisoned transaction, and it is
+`sqlite3_close_v2` that disposes of the stranded work. The fixture as built
+follows the sketch, so its middle arm would leak under the correct reading —
+measured directly, since shrinking `:terminal` to `[:closed]` turns the accepting
+program into a `dangling` on `perturb.dbtx/Tx@[:closed :poisoned]`. The fixture
+gates the sum mechanism, not the fidelity of the db model, and the discrepancy is
+recorded here rather than papered over.
+
+**One thing the sum makes visible that was already true.** `cap/transition!`
+records the **one** destination a run actually took. The static sum and the
+ledger's concrete edge are the before and after of the same uncertainty, which is
+the cleanest example so far of the static/monitored pairing
+`RUNTIME-OBLIGATION-BRIEF` proposes.
+
 #### 8. A fifth piece for the `abort!` specification, and the cheapest one
 
 §4.6's cancellation list has four pieces, all built on Fowler's `cancel` **term**
