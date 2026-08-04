@@ -831,6 +831,56 @@ export, and CTMC/stability claims. One constraint on the deferred OTel item: the
 semantic-event field set should be chosen so that export is a **projection**
 rather than a rework.
 
+### 7.2c UPSTREAM MOVED — merged `origin/main` 2026-08-04, 88 commits
+
+The branch was brought up to date before further experimentation (merge, not
+rebase: **zero file overlap** — main touched `src/jolt/sim`, `test/`,
+`report/`, `docs/proofs`; this branch touched `perturb/` and `docs/research`
+— so a merge is guaranteed clean, needs no force-push, and preserves the
+per-finding commits E34–E41 that are themselves part of the record). All
+perturb gates still exit 0 after the merge: `-M:region -M:evt -M:check -M:layer
+-M:selftest -M:gatecheck`.
+
+**Four things landed upstream that this design proposed as new.** Read from
+source where noted; otherwise from docstrings, with §13 nonclaim 2 still in
+force — that nonclaim has now been proven right once (§7.2 Merge 1).
+
+1. **`jolt.sim.case-outcome` is close to §7.2b step 2's semantic document, and
+   it already exists.** Verified from source: a **versioned, closed, validated**
+   EDN contract — `:version 1`, `:case`, `:outcome`, and
+   **`:monitors [<stored monitor decision> …]`** — with a validator enforcing
+   exact top-level keys, rejecting unsupported versions, and storing every
+   caller value through canonical projection. It is **per case, not per event**,
+   and carries no causal-correlation fields, so it is the *container and the
+   versioning discipline* rather than the whole thing. **The convergence slice's
+   step 2 changes from "define a new document" to "decide whether Case/Outcome
+   v1 extends, or whether events need a sibling."**
+2. **`jolt.sim.fault` is §6.1's `:failure` as a value** — "transport-neutral
+   deterministic fault-plan director… plain immutable data built from a closed
+   fault plan", pure, frozen through `jolt.sim.trace`. And it already draws the
+   distinction this record keeps re-deriving: it records **every matching rule's
+   activation separately from actual firing** — a denominator beside a verdict.
+3. **A Maelstrom lane exists**: `jolt.maelstrom.node` (transport-agnostic node
+   boundary, owns `node_id`/`node_ids`/`msg_id`), `jolt.maelstrom.echo`,
+   `jolt.maelstrom.transport`, `jolt.sim.maelstrom.history` (a pure offline
+   checker over a memory-transport snapshot), and `test/jolt/maelstrom/`. §10's
+   worry that the Maelstrom lane may be unreachable here is **half wrong**: an
+   in-simulator lane is built. The `:native` Jepsen lane — the one that supplies
+   the *independent* oracle — is still the part that needs a JVM.
+4. **`jolt.sim.repl` is part of §5's surface**, described in its own docstring as
+   "a thin in-process helper for humans **and agents** driving the fresh-process
+   supervisor from a long-lived Jolt nREPL session", delegating unchanged to
+   `process-explorer/run-case` and explicitly **not** a second controller,
+   scheduler, worker protocol, or monitor.
+
+Also new since the exists-map was written: `explore_states.clj`, `clock.clj`,
+`ffi_schedule.clj`, and a `report/` viewer lane.
+
+**The direction of the error is worth recording.** §12 undercounted what exists,
+and §7.2 Merge 1 overstated what could be merged. Both come from the same cause
+— an exists-map assembled from docstrings and line counts — and the correct
+response is the review's: verify against source before proposing to build on it.
+
 ### 7.3 What does *not* merge, and why
 
 - **`perturb.ir` stays quarantined.** 93 lines of `alter-var-root` tap whose own
