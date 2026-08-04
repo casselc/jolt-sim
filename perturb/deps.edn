@@ -34,6 +34,14 @@
   ;; `-M:noio --touch-native` is the positive control.
   :noio   {:main-opts ["-m" "perturb.noio"]}
 
+  ;; The measurement of code perturb did NOT write: perturb.stream, ported from
+  ;; teensyp.stream by an agent forbidden to read the rules, checked against a
+  ;; declaration written from outside. Not a gate — it records no expectations,
+  ;; because the point was to find out the verdicts rather than assert them.
+  ;; (This alias was missing when the measurement landed, which made it
+  ;; unreachable from the documented interface; found by the -M:evt work.)
+  :streamcheck {:main-opts ["-m" "perturb.streamcheck"]}
+
   ;; The static capability checker. Reads perturb.cap's declarations as a
   ;; SPECIFICATION and real Jolt IR as the program, and rejects. No socket and
   ;; no server; nothing in the corpus is ever called.
