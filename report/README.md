@@ -22,6 +22,11 @@ jolt -M:trace-report INPUT.edn [OUTPUT.html]
 jolt -M:case-report CASE-OUTCOME.edn [OUTPUT.html]
 ```
 
+The [`examples`](examples/) directory contains a small cooperative scheduler
+trace and a retained whole-application HTTP/SQLite/outbox retry Case/Outcome,
+each with the source EDN, generated self-contained HTML, and a viewport
+preview. Its README records exact regeneration and byte-determinism checks.
+
 Downstream applications should select this repository with
 `:deps/root "report"`. Use this report coordinate as the application's sole
 jolt-sim coordinate. If an application must also declare the core root

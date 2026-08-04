@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<!-- Compiled into jolt.sim.report during namespace analysis. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>jolt-sim case report</title>
+<style>
+  :root {
+    --bg: #f6f7f9;
+    --panel: #ffffff;
+    --ink: #1c2733;
+    --muted: #5b6b7b;
+    --line: #d8dee6;
+    --accent: #2456a6;
+    --pass: #1e7d3c;
+    --violation: #b3261e;
+    --inconclusive: #8a6d00;
+    --code-bg: #eef1f5;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    line-height: 1.45;
+  }
+  header {
+    background: var(--panel);
+    border-bottom: 1px solid var(--line);
+    padding: 1.25rem 1.5rem;
+  }
+  header h1 { margin: 0 0 0.25rem; font-size: 1.35rem; }
+  header .subtitle { margin: 0; color: var(--muted); font-size: 0.95rem; }
+  main { padding: 1.25rem 1.5rem 2rem; max-width: 1100px; margin: 0 auto; }
+  section { margin-bottom: 1.75rem; }
+  h2 {
+    font-size: 1.05rem;
+    margin: 0 0 0.6rem;
+    padding-bottom: 0.3rem;
+    border-bottom: 1px solid var(--line);
+  }
+  .cards { display: flex; gap: 0.75rem; flex-wrap: wrap; }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 0.7rem 1rem;
+    min-width: 9rem;
+  }
+  .card-label { display: block; color: var(--muted); font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.04em; }
+  .card-value { display: block; font-size: 1.15rem; font-weight: 600; margin-top: 0.15rem; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    overflow: hidden;
+    font-size: 0.9rem;
+  }
+  th, td { padding: 0.45rem 0.6rem; text-align: left; vertical-align: top; border-bottom: 1px solid var(--line); }
+  thead th { background: var(--code-bg); font-weight: 600; white-space: nowrap; }
+  tbody tr:last-child td, tbody tr:last-child th { border-bottom: none; }
+  table.kv th { white-space: nowrap; width: 1%; padding-right: 1rem; }
+  .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.85em; }
+  .edn { word-break: break-all; }
+  .detail { word-break: break-word; }
+  .muted { color: var(--muted); }
+  .status { font-weight: 600; }
+  .status-pass, .status-completed { color: var(--pass); }
+  .status-violation, .status-failed, .status-worker-error { color: var(--violation); }
+  .status-inconclusive, .status-timeout { color: var(--inconclusive); }
+  details { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; }
+  summary { cursor: pointer; padding: 0.6rem 0.8rem; font-weight: 600; }
+  .sections-list details { margin-bottom: 0.5rem; }
+  pre.canonical {
+    margin: 0;
+    padding: 0.8rem;
+    background: var(--code-bg);
+    overflow-x: auto;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.82rem;
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+  section > pre.canonical { border: 1px solid var(--line); border-radius: 6px; }
+  footer { padding: 0 1.5rem 1.5rem; color: var(--muted); font-size: 0.8rem; text-align: center; }
+</style>
+</head>
+<body>
+<header>
+  <h1>jolt-sim case report</h1>
+  <p class="subtitle"><code>jolt.sim.fixtures.outbox-delivery-scenarios/exercise-retry-recv-reset</code> &middot; hermetic &middot; completed</p>
+</header>
+
+<main>
+  <section class="cards">
+    <div class="card">
+      <span class="card-label">Document version</span>
+      <span class="card-value">1</span>
+    </div>
+    <div class="card">
+      <span class="card-label">Mode</span>
+      <span class="card-value">hermetic</span>
+    </div>
+    <div class="card">
+      <span class="card-label">Outcome</span>
+      <span class="card-value status status-completed">completed</span>
+    </div>
+    <div class="card">
+      <span class="card-label">Exit</span>
+      <span class="card-value">0</span>
+    </div>
+
+    <div class="card">
+      <span class="card-label">Monitors</span>
+      <span class="card-value">1</span>
+    </div>
+  </section>
+
+  <section>
+    <h2>Case</h2>
+    <table class="kv">
+      <tbody>
+        <tr><th>Scenario</th><td><code>jolt.sim.fixtures.outbox-delivery-scenarios/exercise-retry-recv-reset</code></td></tr>
+        <tr><th>Mode</th><td><code>hermetic</code></td></tr>
+        <tr><th>Schedule</th><td class="edn"><code>nil</code></td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Canonical input (EDN)</h2>
+    <pre class="canonical">{:payload [], :pipe-capacity 1, :poll-eintr-ordinal nil, :stream-capacity 8}</pre>
+  </section>
+
+  <section>
+    <h2>Outcome</h2>
+    <table class="kv">
+      <tbody>
+        <tr>
+          <th>Status</th>
+          <td class="status status-completed">completed</td>
+        </tr>
+        <tr><th>Exit</th><td class="num">0</td></tr>
+
+      </tbody>
+    </table>
+
+    <details>
+      <summary>Result value (canonical EDN)</summary>
+      <pre class="canonical">{:application {:command {:emitted [{:entity-id &quot;entity-a&quot;, :outbox-id 1, :payload [], :request-id &quot;req-1&quot;, :status :pending, :version 1}], :result {:entity-id &quot;entity-a&quot;, :outbox-id 1, :request-id &quot;req-1&quot;, :status :committed, :version 1}, :value {:entity-id &quot;entity-a&quot;, :payload [], :request-id &quot;req-1&quot;}}, :identities {:attempt-id [:outbox/delivery-attempt 1 1], :delivery-id [:outbox/delivery 1], :outbox-id 1, :request-id &quot;req-1&quot;, :transaction-id [:outbox/command &quot;req-1&quot;]}, :marking {:changed? true, :row {:entity-id &quot;entity-a&quot;, :outbox-id 1, :payload [], :request-id &quot;req-1&quot;, :status :delivered, :version 1}}, :pending-state {:entities {&quot;entity-a&quot; {:payload [], :version 1}}, :next-outbox-id 2, :outbox [{:entity-id &quot;entity-a&quot;, :outbox-id 1, :payload [], :request-id &quot;req-1&quot;, :status :pending, :version 1}], :request-log {&quot;req-1&quot; {:command {:entity-id &quot;entity-a&quot;, :payload [], :request-id &quot;req-1&quot;}, :result {:entity-id &quot;entity-a&quot;, :outbox-id 1, :request-id &quot;req-1&quot;, :status :committed, :version 1}}}}, :retry {:attempt-1 {:cleanup-errors [], :error {:class &quot;class clojure.lang.ExceptionInfo&quot;, :data {&quot;:jolt.net/code&quot; &quot;104&quot;, &quot;:jolt.net/kind&quot; &quot;:connection-reset&quot;, &quot;:jolt.net/message&quot; &quot;\&quot;Connection reset by peer (code 104)\&quot;&quot;, &quot;:jolt.net/op&quot; &quot;:read&quot;, &quot;:jolt.net/platform&quot; &quot;:posix&quot;}, :message &quot;jolt.net read: Connection reset by peer (code 104)&quot;}}, :delivery {:close-results {:connection [true false]}, :received-bytes 59, :replies [{&quot;attempt&quot; 2, &quot;outbox-id&quot; 1, &quot;type&quot; &quot;outbox_delivery_ok&quot;}], :requests [{&quot;attempt&quot; 2, &quot;entity-id&quot; &quot;entity-a&quot;, &quot;outbox-id&quot; 1, &quot;payload&quot; [], &quot;request-id&quot; &quot;req-1&quot;, &quot;type&quot; &quot;outbox_delivery&quot;, &quot;version&quot; 1}], :sent-bytes 120}, :state-unchanged-after-failure? true}, :store-state {:entities {&quot;entity-a&quot; {:payload [], :version 1}}, :next-outbox-id 2, :outbox [{:entity-id &quot;entity-a&quot;, :outbox-id 1, :payload [], :request-id &quot;req-1&quot;, :status :delivered, :version 1}], :request-log {&quot;req-1&quot; {:command {:entity-id &quot;entity-a&quot;, :payload [], :request-id &quot;req-1&quot;}, :result {:entity-id &quot;entity-a&quot;, :outbox-id 1, :request-id &quot;req-1&quot;, :status :committed, :version 1}}}}}, :capacity {:pipe {:max-pipe-fifo-bytes 1, :pipe-capacity 1, :pipe-would-blocks 17}, :stream {:max-stream-recv-bytes 8, :stream-capacity 8, :stream-capacity-limited-writes 90, :stream-would-blocks 50}}, :clean? {:memory true, :posix true, :sqlite true}, :fault {:attempts 179, :fired-attempts [{:attempt-id [:jolt.sim.net.posix-fault/recv 82 1073741838 40000], :firing {:firing-ordinal 1, :match-ordinal 1, :outcome {:errno :econnreset, :kind :captured-error}, :rule-firing-ordinal 1, :rule-id :outbox-delivery/reset-delivery-recv}}], :firings 1, :recv-attempts 111, :recv-reset-peer-port 40000}, :http {:close-results {:connection [true false]}, :content-length &quot;107&quot;, :content-type &quot;application/x-bencode&quot;, :response {&quot;entity-id&quot; &quot;entity-a&quot;, &quot;outbox-id&quot; 1, &quot;request-id&quot; &quot;req-1&quot;, &quot;status&quot; &quot;committed&quot;, &quot;type&quot; &quot;command_ok&quot;, &quot;version&quot; 1}, :server-errors [], :status 200}, :receiver {:requests [{&quot;attempt&quot; 1, &quot;entity-id&quot; &quot;entity-a&quot;, &quot;outbox-id&quot; 1, &quot;payload&quot; [], &quot;request-id&quot; &quot;req-1&quot;, &quot;type&quot; &quot;outbox_delivery&quot;, &quot;version&quot; 1} {&quot;attempt&quot; 2, &quot;entity-id&quot; &quot;entity-a&quot;, &quot;outbox-id&quot; 1, &quot;payload&quot; [], &quot;request-id&quot; &quot;req-1&quot;, &quot;type&quot; &quot;outbox_delivery&quot;, &quot;version&quot; 1}], :server-errors [{:class &quot;class clojure.lang.ExceptionInfo&quot;, :data {&quot;:jolt.net/code&quot; &quot;32&quot;, &quot;:jolt.net/kind&quot; &quot;:connection-reset&quot;, &quot;:jolt.net/message&quot; &quot;\&quot;Connection reset by peer (code 32)\&quot;&quot;, &quot;:jolt.net/op&quot; &quot;:write&quot;, &quot;:jolt.net/platform&quot; &quot;:posix&quot;}, :message &quot;jolt.net write: Connection reset by peer (code 32)&quot;}]}, :routes {:all-handled? true, :count 5985, :foreign-symbols [&quot;accept&quot; &quot;bind&quot; &quot;close&quot; &quot;connect&quot; &quot;fcntl&quot; &quot;freeaddrinfo&quot; &quot;getaddrinfo&quot; &quot;getpeername&quot; &quot;getsockname&quot; &quot;getsockopt&quot; &quot;listen&quot; &quot;pipe&quot; &quot;poll&quot; &quot;read&quot; &quot;recv&quot; &quot;send&quot; &quot;setsockopt&quot; &quot;socket&quot; &quot;sqlite3_bind_blob64&quot; &quot;sqlite3_bind_int64&quot; &quot;sqlite3_bind_text&quot; &quot;sqlite3_changes&quot; &quot;sqlite3_close_v2&quot; &quot;sqlite3_column_blob&quot; &quot;sqlite3_column_bytes&quot; &quot;sqlite3_column_count&quot; &quot;sqlite3_column_int64&quot; &quot;sqlite3_column_name&quot; &quot;sqlite3_column_text&quot; &quot;sqlite3_column_type&quot; &quot;sqlite3_finalize&quot; &quot;sqlite3_get_autocommit&quot; &quot;sqlite3_open&quot; &quot;sqlite3_prepare_v2&quot; &quot;sqlite3_step&quot; &quot;write&quot;]}, :schedule {:coordinator-diagnostics {:aborted? false, :arrival-order [:jolt.sim.fixtures.outbox-delivery-scenarios/delivery-client-recv :jolt.sim.fixtures.outbox-delivery-scenarios/receiver-ack-send], :arrived #{:jolt.sim.fixtures.outbox-delivery-scenarios/delivery-client-recv :jolt.sim.fixtures.outbox-delivery-scenarios/receiver-ack-send}, :completed #{:jolt.sim.fixtures.outbox-delivery-scenarios/delivery-client-recv :jolt.sim.fixtures.outbox-delivery-scenarios/receiver-ack-send}, :completion-order [:jolt.sim.fixtures.outbox-delivery-scenarios/receiver-ack-send :jolt.sim.fixtures.outbox-delivery-scenarios/delivery-client-recv], :due-index 2, :in-flight 0, :release-order [:jolt.sim.fixtures.outbox-delivery-scenarios/receiver-ack-send :jolt.sim.fixtures.outbox-delivery-scenarios/delivery-client-recv], :released #{:jolt.sim.fixtures.outbox-delivery-scenarios/delivery-client-recv :jolt.sim.fixtures.outbox-delivery-scenarios/receiver-ack-send}}, :label-counts {:role/delivery-client-recv 13, :role/receiver-ack-send 10, :unlabeled 234}, :release-evidence [[:release :jolt.sim.fixtures.outbox-delivery-scenarios/receiver-ack-send] [:release :jolt.sim.fixtures.outbox-delivery-scenarios/delivery-client-recv]], :routes {:recv {:all-handled? true, :count 111}, :send {:all-handled? true, :count 146}}}, :sqlite {:active-stmts 0, :open-dbs 0, :plan-count 27, :plan-index 27}}</pre>
+    </details>
+
+
+  </section>
+
+
+  <section>
+    <h2>Result detail</h2>
+    <div class="sections-list">
+
+      <details>
+        <summary>:application</summary>
+        <pre class="canonical">{:command {:emitted [{:entity-id &quot;entity-a&quot;, :outbox-id 1, :payload [], :request-id &quot;req-1&quot;, :status :pending, :version 1}], :result {:entity-id &quot;entity-a&quot;, :outbox-id 1, :request-id &quot;req-1&quot;, :status :committed, :version 1}, :value {:entity-id &quot;entity-a&quot;, :payload [], :request-id &quot;req-1&quot;}}, :identities {:attempt-id [:outbox/delivery-attempt 1 1], :delivery-id [:outbox/delivery 1], :outbox-id 1, :request-id &quot;req-1&quot;, :transaction-id [:outbox/command &quot;req-1&quot;]}, :marking {:changed? true, :row {:entity-id &quot;entity-a&quot;, :outbox-id 1, :payload [], :request-id &quot;req-1&quot;, :status :delivered, :version 1}}, :pending-state {:entities {&quot;entity-a&quot; {:payload [], :version 1}}, :next-outbox-id 2, :outbox [{:entity-id &quot;entity-a&quot;, :outbox-id 1, :payload [], :request-id &quot;req-1&quot;, :status :pending, :version 1}], :request-log {&quot;req-1&quot; {:command {:entity-id &quot;entity-a&quot;, :payload [], :request-id &quot;req-1&quot;}, :result {:entity-id &quot;entity-a&quot;, :outbox-id 1, :request-id &quot;req-1&quot;, :status :committed, :version 1}}}}, :retry {:attempt-1 {:cleanup-errors [], :error {:class &quot;class clojure.lang.ExceptionInfo&quot;, :data {&quot;:jolt.net/code&quot; &quot;104&quot;, &quot;:jolt.net/kind&quot; &quot;:connection-reset&quot;, &quot;:jolt.net/message&quot; &quot;\&quot;Connection reset by peer (code 104)\&quot;&quot;, &quot;:jolt.net/op&quot; &quot;:read&quot;, &quot;:jolt.net/platform&quot; &quot;:posix&quot;}, :message &quot;jolt.net read: Connection reset by peer (code 104)&quot;}}, :delivery {:close-results {:connection [true false]}, :received-bytes 59, :replies [{&quot;attempt&quot; 2, &quot;outbox-id&quot; 1, &quot;type&quot; &quot;outbox_delivery_ok&quot;}], :requests [{&quot;attempt&quot; 2, &quot;entity-id&quot; &quot;entity-a&quot;, &quot;outbox-id&quot; 1, &quot;payload&quot; [], &quot;request-id&quot; &quot;req-1&quot;, &quot;type&quot; &quot;outbox_delivery&quot;, &quot;version&quot; 1}], :sent-bytes 120}, :state-unchanged-after-failure? true}, :store-state {:entities {&quot;entity-a&quot; {:payload [], :version 1}}, :next-outbox-id 2, :outbox [{:entity-id &quot;entity-a&quot;, :outbox-id 1, :payload [], :request-id &quot;req-1&quot;, :status :delivered, :version 1}], :request-log {&quot;req-1&quot; {:command {:entity-id &quot;entity-a&quot;, :payload [], :request-id &quot;req-1&quot;}, :result {:entity-id &quot;entity-a&quot;, :outbox-id 1, :request-id &quot;req-1&quot;, :status :committed, :version 1}}}}}</pre>
+      </details>
+
+      <details>
+        <summary>:http</summary>
+        <pre class="canonical">{:close-results {:connection [true false]}, :content-length &quot;107&quot;, :content-type &quot;application/x-bencode&quot;, :response {&quot;entity-id&quot; &quot;entity-a&quot;, &quot;outbox-id&quot; 1, &quot;request-id&quot; &quot;req-1&quot;, &quot;status&quot; &quot;committed&quot;, &quot;type&quot; &quot;command_ok&quot;, &quot;version&quot; 1}, :server-errors [], :status 200}</pre>
+      </details>
+
+      <details>
+        <summary>:receiver</summary>
+        <pre class="canonical">{:requests [{&quot;attempt&quot; 1, &quot;entity-id&quot; &quot;entity-a&quot;, &quot;outbox-id&quot; 1, &quot;payload&quot; [], &quot;request-id&quot; &quot;req-1&quot;, &quot;type&quot; &quot;outbox_delivery&quot;, &quot;version&quot; 1} {&quot;attempt&quot; 2, &quot;entity-id&quot; &quot;entity-a&quot;, &quot;outbox-id&quot; 1, &quot;payload&quot; [], &quot;request-id&quot; &quot;req-1&quot;, &quot;type&quot; &quot;outbox_delivery&quot;, &quot;version&quot; 1}], :server-errors [{:class &quot;class clojure.lang.ExceptionInfo&quot;, :data {&quot;:jolt.net/code&quot; &quot;32&quot;, &quot;:jolt.net/kind&quot; &quot;:connection-reset&quot;, &quot;:jolt.net/message&quot; &quot;\&quot;Connection reset by peer (code 32)\&quot;&quot;, &quot;:jolt.net/op&quot; &quot;:write&quot;, &quot;:jolt.net/platform&quot; &quot;:posix&quot;}, :message &quot;jolt.net write: Connection reset by peer (code 32)&quot;}]}</pre>
+      </details>
+
+      <details>
+        <summary>:routes</summary>
+        <pre class="canonical">{:all-handled? true, :count 5985, :foreign-symbols [&quot;accept&quot; &quot;bind&quot; &quot;close&quot; &quot;connect&quot; &quot;fcntl&quot; &quot;freeaddrinfo&quot; &quot;getaddrinfo&quot; &quot;getpeername&quot; &quot;getsockname&quot; &quot;getsockopt&quot; &quot;listen&quot; &quot;pipe&quot; &quot;poll&quot; &quot;read&quot; &quot;recv&quot; &quot;send&quot; &quot;setsockopt&quot; &quot;socket&quot; &quot;sqlite3_bind_blob64&quot; &quot;sqlite3_bind_int64&quot; &quot;sqlite3_bind_text&quot; &quot;sqlite3_changes&quot; &quot;sqlite3_close_v2&quot; &quot;sqlite3_column_blob&quot; &quot;sqlite3_column_bytes&quot; &quot;sqlite3_column_count&quot; &quot;sqlite3_column_int64&quot; &quot;sqlite3_column_name&quot; &quot;sqlite3_column_text&quot; &quot;sqlite3_column_type&quot; &quot;sqlite3_finalize&quot; &quot;sqlite3_get_autocommit&quot; &quot;sqlite3_open&quot; &quot;sqlite3_prepare_v2&quot; &quot;sqlite3_step&quot; &quot;write&quot;]}</pre>
+      </details>
+
+      <details>
+        <summary>:sqlite</summary>
+        <pre class="canonical">{:active-stmts 0, :open-dbs 0, :plan-count 27, :plan-index 27}</pre>
+      </details>
+
+      <details>
+        <summary>:capacity</summary>
+        <pre class="canonical">{:pipe {:max-pipe-fifo-bytes 1, :pipe-capacity 1, :pipe-would-blocks 17}, :stream {:max-stream-recv-bytes 8, :stream-capacity 8, :stream-capacity-limited-writes 90, :stream-would-blocks 50}}</pre>
+      </details>
+
+      <details>
+        <summary>:fault</summary>
+        <pre class="canonical">{:attempts 179, :fired-attempts [{:attempt-id [:jolt.sim.net.posix-fault/recv 82 1073741838 40000], :firing {:firing-ordinal 1, :match-ordinal 1, :outcome {:errno :econnreset, :kind :captured-error}, :rule-firing-ordinal 1, :rule-id :outbox-delivery/reset-delivery-recv}}], :firings 1, :recv-attempts 111, :recv-reset-peer-port 40000}</pre>
+      </details>
+
+      <details>
+        <summary>:schedule</summary>
+        <pre class="canonical">{:coordinator-diagnostics {:aborted? false, :arrival-order [:jolt.sim.fixtures.outbox-delivery-scenarios/delivery-client-recv :jolt.sim.fixtures.outbox-delivery-scenarios/receiver-ack-send], :arrived #{:jolt.sim.fixtures.outbox-delivery-scenarios/delivery-client-recv :jolt.sim.fixtures.outbox-delivery-scenarios/receiver-ack-send}, :completed #{:jolt.sim.fixtures.outbox-delivery-scenarios/delivery-client-recv :jolt.sim.fixtures.outbox-delivery-scenarios/receiver-ack-send}, :completion-order [:jolt.sim.fixtures.outbox-delivery-scenarios/receiver-ack-send :jolt.sim.fixtures.outbox-delivery-scenarios/delivery-client-recv], :due-index 2, :in-flight 0, :release-order [:jolt.sim.fixtures.outbox-delivery-scenarios/receiver-ack-send :jolt.sim.fixtures.outbox-delivery-scenarios/delivery-client-recv], :released #{:jolt.sim.fixtures.outbox-delivery-scenarios/delivery-client-recv :jolt.sim.fixtures.outbox-delivery-scenarios/receiver-ack-send}}, :label-counts {:role/delivery-client-recv 13, :role/receiver-ack-send 10, :unlabeled 234}, :release-evidence [[:release :jolt.sim.fixtures.outbox-delivery-scenarios/receiver-ack-send] [:release :jolt.sim.fixtures.outbox-delivery-scenarios/delivery-client-recv]], :routes {:recv {:all-handled? true, :count 111}, :send {:all-handled? true, :count 146}}}</pre>
+      </details>
+
+      <details>
+        <summary>:clean?</summary>
+        <pre class="canonical">{:memory true, :posix true, :sqlite true}</pre>
+      </details>
+
+    </div>
+  </section>
+
+
+  <section>
+    <h2>Monitor outcomes</h2>
+
+    <table>
+      <thead>
+        <tr><th>Monitor</th><th>Status</th><th>Index</th><th>Detail</th></tr>
+      </thead>
+      <tbody>
+
+        <tr>
+          <td><code>:outbox/retry-invariants</code></td>
+          <td class="status status-pass">:pass</td>
+          <td class="num"></td>
+          <td class="detail"><code>nil</code></td>
+        </tr>
+
+      </tbody>
+    </table>
+
+  </section>
+
+  <section>
+    <h2>Canonical document (EDN)</h2>
+    <details>
+      <summary>Complete validated Case/Outcome document (version 1)</summary>
+      <pre class="canonical">{:jolt.sim.case-outcome/case {:input [:jolt.sim.value/map [[[:jolt.sim.value/keyword nil &quot;payload&quot;] [:jolt.sim.value/vector []]] [[:jolt.sim.value/keyword nil &quot;pipe-capacity&quot;] [:jolt.sim.value/integer &quot;1&quot;]] [[:jolt.sim.value/keyword nil &quot;poll-eintr-ordinal&quot;] [:jolt.sim.value/nil]] [[:jolt.sim.value/keyword nil &quot;stream-capacity&quot;] [:jolt.sim.value/integer &quot;8&quot;]]]], :mode :hermetic, :scenario jolt.sim.fixtures.outbox-delivery-scenarios/exercise-retry-recv-reset, :schedule nil}, :jolt.sim.case-outcome/monitors [{:detail [:jolt.sim.value/nil], :id [:jolt.sim.value/keyword &quot;outbox&quot; &quot;retry-invariants&quot;], :index nil, :status :pass}], :jolt.sim.case-outcome/outcome {:exit 0, :status :completed, :value [:jolt.sim.value/map [[[:jolt.sim.value/keyword nil &quot;application&quot;] [:jolt.sim.value/map [[[:jolt.sim.value/keyword nil &quot;command&quot;] [:jolt.sim.value/map [[[:jolt.sim.value/keyword nil &quot;emitted&quot;] [:jolt.sim.value/vector [[:jolt.sim.value/map [[[:jolt.sim.value/keyword nil &quot;entity-id&quot;] [:jolt.sim.value/string &quot;entity-a&quot;]] [[:jolt.sim.value/keyword nil &quot;outbox-id&quot;] [:jolt.sim.value/integer &quot;1&quot;]] [[:jolt.sim.value/keyword nil &quot;payload&quot;] [:jolt.sim.value/vector []]] [[:jolt.sim.value/keyword nil &quot;request-id&quot;] [:jolt.sim.value/string &quot;req-1&quot;]] [[:jolt.sim.value/keyword nil &quot;status&quot;] [:jolt.sim.value/keyword nil &quot;pending&quot;]] [[:jolt.sim.value/keyword nil &quot;version&quot;] [:jolt.sim.value/integer &quot;1&quot;]]]]]]] [[:jolt.sim.value/keyword nil &quot;result&quot;] [:jolt.sim.value/map [[[:jolt.sim.value/keyword nil &quot;entity-id&quot;] [:jolt.sim.value/string &quot;entity-a&quot;]] [[:jolt.sim.value/keyword nil &quot;outbox-id&quot;] [:jolt.sim.value/integer &quot;1&quot;]] [[:jolt.sim.value/keyword nil &quot;request-id&quot;] [:jolt.sim.value/string &quot;req-1&quot;]] [[:jolt.sim.value/keyword nil &quot;status&quot;] [:jolt.sim.value/keyword nil &quot;committed&quot;]] [[:jolt.sim.value/keyword nil &quot;version&quot;] [:jolt.sim.value/integer &quot;1&quot;]]]]] [[:jolt.sim.value/keyword nil &quot;value&quot;] [:jolt.sim.value/map [[[:jolt.sim.value/keyword nil &quot;entity-id&quot;] [:jolt.sim.value/string &quot;entity-a&quot;]] [[:jolt.sim.value/keyword nil &quot;payload&quot;] [:jolt.sim.value/vector []]] [[:jolt.sim.value/keyword nil &quot;request-id&quot;] [:jolt.sim.value/string &quot;req-1&quot;]]]]]]]] [[:jolt.sim.value/keyword nil &quot;identities&quot;] [:jolt.sim.value/map [[[:jolt.sim.value/keyword nil &quot;attempt-id&quot;] [:jolt.sim.value/vector [[:jolt.sim.value/keyword &quot;outbox&quot; &quot;delivery-attempt&quot;] [:jolt.sim.value/integer &quot;1&quot;] [:jolt.sim.value/integer &quot;1&quot;]]]] [[:jolt.sim.value/keyword nil &quot;delivery-id&quot;] [:jolt.sim.value/vector [[:jolt.sim.value/keyword &quot;outbox&quot; &quot;delivery&quot;] [:jolt.sim.value/integer &quot;1&quot;]]]] [[:jolt.sim.value/keyword nil &quot;outbox-id&quot;] [:jolt.sim.value/integer &quot;1&quot;]] [[:jolt.sim.value/keyword nil &quot;request-id&quot;] [:jolt.sim.value/string &quot;req-1&quot;]] [[:jolt.sim.value/keyword nil &quot;transaction-id&quot;] [:jolt.sim.value/vector [[:jolt.sim.value/keyword &quot;outbox&quot; &quot;command&quot;] [:jolt.sim.value/string &quot;req-1&quot;]]]]]]] [[:jolt.sim.value/keyword nil &quot;marking&quot;] [:jolt.sim.value/map [[[:jolt.sim.value/keyword nil &quot;changed?&quot;] [:jolt.sim.value/boolean true]] [[:jolt.sim.value/keyword nil &quot;row&quot;] [:jolt.sim.value/map [[[:jolt.sim.value/keyword nil &quot;entity-id&quot;] [:jolt.sim.value/string &quot;entity-a&quot;]] [[:jolt.sim.value/keyword nil &quot;outbox-id&quot;] [:jolt.sim.value/integer &quot;1&quot;]] [[:jolt.sim.value/keyword nil &quot;payload&quot;] [:jolt.sim.value/vector []]] [[:jolt.sim.value/keyword nil &quot;request-id&quot;] [:jolt.sim.value/string &quot;req-1&quot;]] [[:jolt.sim.value/keyword nil &quot;status&quot;] [:jolt.sim.value/keyword nil &quot;delivered&quot;]] [[:jolt.sim.value/keyword nil &quot;version&quot;] [:jolt.sim.value/integer &quot;1&quot;]]]]]]]] [[:jolt.sim.value/keyword nil &quot;pending-state&quot;] [:jolt.sim.value/map [[[:jolt.sim.value/keyword nil &quot;entities&quot;] [:jolt.sim.value/map [[[:jolt.sim.value/string &quot;entity-a&quot;] [:jolt.sim.value/map [[[:jolt.sim.value/keyword nil &quot;payload&quot;] [:jolt.sim.value/vector []]] [[:jolt.sim.value/keyword nil &quot;version&quot;] [:jolt.sim.value/integer &quot;1&quot;]]]]]]]] [[:jolt.sim.value/keyword nil &quot;next-outbox-id&quot;] [:jolt.sim.value/integer &quot;2&quot;]] [[:jolt.sim.value/keyword nil &quot;outbox&quot;] [:jolt.sim.value/vector [[:jolt.sim.value/map [[[:jolt.sim.value/keyword nil &quot;entity-id&quot;] [:jolt.sim.value/string &quot;entity-a&quot;]] [[:jolt.sim.value/keyword nil &quot;outbox-id&quot;] [:jolt.sim.value/integer &quot;1&quot;]] [[:jolt.sim.value/keyword nil &quot;payload&quot;] [:jolt.sim.value/vector []]] [[:jolt.sim.value/keyword nil &quot;request-id&quot;] [:jolt.sim.value/string &quot;req-1&quot;]] [[:jolt.sim.value/keyword nil &quot;status&quot;] [:jolt.sim.value/keyword nil &quot;pending&quot;]] [[:jolt.sim.value/keyword nil &quot;version&quot;] [:jolt.sim.value/integer &quot;1&quot;]]]]]]] [[:jolt.sim.value/keyword nil &quot;request-log&quot;] [:jolt.sim.value/map [[[:jolt.sim.value/string &quot;req-1&quot;] [:jolt.sim.value/map [[[:jolt.sim.value/keyword nil &quot;command&quot;] [:jolt.sim.value/map [[[:jolt.sim.value/keyword nil &quot;entity-id&quot;] [:jolt.sim.value/string &quot;entity-a&quot;]] [[:jolt.sim.value/keyword nil &quot;payload&quot;] [:jolt.sim.value/vector []]] [[:jolt.sim.value/keyword nil &quot;request-id&quot;] [:jolt.sim.value/string &quot;req-1&quot;]]]]] [[:jolt.sim.value/keyword nil &quot;result&quot;] [:jolt.sim.value/map [[[:jolt.sim.value/keyword nil &quot;entity-id&quot;] [:jolt.sim.value/string &quot;entity-a&quot;]] [[:jolt.sim.value/keyword nil &quot;outbox-id&quot;] [:jolt.sim.value/integer &quot;1&quot;]] [[:jolt.sim.value/keyword nil &quot;request-id&quot;] [:jolt.sim.value/string &quot;req-1&quot;]] [[:jolt.sim.value/keyword nil &quot;status&quot;] [:jolt.sim.value/keyword nil &quot;committed&quot;]] [[:jolt.sim.value/keyword nil &quot;version&quot;] [:jolt.sim.value/integer &quot;1&quot;]]]]]]]]]]]]]] [[:jolt.sim.value/keyword nil &quot;retry&quot;] [:jolt.sim.value/map [[[:jolt.sim.value/keyword nil &quot;attempt-1&quot;] [:jolt.sim.value/map [[[:jolt.sim.value/keyword nil &quot;cleanup-errors&quot;] [:jolt.sim.value/vector []]] [[:jolt.sim.value/keyword nil &quot;error&quot;] [:jolt.sim.value/map [[[:jolt.sim.value/keyword nil &quot;class&quot;] [:jolt.sim.value/string &quot;class clojure.lang.ExceptionInfo&quot;]] [[:jolt.sim.value/keyword nil &quot;data&quot;] [:jolt.sim.value/map [[[:jolt.sim.value/string &quot;:jolt.net/code&quot;] [:jolt.sim.value/string &quot;104&quot;]] [[:jolt.sim.value/string &quot;:jolt.net/kind&quot;] [:jolt.sim.value/string &quot;:connection-reset&quot;]] [[:jolt.sim.value/string &quot;:jolt.net/message&quot;] [:jolt.sim.value/string &quot;\&quot;Connection reset by peer (code 104)\&quot;&quot;]] [[:jolt.sim.value/string &quot;:jolt.net/op&quot;] [:jolt.sim.value/string &quot;:read&quot;]] [[:jolt.sim.value/string &quot;:jolt.net/platform&quot;] [:jolt.sim.value/string &quot;:posix&quot;]]]]] [[:jolt.sim.value/keyword nil &quot;message&quot;] [:jolt.sim.value/string &quot;jolt.net read: Connection reset by peer (code 104)&quot;]]]]]]]] [[:jolt.sim.value/keyword nil &quot;delivery&quot;] [:jolt.sim.value/map [[[:jolt.sim.value/keyword nil &quot;close-results&quot;] [:jolt.sim.value/map [[[:jolt.sim.value/keyword nil &quot;connection&quot;] [:jolt.sim.value/vector [[:jolt.sim.value/boolean true] [:jolt.sim.value/boolean false]]]]]]] [[:jolt.sim.value/keyword nil &quot;received-bytes&quot;] [:jolt.sim.value/integer &quot;59&quot;]] [[:jolt.sim.value/keyword nil &quot;replies&quot;] [:jolt.sim.value/vector [[:jolt.sim.value/map [[[:jolt.sim.value/string &quot;attempt&quot;] [:jolt.sim.value/integer &quot;2&quot;]] [[:jolt.sim.value/string &quot;outbox-id&quot;] [:jolt.sim.value/integer &quot;1&quot;]] [[:jolt.sim.value/string &quot;type&quot;] [:jolt.sim.value/string &quot;outbox_delivery_ok&quot;]]]]]]] [[:jolt.sim.value/keyword nil &quot;requests&quot;] [:jolt.sim.value/vector [[:jolt.sim.value/map [[[:jolt.sim.value/string &quot;attempt&quot;] [:jolt.sim.value/integer &quot;2&quot;]] [[:jolt.sim.value/string &quot;entity-id&quot;] [:jolt.sim.value/string &quot;entity-a&quot;]] [[:jolt.sim.value/string &quot;outbox-id&quot;] [:jolt.sim.value/integer &quot;1&quot;]] [[:jolt.sim.value/string &quot;payload&quot;] [:jolt.sim.value/vector []]] [[:jolt.sim.value/string &quot;request-id&quot;] [:jolt.sim.value/string &quot;req-1&quot;]] [[:jolt.sim.value/string &quot;type&quot;] [:jolt.sim.value/string &quot;outbox_delivery&quot;]] [[:jolt.sim.value/string &quot;version&quot;] [:jolt.sim.value/integer &quot;1&quot;]]]]]]] [[:jolt.sim.value/keyword nil &quot;sent-bytes&quot;] [:jolt.sim.value/integer &quot;120&quot;]]]]] [[:jolt.sim.value/keyword nil &quot;state-unchanged-after-failure?&quot;] [:jolt.sim.value/boolean true]]]]] [[:jolt.sim.value/keyword nil &quot;store-state&quot;] [:jolt.sim.value/map [[[:jolt.sim.value/keyword nil &quot;entities&quot;] [:jolt.sim.value/map [[[:jolt.sim.value/string &quot;entity-a&quot;] [:jolt.sim.value/map [[[:jolt.sim.value/keyword nil &quot;payload&quot;] [:jolt.sim.value/vector []]] [[:jolt.sim.value/keyword nil &quot;version&quot;] [:jolt.sim.value/integer &quot;1&quot;]]]]]]]] [[:jolt.sim.value/keyword nil &quot;next-outbox-id&quot;] [:jolt.sim.value/integer &quot;2&quot;]] [[:jolt.sim.value/keyword nil &quot;outbox&quot;] [:jolt.sim.value/vector [[:jolt.sim.value/map [[[:jolt.sim.value/keyword nil &quot;entity-id&quot;] [:jolt.sim.value/string &quot;entity-a&quot;]] [[:jolt.sim.value/keyword nil &quot;outbox-id&quot;] [:jolt.sim.value/integer &quot;1&quot;]] [[:jolt.sim.value/keyword nil &quot;payload&quot;] [:jolt.sim.value/vector []]] [[:jolt.sim.value/keyword nil &quot;request-id&quot;] [:jolt.sim.value/string &quot;req-1&quot;]] [[:jolt.sim.value/keyword nil &quot;status&quot;] [:jolt.sim.value/keyword nil &quot;delivered&quot;]] [[:jolt.sim.value/keyword nil &quot;version&quot;] [:jolt.sim.value/integer &quot;1&quot;]]]]]]] [[:jolt.sim.value/keyword nil &quot;request-log&quot;] [:jolt.sim.value/map [[[:jolt.sim.value/string &quot;req-1&quot;] [:jolt.sim.value/map [[[:jolt.sim.value/keyword nil &quot;command&quot;] [:jolt.sim.value/map [[[:jolt.sim.value/keyword nil &quot;entity-id&quot;] [:jolt.sim.value/string &quot;entity-a&quot;]] [[:jolt.sim.value/keyword nil &quot;payload&quot;] [:jolt.sim.value/vector []]] [[:jolt.sim.value/keyword nil &quot;request-id&quot;] [:jolt.sim.value/string &quot;req-1&quot;]]]]] [[:jolt.sim.value/keyword nil &quot;result&quot;] [:jolt.sim.value/map [[[:jolt.sim.value/keyword nil &quot;entity-id&quot;] [:jolt.sim.value/string &quot;entity-a&quot;]] [[:jolt.sim.value/keyword nil &quot;outbox-id&quot;] [:jolt.sim.value/integer &quot;1&quot;]] [[:jolt.sim.value/keyword nil &quot;request-id&quot;] [:jolt.sim.value/string &quot;req-1&quot;]] [[:jolt.sim.value/keyword nil &quot;status&quot;] [:jolt.sim.value/keyword nil &quot;committed&quot;]] [[:jolt.sim.value/keyword nil &quot;version&quot;] [:jolt.sim.value/integer &quot;1&quot;]]]]]]]]]]]]]]]]] [[:jolt.sim.value/keyword nil &quot;capacity&quot;] [:jolt.sim.value/map [[[:jolt.sim.value/keyword nil &quot;pipe&quot;] [:jolt.sim.value/map [[[:jolt.sim.value/keyword nil &quot;max-pipe-fifo-bytes&quot;] [:jolt.sim.value/integer &quot;1&quot;]] [[:jolt.sim.value/keyword nil &quot;pipe-capacity&quot;] [:jolt.sim.value/integer &quot;1&quot;]] [[:jolt.sim.value/keyword nil &quot;pipe-would-blocks&quot;] [:jolt.sim.value/integer &quot;17&quot;]]]]] [[:jolt.sim.value/keyword nil &quot;stream&quot;] [:jolt.sim.value/map [[[:jolt.sim.value/keyword nil &quot;max-stream-recv-bytes&quot;] [:jolt.sim.value/integer &quot;8&quot;]] [[:jolt.sim.value/keyword nil &quot;stream-capacity&quot;] [:jolt.sim.value/integer &quot;8&quot;]] [[:jolt.sim.value/keyword nil &quot;stream-capacity-limited-writes&quot;] [:jolt.sim.value/integer &quot;90&quot;]] [[:jolt.sim.value/keyword nil &quot;stream-would-blocks&quot;] [:jolt.sim.value/integer &quot;50&quot;]]]]]]]] [[:jolt.sim.value/keyword nil &quot;clean?&quot;] [:jolt.sim.value/map [[[:jolt.sim.value/keyword nil &quot;memory&quot;] [:jolt.sim.value/boolean true]] [[:jolt.sim.value/keyword nil &quot;posix&quot;] [:jolt.sim.value/boolean true]] [[:jolt.sim.value/keyword nil &quot;sqlite&quot;] [:jolt.sim.value/boolean true]]]]] [[:jolt.sim.value/keyword nil &quot;fault&quot;] [:jolt.sim.value/map [[[:jolt.sim.value/keyword nil &quot;attempts&quot;] [:jolt.sim.value/integer &quot;179&quot;]] [[:jolt.sim.value/keyword nil &quot;fired-attempts&quot;] [:jolt.sim.value/vector [[:jolt.sim.value/map [[[:jolt.sim.value/keyword nil &quot;attempt-id&quot;] [:jolt.sim.value/vector [[:jolt.sim.value/keyword &quot;jolt.sim.net.posix-fault&quot; &quot;recv&quot;] [:jolt.sim.value/integer &quot;82&quot;] [:jolt.sim.value/integer &quot;1073741838&quot;] [:jolt.sim.value/integer &quot;40000&quot;]]]] [[:jolt.sim.value/keyword nil &quot;firing&quot;] [:jolt.sim.value/map [[[:jolt.sim.value/keyword nil &quot;firing-ordinal&quot;] [:jolt.sim.value/integer &quot;1&quot;]] [[:jolt.sim.value/keyword nil &quot;match-ordinal&quot;] [:jolt.sim.value/integer &quot;1&quot;]] [[:jolt.sim.value/keyword nil &quot;outcome&quot;] [:jolt.sim.value/map [[[:jolt.sim.value/keyword nil &quot;errno&quot;] [:jolt.sim.value/keyword nil &quot;econnreset&quot;]] [[:jolt.sim.value/keyword nil &quot;kind&quot;] [:jolt.sim.value/keyword nil &quot;captured-error&quot;]]]]] [[:jolt.sim.value/keyword nil &quot;rule-firing-ordinal&quot;] [:jolt.sim.value/integer &quot;1&quot;]] [[:jolt.sim.value/keyword nil &quot;rule-id&quot;] [:jolt.sim.value/keyword &quot;outbox-delivery&quot; &quot;reset-delivery-recv&quot;]]]]]]]]]] [[:jolt.sim.value/keyword nil &quot;firings&quot;] [:jolt.sim.value/integer &quot;1&quot;]] [[:jolt.sim.value/keyword nil &quot;recv-attempts&quot;] [:jolt.sim.value/integer &quot;111&quot;]] [[:jolt.sim.value/keyword nil &quot;recv-reset-peer-port&quot;] [:jolt.sim.value/integer &quot;40000&quot;]]]]] [[:jolt.sim.value/keyword nil &quot;http&quot;] [:jolt.sim.value/map [[[:jolt.sim.value/keyword nil &quot;close-results&quot;] [:jolt.sim.value/map [[[:jolt.sim.value/keyword nil &quot;connection&quot;] [:jolt.sim.value/vector [[:jolt.sim.value/boolean true] [:jolt.sim.value/boolean false]]]]]]] [[:jolt.sim.value/keyword nil &quot;content-length&quot;] [:jolt.sim.value/string &quot;107&quot;]] [[:jolt.sim.value/keyword nil &quot;content-type&quot;] [:jolt.sim.value/string &quot;application/x-bencode&quot;]] [[:jolt.sim.value/keyword nil &quot;response&quot;] [:jolt.sim.value/map [[[:jolt.sim.value/string &quot;entity-id&quot;] [:jolt.sim.value/string &quot;entity-a&quot;]] [[:jolt.sim.value/string &quot;outbox-id&quot;] [:jolt.sim.value/integer &quot;1&quot;]] [[:jolt.sim.value/string &quot;request-id&quot;] [:jolt.sim.value/string &quot;req-1&quot;]] [[:jolt.sim.value/string &quot;status&quot;] [:jolt.sim.value/string &quot;committed&quot;]] [[:jolt.sim.value/string &quot;type&quot;] [:jolt.sim.value/string &quot;command_ok&quot;]] [[:jolt.sim.value/string &quot;version&quot;] [:jolt.sim.value/integer &quot;1&quot;]]]]] [[:jolt.sim.value/keyword nil &quot;server-errors&quot;] [:jolt.sim.value/vector []]] [[:jolt.sim.value/keyword nil &quot;status&quot;] [:jolt.sim.value/integer &quot;200&quot;]]]]] [[:jolt.sim.value/keyword nil &quot;receiver&quot;] [:jolt.sim.value/map [[[:jolt.sim.value/keyword nil &quot;requests&quot;] [:jolt.sim.value/vector [[:jolt.sim.value/map [[[:jolt.sim.value/string &quot;attempt&quot;] [:jolt.sim.value/integer &quot;1&quot;]] [[:jolt.sim.value/string &quot;entity-id&quot;] [:jolt.sim.value/string &quot;entity-a&quot;]] [[:jolt.sim.value/string &quot;outbox-id&quot;] [:jolt.sim.value/integer &quot;1&quot;]] [[:jolt.sim.value/string &quot;payload&quot;] [:jolt.sim.value/vector []]] [[:jolt.sim.value/string &quot;request-id&quot;] [:jolt.sim.value/string &quot;req-1&quot;]] [[:jolt.sim.value/string &quot;type&quot;] [:jolt.sim.value/string &quot;outbox_delivery&quot;]] [[:jolt.sim.value/string &quot;version&quot;] [:jolt.sim.value/integer &quot;1&quot;]]]] [:jolt.sim.value/map [[[:jolt.sim.value/string &quot;attempt&quot;] [:jolt.sim.value/integer &quot;2&quot;]] [[:jolt.sim.value/string &quot;entity-id&quot;] [:jolt.sim.value/string &quot;entity-a&quot;]] [[:jolt.sim.value/string &quot;outbox-id&quot;] [:jolt.sim.value/integer &quot;1&quot;]] [[:jolt.sim.value/string &quot;payload&quot;] [:jolt.sim.value/vector []]] [[:jolt.sim.value/string &quot;request-id&quot;] [:jolt.sim.value/string &quot;req-1&quot;]] [[:jolt.sim.value/string &quot;type&quot;] [:jolt.sim.value/string &quot;outbox_delivery&quot;]] [[:jolt.sim.value/string &quot;version&quot;] [:jolt.sim.value/integer &quot;1&quot;]]]]]]] [[:jolt.sim.value/keyword nil &quot;server-errors&quot;] [:jolt.sim.value/vector [[:jolt.sim.value/map [[[:jolt.sim.value/keyword nil &quot;class&quot;] [:jolt.sim.value/string &quot;class clojure.lang.ExceptionInfo&quot;]] [[:jolt.sim.value/keyword nil &quot;data&quot;] [:jolt.sim.value/map [[[:jolt.sim.value/string &quot;:jolt.net/code&quot;] [:jolt.sim.value/string &quot;32&quot;]] [[:jolt.sim.value/string &quot;:jolt.net/kind&quot;] [:jolt.sim.value/string &quot;:connection-reset&quot;]] [[:jolt.sim.value/string &quot;:jolt.net/message&quot;] [:jolt.sim.value/string &quot;\&quot;Connection reset by peer (code 32)\&quot;&quot;]] [[:jolt.sim.value/string &quot;:jolt.net/op&quot;] [:jolt.sim.value/string &quot;:write&quot;]] [[:jolt.sim.value/string &quot;:jolt.net/platform&quot;] [:jolt.sim.value/string &quot;:posix&quot;]]]]] [[:jolt.sim.value/keyword nil &quot;message&quot;] [:jolt.sim.value/string &quot;jolt.net write: Connection reset by peer (code 32)&quot;]]]]]]]]]] [[:jolt.sim.value/keyword nil &quot;routes&quot;] [:jolt.sim.value/map [[[:jolt.sim.value/keyword nil &quot;all-handled?&quot;] [:jolt.sim.value/boolean true]] [[:jolt.sim.value/keyword nil &quot;count&quot;] [:jolt.sim.value/integer &quot;5985&quot;]] [[:jolt.sim.value/keyword nil &quot;foreign-symbols&quot;] [:jolt.sim.value/vector [[:jolt.sim.value/string &quot;accept&quot;] [:jolt.sim.value/string &quot;bind&quot;] [:jolt.sim.value/string &quot;close&quot;] [:jolt.sim.value/string &quot;connect&quot;] [:jolt.sim.value/string &quot;fcntl&quot;] [:jolt.sim.value/string &quot;freeaddrinfo&quot;] [:jolt.sim.value/string &quot;getaddrinfo&quot;] [:jolt.sim.value/string &quot;getpeername&quot;] [:jolt.sim.value/string &quot;getsockname&quot;] [:jolt.sim.value/string &quot;getsockopt&quot;] [:jolt.sim.value/string &quot;listen&quot;] [:jolt.sim.value/string &quot;pipe&quot;] [:jolt.sim.value/string &quot;poll&quot;] [:jolt.sim.value/string &quot;read&quot;] [:jolt.sim.value/string &quot;recv&quot;] [:jolt.sim.value/string &quot;send&quot;] [:jolt.sim.value/string &quot;setsockopt&quot;] [:jolt.sim.value/string &quot;socket&quot;] [:jolt.sim.value/string &quot;sqlite3_bind_blob64&quot;] [:jolt.sim.value/string &quot;sqlite3_bind_int64&quot;] [:jolt.sim.value/string &quot;sqlite3_bind_text&quot;] [:jolt.sim.value/string &quot;sqlite3_changes&quot;] [:jolt.sim.value/string &quot;sqlite3_close_v2&quot;] [:jolt.sim.value/string &quot;sqlite3_column_blob&quot;] [:jolt.sim.value/string &quot;sqlite3_column_bytes&quot;] [:jolt.sim.value/string &quot;sqlite3_column_count&quot;] [:jolt.sim.value/string &quot;sqlite3_column_int64&quot;] [:jolt.sim.value/string &quot;sqlite3_column_name&quot;] [:jolt.sim.value/string &quot;sqlite3_column_text&quot;] [:jolt.sim.value/string &quot;sqlite3_column_type&quot;] [:jolt.sim.value/string &quot;sqlite3_finalize&quot;] [:jolt.sim.value/string &quot;sqlite3_get_autocommit&quot;] [:jolt.sim.value/string &quot;sqlite3_open&quot;] [:jolt.sim.value/string &quot;sqlite3_prepare_v2&quot;] [:jolt.sim.value/string &quot;sqlite3_step&quot;] [:jolt.sim.value/string &quot;write&quot;]]]]]]] [[:jolt.sim.value/keyword nil &quot;schedule&quot;] [:jolt.sim.value/map [[[:jolt.sim.value/keyword nil &quot;coordinator-diagnostics&quot;] [:jolt.sim.value/map [[[:jolt.sim.value/keyword nil &quot;aborted?&quot;] [:jolt.sim.value/boolean false]] [[:jolt.sim.value/keyword nil &quot;arrival-order&quot;] [:jolt.sim.value/vector [[:jolt.sim.value/keyword &quot;jolt.sim.fixtures.outbox-delivery-scenarios&quot; &quot;delivery-client-recv&quot;] [:jolt.sim.value/keyword &quot;jolt.sim.fixtures.outbox-delivery-scenarios&quot; &quot;receiver-ack-send&quot;]]]] [[:jolt.sim.value/keyword nil &quot;arrived&quot;] [:jolt.sim.value/set [[:jolt.sim.value/keyword &quot;jolt.sim.fixtures.outbox-delivery-scenarios&quot; &quot;delivery-client-recv&quot;] [:jolt.sim.value/keyword &quot;jolt.sim.fixtures.outbox-delivery-scenarios&quot; &quot;receiver-ack-send&quot;]]]] [[:jolt.sim.value/keyword nil &quot;completed&quot;] [:jolt.sim.value/set [[:jolt.sim.value/keyword &quot;jolt.sim.fixtures.outbox-delivery-scenarios&quot; &quot;delivery-client-recv&quot;] [:jolt.sim.value/keyword &quot;jolt.sim.fixtures.outbox-delivery-scenarios&quot; &quot;receiver-ack-send&quot;]]]] [[:jolt.sim.value/keyword nil &quot;completion-order&quot;] [:jolt.sim.value/vector [[:jolt.sim.value/keyword &quot;jolt.sim.fixtures.outbox-delivery-scenarios&quot; &quot;receiver-ack-send&quot;] [:jolt.sim.value/keyword &quot;jolt.sim.fixtures.outbox-delivery-scenarios&quot; &quot;delivery-client-recv&quot;]]]] [[:jolt.sim.value/keyword nil &quot;due-index&quot;] [:jolt.sim.value/integer &quot;2&quot;]] [[:jolt.sim.value/keyword nil &quot;in-flight&quot;] [:jolt.sim.value/integer &quot;0&quot;]] [[:jolt.sim.value/keyword nil &quot;release-order&quot;] [:jolt.sim.value/vector [[:jolt.sim.value/keyword &quot;jolt.sim.fixtures.outbox-delivery-scenarios&quot; &quot;receiver-ack-send&quot;] [:jolt.sim.value/keyword &quot;jolt.sim.fixtures.outbox-delivery-scenarios&quot; &quot;delivery-client-recv&quot;]]]] [[:jolt.sim.value/keyword nil &quot;released&quot;] [:jolt.sim.value/set [[:jolt.sim.value/keyword &quot;jolt.sim.fixtures.outbox-delivery-scenarios&quot; &quot;delivery-client-recv&quot;] [:jolt.sim.value/keyword &quot;jolt.sim.fixtures.outbox-delivery-scenarios&quot; &quot;receiver-ack-send&quot;]]]]]]] [[:jolt.sim.value/keyword nil &quot;label-counts&quot;] [:jolt.sim.value/map [[[:jolt.sim.value/keyword &quot;role&quot; &quot;delivery-client-recv&quot;] [:jolt.sim.value/integer &quot;13&quot;]] [[:jolt.sim.value/keyword &quot;role&quot; &quot;receiver-ack-send&quot;] [:jolt.sim.value/integer &quot;10&quot;]] [[:jolt.sim.value/keyword nil &quot;unlabeled&quot;] [:jolt.sim.value/integer &quot;234&quot;]]]]] [[:jolt.sim.value/keyword nil &quot;release-evidence&quot;] [:jolt.sim.value/vector [[:jolt.sim.value/vector [[:jolt.sim.value/keyword nil &quot;release&quot;] [:jolt.sim.value/keyword &quot;jolt.sim.fixtures.outbox-delivery-scenarios&quot; &quot;receiver-ack-send&quot;]]] [:jolt.sim.value/vector [[:jolt.sim.value/keyword nil &quot;release&quot;] [:jolt.sim.value/keyword &quot;jolt.sim.fixtures.outbox-delivery-scenarios&quot; &quot;delivery-client-recv&quot;]]]]]] [[:jolt.sim.value/keyword nil &quot;routes&quot;] [:jolt.sim.value/map [[[:jolt.sim.value/keyword nil &quot;recv&quot;] [:jolt.sim.value/map [[[:jolt.sim.value/keyword nil &quot;all-handled?&quot;] [:jolt.sim.value/boolean true]] [[:jolt.sim.value/keyword nil &quot;count&quot;] [:jolt.sim.value/integer &quot;111&quot;]]]]] [[:jolt.sim.value/keyword nil &quot;send&quot;] [:jolt.sim.value/map [[[:jolt.sim.value/keyword nil &quot;all-handled?&quot;] [:jolt.sim.value/boolean true]] [[:jolt.sim.value/keyword nil &quot;count&quot;] [:jolt.sim.value/integer &quot;146&quot;]]]]]]]]]]] [[:jolt.sim.value/keyword nil &quot;sqlite&quot;] [:jolt.sim.value/map [[[:jolt.sim.value/keyword nil &quot;active-stmts&quot;] [:jolt.sim.value/integer &quot;0&quot;]] [[:jolt.sim.value/keyword nil &quot;open-dbs&quot;] [:jolt.sim.value/integer &quot;0&quot;]] [[:jolt.sim.value/keyword nil &quot;plan-count&quot;] [:jolt.sim.value/integer &quot;27&quot;]] [[:jolt.sim.value/keyword nil &quot;plan-index&quot;] [:jolt.sim.value/integer &quot;27&quot;]]]]]]]}, :jolt.sim.case-outcome/version 1}</pre>
+    </details>
+  </section>
+</main>
+
+<footer>
+  <p>Generated by jolt.sim.report &middot; case/outcome view-model version 1</p>
+</footer>
+
+</body>
+</html>
