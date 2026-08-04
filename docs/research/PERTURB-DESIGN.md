@@ -60,25 +60,33 @@ The complete current tally of claims this document made and then refuted:
 | 27 ‡ | internal/external choice dissolves the join rule | the linear conditional rule types **both branches in the same context** — perturb's join rule *is* the linear rule; ⊕/& are additive | E20 |
 | 28 ‡ | graded/quantitative types decide the Content-Length obligation without a solver | Granule requires Z3; grades are parameterized *over* a decision procedure; and grades count **uses of a binder**, not octets | E20 |
 | 29 ‡ | sealing gives a principled account of "these bodies are axioms" | it **relocates** trust from a list to a scope; representation independence constrains clients, not implementations | E20 |
+| 30 ‡ | E20: §1.4's no-resumption rule places perturb **outside** the linearity/handler tension | reading Tang et al.: the mismatch has two halves — continuations *discarded* and continuations *multi-invoked*. `abort!` is the discard half. perturb is outside one half of two | E21 |
+| 31 ‡ | E20: exceptions require weakening linearity to **affinity** plus cancellation, and "perturb has the affinity" | reading Fowler et al.: §1.3 rejects affinity **by name** (silent discard is the defect); §1.4 is "**Linear** Types with Explicit Cancellation". E6's affine binding is the rejected option, not half the fix | E21 |
+| 32 ‡ | E20: "grades count uses of a binder, not octets", so no graded system can state the Content-Length obligation | Doré, *Dependent Multiplicities* (2507.08759) — multiplicities **can** depend on run-time values. The conclusion (row 28) survives; the reason does not. The barrier is undecidability and hand-written proof terms, not expressiveness | E21 |
 
-‡ Five rows are the exception the sentence above does not cover: 17 and 18
-arrived from re-examining the argument and from the literature, and 27–29 came
-from a **literature survey** (E20) rather than from an artifact built to attack
-the claim. The commitment is stated of the other twenty-four, which came from a
-measurement, a probe, an independent model, a delegated verification, or — for
-24–26 — from building the fix and finding the premise wrong. Rows 6–9 and 16 are
-cases where the claim had already **passed its spot checks** and failed a probe
-designed to attack it, which is the pattern the commitment exists to name. Rows
-27–29 are the first refutations in this document that no artifact produced, and
-they are flagged accordingly: nothing in E20 was executed.
+‡ Eight rows are the exception the sentence above does not cover: 17 and 18
+arrived from re-examining the argument and from the literature; 27–29 came from
+a **literature survey** (E20) rather than from an artifact built to attack the
+claim; and 30–32 came from **reading E20's own sources** (E21). The commitment
+is stated of the other twenty-four, which came from a measurement, a probe, an
+independent model, a delegated verification, or — for 24–26 — from building the
+fix and finding the premise wrong. Rows 6–9 and 16 are cases where the claim had
+already **passed its spot checks** and failed a probe designed to attack it,
+which is the pattern the commitment exists to name. Rows 27–32 are the
+refutations in this document that no artifact produced, and they are flagged
+accordingly: nothing in E20 or E21 was executed. Note the shape of 30–32: E20
+refuted four of my claims from abstracts, and reading the papers refuted three
+of E20's — two of them in the direction of *more* work, not less.
 
 **How to read this document.** §1 is the settled design, stated once in final
-corrected form. §2 is the divergence register. §3 is the findings E1–E20, each
+corrected form. §2 is the divergence register. §3 is the findings E1–E21, each
 stated as currently believed rather than as first written. §4 is the open
 questions. §5 is the v0 ladder. §6 is the nonclaims. Appendix A is the
 correction history, Appendix B holds the superseded ladders in full,
-Appendix D is E20's bibliography, kept complete because no paper in it was
-read in full text, and Appendix C maps the old chronological section numbers onto this structure —
+Appendix D is E20's bibliography — kept complete because E20 read no paper in it
+in full text, and now marked with what E21 subsequently read (✔✔), what it could
+not obtain (✗), and what remains second-hand — and Appendix C maps the old
+chronological section numbers onto this structure —
 quoted historical text below retains its original `§` references, and Appendix C
 resolves them.
 
@@ -245,6 +253,19 @@ supply one (E19); and a cancellation obligation on the `abort!` path, which
 Fowler et al. (POPL 2019) identify as the price of having exceptions at all in a
 linear setting — E15 blind spot 4 is a soundness gap, not a coverage gap.
 
+**E21 corrects what that price is, and it is not what E20 recorded.** E20 said
+the recipe was affinity **plus** cancellation and that perturb "has the
+affinity". Reading the paper: §1.3 rejects affine types *by name* — "Affine
+types present two quandaries arising from endpoints being **silently
+discarded**" — and §1.4 is titled "**Linear** Types with Explicit Cancellation",
+warning explicitly against confusing the two. Linearity is kept; `cancel` is
+added as a term that *uses* the endpoint. So this section's affine binding (E6)
+is not half the fix, it is the shape the paper argues against, and both halves
+of the obligation are outstanding. E21 claim 3 specifies the four pieces.
+Relatedly, E21 narrows §1.4's defence: no-resumption puts perturb outside the
+*multi-shot* half of the handler/linearity tension and inside the *discard*
+half, which is this same gap seen from the effects side.
+
 ### 1.3 Proof — capability-tier refinements, Ansatz retained
 
 Ansatz (`org.replikativ/ansatz`, a Lean 4 CIC kernel in Java with a Clojure
@@ -291,6 +312,21 @@ This is retained on its merits, not inherited: P5 §4.2 places bounded
 completeness solely with `explore_states.clj` BFS, under stated preconditions
 including **value-semantic state** — the precondition continuations break. E4
 shows the codec layer needs no continuations anyway.
+
+**What D4 buys, restated after E21 read the paper it rests on.** E20 recorded
+that Links combined linearity with effect handlers and carried a soundness bug
+for years, and that §1.4's no-resumption rule "places perturb outside that
+tension structurally". Half of that survives. Tang et al. (POPL 2024) name
+**two** ways handlers break linearity — continuations *discarded* (for
+exceptions) and continuations *invoked more than once* (for backtracking) — and
+prove a safety property that is symmetric in them: "no linear value is
+discarded or duplicated". D4 removes multi-shot, which is the hard half and a
+real gain. It does **not** remove the discard half: `abort!` is exactly a
+discarded continuation, and T-Handler's price for one is that its continuation
+must capture **no linear resources at all**. That is the same gap §1.2 and §4.6
+record on the `abort!` path, reached from the effects side. The recorded
+consequence about D3 is unchanged — reopening it drags control-flow linearity in
+with it, and that paper is still the price list.
 
 D3 (delimited control) stays open for direct-style application code, at a lower
 evidence tier — the two-track wall P5 already draws between bounded-complete
@@ -2866,6 +2902,15 @@ artifacts (Granule's `Vec.gr` and `File.gr`, the Idris 2 manual, `h11`'s
 evidence than an abstract. Appendix D lists every reference so the sources can
 be obtained later.
 
+**Superseded in part by E21.** *No paper was read in full text **when E20 was
+written***; that sentence bounded E20 and it no longer bounds this document.
+Eighteen of the references below have since been fetched and read (E21), and
+where E21's reading disagrees with E20's summary, **E21 governs** — three of
+E20's own statements did not survive (tally rows 30–32), two of them in the
+direction of more work rather than less. Everything in E20 not marked ✔✔ in
+Appendix D is still second-hand and still carries the limitation as originally
+stated.
+
 #### The four refutations
 
 | my claim | refuted by |
@@ -2994,6 +3039,605 @@ claims, for which no base rate exists.
    types would still eliminate E17 nonclaims 1–2 and E18 findings 1(a)–(c). The
    argument against it is cost, deployment evidence, and the ledger — not that
    it would fail to work.
+
+**E20 nonclaim 1 is superseded.** Eighteen of E20's references have now been
+read in full text (E21), plus two sources E20 did not have. Where E21 and E20
+disagree, E21 governs.
+
+---
+
+### E21 — the papers, read; and the two places E20 read an abstract correctly and applied it wrongly
+
+E20 was a literature survey conducted under an egress policy that blocked every
+scholarly host, so **no paper in it was read in full text**. It nonetheless
+refuted four claims of mine, and those refutations became load-bearing: two
+§4.6 items and a defence of §1.4's D4 rest on them. This finding is the
+verification pass. Network access was available; **19 documents were fetched and
+read in full text** — eighteen of E20's references (Vasconcelos in both the SFM
+2009 and I&C 2012 versions) plus two E20 did not have. All are marked ✔✔ in
+Appendix D.
+
+**Method, and what it does not establish.** Every verdict below carries a
+quotation with a section, page or figure locator. Where a paper could not be
+obtained, that is said rather than smoothed over. What this finding establishes
+is *what the cited papers say*; the mapping onto perturb remains argument, and
+E20 nonclaim 2 stands unchanged.
+
+#### The verdict table
+
+| # | E20's claim | verdict | what moves |
+| --- | --- | --- | --- |
+| 1 | the linear conditional rule types both branches in the same context; perturb's join rule *is* the linear rule; ⊕/& do not dissolve it | **CONFIRMED**, and more strongly than E20 put it | §4.6 join item gains a sharper citation and one published mitigation E20 did not have |
+| 2 | handlers break linearity; Links carried the bug; control-flow linearity is the fix | **CONFIRMED** (first three parts) | — |
+| 2′ | §1.4's no-resumption rule places perturb **outside** that tension | **OVERSTATED** — outside the *multi-shot* half only. `abort!` is the *discard* half, which the same paper names as the other half of the mismatch | §1.4, §4.6; new tally row 30 |
+| 3 | exceptions require **affinity** plus explicit cancellation; perturb "has the affinity" | **REFUTED on the mechanism.** Fowler et al. §1.3 *rejects* affinity by name and §1.4 is titled "Linear Types **with** Explicit Cancellation". Linearity is kept; cancellation is an explicit term | §1.2, §4.6 rewritten; new tally row 31 |
+| 4 | grades do not decide a value-dependent counting obligation without a solver | **CONFIRMED as a conclusion** | tally row 28 stands |
+| 4′ | *because* "grades count uses of a binder, not octets" | **REFUTED as a reason.** Doré (2026) gives multiplicities that depend on run-time values. The obstacle is not expressiveness; it is that the resulting check is undecidable and pays in hand-written proof terms instead of SMT | new tally row 32 |
+| 5 | sealing relocates trust; RustBelt discharges it per-library | **CONFIRMED**, verbatim | tally row 29 stands |
+| 6 | sealing *creates* linearity (Alms) | **CONFIRMED**, verbatim, and the mechanism is directly transplantable | §4.6 module item gains a concrete design |
+| 7 | Vault gives pre/post over the whole key set; E18 1(a) was a 2001 rediscovery | **CONFIRMED**, and Vault is **more general than E19** in three ways | §4.6 |
+| 8 | refinements inside recursive session types cost decidability; E19's placement avoids it | **CONFIRMED**, and the cause is nameable | — |
+| 9 | Rudra 264 / 51.6%; Astrauskas 92.3%; seL4 ~20:1 | **CONFIRMED with denominator corrections**, one of which matters | §6 |
+| 10 | Flux is the nearest existing system | **CONFIRMED**, every conjunct | §4.6 gains a costed target |
+| 11 | five negative claims | **four hold; one is qualified** | E20 nonclaim 3 |
+
+#### Claim 1 — confirmed, and the algorithmic form is the exact shape of perturb's rule
+
+Vasconcelos, *Fundamentals of Session Types*. The declarative rule (SFM 2009
+notes Fig. 5, p. 7; I&C 2012 Fig. 5):
+
+> Rule [T-If] for the conditional process splits the incoming context in two
+> parts: one used to check the condition, the other to check **both branches**.
+> The same context for the two branches is justified by the fact that only one
+> of P or Q will be executed.
+
+⊕/& do not dissolve it — the branch rule is the same rule (SFM §5, p. 14):
+
+> To type check a branching process prefixed by x at type &{lᵢ : Tᵢ} we have to
+> check each of the possible continuations Pᵢ at x: Tᵢ. **We use the exact same
+> Γ₂ in all cases** for only one of the Pᵢ will be executed, **similarly to
+> rule for the conditional process**.
+
+And the algorithmic system (SFM Fig. 12, p. 22; I&C Fig. 12) is stronger than
+E20 claimed, in perturb's favour. [A-If] is
+
+```
+    Γ₁ ⊢ v : q bool ; Γ₂      Γ₂ ⊢ P : Γ₃ ; L₃      Γ₂ ⊢ Q : Γ₃ ; L₃
+    ───────────────────────────────────────────────────────────────
+                Γ₁ ⊢ if v then P else Q : Γ₃ ; L₃
+```
+
+Both branches take the **same input context Γ₂ and must return the same output
+context Γ₃ and the same used-set L₃**. That is not merely "the same context"; it
+is an equality on the *residual*, which is what perturb's join rule computes and
+what a consuming branch beside a non-consuming branch violates. E20 said
+perturb's rule *is* the linear rule; the algorithmic rule shows it is the same
+rule stated in the same style, output contexts and all. **Tally row 27 stands
+and is strengthened.**
+
+*Scope, because the brief asked:* this is a π-calculus of processes, not a
+functional language with a join point, and the paper offers no discussion of
+what to do when branches disagree — it simply does not type them. Two
+independent corroborations were found that E20 did not have, and one supplies
+the mitigation §4.6 was missing; both are under claim 11(d) and the
+staged-protocol note below.
+
+#### Claim 2 — confirmed, and then applied to a case the paper puts on the other side
+
+Tang, Hillerström, Lindley, Morris, *Soundly Handling Linearity*, POPL 2024.
+The first three parts are confirmed from the abstract and §1:
+
+> Whereas conventional linear type systems bake in the assumption that
+> continuations are invoked exactly once, effect handlers allow continuations
+> to be **discarded (e.g. for exceptions)** or invoked more than once (e.g. for
+> backtracking). This mismatch leads to soundness bugs in existing systems such
+> as the programming language Links.
+
+The Links bug is real and worked in full in §1 — the `outch` example, a channel
+of session type `!Int.!String.End` against a multi-shot `Choose` and a
+discarding `Fail`: "Running the program causes a segmentation fault when
+printing the received values, as it erroneously attempts to concatenate a
+string with an integer." §5: the implementation "fixes a **long-standing** type
+soundness bug in Links". *Long-standing* is the paper's word and it states no
+duration; E20's "for years" is a fair gloss but is not sourced.
+
+**The fourth part does not survive.** E20 wrote that §1.4's rule — substitute a
+validated result or abort, no resumption, no continuation capture — places
+perturb *outside* that tension. The sentence quoted above lists **two** ways
+handlers break linearity, and `abort!` is the first one. The paper's safety
+property is symmetric:
+
+> we formally prove that F°ₑff preserves the integrity of linear values in the
+> sense that **no linear value is discarded or duplicated**.
+
+And T-Handler (§3, p. 15) prices exactly this. The continuation rᵢ of an
+operation ℓᵢ is given the value linearity Yᵢ of that operation, so that
+
+> when Yᵢ = ◦, the continuation of ℓᵢ may use some linear resources. Making rᵢ
+> linear guarantees that they are used exactly once. When Yᵢ = •, **the
+> continuation of ℓᵢ must not use any linear resources** and rᵢ is unlimited.
+
+An operation whose continuation is *discarded* cannot be given a linear
+resumption — a linear rᵢ must be used exactly once, and a `Fail`-style clause
+never binds it. It must therefore be control-flow-unlimited, and the rule then
+requires that **its continuation capture no linear resources at all**. That is
+the restriction that suffices, stated precisely; and it is the restriction
+perturb violates every time `abort!` is thrown past a live capability.
+
+So the correct statement is: **tail-resumptive-or-abort places perturb outside
+the multi-shot half of the tension and squarely inside the discard half.** "No
+resumption and no continuation capture" is a sound answer for the
+substitute-a-result path and is *not* an answer for the abort path. The halves
+are not equally hard — multi-shot is the hard one and perturb genuinely avoids
+it — but E20's "outside that tension" is too strong, and it is too strong in
+exactly the direction of claim 3.
+
+**D4's defence is narrowed, not withdrawn.** Reopening D3 still drags
+control-flow linearity in, and that paper remains the price list. What changes
+is that D4 does not buy perturb out of the linearity/handler interaction; it
+buys it out of half of one.
+
+#### Claim 3 — the highest-value item, and E20 (and the brief) got its mechanism backwards
+
+Fowler, Lindley, Morris, Decova, *Exceptional Asynchronous Session Types*, POPL
+2019. E20 says: "to have exceptions at all, linearity must weaken to **affinity
+plus explicit cancellation**", and "perturb has the affinity (E6); it lacks the
+cancellation obligation". The brief restates this. **The paper says the opposite
+about the first half, in a section written to say it.**
+
+§1.3, titled *Affine Types*, is an argument against them:
+
+> Affine types present two quandaries arising from endpoints being silently
+> discarded. First, a developer receives no feedback if they accidentally forget
+> to finish a protocol implementation. Second, if an exception is raised in an
+> evaluation context that captures an open endpoint then the peer may be left
+> waiting forever.
+
+§1.4 is titled ***Linear* Types with Explicit Cancellation** and heads off the
+confusion by name:
+
+> (They characterise their sessions as affine, but it is important **not to
+> confuse their system with affine type systems, as in §1.3, which allow
+> variables to be discarded implicitly**.)
+
+The recipe is linearity **retained**, with a `cancel` term that is itself a
+*use*: T-Cancel (Fig. 4) is `Γ ⊢ M : S` ⟹ `Γ ⊢ cancel M : 1`. Discarding is not
+permitted; discarding *explicitly* is. Three principles, §1.4:
+
+> endpoints can be explicitly discarded; an exception is thrown if a
+> communication cannot succeed because a peer endpoint has been cancelled; and
+> endpoint cancellations are **propagated** when endpoints become inaccessible
+> due to an exception being thrown.
+
+**This inverts what perturb was told it already had.** E6's affine binding is
+not half of the solution; it is §1.3's rejected option — silent discard is the
+defect, not the foundation. perturb has the thing the paper argues against and
+lacks both halves of the thing it argues for. The §4.6 item gets bigger, not
+smaller.
+
+**What discharges the obligation, and what it costs.** From §2.3, Fig. 6:
+
+- `E-Cancel`: `F[cancel a] ⟶ F[()] ∥ ⨸a` — cancellation creates a **zapper
+  thread** that owns the dead endpoint.
+- `E-Zap`: cancelling an endpoint cancels every endpoint sitting in its buffer,
+  repeatedly, until the buffer is empty. Cancellation is **transitive through
+  data that holds capabilities**.
+- `E-Raise`: "invokes the `otherwise` clause if an exception is raised, **while
+  also cancelling all endpoints in the enclosing pure context**"; for an
+  unhandled exception, `E-RaiseChild`/`E-RaiseMain` cancel **all free endpoints
+  in the evaluation context**. This is the automatic half: the language, not the
+  programmer, cancels what the non-local exit abandoned.
+- `E-ReceiveZap` / `E-CloseZap`: an operation on an endpoint whose peer is
+  cancelled **raises** rather than blocking. §2.2 says why this is not optional:
+  "Naïvely implemented, cancellation violates progress: a thread could discard
+  an endpoint, leaving a peer waiting forever."
+- One asymmetry, a design cost rather than an oversight: there is deliberately
+  **no** rule raising on a *send* to a cancelled peer, "since to do so would
+  violate confluence" (§2.3). "Not raising exceptions on sends to dead peers is
+  standard in languages such as Erlang."
+
+**What perturb would have to add — concretely**, in dependency order:
+
+1. **A `cancel` form per capability class, typed as a consuming use.** Not an
+   exemption and not a checker special case: `cancel` must satisfy the same
+   `:consumes` rule every other operation does, so that "cancelled" and "leaked"
+   become different verdicts. This is small and has the best ratio of the four.
+2. **A live-capability set at every `abort!` site.** `perturb.check` already
+   computes what is live at a program point — that is what the scope-exit leak
+   rule reads. The rule becomes: at an `abort!`, every capability live in the
+   enclosing scope up to the nearest handler must be cancelled. Two ways to
+   discharge it, and the choice is real: *require* the programmer to write the
+   cancels (a new rejection, more diagnostics, in the E19 style), or *insert*
+   them (a compiler obligation, which is what E-Raise does, and which is the
+   same shape as the dynamic-join option below).
+3. **Propagation into composites.** E-Zap's analogue: cancelling a capability
+   must cancel the capabilities reachable from it. perturb's abstract domain has
+   exactly one composite, a tuple (§1.2), so this is bounded today and will not
+   stay bounded.
+4. **Peer notification — only where there *is* a peer.** This is the part that
+   does **not** transplant wholesale, and saying so is the point of item 4.
+   EGV's endpoints always have a counterparty, and the `⨸`/raise machinery
+   exists to stop that counterparty hanging. perturb's `ResponseBody` and
+   `ServerConn` have a remote peer that is not a perturb value; a buffer or a
+   cursor has no peer at all. What survives is the *obligation*, not the
+   mechanism: a cancelled `ServerConn` must leave the wire consistent (close, or
+   a truncated-body signal), and that is an axiom, not a typing rule.
+
+Items 1–3 are checker work of the class E19 already did. Item 4 is a protocol
+decision per capability. **The `abort!` item is the one that becomes work, and
+it is now specified.**
+
+#### Claim 4 — the conclusion holds; the reason given for it does not
+
+Three parts confirmed:
+
+- **Granule requires a solver.** §1: Granule "exploits an SMT solver to
+  discharge theorems over the indices of graded modalities"; §5.1: "Predicates
+  are compiled into the SMT-LIB format and passed to a compatible SMT solver",
+  "(we use Z3)". Precisely: it requires *an SMT solver*, with Z3 the one used.
+  E20's "requires Z3" is right in practice and a notch stronger than the paper.
+- **Ghica & Smith.** Abstract: "for this abstract type system we provide both a
+  general **type-inference procedure**, parameterized by the decision procedure
+  of the semiring equational theory"; §4: "Provided this theory is decidable, a
+  type inference algorithm automatically follows." E20 attributed the
+  parameterisation to *the system*; the paper attributes it to the *inference
+  procedure*. Directionally right, one notch stronger than the source. §3.3
+  supplies a sharper fact E20 did not have: their own constraints are discharged
+  by Z3, and "nonlinear systems of constraints over ℕ are generally
+  undecidable".
+- **Liquid Resource Types.** Abstract, and it is the cleanest statement of the
+  trade in this bibliography: "automated techniques are restricted to relatively
+  constrained families of resource bounds, while **more expressive proof
+  techniques admitting value-dependent bounds rely on handwritten proofs**.
+  Liquid resource types combine the best of these approaches, **using logical
+  refinements** to automatically prove precise bounds." Value-dependent counting
+  ⇒ refinements ⇒ SMT. **Tally row 28 stands.**
+
+**But E20's fifth, structural correction is refuted.** E20 wrote: "grades count
+uses of a binder; the obligation counts octets... Any encoding making grades
+count octets is a linear budget token split as `Permit[n] → Permit[k] ⊗
+Permit[n−k]`, which is grade arithmetic over variables, which is LIA, which is
+the solver." The first clause is not a fact about graded systems; it is a fact
+about the graded systems E20 could reach. arXiv 2507.08759 — which E20 could not
+fetch — is Maximilian Doré, *Dependent Multiplicities in Dependent Linear Type
+Theory*, and its subject is precisely the opposite:
+
+> We present a novel dependent linear type theory in which the **multiplicity of
+> some variable — i.e., the number of times the variable can be used in a
+> program — can depend on other variables.**
+
+So "this handle owes the wire exactly N more octets", N a run-time integer, *is*
+expressible as a multiplicity, and it is decided **without SMT** — by conversion
+in the host dependent type theory, implemented in Agda (§5). The price is stated
+by the author in §2.4, and it is the price LRT names:
+
+> The expressivity of our type system comes at a cost, however: since we can
+> compute with supplies using our intuitionistic theory, **type-checking for ⊩
+> is vastly undecidable.** ... Dal Lago and Gaboardi have dealt with this issue
+> by parametrising their theory over the set [of] function symbols that are
+> allowed in the computation of resource annotations, restricting to simpler
+> theories when type-checking needs to be decidable. **We take a different
+> approach** and allow the full power of DTT ... if we can establish that some
+> terms are propositionally equal, we can use this witness in `splyConv` to
+> convince the type-checker that we have used the specified resources.
+
+That is: the programmer supplies a proof term. **The answer to the brief's
+concrete question is therefore "yes, and it does not help":** a graded system
+can express the Content-Length obligation over a run-time integer, and avoids
+SMT only by making the check undecidable and handing the discharge back to the
+programmer. The others were checked and cannot: Granule's grades are semiring
+elements solved by SMT; Idris 2/QTT multiplicities are {0, 1, ω}; Linear Haskell
+puts multiplicity on the arrow over the same finite set; BLL's index polynomials
+and dℓPCF are complete only *relative to an oracle* — which is why Doré cites Dal
+Lago & Gaboardi at exactly the point above.
+
+**The conclusion perturb acted on is unchanged: there is no solver-free route to
+this obligation.** What changes is the record's *reason* for believing it, which
+had been a claim about what grades **are** and is now a claim about what the
+decision problem **costs**. Recorded rather than silently applied. **New tally
+row 32.**
+
+#### Claims 5 and 6 — both confirmed verbatim, and 6 is a design
+
+**Claim 5.** RustBelt, POPL 2018, abstract:
+
+> Our proof is extensible in the sense that, **for each new Rust library that
+> uses unsafe features, we can say what verification condition it must satisfy**
+> in order for it to be deemed a safe extension to the language.
+
+And §1.2: "the semantic interpretation of the interface yields a
+**library-specific verification condition**... confined to libraries that
+satisfy their verification conditions, the program is safe to execute." E20
+rested a recommendation on one sentence about per-library verification
+conditions; the sentence exists and says what E20 said. **Tally row 29 stands.**
+
+*Scope, and §4.6 should carry it:* RustBelt's obligations are discharged in Coq
+against a semantic model of the whole language. "Each entry names an obligation
+instead of granting an exemption" describes an architecture whose price is a
+machine-checked logical relation, not a lightweight annotation scheme. Naming
+the obligation is the cheap part.
+
+**Claim 6.** Alms, POPL 2011, abstract:
+
+> A key feature of Alms is the ability to introduce abstract affine types via
+> ML-style signature ascription. In Alms, **an interface can impose stiffer
+> resource usage restrictions than the principal usage restrictions of its
+> implementation.** This form of sealing allows the type system to naturally and
+> directly express a variety of resource management protocols from
+> special-purpose type systems.
+
+Confirmed verbatim. **What makes it sound is stated in §2** and is
+transplantable:
+
+> The original array type α Array.array has kind U, as in unlimited, because it
+> places no limits on duplication. We can use it to represent an abstract type
+> of kind A, however, **because U is a subkind of A**, and Alms's kind
+> subsumption rule allows assigning an abstract type a **greater** kind than
+> that of its concrete representation.
+
+The requirement is: a qualifier lattice with unlimited ≤ affine; sealing
+permitted to move *up* it only; and a principal-kinding result (Theorem 3 —
+"every typeable aλms function has a principal usage qualifier") so that "the
+principal usage restrictions of its implementation" is well defined at all.
+
+Two further details bear directly on `:perturb.cap/representation`. First, §2's
+`CAP_ARRAY` separates the *reference* from the *capability* and ties them with
+an existential "stamp" — `(α, β) array` unlimited, `β cap` affine — where "the
+existential guarantees that the stamp on an array can only match the stamp on
+the capability created by the same call to `new`". That is the shape §1.2 has
+been reaching for by listing operation names. Second, Alms represents those
+capabilities by `unit`, "which is adequate because these capabilities have no
+run-time significance": **the capability is erased.** That matters to any §1.4
+ledger argument that assumes capabilities must exist at run time to be
+cross-checked.
+
+#### Claim 7 — confirmed, and Vault is more general than E19 in three ways
+
+DeLine & Fähndrich, PLDI 2001, §2:
+
+> In Vault, a function's type has a pre- and postcondition, which respectively
+> state **which keys must be in the held-key set to call the function and which
+> keys are in the held-key set when the function returns.**
+
+Effect clauses `[k@A→B]`, `[k@A→]` (consumed), `[→k@B]` (produced), `[new k@B]`
+(fresh). Keys "can be neither duplicated nor lost". An operation moving two
+machines is therefore one effect clause naming two keys — ordinary, in 2001,
+exactly as E20 said. E18 finding 1(a) was a rediscovery. **Confirmed.**
+
+E19 fixed it by keying `[capability operation]`. Vault's form is more general in
+three ways, and the first is the one §4.6 has circled for three findings:
+
+1. **Type guards attach keys to *data*, not only to operations.** §2: "a data
+   object is guarded by zero or more keys; at a given program point, **all the
+   object's keys must be in the held-key set in order for the program to access
+   the data object** at that point." That is a typed statement of "you may touch
+   the connection's concrete map only while holding the Connection's key" — the
+   module-boundary problem, expressed *inside* the capability system rather than
+   as a list of exempt operation names. perturb has no analogue, and
+   `:perturb.cap/representation` is where it would go.
+2. **Types may be parameterised by key sets** (§2: "a Vault type may be
+   parameterized by a key set"), so a helper can be generic in which capability
+   it requires. E19's `:arg` is mandatory and monomorphic; the
+   `unpositioned-two-cap-helper` family is the shape this addresses.
+3. **`[new k@S]` makes minting first-class.** E19 reached the same place by
+   deleting `:created` and declaring `:from nil` — the right answer, arrived at
+   independently — but Vault has it as an effect form rather than a sentinel.
+
+All three are compile-time only: "Since guards and keys are purely compile-time
+entities, the function will be compiled into a function taking an ordinary
+parameter" — the same erasure point Alms makes.
+
+#### Claim 8 — confirmed, and the cause names why E19 is safe
+
+Das & Pfenning, CONCUR 2020, abstract:
+
+> We show that, **despite the decidability of Presburger arithmetic, type
+> equality and therefore also subtyping and type checking are now undecidable**,
+> which stands in contrast to analogous dependent refinement type systems from
+> functional languages. We also present a practical, but incomplete algorithm
+> for type equality, which we have implemented [in Rast].
+
+The cause, §4:
+
+> We prove the undecidability of type equality by exhibiting a reduction from an
+> undecidable problem about two counter machines. ... arithmetic constraints
+> allow us to model branching zero-tests available in the machine. **This,
+> coupled with recursion in the language of types, establishes undecidability.**
+
+The undecidability needs *both* arithmetic refinements *and* recursive types,
+and the reduction goes through on "a small fragment ... containing only type
+definitions, internal choice (⊕) and assertions ?{φ}.A where φ just contains
+constraints n = 0 and n > 0".
+
+**E19's placement genuinely avoids it, for the stated reason.** E19 attaches
+`:perturb.cap/refine` to a *transition* and discharges it by normalisation
+against ghost state. There is no recursive refined type, so no type-equality
+question is ever asked: the theorem's hypothesis is not met. That is a
+structural answer, not luck. Two honesty notes. E19 also avoids it by being
+enormously weaker — it refuses every loop (E19 nonclaim 5) — so "avoids the
+undecidability" is not evidence the fragment is well chosen. And the hypothesis
+*would* be met the moment a protocol type became recursive and indexed, which is
+what any session-typed direction for §1.2 would do.
+
+#### Claim 9 — numbers confirmed, denominators corrected, and one correction matters
+
+- **Rudra**, SOSP 2021. Abstract: "RUDRA can scan the entire registry (43k
+  packages) in 6.5 hours and identified 264 previously unknown memory safety
+  bugs—leading to 76 CVEs and 112 RustSec advisories being filed, which
+  **represent 51.6% of memory safety bugs reported to RustSec since 2016**."
+  §6.1 confirms 264 bugs in 145 packages. **The denominator is not 43,000.**
+  §6.1: of the 43k downloaded, "15.7% (7k) did not compile ... 4.6% (2k) did not
+  produce any Rust code ... 1.8% (0.7k) did not have proper metadata, **leaving
+  us with 77.9% (33k) packages as analysis targets**." E20's "scanned all 43,000
+  crates" should read *downloaded 43k, analysed 33k*. This does not weaken the
+  use E20 made of it; it slightly strengthens it, the yield having come from a
+  smaller corpus.
+- **Astrauskas et al.**, OOPSLA 2020, §5.2.1: "for **92.3% of all crates, the
+  unsafe statement ratio is at most 10%**." Confirmed verbatim. **The
+  denominator is the correction that matters:** "all crates" includes the 76.4%
+  that "contain no unsafe features at all", so the statistic is dominated by
+  crates with none. The authors' own next sentence is the one E20 did not carry:
+  "with 21.3% of crates containing some unsafe statements and – out of those
+  crates – **24.6% having an unsafe statement ratio of at least 20%, we cannot
+  claim that developers use unsafe Rust sparingly**, i.e., they do not always
+  follow the first principle of the Rust hypothesis." Appendix D's "only
+  **partially** supported" was right; the 92.3% figure quoted alone points the
+  other way and should not be used to argue that trusted cores are small.
+- **seL4**, SOSP 2009. p. 1: "seL4 ... comprises **8,700 lines of C code** and
+  600 lines of assembler." §5.2: "The overall size of the proof, including
+  framework, libraries, and generated proofs ... is **200,000 lines of Isabelle
+  script**." 200,000 / 8,700 ≈ **23:1**, not ~20:1. Immaterial to any argument
+  here; corrected because it is quoted as a fact.
+
+#### Claim 10 — Flux confirmed on every conjunct, and the gap to `perturb.refine` is now costed
+
+Lehmann, Geller, Vazou, Jhala, PLDI 2023. The abstract, conjunct by conjunct:
+
+> we design a novel refined type system for Rust that **indexes mutable
+> locations, with pure (immutable) values that can appear in refinements**, and
+> then **exploits Rust's ownership mechanisms** to abstract sub-structural
+> reasoning about locations within Rust's polymorphic type constructors, **while
+> supporting strong updates** ... we implement our type system in Flux, a
+> plug-in to the Rust compiler that ... **efficiently synthesize[s] loop
+> annotations—including complex quantified invariants describing the contents of
+> containers—via liquid inference.**
+
+Strong update = the refinement index of a location changes at an assignment
+(§2.3: "Exclusive ownership provides local strong updates"), which is E20's
+"typestate carrying a refinement" — a fair gloss, though Flux never uses the
+word *typestate*. Inference is Horn-clause based (§4.3): "Flux uses the Liquid
+Fixpoint horn constraint solver ... the unknown κ predicates are Horn variables
+that may have multiple arguments, allowing liquid inference to track
+dependencies between multiple program variables, **thereby enabling Flux to
+automatically synthesize loop invariants**."
+
+**What `perturb.refine` would need to reach the same class**, given E19's
+fragment is "ground linear integer arithmetic with uninterpreted non-negative
+constants, conjunctive, decided by normalisation" and refuses every loop:
+
+1. **An SMT backend.** Flux's ergonomics rest on "decidable (quantifier free)
+   validity queries over the predicates, thereby enabling Horn-clause based"
+   inference (§1). No version of this keeps E19's normaliser.
+   `prototypes/refinement.py` is already recorded as the thing to port; this is
+   the finding that says porting it is necessary and not sufficient.
+2. **A Horn-clause solver over refinement variables** — which is E13's abstract
+   refinements arriving from the other direction, since Flux's κ variables *are*
+   predicate variables. §1.2 already records that HM cannot solve them and that
+   this is Horn-clause constraint solving; Flux is the existence proof that it
+   is practical at this scale.
+3. **Indexed locations**, so a capability's state and its refinement are one
+   thing rather than E19's transition-plus-ghost-state pair.
+
+That is a large, well-understood, entirely conventional pile of work with a
+shipped system at the end of it. It is also the *opposite* direction from E19's
+"it is not a solver, and the report says so unprompted". Both positions are
+defensible; the record should not pretend they are compatible.
+
+#### Claim 11 — four negative claims hold, one is qualified, and one search produced the missing mitigation
+
+Searched with the hosts the brief named, plus arXiv, DBLP, Semantic Scholar and
+GitHub.
+
+- **(a) A typed sans-io trichotomy — NOT FOUND, unchanged.** Searched for typed
+  incremental parsers returning ok / need-more-with-the-*exact original* cursor /
+  invalid. What exists is the *pattern*, undocumented by a type system
+  (`sans-io.readthedocs.io`, `webrtc-rs/sansio`), and formal work on the *split*
+  rather than the trichotomy (Interaction Trees, `coq-http`, already Appendix
+  D.7). EverParse validators return a consumed position or an error and are
+  verified, but they validate a complete buffer; "need more" is not in their
+  result type. **E20's negative claim stands.**
+- **(b) An implementation of Qian, Kavvos, Birkedal — NOT FOUND, confirmed.**
+  The paper (arXiv 2010.13926, read) introduces coexponentials and a
+  session-typed functional language *translated into* them. Every occurrence of
+  "implement" in it is an encoding **within** the calculus — Compare-and-Set, a
+  Keynesian beauty-contest umpire — not a software artifact. **Stands.**
+- **(c) A graded system enforcing a wire-format length obligation — NOT FOUND,
+  stands**, and claim 4 now explains why: the obligation is value-dependent, and
+  the one system that can express it pays in undecidability rather than in a
+  solver. Granule's protocol examples grade *sessions*, not octets.
+- **(d) A measurement of how often a join rule rejects real code — NOT FOUND for
+  frequency; E20's stronger sentence does not survive.** E20 nonclaim 3 says
+  "perturb's zero-in-nREPL, fires-on-the-first-HTTP-driver is better data than
+  anything published". On *frequency* that stands. Two things were found that it
+  should not have claimed superiority over:
+  - **The problem is named and published, as the motivation for a system built
+    to remove it.** Doré (2507.08759) §1, on the standard linear `if` rule:
+    "Both elements of type A have to be constructed from the same resources,
+    **which is a steep ask: different if-then-else branches in a program will
+    generally do different things, and hence use different resources.**" That is
+    §1.2's "known usability risk" in someone else's words, and dependent
+    multiplicities let the branches differ. **This is a fourth mitigation and
+    the only one that removes the rule rather than routing around it** — and it
+    costs undecidable checking (claim 4), so it is an option to record, not to
+    take.
+  - **The usability cost is measured, just not the frequency.** *A Grounded
+    Conceptual Model for Ownership Types in Rust* (arXiv 2309.04134, read), §4:
+    participants could "predict the compiler's reason for rejection in 78% of
+    cases", but "could only **fix** the program in **46%** of cases ... and
+    could only create a counterexample in 31% of cases". §4.6's own sentence —
+    the accepted rewrite "works and is not discoverable from the diagnostic" —
+    is that documented failure mode, with a number on it.
+- **(e) A trusted-surface metric surviving adversarial refactoring — NOT FOUND,
+  stands.** Nothing beyond what E20 had: `cargo-geiger` #71's mirror defect, and
+  the unsafety-isolation-graph and safety-tag work in Appendix D.6, which
+  propose audit *units* rather than a scalar — i.e. they concede the scalar does
+  not exist.
+
+#### One thing found that belongs to the staged-protocol note
+
+`docs/research/STAGED-PROTOCOL-NOTE.md` asks whether "type systems as macros"
+carries *substructural* typing, calling it "the load-bearing question for a
+Lisp-hosted capability tier". **It does, and the artifact exists.** The POPL
+2017 Turnstile paper itself never mentions linearity — its example ladder is
+STLC → System F → Fω → subtyping → dependent types — but the `macrotypes`
+repository ships `turnstile-example/turnstile/examples/linear/`, containing
+`lin.rkt`, `lin2.rkt`–`lin5.rkt`, `lin+cons.rkt`, `lin+tup.rkt`, `lin+var.rkt`,
+**`lin+chan.rkt`** (linear channels) and `fabul.rkt`. `lin.rkt` defines the
+linear arrow `-o` and a `turnstile/mode`-based linear scope discipline
+(`linear-use-var!`, `linear-out-of-scope!`, `linear-merge-scopes!`,
+`make-linear-branch-mode`, `branch-then`/`branch-else`).
+
+And it raises, verbatim:
+
+```racket
+(define (fail/unbalanced-branches x)
+  (raise-syntax-error #f "linear variable may be unused in certain branches" x))
+```
+
+A Lisp-hosted linear type checker implemented as macros has **perturb's join
+rule and perturb's join diagnostic**. That is a third independent corroboration
+of claim 1, an existence proof for the note's first question, and the closest
+prior art to a perturb capability tier this document has found. The note's other
+two questions — whether 3D is independently checked, and whether anyone has
+*generated* linearity/typestate annotations from a protocol description — were
+not resolved and remain open.
+
+#### E21's own nonclaims
+
+1. **Nineteen documents, not the whole bibliography.** Appendix D has roughly
+   ninety entries. What was read is marked ✔✔; everything unmarked remains
+   verified-for-existence only, and E20's method limitation continues to bound
+   it. The selection was the brief's eleven claims, not a sample of the field.
+2. **Reading a paper is not running one.** Nothing here was executed. E21 is a
+   documentary finding and sits under the same flag as E20 in the tally: no
+   artifact produced these corrections. The `abort!` work specified under claim
+   3 is the artifact that would.
+3. **The mapping onto perturb is still argument.** Confirming that Fowler et al.
+   say X does not establish that X applies to a capability with no peer; claim 3
+   item 4 says exactly where the transplant stops.
+4. **Two papers could not be obtained**, and are marked ✗ in Appendix D:
+   Parkinson & Bierman (POPL 2005) and Mostrous & Vasconcelos (2014), both
+   behind `dl.acm.org`'s Cloudflare challenge with no author-hosted copy found.
+   Claim 5's abstract-predicates half therefore rests on RustBelt plus E20's
+   second-hand reading, not on Parkinson & Bierman directly.
+5. **The brief that commissioned this contained a factual error, as it
+   predicted.** It restated E20's "linearity must weaken to affinity **plus** an
+   explicit cancellation obligation" as the thing to verify against Fowler et
+   al., and offered "its capabilities already bind affinely (E6)" as though that
+   were half the solution. Fowler §1.3 rejects affinity by name and §1.4 keeps
+   linearity. The error was inherited from E20 rather than introduced by the
+   brief — but it was carried forward unqueried in both, which is the failure
+   mode a second source is supposed to catch.
 
 ---
 
@@ -3219,6 +3863,32 @@ Recorded here so they are not lost between sections. None of these is decided.
   session-typed answer), or a **runtime drop flag** (Rust RFC 320). Also: E20
   found no published measurement of how often this fires, so perturb's two data
   points are better evidence than anything in the literature.
+  **E21 confirms the rule from the source and qualifies the last sentence.**
+  Vasconcelos's *algorithmic* rule [A-If] is sharper than E20 reported: both
+  branches take the same input context **and must return the same output context
+  and the same used-set**, which is an equality on the residual — perturb's join
+  rule exactly. [T-Branch] is the same rule for &, "the exact same Γ₂ in all
+  cases ... similarly to rule for the conditional process", so ⊕/& really do not
+  dissolve it. Two things E20 did not have:
+  - **A fourth mitigation, and the only one that removes the rule.** Doré,
+    *Dependent Multiplicities in Dependent Linear Type Theory* (arXiv
+    2507.08759), is built to dissolve exactly this, and names it: "Both elements
+    of type A have to be constructed from the same resources, **which is a steep
+    ask: different if-then-else branches in a program will generally do
+    different things**". Value-dependent multiplicities let the branches differ.
+    The cost is that type checking becomes "vastly undecidable" and discharge
+    moves to hand-written proof terms (tally row 32). An option to record, not
+    to take.
+  - **The frequency is still unmeasured; the usability cost is not.** *A
+    Grounded Conceptual Model for Ownership Types in Rust* (arXiv 2309.04134):
+    participants predicted the compiler's reason for rejection in 78% of cases
+    but could only **fix** the program in **46%**, and construct a
+    counterexample in 31%. "The accepted rewrite is not discoverable from the
+    diagnostic" is a documented failure mode with a number on it. perturb's two
+    data points remain the better evidence *on frequency* and only on frequency.
+  - And a third corroboration, in a Lisp: Turnstile's `linear/lin.rkt` raises
+    `"linear variable may be unused in certain branches"` from a macro-hosted
+    linear type checker (E21).
 - **~~`:local`~~ and `:extern`.** §1.1's two IR claims were inferences from
   source reading. **`:local` is now settled**: a checker walked real IR and the
   claim holds — names, no binding identity, no `:binding-id` key, no
@@ -3259,6 +3929,31 @@ Recorded here so they are not lost between sections. None of these is decided.
   Morris's sealer/unsealer pairs fit better. See Appendix D.5.
   **Independent corroboration of the gameability finding:** `cargo-geiger` has
   the same defect in mirror image and has shipped with it since 2019.
+
+  **E21 read (i), (iii) and the Vault citation, and all three survive with a
+  design attached.** Alms's abstract is verbatim what E20 reported — "an
+  interface can impose stiffer resource usage restrictions than the principal
+  usage restrictions of its implementation" — and §2 states what makes it sound:
+  a qualifier lattice with **U a subkind of A**, sealing permitted to move *up*
+  it only, plus a principal-kinding theorem so that "principal usage
+  restrictions of its implementation" is well defined. §2's `CAP_ARRAY` is the
+  shape this item wants: split the *reference* (unlimited) from the *capability*
+  (affine) and tie them with an existential **stamp**, so "the stamp on an array
+  can only match the stamp on the capability created by the same call to `new`".
+  Two consequences worth carrying: the capability is represented by `unit` and
+  **erased** — "these capabilities have no run-time significance" — which any
+  ledger argument premised on run-time capabilities must reckon with; and
+  RustBelt's per-library obligations are discharged in Coq against a semantic
+  model of the whole language, so "names an obligation instead of granting an
+  exemption" is an architecture whose price is a machine-checked logical
+  relation, not a cheaper annotation. **Vault already has the missing
+  construct**: its *type guards* attach keys to **data**, not only to
+  operations — "at a given program point, all the object's keys must be in the
+  held-key set in order for the program to access the data object" — which is
+  "you may touch the connection's concrete map only while holding the
+  Connection's key", stated inside the capability system rather than as a list of
+  exempt names. It also parameterises types by key sets, which is the
+  `unpositioned-two-cap-helper` shape. Both are compile-time only.
 - **~~An operation that advances two machines cannot be declared~~ CLOSED**
   (E19). Keyed `[capability operation]`; three such operations, not two; and
   E18's "nothing here is a false accept" was wrong for the borrow+produce case.
@@ -3275,12 +3970,53 @@ Recorded here so they are not lost between sections. None of these is decided.
   logic problem: make `body-finish!` *consume* the Body and *produce* the Conn,
   and the affine discipline enforces the order at zero solver cost (Vault, PLDI
   2001). E19 made that declarable; nothing has used it yet.
-- **The `abort!` path has no cancellation obligation.** E15 blind spot 4 is a
-  soundness gap, not a coverage gap: a non-local exit past a live capability
-  leaks it. Fowler et al. (POPL 2019) — having exceptions at all requires
-  weakening linearity to affinity **plus explicit cancellation**. perturb has
-  the affinity and not the cancellation. E20 ranks this the highest-value item
-  the queue did not contain (Appendix D.3).
+  **E21 costs the loop/function gap.** Flux (PLDI 2023) is confirmed on every
+  conjunct E20 claimed for it, including inferred loop invariants — "Flux uses
+  the Liquid Fixpoint horn constraint solver ... enabling Flux to automatically
+  synthesize loop invariants". Reaching that class needs three things E19 does
+  not have: an **SMT backend** (Flux rests on "decidable (quantifier free)
+  validity queries"), a **Horn-clause solver over refinement variables** (Flux's
+  κ variables are E13's abstract refinements arriving from the other direction),
+  and **indexed locations** so state and refinement are one thing rather than a
+  transition-plus-ghost-state pair. That is conventional, well-understood work
+  with a shipped system at the end of it — and it is the opposite direction from
+  E19's "it is not a solver, and the report says so unprompted". Both are
+  defensible; they are not compatible, and the record should not imply they are.
+  Separately, E21 confirms that E19's *placement* genuinely dodges Rast's
+  undecidability rather than dodging it by luck: Das & Pfenning's reduction needs
+  arithmetic refinements **and recursion in the language of types**, and E19 has
+  no recursive refined type for a type-equality question to be asked about.
+- **The `abort!` path has no cancellation obligation. Now specified, and bigger
+  than E20 priced it (E21).** E15 blind spot 4 is a soundness gap, not a
+  coverage gap: a non-local exit past a live capability leaks it. E20 recorded
+  the recipe as "weaken linearity to affinity **plus** explicit cancellation —
+  perturb has the affinity". **That is backwards.** Fowler et al. §1.3 rejects
+  affine types by name, because they permit *silent* discard: "a developer
+  receives no feedback if they accidentally forget to finish a protocol
+  implementation", and "if an exception is raised in an evaluation context that
+  captures an open endpoint then the peer may be left waiting forever". §1.4 is
+  titled "**Linear** Types with Explicit Cancellation" and warns against
+  confusing the two. Linearity is *kept*; `cancel` is a term that **uses** the
+  endpoint (T-Cancel: `Γ ⊢ M : S` ⟹ `Γ ⊢ cancel M : 1`). E6's affine binding is
+  the rejected option, so perturb has neither half. Four pieces, in dependency
+  order (E21 claim 3):
+  1. a `cancel` form per capability class, typed as a consuming use, so that
+     *cancelled* and *leaked* become different verdicts — small, best ratio;
+  2. a live-capability set at every `abort!` site, discharged either by
+     requiring the programmer to write the cancels or by inserting them (the
+     latter is what EGV's `E-Raise` does: it cancels "all endpoints in the
+     enclosing pure context");
+  3. propagation into composites — EGV's `E-Zap` cancels transitively through
+     buffered values; perturb's abstract domain has one composite today (a
+     tuple) and will not keep it;
+  4. peer notification **only where a peer exists** — this is where the
+     transplant stops. EGV endpoints always have a counterparty and the
+     `⨸`/raise machinery exists to stop it hanging; a perturb buffer or cursor
+     has none. What survives for `ServerConn` is the *obligation* to leave the
+     wire consistent, which is an axiom, not a typing rule.
+
+  Still the highest-value item the queue did not contain (Appendix D.3), and now
+  the one item on this list with a written specification.
 - **A dynamic join is an unexplored option.** §1.2's "no sound join exists" is
   true for a fully static, zero-runtime-state discipline and false in general —
   Rust carries a runtime **drop flag** (RFC 320). A `:maybe-moved` mode
@@ -3783,12 +4519,29 @@ fetched directly. This list is kept complete so the sources can be obtained when
 access allows, and so any claim resting on one can be re-checked against the
 paper rather than against a summary of it.
 
+**E21 update — the marks now mean three different things.**
+
+| mark | meaning |
+| --- | --- |
+| ✔✔ | **read in full text** during E21, from the URL given. Any claim resting on it has been checked against the paper |
+| ✔ | fetched during E20 — an implementation artifact, repo, manual or issue, not a paper |
+| ✗ | **attempted and not obtained** during E21; the reason is given |
+| (none) | still verified for existence, venue, authors and year only. E20's method limitation applies unchanged |
+
+Two entries were attempted and failed, both behind `dl.acm.org`'s Cloudflare
+challenge with no author-hosted copy found: **Parkinson & Bierman** (D.5) and
+**Mostrous & Vasconcelos 2014** (cited by Fowler et al. as the origin of explicit
+cancellation, and not previously listed here — added to D.3 marked ✗). ACM was a
+dead end for automated fetching exactly as E20 recorded; everything obtained came
+from arXiv, LIPIcs, author pages, institutional repositories, `web.archive.org`
+(for `di.fc.ul.pt`, which redirect-loops), or GitHub.
+
 ### D.1 Typestate
 
 | ref | where |
 | --- | --- |
 | Strom & Yemini, *Typestate: A Programming Language Concept for Enhancing Software Reliability*, IEEE TSE 12(1), 1986 | original; NIL, IBM, no external deployment |
-| DeLine & Fähndrich, *Enforcing High-Level Protocols in Low-Level Software*, PLDI 2001 | [10.1145/378795.378811](https://dl.acm.org/doi/10.1145/378795.378811) — **Vault**; tracked keys; pre/post over the whole key set |
+| ✔✔ DeLine & Fähndrich, *Enforcing High-Level Protocols in Low-Level Software*, PLDI 2001 | [MSR PDF](https://www.microsoft.com/en-us/research/wp-content/uploads/2001/05/pldi01.pdf) — **Vault**; tracked keys; pre/post over the whole key set. **E21: confirmed, and more general than E19 in three ways** — type guards attach keys to *data*; types may be parameterised by key sets; `[new k@S]` makes minting first-class |
 | DeLine & Fähndrich, *Adoption and Focus: Practical Linear Types for Imperative Programming*, PLDI 2002 | Vault's aliasing story |
 | DeLine & Fähndrich, *Typestates for Objects*, ECOOP 2004 | [10.1007/978-3-540-24851-4_21](https://link.springer.com/chapter/10.1007/978-3-540-24851-4_21) — Fugue |
 | Fähndrich et al., *Language support for fast and reliable message-based communication in Singularity OS*, EuroSys 2006 | Sing#; channel contracts; `C.Imp`/`C.Exp` |
@@ -3807,7 +4560,7 @@ paper rather than against a summary of it.
 | ref | where |
 | --- | --- |
 | Honda, Vasconcelos, Kubo, *Language Primitives and Type Discipline for Structured Communication-Based Programming*, ESOP 1998 | delegation |
-| Vasconcelos, *Fundamentals of Session Types*, Information and Computation 217, 2012 | **the conditional rule: both branches typed in the same context** — the refutation of E20's claim 1 |
+| ✔✔ Vasconcelos, *Fundamentals of Session Types*, Information and Computation 217, 2012; and the SFM 2009 lecture notes | both read via `web.archive.org` (`di.fc.ul.pt` redirect-loops). **the conditional rule: both branches typed in the same context** — the refutation of E20's claim 1. **E21: confirmed and strengthened** — algorithmic [A-If] additionally requires both branches to return the **same output context and used-set**; [T-Branch] is the same rule for `&` |
 | Caires & Pfenning, *Session Types as Intuitionistic Linear Propositions*, CONCUR 2010 | `!A` as replicated server |
 | Thiemann & Vasconcelos, *Context-Free Session Types*, ICFP 2016 | FreeST; lifts `PRESERVE` beyond regular |
 | Thiemann, *Intrinsically Typed Sessions with Callbacks*, 2023 | [arXiv:2303.01278](https://arxiv.org/abs/2303.01278) — driver/handler split in miniature |
@@ -3818,9 +4571,9 @@ paper rather than against a summary of it.
 | Chen, Balzer, Toninho, Ferrite | [arXiv:2009.13619](https://arxiv.org/abs/2009.13619), [arXiv:2205.06921](https://arxiv.org/abs/2205.06921) |
 | Scalas & Yoshida, lchannels, ECOOP 2016; Scalas, Yoshida, Benussi, Effpi, PLDI 2019 | Scala |
 | Deniélou & Yoshida, *Parameterised Multiparty Session Types*, FoSSaCS 2011 / LMCS 8(4) 2012 | [arXiv:1208.6483](https://arxiv.org/abs/1208.6483) |
-| Qian, Kavvos, Birkedal, *Client-Server Sessions in Linear Logic*, ICFP 2021 | [arXiv:2010.13926](https://arxiv.org/abs/2010.13926) — right theory for listener+N, **no implementation found** |
+| ✔✔ Qian, Kavvos, Birkedal, *Client-Server Sessions in Linear Logic*, ICFP 2021 | [arXiv:2010.13926](https://arxiv.org/abs/2010.13926) — right theory for listener+N, **no implementation found**. **E21: negative claim confirmed** — every "implement" in the paper is an encoding *within* the calculus (CAS, a beauty-contest umpire), not software |
 | Balzer & Pfenning, *Manifest Sharing with Session Types*, ICFP 2017; *Manifest Deadlock-Freedom for Shared Session Types*, ESOP 2019 | trouble with a statically undetermined number of shared sessions — i.e. a server |
-| Das & Pfenning, *Session Types with Arithmetic Refinements*, CONCUR 2020 | [arXiv:2005.05970](https://arxiv.org/abs/2005.05970) — **refinements inside recursive session types ⇒ undecidable type equality** |
+| ✔✔ Das & Pfenning, *Session Types with Arithmetic Refinements*, CONCUR 2020 | [arXiv:2005.05970](https://arxiv.org/abs/2005.05970) — **refinements inside recursive session types ⇒ undecidable type equality**. **E21: confirmed**; cause is a reduction from two-counter-machine halting, needing arithmetic constraints **and recursion in the language of types** — which E19's transition-level placement never introduces |
 | Das & Pfenning, Rast, FSCD 2020 | the implementation of the above |
 | Saffrich & Thiemann, *Polymorphic Typestate for Session Types*, PPDP 2023 | escaping CPS needs higher-order polymorphism + existentials |
 | Kirkeby et al., *Session Types for the Transport Layer: Towards an Implementation of TCP*, 2024 | [arXiv:2404.05478](https://arxiv.org/abs/2404.05478) — "differences in assumptions between session type theory and how transport protocols are implemented" |
@@ -3831,8 +4584,9 @@ paper rather than against a summary of it.
 | ref | where |
 | --- | --- |
 | Orchard & Yoshida, *Effects as Sessions, Sessions as Effects*, POPL 2016 | the two-way embedding — "the protocol **is** the effect signature" |
-| Tang, Hillerström, Lindley, Morris, *Soundly Handling Linearity*, POPL 2024 (distinguished paper) | [arXiv:2307.09383](https://arxiv.org/abs/2307.09383) — **Links' multi-year soundness bug**; control-flow linearity; the price list for reopening D3 |
-| Fowler, Lindley, Morris, Decova, *Exceptional Asynchronous Session Types: Session Types without Tiers*, POPL 2019 | **affinity + explicit cancellation** — the highest-value unadopted item |
+| ✔✔ Tang, Hillerström, Lindley, Morris, *Soundly Handling Linearity*, POPL 2024 (distinguished paper) | [arXiv:2307.09383](https://arxiv.org/abs/2307.09383) — Links' soundness bug (the paper says "**long-standing**"; it states no duration); control-flow linearity; the price list for reopening D3. **E21: confirmed, and E20's use of it overstated** — the mismatch has two halves, *discarded* and *multi-invoked*, and `abort!` is the first (tally row 30) |
+| ✔✔ Fowler, Lindley, Morris, Decova, *Exceptional Asynchronous Session Types: Session Types without Tiers*, POPL 2019 | [slindley/papers/zap.pdf](https://homepages.inf.ed.ac.uk/slindley/papers/zap.pdf) — **~~affinity~~ LINEARITY + explicit cancellation**, still the highest-value unadopted item. **E21: E20 had the mechanism backwards** — §1.3 rejects affine types by name; §1.4 is "*Linear* Types with Explicit Cancellation" (tally row 31) |
+| ✗ Mostrous & Vasconcelos, *Affine Sessions*, 2014 | the origin of explicit cancellation, per Fowler et al. §1.4. **Not obtained** (Springer; no open copy found). Everything recorded about it here is Fowler et al.'s characterisation, including the warning not to read their "affine" as affine typing |
 | Brady, *Programming and Reasoning with Algebraic Effects and Dependent Types*, ICFP 2013; *Resource-Dependent Algebraic Effects*, TFP 2014; *State Machines All The Way Down*, ML 2017 | Idris `Control.ST`; closest existing design |
 | Brachthäuser, Schuster, Ostermann, *Effects as Capabilities*, OOPSLA 2020; *Effects, Capabilities, and Boxes*, OOPSLA 2022 | Effekt — **vocabulary warning**: its "capability" is handler evidence, not a linear resource |
 | Schuster et al., *From Capabilities to Regions*, OOPSLA 2023 | |
@@ -3842,9 +4596,9 @@ paper rather than against a summary of it.
 
 | ref | where |
 | --- | --- |
-| Orchard, Liepelt, Eades, *Quantitative Program Reasoning with Graded Modal Types*, ICFP 2019 | [10.1145/3341714](https://dl.acm.org/doi/pdf/10.1145/3341714) — Granule |
+| ✔✔ Orchard, Liepelt, Eades, *Quantitative Program Reasoning with Graded Modal Types*, ICFP 2019 | [Kent PDF](https://www.cs.kent.ac.uk/people/staff/dao7/publ/granule-icfp19.pdf) — Granule. **E21: confirmed** — "exploits an SMT solver to discharge theorems over the indices of graded modalities"; predicates go to SMT-LIB and "a compatible SMT solver (we use Z3)". Requires *an* SMT solver; Z3 is the one used |
 | ✔ Granule repo, install docs, `StdLib/Vec.gr`, `StdLib/File.gr`, `examples/intro.gr.md` | [github.com/granule-project/granule](https://github.com/granule-project/granule) — **requires Z3**; `File.gr`'s write loop has an un-indexed handle; `last`/`init` commented out of `Vec.gr` |
-| Ghica & Smith, *Bounded Linear Types in a Resource Semiring*, ESOP 2014 | [10.1007/978-3-642-54833-8_18](https://link.springer.com/chapter/10.1007/978-3-642-54833-8_18) — "parameterized by the decision procedure of the semiring equational theory" |
+| ✔✔ Ghica & Smith, *Bounded Linear Types in a Resource Semiring*, ESOP 2014 | [Birmingham PDF](https://pure-oai.bham.ac.uk/ws/portalfiles/portal/23697858/esop14.pdf) — the quoted phrase is exact but describes the **type-inference procedure**, not "the system" as E20 had it. §3.3 adds: their constraints go to Z3, and "nonlinear systems of constraints over ℕ are generally undecidable" |
 | Girard, Scedrov, Scott, *Bounded Linear Logic*, TCS 97(1), 1992 | index polynomials |
 | Dal Lago & Gaboardi, *Linear Dependent Types and Relative Completeness*, LMCS 8(4), 2012 | [arXiv:1104.0193](https://arxiv.org/abs/1104.0193) — completeness *relative to an oracle* |
 | Atkey, *Syntax and Semantics of Quantitative Type Theory*; Brady, *Idris 2: QTT in Practice*, ECOOP 2021 | LIPIcs 194:9 |
@@ -3854,13 +4608,14 @@ paper rather than against a summary of it.
 | Petricek, Orchard, Mycroft, *Coeffects*, ICFP 2014 | framework, not a mechanism |
 | Marshall, Vollmer, Orchard, *Linearity and Uniqueness: An Entente Cordiale*, ESOP 2022 | the citation to use **if** grading is reconsidered for §1.2's axis list |
 | Marshall & Orchard, *Replicate, Reuse, Repeat*, 2022 | [arXiv:2203.12875](https://arxiv.org/abs/2203.12875) — session types as grades |
-| Knoth, Wang, Reynolds, Polikarpova, Hoffmann, *Liquid Resource Types*, ICFP 2020 | [10.1145/3408988](https://dl.acm.org/doi/10.1145/3408988) — **the AARA authors concluding value-dependent counting needs refinements** |
-| Lehmann, Geller, Vazou, Jhala, *Flux: Liquid Types for Rust*, PLDI 2023 | [flux-pldi23.pdf](https://ranjitjhala.github.io/static/flux-pldi23.pdf) — **nearest system to perturb's shape; read first** |
+| ✔✔ Knoth, Wang, Reynolds, Polikarpova, Hoffmann, *Liquid Resource Types*, ICFP 2020 | [arXiv:2006.16233](https://arxiv.org/abs/2006.16233) — **confirmed verbatim**: "more expressive proof techniques admitting value-dependent bounds rely on handwritten proofs. Liquid resource types combine the best of these approaches, using logical refinements..." Value-dependent counting ⇒ refinements ⇒ SMT |
+| ✔✔ Lehmann, Geller, Vazou, Jhala, *Flux: Liquid Types for Rust*, PLDI 2023 | [flux-pldi23.pdf](https://ranjitjhala.github.io/static/flux-pldi23.pdf) — **nearest system to perturb's shape. E21: every conjunct confirmed** — indexed mutable locations, ownership-based substructural reasoning, strong updates, and loop invariants synthesised by the Liquid Fixpoint Horn solver. Reaching this class costs SMT + a Horn solver + indexed locations |
 | Sammler, Lepigre, Krebbers, Memarian, Dreyer, Garg, *RefinedC*, PLDI 2021 | [10.1145/3453483.3454036](https://dl.acm.org/doi/10.1145/3453483.3454036) — ownership + refinement **without SMT**, via Lithium |
 | Vazou et al., abstract refinements, ESOP 2013; *LiquidHaskell in the real world* | already cited in §1.3/Q2 |
 | Vazou, Tanter, Van Horn, *Gradual Liquid Type Inference*, OOPSLA 2018 | inference is global; failure gives obscure messages |
 | Toman et al., ConSORT, ESOP 2020 | ownership refinement types, CHC-based |
 | Xi, Dependent ML, JFP 2007; ATS | index refinement over a restricted domain; heavy annotation burden |
+| ✔✔ Doré, *Dependent Multiplicities in Dependent Linear Type Theory*, 2026 | [arXiv:2507.08759](https://arxiv.org/abs/2507.08759) — E20 could not fetch this and it **refutes E20's fifth correction**: multiplicities *can* depend on run-time values, so the Content-Length obligation is expressible. Decided by conversion in Agda, not SMT — but "type-checking for ⊩ is **vastly undecidable**" and discharge falls back on programmer-supplied propositional-equality witnesses. Also states the linear-`if` problem as motivation: "a steep ask" (tally row 32) |
 
 ### D.5 Abstraction boundaries, TCBs, and their measurement
 
@@ -3871,16 +4626,16 @@ paper rather than against a summary of it.
 | Cardelli, Donahue, Jordan et al., *Modula-3 Report*, SRC-RR-52 | **partial revelation** — graded disclosure, the one classical answer to rights amplification |
 | Morris, *Protection in Programming Languages*, CACM 16(1), 1973 | [10.1145/361932.361937](https://dl.acm.org/doi/pdf/10.1145/361932.361937) — sealer/unsealer pairs; **fits two-machine operations better than ML modules** |
 | Matthews & Ahmed, *Parametric Polymorphism through Run-Time Sealing*, ESOP 2008 | [10.1007/978-3-540-78739-6_2](https://link.springer.com/chapter/10.1007/978-3-540-78739-6_2) |
-| Parkinson & Bierman, *Separation logic and abstraction*, POPL 2005 | [10.1145/1040305.1040326](https://dl.acm.org/doi/10.1145/1040305.1040326) — **abstract predicates: the principled account of "these bodies are axioms"** |
-| Jung, Jourdan, Krebbers, Dreyer, *RustBelt*, POPL 2018 | [10.1145/3158154](https://dl.acm.org/doi/10.1145/3158154) — **each entry names an obligation instead of granting an exemption** |
+| ✗ Parkinson & Bierman, *Separation logic and abstraction*, POPL 2005 | [10.1145/1040305.1040326](https://dl.acm.org/doi/10.1145/1040305.1040326) — **abstract predicates**. **Not obtained** (ACM Cloudflare; no author-hosted copy found). E20's claim 5 therefore rests on RustBelt, which *was* read, plus second-hand reading of this |
+| ✔✔ Jung, Jourdan, Krebbers, Dreyer, *RustBelt*, POPL 2018 | [plv.mpi-sws.org PDF](https://plv.mpi-sws.org/rustbelt/popl18/paper.pdf) — **confirmed verbatim**: "for each new Rust library that uses unsafe features, we can say what verification condition it must satisfy". §1.2: "library-specific verification condition". *Scope:* discharged in Coq against a semantic model of the whole language |
 | *RustHornBelt*, PLDI 2022; *RefinedRust*, PLDI 2024 | [10.1145/3519939.3523704](https://dl.acm.org/doi/10.1145/3519939.3523704) |
 | Jung, Dang, Kang, Dreyer, *Stacked Borrows*, POPL 2020; Tree Borrows, PLDI 2025 | [plv.mpi-sws.org/rustbelt/stacked-borrows](https://plv.mpi-sws.org/rustbelt/stacked-borrows/) |
 | Jung et al., *Miri*, POPL 2026 | [10.1145/3776690](https://dl.acm.org/doi/abs/10.1145/3776690) — **a dynamic checker for the trusted core**; cheap and perturb has no analogue |
 | Swasey, Garg, Dreyer, *Robust and Compositional Verification of Object Capability Patterns*, OOPSLA 2017 | [10.1145/3133913](https://dl.acm.org/doi/10.1145/3133913) |
-| Tov & Pucella, *Practical Affine Types* (Alms), POPL 2011 | [10.1145/1926385.1926436](https://dl.acm.org/doi/10.1145/1926385.1926436) — **sealing CREATES the linearity** |
+| ✔✔ Tov & Pucella, *Practical Affine Types* (Alms), POPL 2011 | [author PDF](https://users.cs.northwestern.edu/~jesse/pubs/alms/tovpucella-alms.pdf) — **sealing CREATES the linearity, confirmed verbatim**. Soundness needs: U a subkind of A, sealing moving *up* the lattice only, and principal kinding (Thm 3). §2's `CAP_ARRAY` splits reference from capability with an existential stamp, and capabilities are `unit` — **erased** |
 | Tov & Pucella, *Stateful Contracts for Affine Types*, ESOP 2010 | [10.1007/978-3-642-11957-6_29](https://dl.acm.org/doi/10.1007/978-3-642-11957-6_29) — the paper for a `clojure.*` boundary (§1.6) |
 | Morris, *The Best of Both Worlds* (Quill), ICFP 2016 | [arXiv:1612.06633](https://arxiv.org/abs/1612.06633) — linearity qualifiers solvable by qualified-type inference; a smaller hammer than E13's |
-| Klein et al., *seL4*, SOSP 2009 | [10.1145/1629575.1629596](https://dl.acm.org/doi/10.1145/1629575.1629596) — 8,700 C lines, 200,000 Isabelle, **20:1** |
+| ✔✔ Klein et al., *seL4*, SOSP 2009 | [SOSP PDF](https://www.sigops.org/s/conferences/sosp/2009/papers/klein-sosp09.pdf) — 8,700 C lines (+600 assembler), 200,000 Isabelle. **E21: the ratio is ≈23:1, not 20:1** |
 | Protzenko et al., *Verified Low-Level Programming Embedded in F\**, ICFP 2017 | they **publish the TCB list** |
 | Paulson, *the de Bruijn criterion vs the LCF architecture* | [lawrencecpaulson.github.io/2022/01/05/LCF.html](https://lawrencecpaulson.github.io/2022/01/05/LCF.html) |
 
@@ -3888,8 +4643,9 @@ paper rather than against a summary of it.
 
 | ref | where |
 | --- | --- |
-| Astrauskas, Matheja, Poli, Müller, Summers, *How Do Programmers Use Unsafe Rust?*, OOPSLA 2020 | [10.1145/3428204](https://dl.acm.org/doi/10.1145/3428204) — 31,000+ crates; **92.3% have unsafe-statement ratio ≤10%**; "the Rust hypothesis" only **partially** supported |
-| Bae, Kim, Askar, Lim, Kim, *Rudra*, SOSP 2021 | [10.1145/3477132.3483570](https://dl.acm.org/doi/pdf/10.1145/3477132.3483570) — **264 bugs in one scan = 51.6% of RustSec's memory-safety history** |
+| ✔✔ Astrauskas, Matheja, Poli, Müller, Summers, *How Do Programmers Use Unsafe Rust?*, OOPSLA 2020 | [ETH PDF](https://pm.inf.ethz.ch/publications/AstrauskasMathejaMuellerPoliSummers20.pdf) — **92.3% ≤10% confirmed verbatim, but the denominator is "all crates", 76.4% of which contain no unsafe at all.** The authors' own conclusion: of the 21.3% that do, 24.6% exceed 20%, so "**we cannot claim that developers use unsafe Rust sparingly**". Do not quote 92.3% to argue trusted cores are small |
+| ✔✔ Bae, Kim, Askar, Lim, Kim, *Rudra*, SOSP 2021 | [author PDF](https://taesoo.kim/pubs/2021/bae:rudra.pdf) — **264 bugs in 145 packages = 51.6% of memory-safety bugs reported to RustSec since 2016; 112 advisories, 76 CVEs. Confirmed.** Denominator correction: 43k *downloaded*, **33k analysed** (7k did not compile, 2k no Rust code, 0.7k bad metadata) |
+| ✔✔ *A Grounded Conceptual Model for Ownership Types in Rust*, 2023 | [arXiv:2309.04134](https://arxiv.org/abs/2309.04134) — not in E20. Participants predicted the borrow checker's reason for rejection in **78%** of cases but could only **fix** the program in **46%**, and build a counterexample in **31%**. The measured usability cost of a substructural rejection (§4.6's join item) |
 | Qin, Chen, Yu, Song, Zhang, PLDI 2020 | [10.1145/3385412.3386036](https://dl.acm.org/doi/10.1145/3385412.3386036) — all memory-safety bugs involved unsafe; "interior unsafe" |
 | Xu, Chen, Wang, Suo, Cheng, TOSEM 2021 | [arXiv:2003.03296](https://arxiv.org/abs/2003.03296) — all Rust memory-safety CVEs to 2020 |
 | Evans, Campbell, Soffa, *Is Rust Used Safely by Software Developers?*, ICSE 2020 | only 27% of crates are transitively unsafe-free — per-crate ratios understate exposure |
@@ -3919,6 +4675,8 @@ paper rather than against a summary of it.
 | Tobin-Hochstadt & Felleisen, *The Design and Implementation of Typed Scheme*, POPL 2008 | |
 | Bonnaire-Sergeant, Davies, Tobin-Hochstadt, *Practical Optional Types for Clojure*, ESOP 2016 | [arXiv:1812.03571](https://arxiv.org/abs/1812.03571) — the transplant exists |
 | Takikawa, Feltey, Greenman, New, Vitek, Felleisen, *Is Sound Gradual Typing Dead?*, POPL 2016 | [10.1145/2837614.2837630](https://dl.acm.org/doi/10.1145/2837614.2837630) — **keep the seal static** |
+| ✔✔ Chang, Knauth, Greenman, *Type Systems as Macros*, POPL 2017 | [Northeastern PDF](https://www.ccs.neu.edu/home/stchang/pubs/ckg-popl2017.pdf) — Turnstile. The **paper** never mentions linearity (its ladder is STLC → System F → Fω → subtyping → dependent) |
+| ✔ `stchang/macrotypes`, `turnstile-example/turnstile/examples/linear/` | `lin.rkt`, `lin2`–`lin5`, `lin+cons`, `lin+tup`, `lin+var`, **`lin+chan`**, `fabul` — **a substructural type checker written as Racket macros**, with the linear arrow `-o` and a mode-based linear scope discipline. Raises `"linear variable may be unused in certain branches"`: perturb's join rule and perturb's diagnostic, in a Lisp. Answers the staged-protocol note's first question |
 | Culpepper, Tobin-Hochstadt, Flatt, *Advanced Macrology and the Implementation of Typed Scheme*, Scheme Workshop 2007 | blame across macroexpansion is open (Q4) |
 | ✔ Clojure reference: *Vars and the Global Environment* | `:private` is intent; `@#'ns/private-var` works — **perturb cannot get sealing from the host** |
 

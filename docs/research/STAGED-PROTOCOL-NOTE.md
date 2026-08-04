@@ -136,9 +136,37 @@ no claim stronger than its artifact.
 
 ## What to ask the literature, if a survey is running
 
-- **Turnstile** — does the "type system as macroexpander" approach carry
+- ~~**Turnstile** — does the "type system as macroexpander" approach carry
   *linear* or *substructural* typing, or only conventional type systems? That is
-  the load-bearing question for a Lisp-hosted capability tier.
+  the load-bearing question for a Lisp-hosted capability tier.~~
+  **ANSWERED — yes, and the artifact exists (E21).** The POPL 2017 paper itself
+  never mentions linearity; its example ladder is STLC → System F → Fω →
+  subtyping → dependent types. But `stchang/macrotypes` ships
+  `turnstile-example/turnstile/examples/linear/`: `lin.rkt`, `lin2.rkt`–
+  `lin5.rkt`, `lin+cons.rkt`, `lin+tup.rkt`, `lin+var.rkt`, **`lin+chan.rkt`**
+  (linear channels) and `fabul.rkt`. `lin.rkt` defines the linear arrow `-o` and
+  a `turnstile/mode`-based linear scope discipline — `linear-use-var!`,
+  `linear-out-of-scope!`, `linear-merge-scopes!`, `make-linear-branch-mode`,
+  `branch-then`/`branch-else`.
+
+  And it raises, verbatim:
+
+  ```racket
+  (define (fail/unbalanced-branches x)
+    (raise-syntax-error #f "linear variable may be unused in certain branches" x))
+  ```
+
+  A Lisp-hosted linear type checker implemented as macros has **perturb's join
+  rule and perturb's join diagnostic** — a third independent corroboration of
+  E20's claim 1, and the closest prior art to a perturb capability tier the
+  record has found. Two consequences for this note. It removes the "no host to
+  inherit from" objection *for the checker mechanism* (though not for the module
+  system — the third cost stands). And it makes the `defmachine` first step
+  cheaper to justify: the macro-as-type-checker architecture is not speculative
+  in a Lisp, it is a decade old and has a substructural instance. What is **not**
+  established is whether that discipline survives the thing perturb actually
+  does — reading post-macroexpansion **IR** rather than surface syntax — which is
+  where Q4's provenance problem lives.
 - **3D → EverParse** — is the pipeline's spec language independently checked, or
   only checked via the F\* it emits? Determines whether the second universe needs
   its own metatheory or can borrow the first's.
