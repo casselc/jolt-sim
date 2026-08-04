@@ -30,6 +30,7 @@
 (def ^:private status-key :jolt.sim.explore/status)
 (def ^:private value-key :jolt.sim.explore/value)
 (def ^:private error-key :jolt.sim.explore/error)
+(def ^:private phase-key :jolt.sim.explore/phase)
 
 (def ^:private request-keys
   #{protocol-key scenario-key schedule-key input-key})
@@ -83,7 +84,7 @@
   (when-not (= request-keys (set (keys request)))
     (throw (protocol-error :request-keys
                            {:expected request-keys
-                           :actual (set (keys request))})))
+                            :actual (set (keys request))})))
   (let [scenario (get request scenario-key)
         schedule (get request schedule-key)
         input (get request input-key)]
@@ -144,6 +145,17 @@
    schedule-key schedule
    error-key (trace/canonical-value (safe-error phase error))})
 
+(defn- ready-document []
+  {protocol-key protocol-version
+   phase-key :scenario-ready})
+
+(defn- write-ready! [path]
+  ;; One complete, closed write is enough for the parent-side readiness
+  ;; boundary. The worker has already loaded this namespace, restored and
+  ;; validated the request, and resolved the marked scenario before this file
+  ;; appears. It contains no application value or ambient process state.
+  (spit path (trace/canonical-edn (ready-document))))
+
 (defn execute-request
   "Executes one already-materialized request and returns a result document.
 
@@ -153,46 +165,60 @@
   contract rather than a discovered application counterexample. Request
   validation, resolution, and result/error/input serialization failures are
   likewise `:worker-error`. A nil request schedule drives no
-  `:future-schedule` override. The function itself does no file I/O."
-  [request]
-  (let [validation
-        (try
-          {:request (validate-request! request)}
-          (catch :default error
-            {:error error}))]
-    (if-let [error (:error validation)]
-      (worker-error-document
-       (when (map? request) (get request schedule-key))
-       :request-validation
-       error)
-      (let [request (:request validation)
-            scenario (get request scenario-key)
-            schedule (get request schedule-key)]
-        (try
-          (let [input (trace/restore-value (get request input-key))
-                scenario-var (resolve-scenario! scenario)
-                accepts-input? (:jolt.sim/accepts-input (meta scenario-var))]
-            (if (and (some? input) (not accepts-input?))
-              (worker-error-document
-               schedule :scenario-input (rejects-input-error scenario input))
-              (let [overrides (if schedule {:future-schedule schedule} {})
-                    outcome
-                    (try
-                      {:ok? true
-                       :value (@scenario-var overrides input)}
-                      (catch :default error
-                        {:ok? false :error error}))]
-                (if (:ok? outcome)
-                  (try
-                    (completed-document schedule (:value outcome))
-                    (catch :default error
-                      (worker-error-document schedule :result-encoding error)))
-                  (try
-                    (failed-document schedule (:error outcome))
-                    (catch :default error
-                      (worker-error-document schedule :error-encoding error)))))))
-          (catch :default error
-            (worker-error-document schedule :scenario-resolution error)))))))
+  `:future-schedule` override. The one-argument arity does no file I/O; the
+  optional `on-ready` callback may publish a sideband readiness marker."
+  ([request]
+   (execute-request request (fn [] nil)))
+  ([request on-ready]
+   (let [validation
+         (try
+           {:request (validate-request! request)}
+           (catch :default error
+             {:error error}))]
+     (if-let [error (:error validation)]
+       (worker-error-document
+        (when (map? request) (get request schedule-key))
+        :request-validation
+        error)
+       (let [request (:request validation)
+             scenario (get request scenario-key)
+             schedule (get request schedule-key)]
+         (try
+           (let [input (trace/restore-value (get request input-key))
+                 scenario-var (resolve-scenario! scenario)
+                 accepts-input? (:jolt.sim/accepts-input (meta scenario-var))]
+             (if (and (some? input) (not accepts-input?))
+               (worker-error-document
+                schedule :scenario-input (rejects-input-error scenario input))
+               (let [ready
+                     (try
+                       (on-ready)
+                       {:ok? true}
+                       (catch :default error
+                         {:ok? false :error error}))]
+                 (if-not (:ok? ready)
+                   (worker-error-document
+                    schedule :ready-signal (:error ready))
+                   (let [overrides (if schedule {:future-schedule schedule} {})
+                         outcome
+                         (try
+                           {:ok? true
+                            :value (@scenario-var overrides input)}
+                           (catch :default error
+                             {:ok? false :error error}))]
+                     (if (:ok? outcome)
+                       (try
+                         (completed-document schedule (:value outcome))
+                         (catch :default error
+                           (worker-error-document
+                            schedule :result-encoding error)))
+                       (try
+                         (failed-document schedule (:error outcome))
+                         (catch :default error
+                           (worker-error-document
+                            schedule :error-encoding error)))))))))
+           (catch :default error
+             (worker-error-document schedule :scenario-resolution error))))))))
 
 (defn decode-result
   "Validates and restores one result document for `expected-schedule`.
@@ -257,18 +283,26 @@
   document)
 
 (defn -main [& args]
-  (when-not (= 2 (count args))
+  (when-not (contains? #{2 3} (count args))
     (throw
      (protocol-error :worker-arguments
-                     {:expected ["request-path" "result-path"]
+                     {:expected ["request-path" "result-path"
+                                 "optional-ready-path"]
                       :actual-count (count args)})))
   (let [request-path (nth args 0)
         result-path (nth args 1)
+        ready-path (nth args 2 nil)
         request-holder (atom nil)]
     (try
       (let [request (edn/read-string (slurp request-path))]
         (reset! request-holder request)
-        (write-document! result-path (execute-request request)))
+        (write-document!
+         result-path
+         (execute-request
+          request
+          (fn []
+            (when ready-path
+              (write-ready! ready-path))))))
       (catch :default error
         ;; A malformed request generated outside this library may not contain a
         ;; usable schedule. The parent will reject the nil echo as a protocol

@@ -156,7 +156,8 @@
         project-dir (required-environment "JOLT_SIM_PROJECT_DIR")
         process-config
         {:worker-command [bin "-M:explore-worker-test"]
-         :dir project-dir}
+         :dir project-dir
+         :startup-timeout-ms 120000}
         result
         (binding [*process-config* process-config
                   ffi-admission/*process-config* process-config]

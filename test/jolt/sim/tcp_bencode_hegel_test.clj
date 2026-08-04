@@ -584,7 +584,8 @@
         result
         (binding [*process-config*
                   {:worker-command [bin "-M:tcp-bencode-explore-worker"]
-                   :dir project-dir}]
+                   :dir project-dir
+                   :startup-timeout-ms 120000}]
           (reduce (fn [summary bounded-test]
                     (merge-with + summary
                                 (run-bounded-test-var! bounded-test)))

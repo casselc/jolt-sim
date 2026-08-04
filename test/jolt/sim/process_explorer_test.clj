@@ -112,6 +112,113 @@
     (is (empty? @sleeps)
         "probe overhead counts against the deadline instead of adding polls")))
 
+(deftest startup-timeout-is-positive-and-fail-closed-in-every-entrypoint
+  (let [invalid-values [nil 0 -1 1.5]
+        run-data
+        (mapv #(ex-data-of
+                (fn []
+                  (process-explorer/run-schedule
+                   (assoc base-run-config :startup-timeout-ms %))))
+              invalid-values)
+        case-data
+        (mapv #(ex-data-of
+                (fn []
+                  (process-explorer/run-case
+                   (assoc base-case-config :startup-timeout-ms %))))
+              invalid-values)
+        explore-data
+        (mapv #(ex-data-of
+                (fn []
+                  (process-explorer/explore
+                   (-> base-run-config
+                       (dissoc :schedule)
+                       (assoc :schedules [[0 1] [1 0]]
+                              :startup-timeout-ms %)))))
+              invalid-values)]
+    (doseq [[value data]
+            (map vector
+                 (concat invalid-values invalid-values invalid-values)
+                 (concat run-data case-data explore-data))]
+      (is (= :jolt.sim.process-explorer/invalid-config (:type data)))
+      (is (= :invalid-startup-timeout (:reason data)))
+      (is (= value (:value data))))))
+
+(deftest startup-deadline-is-infrastructure-but-post-ready-deadline-is-a-case
+  (let [supervise-var
+        (resolve 'jolt.sim.process-explorer/supervise-child)
+        ready-wait-var
+        (resolve 'jolt.sim.process-explorer/wait-for-ready-or-exit!)
+        wait-var (resolve 'jolt.sim.process-explorer/timed-wait!)
+        pid-var (resolve 'jolt.sim.process-explorer/child-pid)
+        terminate-var
+        (resolve 'jolt.sim.process-explorer/terminate-and-reap!)
+        config {:timeout-ms 7 :startup-timeout-ms 11 :kill-grace-ms 1}
+        common-args
+        [config [0] :fake-child "unused-result" "unused-ready"
+         "unused-stdout" "unused-stderr"]
+        startup
+        (with-redefs-fn
+          {ready-wait-var (fn [& _] :deadline)
+           pid-var (fn [_] 42)
+           terminate-var (fn [& _] 143)}
+          #(apply @supervise-var common-args))
+        execution
+        (with-redefs-fn
+          {ready-wait-var (fn [& _] :ready)
+           wait-var (fn [_ timeout-ms]
+                      (is (= 7 timeout-ms))
+                      false)
+           pid-var (fn [_] 42)
+           terminate-var (fn [& _] 143)}
+          #(apply @supervise-var common-args))]
+    (is (= :worker-error (:status startup)))
+    (is (= :worker-startup-timeout (get-in startup [:error :phase])))
+    (is (false? (get-in startup [:diagnostics :worker-ready?])))
+    (is (= :timeout (:status execution)))
+    (is (= :deadline (:reason execution)))
+    (is (true? (get-in execution [:diagnostics :worker-ready?])))))
+
+(deftest startup-handshake-is-opt-in-at-the-worker-command-boundary
+  (let [run-var (resolve 'jolt.sim.process-explorer/run-worker!)
+        create-var (resolve 'jolt.sim.process-explorer/create-run-dir)
+        process-var (resolve 'jolt.process/process)
+        supervise-var (resolve 'jolt.sim.process-explorer/supervise-child)
+        first-dir
+        (str (fs/create-temp-dir {:prefix "jolt-sim-worker-command-old-"}))
+        second-dir
+        (str (fs/create-temp-dir {:prefix "jolt-sim-worker-command-ready-"}))
+        directories (atom [first-dir second-dir])
+        commands (atom [])]
+    (with-redefs-fn
+      {create-var
+       (fn [_]
+         (let [directory (first @directories)]
+           (swap! directories subvec 1)
+           directory))
+       process-var
+       (fn [command _options]
+         (swap! commands conj command)
+         :fake-child)
+       supervise-var
+       (fn [_config schedule _child _result _ready _stdout _stderr]
+         {:status :completed :schedule schedule})}
+      (fn []
+        (@run-var base-run-config [0 1] nil)
+        (@run-var
+         (assoc base-run-config :startup-timeout-ms 5000)
+         [0 1]
+         nil)))
+    (let [[old-command ready-command] @commands]
+      (is (= 4 (count old-command)))
+      (is (= 5 (count ready-command)))
+      (is (= ["jolt" "-M:explore-worker-test"]
+             (subvec old-command 0 2)))
+      (is (= ["jolt" "-M:explore-worker-test"]
+             (subvec ready-command 0 2)))
+      (is (.endsWith (nth old-command 2) "/request.edn"))
+      (is (.endsWith (nth old-command 3) "/result.edn"))
+      (is (.endsWith (nth ready-command 4) "/worker-ready.edn")))))
+
 (deftest only-completed-outcomes-discard-process-artifacts
   (let [retain-var
         (resolve 'jolt.sim.process-explorer/retain-outcome-artifacts?)]
@@ -132,7 +239,7 @@
           {create-var (fn [_] run-dir)
            process-var (fn [& _] :fake-child)
            supervise-var
-           (fn [_config schedule _child _result _stdout _stderr]
+           (fn [_config schedule _child _result _ready _stdout _stderr]
              {:status :completed :schedule schedule})}
           #(@run-var base-run-config [0 1] nil))]
     (is (= :completed (:status outcome)))
@@ -151,7 +258,7 @@
           {create-var (fn [_] run-dir)
            process-var (fn [& _] :fake-child)
            supervise-var
-           (fn [_config schedule _child _result _stdout _stderr]
+           (fn [_config schedule _child _result _ready _stdout _stderr]
              {:status :completed :schedule schedule})}
           #(@run-var
             (assoc base-run-config :retain-completed-artifacts? false)
@@ -173,7 +280,7 @@
           {create-var (fn [_] run-dir)
            process-var (fn [& _] :fake-child)
            supervise-var
-           (fn [_config schedule _child _result _stdout _stderr]
+           (fn [_config schedule _child _result _ready _stdout _stderr]
              {:status :completed :schedule schedule})}
           #(@run-var
             (assoc base-run-config :retain-completed-artifacts? true)
@@ -271,6 +378,7 @@
                [0]
                :fake-child
                "unused-result"
+               nil
                "unused-stdout"
                "unused-stderr"))))]
     (is (identical? unobserved thrown))
@@ -307,6 +415,7 @@
             [0]
             :fake-child
             "unused-result"
+            nil
             "unused-stdout"
             "unused-stderr"))]
     (is (= :completed (:status outcome)))

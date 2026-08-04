@@ -6,7 +6,8 @@
   process is launched. One bounded local-file case exercises the worker
   entrypoint; the suite remains stable on any image (including an ordinary
   released one)."
-  (:require [clojure.test :as test :refer [deftest is testing]]
+  (:require [clojure.edn :as edn]
+            [clojure.test :as test :refer [deftest is testing]]
             [jolt.fs :as fs]
             [jolt.sim.explore-worker :as explore]
             [jolt.sim.trace :as trace]))
@@ -17,6 +18,7 @@
 (def ^:private input-key :jolt.sim.explore/input)
 (def ^:private value-key :jolt.sim.explore/value)
 (def ^:private error-key :jolt.sim.explore/error)
+(def ^:private phase-key :jolt.sim.explore/phase)
 
 (def ^:private completed-result-keys
   #{protocol-key status-key schedule-key value-key})
@@ -69,6 +71,14 @@
     "application deliberately collides with the input-rejection keyword"
     {:type :jolt.sim.runtime/scenario-rejects-input
      :input input})))
+
+(def ready-order (atom []))
+
+(defn ^{:jolt.sim/scenario true :jolt.sim/accepts-input true}
+  ready-order-scenario
+  [_runtime-overrides input]
+  (swap! ready-order conj :body)
+  {:input input :events @ready-order})
 
 ;;; ---------------------------------------------------------------------------
 ;;; request-document
@@ -212,6 +222,81 @@
            (get-in outcome [:error :data :type])))
     (is (= {:workload :collision-control}
            (get-in outcome [:error :data :input])))))
+
+(deftest ready-callback-runs-once-after-resolution-and-before-the-body
+  (reset! ready-order [])
+  (let [request
+        (explore/request-document
+         'jolt.sim.explore-worker-test/ready-order-scenario
+         nil
+         :payload)
+        document
+        (explore/execute-request
+         request
+         #(swap! ready-order conj :ready))
+        outcome (explore/decode-result nil document)]
+    (is (= :completed (:status outcome)))
+    (is (= {:input :payload :events [:ready :body]} (:result outcome)))
+    (is (= [:ready :body] @ready-order))))
+
+(deftest ready-callback-failure-is-infrastructure-and-skips-the-body
+  (reset! ready-order [])
+  (let [request
+        (explore/request-document
+         'jolt.sim.explore-worker-test/ready-order-scenario
+         nil
+         :must-not-run)
+        document
+        (explore/execute-request
+         request
+         #(throw (ex-info "cannot publish readiness" {})))
+        outcome (explore/decode-result nil document)]
+    (is (= :worker-error (:status outcome)))
+    (is (= :ready-signal (get-in outcome [:error :phase])))
+    (is (empty? @ready-order))))
+
+(deftest three-argument-entrypoint-publishes-the-exact-ready-marker
+  (let [run-dir
+        (str (fs/create-temp-dir {:prefix "jolt-sim-worker-ready-test-"}))
+        request-path (str (fs/path run-dir "request.edn"))
+        result-path (str (fs/path run-dir "result.edn"))
+        ready-path (str (fs/path run-dir "worker-ready.edn"))]
+    (try
+      (spit
+       request-path
+       (trace/canonical-edn
+        (explore/request-document
+         'jolt.sim.explore-worker-test/ready-order-scenario
+         nil
+         :entrypoint)))
+      (reset! ready-order [])
+      (explore/-main request-path result-path ready-path)
+      (is (= {protocol-key 2 phase-key :scenario-ready}
+             (edn/read-string (slurp ready-path))))
+      (is (= :completed
+             (:status (explore/decode-result-edn nil (slurp result-path)))))
+      (finally
+        (when (fs/exists? run-dir)
+          (fs/delete-tree run-dir))))))
+
+(deftest two-argument-entrypoint-remains-sideband-free
+  (let [run-dir
+        (str (fs/create-temp-dir {:prefix "jolt-sim-worker-legacy-test-"}))
+        request-path (str (fs/path run-dir "request.edn"))
+        result-path (str (fs/path run-dir "result.edn"))
+        absent-ready-path (str (fs/path run-dir "worker-ready.edn"))]
+    (try
+      (spit
+       request-path
+       (trace/canonical-edn
+        (explore/request-document
+         'jolt.sim.explore-worker-test/ready-order-scenario nil nil)))
+      (explore/-main request-path result-path)
+      (is (fs/exists? result-path))
+      (is (false? (fs/exists? absent-ready-path)))
+      (finally
+        (when (fs/exists? run-dir)
+          (fs/delete-tree run-dir))))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; decode-result: happy paths for all three statuses

@@ -2013,7 +2013,8 @@
         (binding [*process-config*
                   (cond->
                    {:worker-command [bin "-M:outbox-delivery-explore-worker"]
-                    :dir project-dir}
+                    :dir project-dir
+                    :startup-timeout-ms 120000}
                     temp-dir (assoc :temp-dir temp-dir))
                   *case-artifact-export-dir* export-dir]
           (reduce (fn [summary test-var]

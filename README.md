@@ -454,6 +454,7 @@ scheduler:
   :input {:workload [[:checkout :order-7]]
           :faults [[:sqlite/busy 1]]}
   :schedule [1 0]
+  :startup-timeout-ms 60000
   :timeout-ms 5000})
 ```
 
@@ -470,6 +471,7 @@ runs an ordered schedule domain. For example:
   :scenario 'my.scenarios/checkout-race
   :schedules (explore/schedule-plans
               {:future-count 3 :max-schedules 6})
+  :startup-timeout-ms 60000
   :timeout-ms 5000})
 ```
 
@@ -484,8 +486,15 @@ is invoked. Inputs, completed values, and scenario failures cross the boundary
 through the canonical trace value domain; resolution, protocol, contract, and
 encoding failures are reported as `:worker-error`. A child that misses its
 deadline is sent TERM, then KILL after a bounded grace period, and must be
-observed reaped before the supervisor returns `:timeout`. Failure to observe
-death is an infrastructure exception rather than an ordinary outcome.
+observed reaped. When `:startup-timeout-ms` is present, the worker publishes a
+sideband readiness marker only after request validation, scenario resolution,
+and input restoration. Missing that bootstrap deadline is a `:worker-error`
+and aborts a Hegel campaign as infrastructure; the independent `:timeout-ms`
+starts at readiness, so only a scenario that blocks after its body is admitted
+is a shrinkable `:timeout` case. Omitting `:startup-timeout-ms` preserves the
+original single-deadline, two-argument worker invocation. Failure to observe
+worker death is always an infrastructure exception rather than an ordinary
+outcome.
 
 Completed cases remove their private run directory. Every `:failed`,
 `:worker-error`, or `:timeout` outcome instead includes an `:artifact-dir` and
