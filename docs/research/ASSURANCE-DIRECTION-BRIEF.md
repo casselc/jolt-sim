@@ -240,7 +240,14 @@ without threads. Neither the document nor its own §4.1 draws that asymmetry.
    for v0. Earns `monitored`.
 
 Not on the queue: the framework itself. Items 1–3 are worth doing whichever
-direction wins; 4 and 5 are cheap experiments that would inform it. If a UI
+direction wins; 4 and 5 are cheap experiments that would inform it.
+
+> **Superseded in scope, not in content.** `PROGRESSIVE-FORMALISM-DESIGN.md` is
+> the framework this line said was not on the queue. The tension is deliberate
+> and left visible: that document is a *design*, still unbuilt, and its own §11
+> first slice is chosen precisely so the framework is not attempted before the
+> merge it depends on is proven. Everything this brief says about the three
+> reviewed documents stands unchanged. If a UI
 target is wanted later, the honest one is **a single a1s mutation lifecycle
 written as a threaded client session** — confirm → request → poll → terminal,
 responses scripted, checked against an oracle that states the expected terminal
