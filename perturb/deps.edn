@@ -71,4 +71,22 @@
   ;; application that is a pure (state, event) -> [state', effects]. Checks
   ;; both namespaces and then RUNS both drivers, scripted and over a real
   ;; loopback socket. NOT a gate — it records no expectations. Takes a port.
-  :evt    {:main-opts ["-m" "perturb.evtcheck"]}}}
+  :evt    {:main-opts ["-m" "perturb.evtcheck"]}
+
+  ;; The LAYERING experiment: a TLS-shaped record layer whose handler satisfies
+  ;; `perturb.wire/socket` by PERFORMING `perturb.wire/socket` against the rung
+  ;; below, so `perturb.http` runs unmodified over handler-over-handler rather
+  ;; than call-over-call. Checks `perturb.tlsish` and then RUNS the stack,
+  ;; scripted and over a real loopback socket, printing the octets that crossed
+  ;; each layer. NOT a gate — it records no expectations. Takes a port.
+  :tls    {:main-opts ["-m" "perturb.tlsdemo"]}
+
+  ;; PERTURB-DESIGN §5 ladder step 1a: the jolt-tcp CLIENT connection. Compiles
+  ;; casselc/jolt-tcp's real `teensyp.client` and its real test suite from a
+  ;; working tree ($JOLT_TCP_ROOT), unmodified and not as a dependency, and
+  ;; checks them against a capability declared from OUTSIDE in `perturb.tcpcap`.
+  ;; No socket and no server; the only library code that runs is one stray
+  ;; top-level form in the library's own test file, which the report prints.
+  ;; NOT a gate — it records no expectations, because the point is to find out
+  ;; what the verdicts are.
+  :tcpcheck {:main-opts ["-m" "perturb.tcpcheck"]}}}
