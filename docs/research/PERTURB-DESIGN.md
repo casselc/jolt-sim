@@ -86,9 +86,12 @@ The complete current tally of claims this document made and then refuted:
 | 53 | the sans-io `:need-more` contract's cost is **retention** — "arbitrary backtracking retains all prior input" (SOTA round 2) | false for this representation. One-octet delivery retains **32 bytes more** than whole delivery against a 48-byte floor, because Jolt's `subvec` copies. The cost is CPU and garbage: 1220× and 800× at 4 KB | E36 |
 | 54 | replacing the trichotomy with a resumable continuation would remove the one-octet-delivery cost | it removes **45%** of it. The refill arithmetic with the parse deleted is 55% and is quadratic on its own, because `:need-more` resets `pos` to 0 and `odrop` copies the whole buffer every refill | E36 |
 | 55 | §1.5's "unsigned bytes, bytevector-backed" describes the window perturb has | the reachable representation is a tagged **map** over a **persistent vector** of exact integers, at **8.84 B/octet** — worse than the 8.03 B/element byte array E11 criticised — plus ~280 B of wrapper per view and ~16 B of allocation per `oref` | E36 |
-| 56 | `octets?` recognises a `perturb.octet` window | it is a **tag recognizer** — it accepts a forged tagged map, while the constructors range-check their inputs. Found by reading, not by a gate, in the namespace E36 had just benchmarked | E37 |
+| 56 | `octets?` recognises a `perturb.octet` window | it is a **tag recognizer** — it accepts a forged tagged map, while the constructors range-check their inputs. Found by reading, not by a gate, in the namespace E36 had just benchmarked. **E38: confirmed by execution and closed.** The site was `perturb.wire/socket`'s `:recv :result-pred` — the only check between a handler's result and the codec — so ten forgeries crossed `perform`. `octets?` now decides the refinement; `-M:octetcheck` is the gate | E37; E38 |
 | 57 | `perturb.refine` can support a `proved` verdict on arithmetic obligations | it is **not an SMT solver**: a sound-but-incomplete syntactic normalizer that may refuse unknown results. This limits the structural brief's nominated first strong-end verdict | E37 |
 | 58 | perturb's evidence lattice is one ordered scale | it conflates **strength** with **scope**. `bounded-complete` is a completeness statement relative to a finite domain and an oracle, not a weaker flavour of `proved`. Three independent documents now ask for the split | E37; adoption audit B2 |
+| 59 | `perturb.effect/cross!`: "a handler that lies about its result type is stopped here, not downstream in the codec" | **false as written** — the comment describes a `:result-pred` that was a tag test. Ten hand-built forgeries crossed the boundary and failed later as host exceptions at arbitrary depth, none naming the boundary or the handler that lied; two paths were silent | E38 |
+| 60 | E34: "4 of the 7 remaining tcpcheck rejections are §4.6's root cause" | true but **imprecise**. One is decided by a declaration perturb already had (`:contention :thread-confined` + `future-call`); the other three are blocked by a *single* named gap — higher-order capability passing. §4.6's higher-order bullet is the **sole** blocker on 3 of 7 | E38 |
+| 61 | a faster inner loop is a free win inside the noio window | `every?`/`reduce` over a persistent vector is **~2.5× faster** and moved the scripted run from 0 to 2 attributable syscalls — anonymous `mmap`, Chez growing its heap. INHERITED I11's instrument is a **syscall counter** and cannot distinguish heap growth from I/O, so an allocation-free loop is required and the 2.5× is the price | E38 |
 | 51 † | §1.4's **"no resumption"**, and every argument resting on it | a misclassification. A handler that supplies a validated result after which the caller continues is an **implicit tail resumption** — the case the handler literature singles out as efficiently compilable — and only the failure path is abortive. D4 occupies two points on the control axis rather than a point below it, and the property that actually buys the resource reasoning is **no first-class continuation** | E31 |
 | 52 † | `SOTA-POSITIONING-BRIEF` and E27 finding 3: Fowler's "linear effect handlers … left as future work" means we may be standing in an **open gap** | **partly** closed — E31 recorded "closed" from one survey and E32's second, independent reading of the full text (now in `papers/`) narrows it: control-flow linearity gives a direct theory for continuation/resource integrity, and **cancellation protocol obligations remain separate**; it proves nothing about our checker, external declarations, refined typestate, native resources or `abort!` cleanup. Tang et al. (POPL 2024) give control-flow linearity with an inference calculus and repair the Links bug; Brachthäuser & Leijen classify control flow as linear/affine/abortive/unrestricted; van Rooij & Krebbers (*Affect*, POPL 2025) track continuations through mutable references. The 2019 sentence can no longer be cited. My stated prediction — "still open but narrower" — was wrong in degree | E31 |
 | 53 † | E29: handler-over-handler layering as a result in itself | generic composition and outward forwarding are standard, and scoped-effect calculi formalise them. The narrow obligation — same-effect forwarding through several protocol layers **preserving typestate-linear obligations** — was not found, and is sharpened rather than answered. Separately, the nearest formal family for D4 is **runners** (Ahman & Bauer, ESOP 2020), not a handler calculus | E31 |
@@ -6022,6 +6025,180 @@ analysis and **not** by capability typestate.
    small refinement domain may fail sooner on real Jolt IR than the typed-language
    literature predicts; and a JVM oracle can reproduce JVM behaviour without
    establishing the intended language semantics.
+
+### E38 — E37's two items executed: the rule that changed no verdict, and the validator that did not validate
+
+E37 produced two actionable items. Both were built and gated. They are recorded
+together because they are the same claim tested at two levels — *a value's
+declared interface is what decides, not its allocation* — once in the checker
+and once at the effect boundary.
+
+---
+
+#### Part 1 — the transitive shareability rule, and why nothing moved
+
+`perturb.share` implements E37's classifier as a decision procedure over value
+**profiles** (`:prim`, product, sum, collection, closure, `[:cap C]`, opaque,
+sealed), with three verdicts: **`:shareable`** (contraction and weakening sound
+at the declared interface), **`:mixed`** (authority-bearing — duplication,
+storage and discard remain capability-tier events), and **`:refused`** (the
+procedure will not say; never an accept). `perturb.check` consults it at the two
+duplication sites — `w-local`'s capture and `w-composite`'s escape.
+
+**The result is that no verdict moved.** Verdict-line diffs against baseline are
+**0 lines across all 14 gates**, `-M:tcpcheck` included, per-definition verdicts
+*and* per-bucket counts identical. That is the confirmation, not a
+disappointment: E37 said the transitivity clause is a **reason** the capability
+tier was already enforcing without being able to state it. What the rule buys is
+a derived reason and a witness path. The old diagnostic asserted "a `linearity
+:once` capability may not be closed over" — which E37 identifies as the wrong
+reason; the new one is derived, with the path to the offending component.
+
+**Two things a naive implementation gets wrong**, both pinned by executed cases:
+
+1. **The qualification is implemented by omission.** `classify` **never reads**
+   `:internal-mutation`. The three clauses that decide are whether aliases
+   observe mutation, whether duplication duplicates authority, and whether
+   discard leaks an obligation — *not* "does it mutate". Two interfaces
+   identical but for a declared cached hash are both `shareable`. What
+   `:internal-mutation` *is* read by is the declaration rules, where its `:kind`
+   must come from a closed set with a stated `:why`. `:transient-builder` is
+   deliberately **excluded** from that set: a transient is an affine builder
+   with a linear→unrestricted `persistent!` freeze boundary, and calling that
+   hidden mutation would hide the one edge that matters (E37, from the survey).
+2. **Dominance is `:mixed > :refused > :shareable`.** `:mixed` is a decision;
+   `:refused` is ignorance. Backwards, one unclassifiable element masks a socket
+   sitting beside it.
+
+**A new declaration rule joins the "a declaration must not be able to lie"
+family**, beside `check-cancellation-declarations!` and
+`check-absorbing-declarations!`: **`seal-hides-authority`**. A seal may hide
+mutation; it may not hide authority. An interface sealing a payload that
+transitively reaches a capability while claiming `duplication-duplicates-authority?
+false` is refused where it is written. Its control shows a socket promoted to
+`shareable` when the rule is removed.
+
+##### The residual splits 1/3, and the split is the finding
+
+Of E34's 4 `capture` diagnostics on jolt-tcp, **all four are classified and none
+is accepted**:
+
+- **1 decided** — `client_test.clj:603:33`, the `future`. The closure is handed
+  to `clojure.core/future-call` and `teensyp.client/Connection` declares
+  `:perturb.cap/contention :thread-confined`, so the route crosses a thread
+  boundary while the original name is live. **Decided from the declaration, with
+  no model of the closure body.**
+- **3 refused** — `584:15`, `588:15`, `636:20`, all `(thrown-by #(… connection …))`.
+  The classification stands (`closure(cap …) → mixed`, witness `[0]`); what is
+  refused is whether *this* capture is a violation, because that is a fact about
+  `thrown-by`'s higher-order retention contract. Accepting them would require
+  modelling what a callee does with a closure it was handed.
+
+So E34's "4 of 7 are §4.6's root cause" is true but imprecise. **§4.6's
+higher-order bullet — "higher-order capability passing has no notation at all" —
+is now the specific and sole blocker on 3 of the 7 remaining rejections**, and
+I20 gains a second use: `:contention` is what makes the one decidable case
+decidable.
+
+##### The three-way control, run as the survey specified
+
+- **Arm A (negative).** Ten functions building, indexing, duplicating,
+  discarding, nesting, looping over and closing over persistent
+  vectors/maps/strings/octet windows with **no capability payload**: **zero
+  diagnostics of any kind.** This is a measurement rather than an absence *only
+  because arm B is rejected by the same run of the same checker.*
+- **Arm B (positive countercase).** The same shapes holding an open connection —
+  all seven visible: `escape`, `dangling`, `use-after-move`, `capture`. The
+  laundering test is `conn-duplicated-through-a-vector`: the connection is put
+  into a persistent vector and projected out twice, and the affine rebind kills
+  the second route. One socket, two closes, caught. **The immutable shell
+  laundered nothing.**
+- **Arm C (structural countercase).** A small pass reads `let` bindings and
+  `perturb.octet`'s length algebra out of **real IR** and hands the obligation to
+  `perturb.refine`'s ground linear fragment: in-bounds `valid`, out-of-bounds and
+  the `i = n` boundary `refuted`, the concat length law `valid`, a broken length
+  claim `refuted`, and a runtime index `unknown` — a refusal. Capability
+  typestate is silent on all seven. An **empty-environment instrument control**
+  collapses all seven to `unknown`, so a decided obligation is one that read the
+  IR.
+
+---
+
+#### Part 2 — the declared validator did not validate
+
+Tally row 56, found by reading in E37's reframe, is confirmed by execution and
+closed. **The severity is higher than the one-line description suggested.**
+
+The tag test was not a convenience predicate. It was
+`perturb.wire/socket`'s `:recv {:result-pred o/octets?}` — **the only check
+between a handler's return value and the codec** — and `perturb.effect/cross!`
+carries a comment stating that "a handler that lies about its result type is
+stopped here, not downstream in the codec". **That comment was false as
+written.** Ten hand-built forgeries crossed `perform`: out-of-range integers, a
+single signed byte, non-integers, a string backing, a `nil` backing, a
+non-sequence, a seq rather than a vector, a real window plus an extra key, no
+backing key, and a bare vector.
+
+**The failure mode is the finding.** Forged input did not corrupt memory; it
+produced **host exceptions at arbitrary depth** — `ClassCastException`, `Value
+out of range for char`, `subvec requires a vector`, `index out of bounds` — none
+of which names the boundary crossed or the handler that lied. Two paths were
+silent: `{K nil}` reads as an empty window, i.e. as **EOF**; and a real window
+carrying an extra key breaks value equality, so with `perturb.bencode/dget`
+looking decoded keys up **by value**, a forged key returned `nil` where the
+honest one returned its value.
+
+**Hardening was chosen over opacity, for a reason worth keeping: no unforgeable
+token is reachable from Jolt-level code.** A namespace-private sentinel can be
+read straight back out of any legitimate window, so opacity would raise the bar,
+cost a key per view on top of E36's ~280 B wrapper, and still not close the hole.
+`octets?` now decides the refinement — map, exactly one key, vector backing,
+every element an octet — and is explicitly **not** a provenance check: §1.3
+states `0 ≤ b ≤ 255` as a *type*, and a type is satisfied by shape, so a foreign
+map whose contents satisfy it is accepted and is `=` to a constructed one.
+
+`-M:octetcheck` runs ten forgeries against the boundary plus two positive
+controls: a legitimate window admitted, **and the empty window admitted**,
+because end-of-stream must still work.
+
+##### A cost finding that generalises beyond this fix
+
+The scan was first written with `every?` — **~2.5× faster**, because
+`clojure.core/every?` is `reduce`+`reduced` and drives the vector's index loop.
+`dev/verify-noio.sh` **rejected it**: the scripted run's marker window went 0 → 2
+attributable syscalls, both anonymous `mmap`. That is Chez growing its heap,
+because the reduce path allocates and an indexed loop does not; reproduced 2/2
+runs each way. **INHERITED I11's instrument is a syscall counter and cannot
+distinguish heap growth from I/O**, so the allocation-free loop ships and the
+2.5× is the price. Any future "make it faster with `reduce`" in a namespace
+inside the noio window carries the same risk. `-M:octetcheck` prints both columns
+so the rejected variant stays measurable.
+
+---
+
+#### E38's nonclaims
+
+1. **The shareability rule decides profiles, not programs** — the
+   `perturb.refine` posture. It is consulted by the checker; it does not infer
+   profiles from code.
+2. **`perturb.share` refuses to promote opaque/FFI values, and that refusal is
+   deliberately not wired to a rejection.** Every result of an unannotated call
+   is opaque to the checker; denying them all would reject essentially every
+   program while carrying no evidence. `report-limits` 19(b).
+3. **Arm C is not an index checker.** It reads `let` bindings and one length
+   algebra, with no join, no fixpoint and no hypotheses. It produces
+   valid/refuted/unknown over a **named finite** set of seven declared
+   obligations — neither `proved` nor `bounded-complete`. E37's correction 2
+   holds on this artifact, which is its own corroboration of tally row 58.
+4. **The three-way control is internal.** Both research passes' Q6 absence
+   result stands unchanged; nothing here replicates or contradicts it. Arm A is
+   ten functions.
+5. **The octet audit is one hole, one reading, one namespace.** Every
+   `o/octets?` call site was checked and a grep confirmed no namespace outside
+   `octet.clj` builds a window by hand — but `perturb.http/token-octets?` was not
+   audited, and the other effects' `:result-pred`s (`conn-token?`, `count?`,
+   `closed?`) are unexamined. `conn-token?` is `some?`, deliberately opaque by
+   design, and nobody has looked at whether that is the same category.
 
 ## 4. Open questions
 
