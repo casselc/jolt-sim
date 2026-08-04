@@ -19,15 +19,18 @@
             [jolt.sim.trace :as trace]))
 
 (def ^:private run-keys
-  #{:worker-command :scenario :schedule :timeout-ms :kill-grace-ms
+  #{:worker-command :scenario :schedule :timeout-ms :startup-timeout-ms
+    :kill-grace-ms
     :dir :extra-env :temp-dir :retain-completed-artifacts?})
 
 (def ^:private case-keys
-  #{:worker-command :scenario :schedule :input :timeout-ms :kill-grace-ms
+  #{:worker-command :scenario :schedule :input :timeout-ms
+    :startup-timeout-ms :kill-grace-ms
     :dir :extra-env :temp-dir :retain-completed-artifacts?})
 
 (def ^:private explore-keys
-  #{:worker-command :scenario :schedules :timeout-ms :kill-grace-ms
+  #{:worker-command :scenario :schedules :timeout-ms :startup-timeout-ms
+    :kill-grace-ms
     :dir :extra-env :temp-dir :retain-completed-artifacts?})
 
 (def ^:private diagnostic-byte-limit 65536)
@@ -67,6 +70,11 @@
   (when-not (positive-integer? (:timeout-ms config))
     (throw
      (invalid-config :invalid-timeout {:value (:timeout-ms config)})))
+  (when (contains? config :startup-timeout-ms)
+    (when-not (positive-integer? (:startup-timeout-ms config))
+      (throw
+       (invalid-config :invalid-startup-timeout
+                       {:value (:startup-timeout-ms config)}))))
   (let [kill-grace-ms (get config :kill-grace-ms 250)]
     (when-not (positive-integer? kill-grace-ms)
       (throw
@@ -195,6 +203,26 @@
                     (max 1 (quot remaining 1000000))))
               (recur))))))))
 
+(defn- wait-for-ready-or-exit!
+  "Waits until the paired worker has written its scenario-ready marker, exits,
+  or exhausts the startup deadline. Returns exactly :ready, :exited, or
+  :deadline. The execution deadline does not begin until :ready is observed."
+  [child ready-path timeout-ms]
+  (let [deadline (+ (monotonic-nanos) (* timeout-ms 1000000))]
+    (loop []
+      (cond
+        (fs/exists? ready-path) :ready
+        (not (child-alive? child)) :exited
+        :else
+        (let [remaining (- deadline (monotonic-nanos))]
+          (if (<= remaining 0)
+            :deadline
+            (do
+              (sleep-ms!
+               (min wait-poll-ms
+                    (max 1 (quot remaining 1000000))))
+              (recur))))))))
+
 (defn- child-pid [child]
   (.pid (:proc child)))
 
@@ -301,7 +329,7 @@
            schedule :result-protocol error diagnostics exit))))))
 
 (defn- supervise-child
-  [config schedule child result-path stdout-path stderr-path]
+  [config schedule child result-path ready-path stdout-path stderr-path]
   ;; PID is diagnostic-only. Failure to read it must never abandon an already
   ;; spawned child before the bounded wait/termination/reap path owns it.
   (let [pid-diagnostic
@@ -310,9 +338,22 @@
           (catch :default error
             {:worker-pid nil
              :worker-pid-error (error-summary :worker-pid error)}))
+        startup-aware? (contains? config :startup-timeout-ms)
         wait-result
         (try
-          {:finished? (boolean (timed-wait! child (:timeout-ms config)))}
+          (if startup-aware?
+            (case (wait-for-ready-or-exit!
+                   child ready-path (:startup-timeout-ms config))
+              :ready
+              {:ready? true
+               :finished? (boolean (timed-wait! child (:timeout-ms config)))}
+
+              :exited
+              {:ready? false :finished? true}
+
+              :deadline
+              {:ready? false :startup-timeout? true})
+            {:finished? (boolean (timed-wait! child (:timeout-ms config)))})
           (catch :default error
             {:finished? false :error error}))]
     (update
@@ -335,6 +376,17 @@
               (diagnostics stdout-path stderr-path)
               exit))))
 
+       (:startup-timeout? wait-result)
+       (let [exit (terminate-and-reap! child (:kill-grace-ms config))]
+         (worker-error-outcome
+          schedule
+          :worker-startup-timeout
+          (ex-info
+           "exploration worker did not signal scenario readiness before its startup deadline"
+           {:startup-timeout-ms (:startup-timeout-ms config)})
+          (diagnostics stdout-path stderr-path)
+          exit))
+
        :else
        (let [exit (terminate-and-reap! child (:kill-grace-ms config))]
          {:status :timeout
@@ -342,7 +394,9 @@
           :reason :deadline
           :exit exit
           :diagnostics (diagnostics stdout-path stderr-path)}))
-     :diagnostics merge pid-diagnostic)))
+     :diagnostics merge pid-diagnostic
+     (when startup-aware?
+       {:worker-ready? (boolean (:ready? wait-result))}))))
 
 (defn- captured [thunk]
   (try
@@ -373,6 +427,7 @@
   (let [run-dir (create-run-dir (:temp-dir config))
         request-path (path-in run-dir "request.edn")
         result-path (path-in run-dir "result.edn")
+        ready-path (path-in run-dir "worker-ready.edn")
         stdout-path (path-in run-dir "stdout.log")
         stderr-path (path-in run-dir "stderr.log")
         keep-temp? (volatile! false)]
@@ -391,8 +446,11 @@
                    schedule :request-writing error
                    (diagnostics stdout-path stderr-path))
                   (let [command
-                        (into (:worker-command config)
-                              [request-path result-path])
+                        (cond->
+                         (into (:worker-command config)
+                               [request-path result-path])
+                          (contains? config :startup-timeout-ms)
+                          (conj ready-path))
                         spawn
                         (captured
                          #(process/process
@@ -404,7 +462,10 @@
                        (diagnostics stdout-path stderr-path))
                       (supervise-child
                        config schedule (:value spawn)
-                       result-path stdout-path stderr-path)))))
+                       result-path
+                       (when (contains? config :startup-timeout-ms)
+                         ready-path)
+                       stdout-path stderr-path)))))
               (catch :default error
                 ;; `supervise-child` converts every ordinary post-spawn
                 ;; failure into an outcome. Only the two explicit "exit not
@@ -444,6 +505,11 @@
     :timeout-ms      positive child deadline
     :dir             explicit child working directory
 
+  Optional `:startup-timeout-ms` enables the paired worker-ready handshake and
+  bounds bootstrap separately; when present, `:timeout-ms` begins only after
+  the marked scenario is resolved and ready to execute. A startup deadline is
+  a `:worker-error`, while a post-ready execution deadline remains `:timeout`.
+  Omitting it preserves the original single-deadline/two-argument worker path.
   Optional `:extra-env` is a string map, `:kill-grace-ms` defaults to 250,
   `:temp-dir` selects an existing parent for per-run artifacts, and
   `:retain-completed-artifacts?` defaults to false.

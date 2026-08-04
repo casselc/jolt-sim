@@ -853,7 +853,8 @@
         result
         (binding [*process-config*
                   {:worker-command [bin "-M:http-sqlite-explore-worker"]
-                   :dir project-dir}]
+                   :dir project-dir
+                   :startup-timeout-ms 120000}]
           (deref (future (test/run-tests
                           'jolt.sim.http-sqlite-hegel-test))
                  watchdog-timeout-ms ::timeout))]
