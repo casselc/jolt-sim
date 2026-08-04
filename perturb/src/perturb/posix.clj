@@ -47,31 +47,47 @@
 ;; `perturb.posix` would fail outright and every run of this artifact would stop.
 ;; It does not. `perturb.noio` calls it and shows it throws — so resolution
 ;; happens at CALL, and "zero native calls" is exactly "zero symbols resolved".
+;;
+;; The `__cfn` form itself is what carries that property, not the `defcfn`
+;; spelling of it: `defcfn` is literally `(def name (jolt.ffi/__cfn ...))`. So
+;; `defsys` below, which builds the same `__cfn` inside the binding it gates,
+;; keeps it exactly — one `__cfn` closure per binding, evaluated once when the
+;; `def` runs, resolving nothing until the first call.
 
-(ffi/defcfn c-socket  "socket"  [:int :int :int] :int)
-(ffi/defcfn c-connect "connect" [:int :pointer :int] :int :blocking)
-(ffi/defcfn c-recv    "recv"    [:int :pointer :size_t :int] :ssize_t :blocking)
-(ffi/defcfn c-send    "send"    [:int :pointer :size_t :int] :ssize_t :blocking)
-(ffi/defcfn c-close   "close"   [:int] :int)
-;; Server side, added for perturb.http. Same lazy-resolution property as the
-;; five above (INHERITED I11): building these `def`s resolves nothing.
-(ffi/defcfn c-bind    "bind"    [:int :pointer :int] :int)
-(ffi/defcfn c-listen  "listen"  [:int :int] :int)
-(ffi/defcfn c-accept  "accept"  [:int :pointer :pointer] :int :blocking)
-(ffi/defcfn c-setsockopt "setsockopt" [:int :int :int :pointer :int] :int)
-
+;; --- THE ONE UNGATED NATIVE BINDING, NAMED AS SUCH --------------------------
+;;
+;; Everything else in this namespace that crosses to C is emitted by `defsys`,
+;; which cannot emit a binding without its gate. This one is the deliberate
+;; exception and it is on a list rather than merely absent from one:
+;; `perturb.gatecheck` reads `ungated-bindings`, requires every ungated FFI
+;; binding it finds in this namespace's IR to appear on it, and FAILS if the
+;; list is anything other than exactly this one name. Growing the hole is a
+;; failing change, not a quiet one.
+;;
 ;; The canary. Never called by the handler; called by `perturb.noio` as a probe.
+;; It must stay ungated: its whole job is to be CALLED with no handler anywhere
+;; and to show that the throw comes from symbol resolution, which is the
+;; evidence that `def` resolves nothing. A gated canary would be refused by
+;; `gate!` before it ever reached the resolver and would prove nothing.
 (ffi/defcfn c-absent-canary "perturb_absent_symbol_canary_do_not_define" [] :int)
+
+(def ungated-bindings
+  "The named allow-list: FFI bindings in this namespace that `defsys` did not
+  emit and that therefore have no gate. Exactly one, on purpose. Read as a
+  specification by `perturb.gatecheck`, which fails if this namespace's IR
+  contains an ungated binding that is not here, and fails if this list has
+  grown."
+  '#{c-absent-canary})
 
 (def native-log
   "Every crossing from this namespace into native code, counted.
 
   `:library-loads` counts calls to `jolt.ffi/load-library`, i.e. the thing I11
-  used to do at namespace load. `:calls` counts invocations of the five syscall
-  bindings — and because resolution is lazy and per-binding, a binding that was
-  never called was never resolved. Nothing in perturb reads this; it exists so
-  the no-I/O claim can be *measured* rather than argued (INHERITED I10 applies —
-  it is a Jolt atom)."
+  used to do at namespace load. `:calls` counts invocations of the nine gated
+  syscall bindings — and because resolution is lazy and per-binding, a binding
+  that was never called was never resolved. Nothing in perturb reads this; it
+  exists so the no-I/O claim can be *measured* rather than argued (INHERITED
+  I10 applies — it is a Jolt atom)."
   (atom {:library-loads 0 :calls 0 :by-op {}}))
 
 (defn native-log-snapshot [] @native-log)
@@ -114,22 +130,74 @@
   This is the difference E26 finding 3 names. `native-log` still counts, and it
   is still attribution by instrument in E16's sense. `gate!` is not an
   instrument: it is a precondition, and the run it fails cannot be reported as
-  successful even if the caller swallows the exception."
+  successful even if the caller swallows the exception.
+
+  \"Every wrapper begins here\" used to be a convention a reader had to keep.
+  It is now emitted: `defsys` below writes this call and the `__cfn` it guards
+  in one form, and `perturb.gatecheck` walks this namespace's IR and fails if
+  any FFI binding in it is not that shape."
   [op]
   (fx/native! (symbol "perturb.posix" (name op)))
   (ensure-native!)
   (count! op))
 
-(defn- sys-socket  [d t p]     (gate! :socket)  (c-socket d t p))
-(defn- sys-connect [fd sa n]   (gate! :connect) (c-connect fd sa n))
-(defn- sys-send    [fd p n fl] (gate! :send)    (c-send fd p n fl))
-(defn- sys-recv    [fd p n fl] (gate! :recv)    (c-recv fd p n fl))
-(defn- sys-close   [fd]        (gate! :close)   (c-close fd))
-(defn- sys-bind    [fd sa n]   (gate! :bind)    (c-bind fd sa n))
-(defn- sys-listen  [fd bl]     (gate! :listen)  (c-listen fd bl))
-(defn- sys-accept  [fd sa sl]  (gate! :accept)  (c-accept fd sa sl))
-(defn- sys-setsockopt [fd l o p n]
-  (gate! :setsockopt) (c-setsockopt fd l o p n))
+;; --- defsys: the binding and its gate, or neither ---------------------------
+;;
+;; THE RESIDUAL THIS CLOSES. E26 finding 3 left perturb gating at its OWN
+;; wrapper rather than at the runtime's FFI descriptor layer, the way
+;; `jolt.sim` intercepts a descriptor. The consequence was stated in the commit
+;; that landed the fail-closed boundary: a `jolt.ffi/defcfn` added without a
+;; matching `gate!` is invisible to the boundary — not refused, not counted,
+;; not latched. The gate was mandatory only by convention, and convention is
+;; exactly what an added line does not read.
+;;
+;; `defsys` makes the ungated binding UNREPRESENTABLE rather than merely
+;; absent. It emits ONE top-level `def` whose init evaluates the `__cfn` form
+;; into a local and closes over it. There is no var holding the raw callable,
+;; so there is no name by which the C entry point can be reached without
+;; passing `gate!` first — not "you should not", but "you cannot spell it".
+;; The gate op is DERIVED from the C symbol, so the symbol `perturb.effect`
+;; latches and the entry point actually resolved cannot drift apart.
+;;
+;; WHAT IT DOES NOT DO, and this is the honest half. It is still perturb gating
+;; at perturb's wrapper. It binds only what is written in THIS namespace: a
+;; `defcfn` in some other namespace, or a host escape that is not an FFI form
+;; at all, is as invisible as before. `perturb.gatecheck` audits this namespace
+;; and says so in as many words.
+
+(defmacro defsys
+  "Define `sys-name` as a gated native binding.
+
+  `(defsys sys-socket \"socket\" [:int :int :int] :int)` expands to
+
+      (def sys-socket
+        (let [cfn (jolt.ffi/foreign-fn \"socket\" [:int :int :int] :int)]
+          (fn [a0 a1 a2] (gate! :socket) (cfn a0 a1 a2))))
+
+  — the same `jolt.ffi/__cfn` special form `defcfn` produces, with the same
+  once-per-binding lazy resolution, and with no var naming the raw callable.
+  The trailing options are `defcfn`'s (`:blocking`, or an options map)."
+  [sys-name csym argtypes rettype & opts]
+  (let [params (mapv (fn [i] (symbol (str "a" i))) (range (count argtypes)))
+        cfn    (gensym "cfn")]
+    (list 'def (with-meta sys-name {:private true})
+          (list 'let* [cfn (concat (list 'jolt.ffi/foreign-fn csym argtypes rettype) opts)]
+                (list 'fn* params
+                      (list 'perturb.posix/gate! (keyword csym))
+                      (cons cfn params))))))
+
+(defsys sys-socket     "socket"     [:int :int :int] :int)
+(defsys sys-connect    "connect"    [:int :pointer :int] :int :blocking)
+(defsys sys-send       "send"       [:int :pointer :size_t :int] :ssize_t :blocking)
+(defsys sys-recv       "recv"       [:int :pointer :size_t :int] :ssize_t :blocking)
+(defsys sys-close      "close"      [:int] :int)
+;; Server side, added for perturb.http. Same lazy-resolution property as the
+;; five above (INHERITED I11): building these `def`s resolves nothing, because
+;; `defsys` emits the same `__cfn` closure `defcfn` did.
+(defsys sys-bind       "bind"       [:int :pointer :int] :int)
+(defsys sys-listen     "listen"     [:int :int] :int)
+(defsys sys-accept     "accept"     [:int :pointer :pointer] :int :blocking)
+(defsys sys-setsockopt "setsockopt" [:int :int :int :pointer :int] :int)
 
 (defn absent-canary-probe
   "Call the canary symbol. Returns `:resolved` if it somehow came back (it

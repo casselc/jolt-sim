@@ -39,6 +39,18 @@
 # clean AND its report must say all-handled? false. Runs 1 and 2 must both say
 # all-handled? true, over a required-symbol set, so neither can pass vacuously.
 #
+# WHAT NONE OF THE ABOVE GIVES YOU, AND RUN 5 DOES. Runs 1-2b are about
+# crossings that HAPPENED. They are silent about a binding nobody called, and
+# about a binding written with no gate at all: perturb gates at its own wrapper,
+# not at the runtime's FFI descriptor layer the way jolt.sim does, so a
+# jolt.ffi/defcfn added without a matching gate! is invisible to every check
+# above. Run 5 is `jolt -M:gatecheck`: it reads real Jolt IR for perturb.posix
+# and requires every :ffi-fn node in it to be one perturb.posix/defsys emitted
+# (hence gated) or to be on a named allow-list of exactly one — the absent-symbol
+# canary, which must stay ungated to remain evidence. It enumerates ONE
+# namespace; it does not make perturb equivalent to descriptor-layer
+# interception, and it says so itself.
+#
 # WHAT strace CANNOT SEE, and why the in-process counter exists. `(load-library)`
 # with no argument is dlopen(NULL): it binds the process's own already-mapped
 # symbols and issues zero syscalls (run 4 demonstrates the instrument's blind
@@ -164,6 +176,22 @@ done
 echo
 
 echo "========================================================================"
+echo "RUN 5 — BINDING ENUMERATION. Not a window and not a run: a walk of real"
+echo "  Jolt IR for perturb.posix. Every jolt.ffi binding in it must be one"
+echo "  perturb.posix/defsys emitted — __cfn behind (gate! :csym), with no var"
+echo "  naming the raw callable — or be on the named allow-list of exactly one."
+echo "========================================================================"
+if ( cd "$root" && "$JOLT" -M:gatecheck ) > "$tmp/gate.out" 2>"$tmp/gate.err"; then
+  gate_rc=0
+else
+  gate_rc=$?
+fi
+sed -n '/^perturb.gatecheck/,$p' "$tmp/gate.out" | sed 's/^/    /'
+if [ -s "$tmp/gate.err" ]; then sed 's/^/    stderr: /' "$tmp/gate.err"; fi
+gate_pass=$(grep -c '^  PASS ' "$tmp/gate.out" || true)
+echo
+
+echo "========================================================================"
 echo "VERDICT"
 echo "========================================================================"
 fail=0
@@ -203,6 +231,21 @@ if [ "$latch_fired" -gt 0 ] && [ "$latch_false" -gt 0 ] && [ "$latch_net" -eq 0 
 else
   echo "  FAIL  latch control: fired=$latch_fired all-handled-false=$latch_false"
   echo "        socket/connect in window=$latch_net — the boundary is blind"; fail=1
+fi
+if [ "$gate_rc" -eq 0 ] && [ "$gate_pass" -eq 3 ]; then
+  echo "  PASS  binding enumeration: every jolt.ffi binding in perturb.posix is"
+  echo "        emitted by perturb.posix/defsys (so it carries its gate) or is on"
+  echo "        the one-entry allow-list; the walk found all nine required C entry"
+  echo "        points, so it is not passing by finding nothing"
+  echo "        -> a defcfn added without a gate is now a FAILING change, not an"
+  echo "           invisible one. Scoped to perturb.posix: a binding declared in"
+  echo "           another namespace is still outside the boundary."
+else
+  echo "  FAIL  binding enumeration: jolt -M:gatecheck exited $gate_rc with"
+  echo "        $gate_pass/3 verdict lines passing — perturb.posix contains a"
+  echo "        native binding with no gate, or the walk itself is broken"
+  sed -n '/^VERDICT/,$p' "$tmp/gate.out" | sed 's/^/        /'
+  fail=1
 fi
 echo "  NOTE  leak 2 exhibit: $loud_w write() syscalls in the window when the same"
 echo "        scripted run prints its three values. Console output is real,"
