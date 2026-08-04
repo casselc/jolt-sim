@@ -107,4 +107,27 @@
   ;; plus PRACTICAL-ADOPTION §A3's runtime refusals and forged-trace controls.
   ;; IS A GATE: it records expectations and exits non-zero when one changes.
   ;; No socket and no server.
-  :layer  {:main-opts ["-m" "perturb.layercheck"]}}}
+  :layer  {:main-opts ["-m" "perturb.layercheck"]}
+
+  ;; E37 / tally row 56, EXECUTED: `perturb.octet/octets?` was a TAG recognizer,
+  ;; so a hand-built `{:perturb.octet/octets [-1 999]}` passed the result
+  ;; predicate `perturb.wire/socket` declares for `:recv` — the one check
+  ;; standing between a handler's return value and the codec. Runs the forged
+  ;; corpus against the effect boundary and against the recognizer, both
+  ;; directions, and times the predicate because it went from O(1) to O(n).
+  ;; IS A GATE: it records expectations and exits non-zero when one changes.
+  ;; Takes a sample count for the timing section (default 5). No socket, no
+  ;; server, no FFI.
+  :octetcheck {:main-opts ["-m" "perturb.octetcheck"]}
+
+  ;; PERTURB-DESIGN E37's reframe, EXECUTED: the TRANSITIVE SHAREABILITY RULE.
+  ;; The classifier for a freely duplicable value is an INTERFACE property, and
+  ;; its transitivity clause is §4.6's root cause rather than a second tier.
+  ;; Runs `perturb.share`'s boundary table, its declaration rules each broken
+  ;; and restored, and the survey's THREE-WAY negative control over real IR:
+  ;; unrestricted persistent values must draw nothing from capability typestate,
+  ;; a capability inside a persistent container must stay visible, and an
+  ;; out-of-bounds read must be caught by structural reasoning instead.
+  ;; IS A GATE: it records expectations and exits non-zero when one changes.
+  ;; No socket and no server; nothing in arm B is ever called.
+  :share  {:main-opts ["-m" "perturb.sharecheck"]}}}

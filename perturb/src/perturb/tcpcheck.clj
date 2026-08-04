@@ -365,6 +365,85 @@
     (println "       `perturb.dbtxcorpus/sock-never-closed` is the gated control for it")
     (println "       and it is a REJECT.")))
 
+;; ---------------------------------------------------------------------------
+;; THE 4 `capture` RESIDUALS, UNDER THE TRANSITIVE SHAREABILITY RULE
+;; ---------------------------------------------------------------------------
+;;
+;; PERTURB-DESIGN E34 left variant 5 with 7 substantive rejections, of which
+;; FOUR are `capture` — 57% of everything this run still rejects, up from 17%
+;; under E30's variant 1. E37's reframe says why they are one cause and not four
+;; accidents: the closure is an immutable value that reaches a capability, so
+;; duplicating it duplicates a ROUTE, and the transitivity clause is the rule
+;; that says so.
+;;
+;; WHAT CHANGED AND WHAT DID NOT. The rule CLASSIFIES all four — every one is a
+;; closure whose single capture is a declared capability, so every one is
+;; `mixed`, with the witness path naming the capture. That is a decision, and it
+;; replaces the old message's reason ("a `linearity :once` capability may not be
+;; closed over"), which E37 says is the wrong reason: what is wrong is not the
+;; linearity of the capability but the SHAREABILITY of the closure.
+;;
+;; It does NOT accept any of them, and the split below is the honest result:
+;;
+;;   DECIDED  — one. The `future` at client_test.clj:601 hands the closure to
+;;              `clojure.core/future-call`, and `teensyp.client/Connection`
+;;              declares `:perturb.cap/contention :thread-confined`. The route
+;;              crosses a thread boundary while the original name is still live
+;;              on this one. Decided FROM THE DECLARATION, with no model of what
+;;              the closure body does.
+;;
+;;   REFUSED  — three. All three are `(thrown-by #(… connection …))`, and
+;;              `thrown-by` calls its argument exactly once and drops it
+;;              (client_test.clj:46-50). Accepting them would require knowing
+;;              that, and knowing it is a fact about a CALLEE'S higher-order
+;;              retention contract, which §4.6 records that perturb has no
+;;              notation for at all. So the rule refuses, names the missing
+;;              notation, and the diagnostic stands. Guessing here would be a
+;;              false accept on a program the checker cannot see the shape of.
+;;
+;; A rule that accepted all four would have done it by weakening the check.
+
+(defn- capture-rows [r]
+  (vec (filter (fn [d] (= :capture (:kind d)))
+               (mapcat :diagnostics (all-results r)))))
+
+(defn- site-of [d]
+  (or (first (filter (fn [l] (and (string? l) (str/includes? l "captured by a nested fn at")))
+                     (:detail d)))
+      "?"))
+
+(defn- print-share-residual [r]
+  (let [caps (capture-rows r)
+        dec  (filter (fn [d] (:decided? (:disposition d))) caps)
+        ref  (remove (fn [d] (:decided? (:disposition d))) caps)]
+    (println)
+    (println "  THE `capture` RESIDUAL, UNDER THE TRANSITIVE SHAREABILITY RULE (E37).")
+    (println "  Read off the diagnostics variant 5 actually raised, not asserted here.")
+    (println)
+    (println (str "    " (count caps) "  capture diagnostics"))
+    (println (str "    " (count caps) "  CLASSIFIED by perturb.share — every one is"))
+    (println "          closure(cap teensyp.client/Connection) -> mixed, witness [0].")
+    (println "          The closure is a non-shareable value because a transitively")
+    (println "          reachable component is; duplicating it duplicates a ROUTE.")
+    (println)
+    (println (str "    " (count dec) "  DECIDED — the capture is a violation, on the declaration:"))
+    (doseq [d dec]
+      (println (str "         " (str/trim (site-of d))))
+      (doseq [l (:why (:disposition d))] (println (str "           " l))))
+    (println)
+    (println (str "    " (count ref) "  REFUSED — the classification stands; whether THIS capture"))
+    (println "         is a violation does not, and the reason is a missing notation:")
+    (doseq [d ref]
+      (println (str "         " (str/trim (site-of d))))
+      (println (str "           consumer undeclared: " (name (:ground (:disposition d)))
+                    "; needs " (:needs (:disposition d)))))
+    (println)
+    (println "    NOTHING WAS ACCEPTED. Substantive rejections are unchanged, and")
+    (println "    that is the intended outcome: accepting the three `thrown-by`")
+    (println "    thunks would require modelling what a callee does with a closure")
+    (println "    it was handed, which is §4.6's higher-order item and is not a")
+    (println "    thing this rule may guess at.")))
+
 (defn- banner [s]
   (println)
   (println (str "== " s " " (apply str (repeat (max 0 (- 74 (count s))) "=")))))
@@ -461,7 +540,8 @@
         (println)
         (println "  --- against VARIANT 1, which is the same machine under `:linearity :once`:")
         (print-delta v1 v5)
-        (print-acid-test v5)))
+        (print-acid-test v5)
+        (print-share-residual v5)))
 
     (banner "READ THESE AS EVIDENCE ABOUT THE RULES")
     (println "   jolt-tcp's client works. Its own suite exercises this exact lifecycle")

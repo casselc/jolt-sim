@@ -52,6 +52,19 @@
                its destructor is still a leak. This is §4.6's cancellation
                piece 5, and it discharges ONE of Fowler's two quandaries: no
                peer is notified (E26 finding 8, scoped by E27; item 15)
+    SHAREABLE  the classifier for a freely duplicable value is an INTERFACE
+               property, not an allocation property. A value may be contracted
+               and weakened when aliases cannot observe mutation, copying
+               cannot duplicate a finalization obligation, discarding cannot
+               leak one, and EVERY TRANSITIVELY REACHABLE EXPOSED COMPONENT is
+               itself unrestricted — or is sealed behind an observationally
+               immutable interface. `perturb.share` decides that; this
+               namespace builds the profile from its own abstract value at the
+               two sites where a value is duplicated or stored (a closure
+               capture, and a composite) and prints the decision instead of
+               asserting a reason. E37's reframe: the transitivity clause is
+               §4.6's root cause and not a second tier, because an immutable
+               shell holding a capability duplicates ROUTES to it (item 19)
 
   ONE JUDGEMENT IS NOT A MODE JUDGEMENT AT ALL, AND IS THE OTHER TIER:
 
@@ -109,6 +122,7 @@
 (require '[perturb.effect :as fx])
 (require '[perturb.octet :as o])
 (require '[perturb.refine :as ref])
+(require '[perturb.share :as sh])
 (require '[clojure.string :as str])
 
 ;; --- diagnostics ------------------------------------------------------------
@@ -557,6 +571,43 @@
        {:st (:st r) :val (tuple (:items r))})
      (f st v path))))
 
+;; --- THE TRANSITIVE SHAREABILITY RULE, READ OFF THE ABSTRACT VALUE ----------
+;;
+;; E37's reframe. The checker's abstract value is already a tree — a tuple of
+;; leaves, each a capability, a dead capability, or opaque — so the profile
+;; `perturb.share` classifies is a direct reading of it and nothing is invented
+;; on the way. What that buys is that the REASON printed at a capture or an
+;; escape is DERIVED from the value's shape rather than asserted: the old
+;; `capture` message said "a `linearity :once` capability may not be closed
+;; over", which E37 says is the wrong reason. The right one is that the closure
+;; is a non-shareable value because a transitively reachable component is, and
+;; the witness path says which one.
+;;
+;; AN OPAQUE LEAF IS TAGGED WITH WHY IT IS OPAQUE, and `perturb.share` REFUSES
+;; to promote it. That refusal is NOT turned into a rejection here, and the
+;; reason is honest rather than lenient: every result of an unannotated call is
+;; opaque to this checker, so denying all of them would reject essentially every
+;; program while carrying no evidence at all. See report-limits item 19.
+
+(defn- share-profile
+  "The `perturb.share` profile of one abstract value."
+  [st v]
+  (cond
+    (nil? v)          [:opaque :perturb.check/absent]
+    (= :cap (:v v))   [:cap (:cap (get (:caps st) (:bid v)))]
+    (= :dead (:v v))  [:cap (:cap v)]
+    (= :tuple (:v v)) (vec (cons :product
+                                 (map (fn [i] (share-profile st i)) (:items v))))
+    :else             [:opaque :perturb.check/unannotated]))
+
+(defn- share-lines
+  "The classification of `prof`, as diagnostic lines. Declarations come from
+  `perturb.share`'s registry, which is empty unless something declared one —
+  and nothing in perturb's own corpora does, so a capability leaf decides every
+  profile here on its own."
+  [prof]
+  (sh/decision-lines prof (sh/classify (sh/interfaces) prof)))
+
 (defn- shape-of
   "The capability shape of `v`: which positions hold which capability in which
   state. This is what a loop back edge has to preserve."
@@ -991,12 +1042,37 @@
               (contains? (:caps s) bid)
               (let [c (get (:caps s) bid)]
                 (when (> (:fn-depth s) (:fn-depth c))
-                  (report! {:kind :capture :cap (:cap c)
-                            :detail [(str "capability    `" nm (path-str path) "` : "
-                                          (:cap c) "@" (:state c))
-                                     (str "captured by a nested fn at " (pir/site (:pos s)))
-                                     (str "a `linearity :once` capability may not be closed over")
-                                     (str "in            " (:in s))]}))
+                  ;; THE TRANSITIVE SHAREABILITY RULE (E37). The value being
+                  ;; closed over is the WHOLE binding, not the leaf: a closure
+                  ;; over `[conn frames]` is mixed because one FIELD is, and the
+                  ;; witness path says which. The consumer of the closure is
+                  ;; recorded by `w-fn`, and `perturb.share/capture-disposition`
+                  ;; says whether the rule DECIDES this capture or refuses it —
+                  ;; refuses being the answer whenever the callee's higher-order
+                  ;; retention contract is undeclared, which §4.6 says perturb
+                  ;; has no notation for.
+                  (let [prof [:closure (share-profile s (:val e))]
+                        disp (sh/capture-disposition
+                               {:consumer (:closure-consumer s)
+                                :contention (:perturb.cap/contention
+                                              (decl-of (:spec s) (:cap c)))
+                                :cap (:cap c)})]
+                    (report! {:kind :capture :cap (:cap c)
+                              :share (sh/classify (sh/interfaces) prof)
+                              :disposition disp
+                              :detail (vec (concat
+                                             [(str "capability    `" nm (path-str path) "` : "
+                                                   (:cap c) "@" (:state c))
+                                              (str "captured by a nested fn at "
+                                                   (pir/site (:pos s)))]
+                                             (share-lines prof)
+                                             [(str "route         "
+                                                   (if (:decided? disp)
+                                                     "DECIDED — this capture is a violation"
+                                                     "REFUSED — the classification stands, the question does not")
+                                                   "  (" (name (:ground disp)) ")")]
+                                             (map (fn [l] (str "  " l)) (:why disp))
+                                             [(str "in            " (:in s))]))})))
                 {:st s :val leaf})
 
               :else {:st s :val OPAQUE})))))))
@@ -1868,15 +1944,24 @@
   (let [r (w-seq st items)]
     (doseq [v (:vals r)]
       (doseq [e (live-caps (:st r) v)]
-        (let [lc (:lc e)]
+        (let [lc   (:lc e)
+              ;; THE TRANSITIVE RULE AGAIN, at the other duplication site. The
+              ;; container is persistent and immutable and that is exactly the
+              ;; point: `[:coll …]` is shareable iff its element profile is, and
+              ;; an immutable shell around a capability does not launder the
+              ;; route it carries.
+              prof [:coll (share-profile (:st r) v)]]
           (report! {:kind :escape :cap (:cap lc)
-                    :detail [(str "capability    "
-                                  (if (:name lc) (str "`" (:name lc) "` : ") "")
-                                  (:cap lc) "@" (:state lc))
-                             (str "enters a " kind " at " (pir/site (:pos (:st r))))
-                             (str "a capability path names TUPLE positions only, so the")
-                             (str "checker cannot follow it out of a " kind " (E13, E15)")
-                             (str "in            " (:in (:st r)))]}))))
+                    :share (sh/classify (sh/interfaces) prof)
+                    :detail (vec (concat
+                                   [(str "capability    "
+                                         (if (:name lc) (str "`" (:name lc) "` : ") "")
+                                         (:cap lc) "@" (:state lc))
+                                    (str "enters a " kind " at " (pir/site (:pos (:st r))))]
+                                   (share-lines prof)
+                                   [(str "a capability path names TUPLE positions only, so the")
+                                    (str "checker cannot follow it out of a " kind " (E13, E15)")
+                                    (str "in            " (:in (:st r)))]))}))))
     {:st (:st r) :val OPAQUE}))
 
 (defn- w-vector
@@ -1891,7 +1976,16 @@
   ;; A closure body is analysed for diagnostics, but its state does not propagate:
   ;; the checker does not model when (or how often) the closure runs.
   (doseq [ar (:arities node)]
-    (let [st1 (push-scope (assoc st :fn-depth (inc (:fn-depth st))))
+    ;; WHO GETS THE CLOSURE. `:use-ctx` names the callee whose ARGUMENT this fn
+    ;; node is, and it is recorded here because inside the body it is
+    ;; immediately overwritten by the closure's own calls. It is the only thing
+    ;; that distinguishes `(future #(… conn …))` — a route across a thread
+    ;; boundary, which the declared contention axis decides — from
+    ;; `(thrown-by #(… conn …))`, where the callee's retention contract is
+    ;; undeclared and the rule REFUSES rather than guessing. See
+    ;; `perturb.share/capture-disposition`.
+    (let [st1 (push-scope (assoc (assoc st :closure-consumer (:use-ctx st))
+                                 :fn-depth (inc (:fn-depth st))))
           st2 (reduce (fn [s p] (bind-name s p {:bid (fresh-bid) :val OPAQUE}))
                       st1 (:params ar))
           st3 (if (:rest ar)
@@ -2600,7 +2694,13 @@
    ""
    "  3. Closure bodies are walked for diagnostics but their state does not"
    "     propagate: the checker does not model whether or how often a closure runs."
-   "     Capturing a live capability is rejected outright rather than reasoned about."
+   "     Capturing a live capability is still rejected outright. What changed is"
+   "     the REASON and how much of it is decided rather than asserted — see"
+   "     item 19: the closure is classified non-shareable by the transitive rule,"
+   "     and whether that particular capture is a violation is DECIDED only when"
+   "     the consumer introduces concurrency and the capability declares"
+   "     `:contention :thread-confined`. Every other consumer is a REFUSAL with"
+   "     the missing declaration named. The rejection is unchanged either way."
    ""
    "  4. try/catch has no exception-path join. Any capability discipline across a"
    "     handler is unchecked and the checker says so where it finds one."
@@ -3006,7 +3106,45 @@
    "           observable and a body that did not move it draws"
    "           `produces-mismatch`. That is a small enlargement of what is"
    "           checked rather than of what is trusted, and it is the only one"
-   "           here."])
+   "           here."
+   ""
+   " 19. THE TRANSITIVE SHAREABILITY RULE — WHAT IT DECIDES HERE, AND THE FOUR"
+   "     THINGS IT DOES NOT."
+   "     E37's reframe: the classifier for a freely duplicable value is an"
+   "     INTERFACE property, and its transitivity clause is §4.6's root cause"
+   "     rather than a second tier. `perturb.share` holds the rule; this"
+   "     namespace builds a profile from its own abstract value at the two"
+   "     duplication sites — a closure capture and a composite — and PRINTS the"
+   "     classification with the witness path instead of asserting a reason."
+   "     `perturb.sharecheck` runs the rule's boundary table and the three-way"
+   "     control."
+   ""
+   "       (a) NO VERDICT MOVED, AND THAT IS THE INTENDED RESULT ON THIS CORPUS."
+   "           Every profile the checker can build has a capability leaf in it"
+   "           already — that is why the site raised a diagnostic at all — so the"
+   "           rule confirms `mixed` everywhere it is consulted. It buys a"
+   "           derived reason and a witness path, not a changed accept set. A"
+   "           rule that had moved a verdict here would have done it by"
+   "           weakening the check."
+   "       (b) `:refused` IS NOT WIRED TO A REJECTION. `perturb.share` denies"
+   "           promotion to an opaque/FFI value with no trusted declaration."
+   "           Turning that into a rejection here would reject essentially every"
+   "           program, because EVERY result of an unannotated call is opaque to"
+   "           this checker and carries no provenance to declare. The refusal is"
+   "           reported by `-M:share`, where it is about a profile, and is not"
+   "           enforced here, where it would be about ignorance."
+   "       (c) A PROFILE IS NOT A TYPE. `[:coll p]` says every element has"
+   "           profile p, not which ones do; there are no field names and no"
+   "           arity. That is enough for transitive reachability and is"
+   "           deliberately not enough for anything else."
+   "       (d) THE HIGHER-ORDER QUESTION IS STILL OPEN, AND IS NOW NAMED AT THE"
+   "           SITE. `capture-disposition` refuses every consumer that is not a"
+   "           declared concurrency introducer, because whether a callee calls"
+   "           the closure once and drops it, retains it, or copies it is not"
+   "           written down anywhere. §4.6: `(f c)` cannot be annotated because"
+   "           the callee is a parameter. Deciding those would need a notation"
+   "           this language does not have, and guessing would be a false"
+   "           accept."])
 
 (def ^:private line
   "========================================================================")

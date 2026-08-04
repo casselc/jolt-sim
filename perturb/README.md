@@ -57,6 +57,12 @@ $JOLT -M:refine
 # and every ACCEPTED one is then executed under a scripted handler (E15).
 $JOLT -M:check
 
+# the TRANSITIVE SHAREABILITY RULE and the three-way negative control:
+# unrestricted persistent values must draw NOTHING from capability typestate,
+# a capability inside a persistent container must stay VISIBLE, and an
+# out-of-bounds read must be caught by STRUCTURAL reasoning instead.
+$JOLT -M:share
+
 # differential oracle against jolt.nrepl's bencode
 $JOLT -M:oracle
 
@@ -345,6 +351,47 @@ arm is bottom) and is not discoverable from the diagnostic.
 `-M:check` also prints, from the IR itself, the evidence for §1.1's untested
 `:local` claim, and the list of things the checker cannot see. Read the second
 list before believing an `ok`.
+
+### The transitive shareability rule, and the control that says it separates
+
+`jolt -M:share`. E37's reframe: the classifier for a **freely duplicable value
+is an interface property, not an allocation property**. Contraction and
+weakening are sound when aliases cannot observe mutation, copying cannot
+duplicate a finalization obligation, discarding cannot leak one, and **every
+transitively reachable exposed component is itself unrestricted** — or is sealed
+behind an observationally immutable interface. That last clause is §4.6's root
+cause rather than a second tier: a persistent vector can hold a live socket and
+a closure can capture one, and duplicating the immutable shell duplicates
+**routes to the capability**.
+
+`perturb.share` decides a profile — primitives shareable; products, sums,
+collections and closures shareable iff every field, element, alternative and
+capture is; a declared capability `mixed`; an opaque/FFI value **refused**
+unless a trusted declaration promotes it. Three verdicts, and `refused` is never
+an accept. Two parts are easy to get wrong and are pinned by cases in the table:
+**hidden mutation does not defeat unrestricted use** (`classify` never reads the
+`:internal-mutation` key — cached hashes and path copying are declared, not
+consulted), and **`:mixed` dominates `:refused`**, so one unclassifiable element
+cannot mask a socket beside it. One declaration rule makes the qualification
+safe: a seal may hide **mutation**, it may not hide **authority**.
+
+`perturb.check` consults it at the two sites where a value is duplicated or
+stored — a closure capture and a composite — so the reason printed is derived
+with a witness path rather than asserted. **No verdict in any corpus moved**,
+and that is the intended outcome: every profile the checker can build at those
+sites already contains a capability.
+
+The three-way control is the point of the exercise, and it runs over real IR in
+`perturb.sharecorpus`: ten functions of only unrestricted persistent values draw
+**nothing**; the same shapes with a connection inside draw `escape`,
+`use-after-move`, `dangling` and `capture`, by the **same run of the same
+checker**; and seven pure octet functions have their index and length
+obligations decided by `perturb.refine` — including a deliberate out-of-bounds
+read and a broken concat length law — while capability typestate stays silent on
+all seven. It is an **internal control**, not a published result: both research
+passes looked for a study running typestate over persistent collections and
+found none, and both say the reason is that mature systems classify such values
+unrestricted *before* typestate, so the experiment is never run.
 
 ## The two logs
 
