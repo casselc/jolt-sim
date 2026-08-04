@@ -77,6 +77,10 @@ The complete current tally of claims this document made and then refuted:
 | 44 | E26 finding 3 / `RUNTIME-OBLIGATION-BRIEF`: failing closed and latching makes boundary completeness a **per-run invariant** rather than a measurement | true **of the native rung only**. Under a handler stack the caller of a refusal is another handler: a layer that catches `:handler-abort` from the rung below and answers `[:ok empty]` leaves the run reporting `all-handled? true` with nothing latched. And the same layer composed by *calling* instead of performing loses 170 crossings from the trace with no instrument distinguishing the two runs — the native gate does not refuse it either, because `*handling*` is already non-nil from the outer perform. Above the native rung the boundary is a **convention** | E29 |
 | 45 | E23/E24: applications *want* the shapes §4.6 forbids (collection, growth, runtime selection, callback parameter) | stronger than wanted. A **handler is inter-invocation state by construction** — entered once per operation, carrying buffer, phase and transport token between invocations, which no `let` can span. The only carriers are an atom and a closure, both refused. A handler stack **cannot be written at all** without a refused shape; the identical operations in one straight `let` chain check clean and cannot be a handler | E29 |
 | 46 | §1.4's effect layer is checkable code like any other | **installing a handler is an `unsupported-construct`**. `binding` expands to `try`/`finally` and `report-limits` item 4 refuses `try`/`catch`, so `with-handlers`, `with-trace`, `with-run` and `perform`'s own `*handling*` binding are all refused. True since `perturb.effect` was written, never found because every handler installation lived in a demo namespace nothing checks. There is no rewrite — the dynamic extent *is* the mechanism | E29 |
+| 47 | E26 finding 5: jolt-net's **idempotent close** is a contract perturb must statically reject, so either the library is papering over a hazard or `:linearity :once` is too strong | **neither — both are right about different things.** `:once` conflates a *discharge obligation* (close happens exactly once) with a *dead-name permission* (the binding may not be mentioned afterwards). The library satisfies the first **more strongly** than linearity does: a compare-and-set close means exactly one close *at run time however many times the text says it*, and the `true`/`false` return is a **race arbiter**, not a second close. It violates the second and covers that hazard dynamically. The decisive evidence is not the double close: `closed?` and `connection-info` are pure observers declared `:borrows :state :any`, legal in the terminal state, documented and tested — and rejected identically, because `use-after-move` is about the **name** being dead. The missing concept is an **absorbing terminal state**, admitting its destructor and its observers as self-loops. Corroboration: `shutdown-write!` is idempotent too and is perfectly expressible as a self-loop. **Idempotence is not what `:once` rejects; idempotence at a terminal state is** | E30 |
+| 48 | E26 finding 7: the declaration gap is on the **`:to` side**, and `:from` collections already work | true only when every source shares one destination. `check-annotation-consistency!` groups declared edges by `[capability :from]` and compares every group against the same single annotation, so an operation with distinct `:from`s and correspondingly distinct `:to`s must fail all but one. E26's sum handles a **nondeterministic** destination; this is the **deterministic** case. The gap is the **pairing** | E30 |
+| 49 | E23/E24/E26: a capability may only live in a binding of statically known shape, the **single root cause** behind every rejection measured | measured against a library with a test suite rather than a corpus this project shaped: **4 of 23 substantive rejections, 17%**. Twelve are **in-place typestate** (a stable name over a mutable atom — not a binding-shape problem at all) and six are the `:from`/`:to` pairing. **78% of rejections have causes that were never on the list**, and the density of the known `try` limit is now a number too: one `unsupported-construct` per `clojure.test/is` | E30 |
+| 50 | `:arg` on a `:produces` entry is part of the declaration language | it is **accepted and silently ignored** — no `annotation-unsupported`, no declaration diagnostic, and the capability lands on the result anyway. A key the language takes and does not implement, which is the in-place fix already having a syntax that does nothing | E30 |
 
 ‡ Eight rows are the exception the sentence above does not cover: 17 and 18
 arrived from re-examining the argument and from the literature; 27–29 came from
@@ -109,7 +113,7 @@ worse ratio than E20's literature survey achieved and was obtained for a
 fraction of the effort. The standing commitment covers rows 1–26 and 33–35.
 
 **How to read this document.** §1 is the settled design, stated once in final
-corrected form. §2 is the divergence register. §3 is the findings E1–E29, each
+corrected form. §2 is the divergence register. §3 is the findings E1–E30, each
 stated as currently believed rather than as first written. §4 is the open
 questions. §5 is the v0 ladder. §6 is the nonclaims. Appendix A is the
 correction history, Appendix B holds the superseded ladders in full,
@@ -4862,6 +4866,204 @@ does not exist, so the client cannot finish one inside `connect`.
    `monitored` (ledger only); and two things are **`failed`** — the discipline as
    a *static* property of the layer, and the effect boundary as a *seam*.
 
+### E30 — ladder step 1a: the jolt-tcp client, and what `:linearity :once` is actually conflating
+
+§5's step 1a — the jolt-tcp **client** connection, the rung E26 found reachable
+after establishing that the original step 1 never was. `perturb.tcpcap` declares
+the capability from outside; `perturb.tcpcheck` compiles the library's real
+`teensyp/client.clj` (773 lines, 51 defs) and its real `client_test.clj` (642
+lines, 19 defs) from a working tree — **unmodified, and not as a dependency** —
+and checks them. Zero socket syscalls under `strace`. Four declaration variants
+were run, so each finding has a control.
+
+Two capture facts worth recording. `jolt-net` cannot load here at all
+(`jolt/net/ffi.clj:49` uses `:varargs-after`, which upstream Jolt lacks), so
+`jolt.net` is a **name-only stub** and the client's IR is genuinely its own. And
+`perturb.ir`'s tap fires only on a top-level `:def` while `deftest` expands to a
+`do`, so **13 of 19 test defs were invisible** until `tcpcheck` installed a
+second tap descending one `do` level — in its own namespace, leaving `perturb.ir`
+untouched.
+
+#### 1. The idempotent-close collision: both are right, about different things
+
+This is what the rung was built to settle. `:linearity :once` conflates two
+obligations that this resource separates:
+
+1. **the discharge obligation** — close must happen exactly once (a leak
+   property);
+2. **the dead-name permission** — after the destructor the binding may not be
+   mentioned (a `write-after-move` safety property).
+
+**The library satisfies (1) more strongly than linearity does.** Linearity says
+"exactly one close *in the program text*". `handle.clj`'s compare-and-set close
+says "exactly one close *at run time, however many times the text says it*", and
+the `true`/`false` return is not "close succeeded twice" — it is a **race
+arbiter**, telling one caller that another began the close. That is why `close!`
+is documented as callable from any thread, and why the descriptor-reuse argument
+papers over nothing: it is the mechanism by which the linear obligation is
+discharged when the set of holders is not statically known.
+
+**The library violates (2), and (2) is doing real work** — but discharges that
+hazard dynamically instead, with `ensure-open!` throwing on every operation, and
+its own test asserts exactly that.
+
+**The decisive evidence that this is a language gap rather than a disagreement**
+is not the double close at all. Variant 2 isolates the collision, and alongside
+the expected `use-after-move` on the second `close!` it reports three more:
+
+```
+    used again at client_test.clj:636:20  (argument to teensyp.client/receive-at-most!)
+    used again at client_test.clj:640:13  (argument to teensyp.client/closed?)
+    used again at client_test.clj:641:32  (argument to teensyp.client/connection-info)
+```
+
+`closed?` and `connection-info` are declared `:borrows` with `:state :any` —
+**legal in every state, including `:closed`** — and are rejected anyway, because
+`use-after-move` is about *the name being dead*, not about the state. The
+library's documented, tested ability to ask a closed connection `{:state
+:closed}` is unreachable under `:once`, and **no `:state` value can rescue it**.
+No position on idempotence explains that rejection.
+
+**The missing concept, named: an *absorbing* terminal state** — a terminal state
+that admits its own destructor and its observers as **self-loops**. Not "terminal"
+in the current sense (obligation discharged, name dead), but *obligation
+discharged, name still alive, only these operations legal*. It is §4.6 piece 5's
+`MUST_CLOSE` shifted one step past the end: `MUST_CLOSE` is a state whose only
+outgoing edge is the destructor; this is a state whose only outgoing edges are
+the destructor **again** and the observers.
+
+One clean corroboration from the artifact itself: **`shutdown-write!` is
+idempotent too** — the same contract one level down — and it is *perfectly
+expressible*, as a self-loop on `:write-shut`. **Idempotence is not what
+`:linearity :once` rejects. Idempotence at a terminal state is.**
+
+#### 2. In-place typestate — a cause that is not §4.6's root cause
+
+The connection is a **stable name over a mutable atom**: every transition mutates
+in place and returns something else (`receive-into!` a byte count, `close!` a
+boolean). `:consumes`/`:produces` is *value threading*. So `use-after-move` means
+the name died at a transition that could not return it, and `dangling` means the
+only encoding that keeps the name alive cannot consume it either.
+
+This is **not** the binding-shape root cause — the binding is an ordinary `let`
+of statically known shape. Variant 1 draws 12 of these against 4 root-cause
+diagnostics.
+
+The declared fix already has a syntax and **the syntax is silently ignored**.
+Variant 4 declares `close!` as `:consumes [{… :arg 0}] :produces [{… :state
+:closed :arg 0}]` — "the connection changes state where it stands". Result: no
+`annotation-unsupported`, no declaration diagnostic, zero declaration-level
+complaints, the four `use-after-move` unchanged, and one *new* `no-signature`
+because the produced capability landed on the return value and
+`clojure.core/true?` received a `Connection@:closed`. **The declaration language
+accepts a key it does not implement**, which is a false-silence hole in its own
+right. The minimal change is confined to `produced-value` / `w-annotated-invoke`:
+if a `:produces` entry carries `:arg`, rebind that argument's binding rather than
+placing the capability in the result.
+
+#### 3. The `:from`/`:to` gap is the *pairing*, and E26 finding 7 said otherwise
+
+E26 finding 7 concluded the gap is on the `:to` side and that `:from` collections
+"already work". True only when all sources share one destination.
+`check-annotation-consistency!` groups declared edges by `[capability :from]` and
+compares **every group against the same single annotation**, so an operation with
+distinct `:from`s and correspondingly distinct `:to`s must fail all but one
+group:
+
+```
+=== teensyp.client/shutdown-write!
+annotation-inconsistent  declared edge :read-eof -> :half-closed / annotation says :open -> :write-shut
+annotation-inconsistent  declared edge :write-shut -> :write-shut / annotation says :open -> :write-shut
+```
+
+E26 finding 7's sum handles a **nondeterministic** destination. This is the
+**deterministic** case: today the transition relation must be a function of the
+operation alone, never of `(operation, source)`.
+
+#### 4. What the measurement says about §4.6's root cause
+
+Of variant 1's 151 diagnostics, **128 are `unsupported-construct` from `try`** —
+arithmetic, not a surprise: `clojure.test/is` expands to `try`/`catch`, and the
+test file has 96 `(is …)`. That is a **density number** E23's limit never had:
+**one rejection per assertion** in any test-bearing corpus.
+
+Excluding those, the 23 substantive rejections split **12 in-place, 6
+from-to-pairing, 4 §4.6 root cause, 1 E23-interprocedural**. So the root cause
+E23/E24/E26 converged on is **4 of 23 — 17%**, and **78% are two causes that were
+not on the list**. Every prior measurement was of code perturb's own author had
+shaped the corpus for; this is the first against a library with a test suite.
+
+#### 5. Four smaller findings, each with evidence
+
+- **Arity delegation is a forbidden shape.** `receive-into!`'s 4-arity calls its
+  own 5-arity, and jolt compiles the self-call to the fn's own local
+  self-reference rather than a var deref, so **an annotation on the var does not
+  apply to the var's own overloads** — reported as "callee a computed function".
+  The most ordinary Clojure idiom there is.
+- **`:perturb.cap/representation` is 7–10 names, not four** (E26 finding 4 said
+  four), and the sharper fact is that **which names must be listed is a function
+  of which operations you declare as transitions**, not of the code: 7, 9 or 10
+  names for the same library across variants. Further evidence for E18 finding 4
+  that a name-list is the wrong metric.
+- **A discriminator cannot be declared for the sums that actually arise.** The
+  key requires a predicate var applied at `:arg n`. `closed?` qualifies and
+  partitions the one axis that never needs discriminating; the real sums
+  (`[:open :read-eof]`, `[:write-shut :half-closed]`) are resolved in the library
+  by `(:read-eof? (client/connection-info c))` — **a key read on the map returned
+  by an operation**, which is undeclarable.
+- **The transition annotations are lies nothing can catch.** `receive-into!`
+  returns an integer and `close!` a boolean, but `:consumes`+`:produces` is the
+  only way to advance a machine, so both are declared to hand the connection
+  back. A declared transition's body is an axiom, so `produces-mismatch` never
+  runs. The lie surfaces only downstream — variant 1 reports the **integer byte
+  count `n` as a leaked connection**.
+
+#### 6. I20 is now blocking, not merely untested
+
+`:contention :thread-confined` is declared **knowing it is false** of the
+artifact: the docstring says `close!` may run from any thread, and the loopback
+test reads on a `future` while writing on the test thread. It is written anyway
+because `cap/capability` refuses a declaration missing an axis, so omitting it
+would *delete the axis from the report* rather than record it as unsatisfiable.
+
+And the state the declaration had to delete is exactly the contention window:
+`:closing` and `:closed` are both real (`begin-close!` sets one, `close-resources!`
+the other in a `finally`) and are distinguishable **only by a concurrent
+thread** — which is the precise window idempotent close exists to arbitrate. I20
+deleted a state.
+
+Also absent: the two per-direction gates `{:held? :waiters}`, a second and third
+machine per connection, and what makes "one reader and one writer may run
+concurrently" true. And there is **no product typestate** — `:perturb.cap/typestate`
+is a flat keyword list with no orthogonal regions, so a 3×2×2 product is
+multiplied out by hand and grows exponentially in independent bits.
+
+#### E30's own nonclaims
+
+1. **jolt-tcp is not verified.** A declaration checked against a library is a
+   statement about what the declaration language can say. The client works, and
+   its suite passes against a real loopback socket under the compiler it targets.
+   **Every rejection above is the checker refusing a program that works.**
+2. **The annotations are unverified, and some are deliberately false.** Every
+   declared transition's body is an axiom, so nothing checks that `close!`
+   performs its transition, and the `:produces` declared on operations that
+   return integers and booleans are undetectable by construction.
+3. **`jolt.net` is a stub** whose arities are `[& _]`, so it cannot catch an
+   arity error the real library would.
+4. **Nothing was run** — with one exception, the library's own stray top-level
+   form (see below), which touches no socket.
+5. **No rule was changed and no gate weakened.** The `:arg`-on-`:produces` fix
+   was specified and deliberately **not** made.
+
+#### Incidental, and reported rather than fixed
+
+`teensyp/client_test.clj:202` has a paren that closes its `deftest` early, so the
+`(testing "a native reset reported with readiness is never rewritten" …)` block
+at line 204 is a **top-level form**: it executes at load and is never registered,
+run, or reported as a test. Verified by balancing parens across the file. Found
+by loading the library, not by checking it — which is itself a small argument for
+compiling third-party code rather than reading it.
+
 ## 4. Open questions
 
 Q1–Q5 are §4.1–§4.5; §4.6 collects open items that never carried a Q number.
@@ -5070,7 +5272,10 @@ Recorded here so they are not lost between sections. None of these is decided.
 - **A capability may only live in a binding of statically-known shape.** The
   single root cause behind E23 and E24, measured from four directions: it cannot
   be passed to a **function-valued parameter** (`with-conn`, and every reactor
-  callback), stored in a **collection** (map and vector are identical here — the
+  callback), delegated to **another arity of the same `defn`** (jolt compiles a
+  self-call to the fn's own local self-reference, not a var deref, so an
+  annotation on the var does not apply to the var's own overloads — E30), stored
+  in a **collection** (map and vector are identical here — the
   abstract domain models the vector *literal node*, not the vector), held in a
   collection that **grows** (arity must be a source constant), or **selected by a
   runtime value** (`join`). An event-driven application needs all four, so this
@@ -5159,6 +5364,28 @@ Recorded here so they are not lost between sections. None of these is decided.
   - And a third corroboration, in a Lisp: Turnstile's `linear/lin.rkt` raises
     `"linear variable may be unused in certain branches"` from a macro-hosted
     linear type checker (E21).
+- **In-place (mutable-handle) typestate.** §1.2's `:consumes`/`:produces` is
+  value threading; the jolt-tcp connection is a **stable name over an atom** and
+  every transition mutates it where it stands. This is *not* the binding-shape
+  root cause below — the binding is an ordinary `let` — and it accounted for 12
+  of 23 substantive rejections at its worst (E30). The minimum fix is honouring
+  `:arg` on a `:produces` entry as an in-place produce, confined to
+  `produced-value` / `w-annotated-invoke`. **Its current status is that the key
+  is accepted and silently ignored** (tally row 50), which must be fixed either
+  way: a declaration language that takes a key it does not implement is a
+  false-silence hole.
+- **An absorbing terminal state** — one that admits its own destructor and its
+  observers as self-loops. Without it, a pure observer legal in the terminal
+  state (`connection-info` on a closed connection) is rejected as
+  `use-after-move`, because that diagnostic is about the *name*, not the state.
+  E30 finding 1; this is §4.6 piece 5's `MUST_CLOSE` shifted one step past the
+  end.
+- **A state-dependent destination.** `check-annotation-consistency!` compares
+  every `[capability :from]` group against one annotation, so the transition
+  relation must be a function of the operation alone and never of
+  `(operation, source)`. E26 finding 7 recorded the *nondeterministic* case and
+  said the `:from` side already worked; the deterministic case is a separate gap
+  (tally row 48).
 - **~~`:local`~~ and ~~`:extern`~~ — both now measured, and what remains is a
   different item.** §1.1's two IR claims were inferences from source reading.
   **`:local` is settled**: a checker walked real IR and the claim holds — names,
@@ -5390,6 +5617,15 @@ which makes them better targets than the two earlier ladders (Appendix B).
    names on `:perturb.cap/representation` and of confronting jolt-net's
    deliberately **idempotent close**, which `:linearity :once` rejects. Step 1b
    is the server, and it is gated on §4.6's live fork, not on effort.
+
+   **Step 1a is BUILT** (`-M:tcpcheck`, E30) — the library's real client and its
+   real test suite, compiled from a working tree and checked against a
+   capability declared from outside. What it establishes is narrower than this
+   table's row claims: the statically checkable machine is **two states**. The
+   half-close states, and with them the `no send-all! after shutdown-write!`
+   guard, are outside it, because every transition mutates a stable name in
+   place and `:consumes`/`:produces` is value threading. Read the coverage row
+   below as **not** covered by step 1a.
 2. **jolt-http keep-alive/pipelining** — ordering, exactly-once, no-leftover,
    against the existing RFC-derived oracle.
 3. **SSE** — liveness, resumption, reconnect faults.
