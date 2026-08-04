@@ -4008,7 +4008,8 @@ blocked every scholarly host: `dl.acm.org`, `arxiv.org`, `link.springer.com`,
 layer. Reachable: `github.com`, `raw.githubusercontent.com`, and search-engine
 extractions. **Every reference below was verified for existence, venue, authors
 and year; none was read in full text**, except the items marked ✔, which were
-fetched directly. This list is kept complete so the sources can be obtained when
+fetched directly, and the two in **D.8**, which were supplied as PDFs and are
+committed under `docs/research/papers/`. This list is kept complete so the sources can be obtained when
 access allows, and so any claim resting on one can be re-checked against the
 paper rather than against a summary of it.
 
@@ -4151,6 +4152,57 @@ paper rather than against a summary of it.
 | Culpepper, Tobin-Hochstadt, Flatt, *Advanced Macrology and the Implementation of Typed Scheme*, Scheme Workshop 2007 | blame across macroexpansion is open (Q4) |
 | ✔ Clojure reference: *Vars and the Global Environment* | `:private` is intent; `@#'ns/private-var` works — **perturb cannot get sealing from the host** |
 
+---
+
+### D.8 Full text actually in hand — the only two
+
+Everything in D.1–D.7 was verified for existence, venue, authors and year and
+**not read**. These two are different: they were supplied as PDFs, both are
+**CC-BY 4.0**, and both are committed under `docs/research/papers/`. They are
+also the two that bear most directly on the live fork in §4.6 — whether a
+dynamically-sized capability collection becomes a language feature or stays in
+an instrumented trusted core.
+
+| ref | where | why it is here |
+| --- | --- | --- |
+| Milano, Turcotti, Myers, *A Flexible Type System for Fearless Concurrency*, PLDI 2022 | [10.1145/3519939.3523443](https://doi.org/10.1145/3519939.3523443) · `papers/PLDI22-flexible-type-system-for-fearless-concurrency.pdf` | **A candidate answer to E23/E24's root cause.** Its typing rules use *regions*, *isolated fields*, *tracked vs untracked*, **tempered domination**, `if disconnected`, and `Send`/`Receive` gated on an **empty tracking context**. |
+| Laddad, Cheung, Hellerstein, Milano, *Flo: A Semantic Foundation for Progressive Stream Processing*, 2025 | [10.1145/3704845](https://doi.org/10.1145/3704845) · `papers/flo-semantic-foundation-progressive-stream-processing.pdf` | **A candidate semantic foundation for the layered-event architecture.** Two properties — *streaming progress* and *eager execution* — a type system distinguishing **bounded** streams (operators may block on termination) from **unbounded**, dataflow composition, and **nested graphs with cycles**. Models Flink, LVars and DBSP. |
+
+**What each would answer, stated as a hypothesis rather than a result — neither
+has been read end to end, only the abstract of Flo and the typing-rule section
+of the PLDI paper, via a crude PDF extraction.**
+
+*Fearless Concurrency → the §4.6 root cause.* Our wall is that a capability may
+live only in a binding of statically-known shape. A **region** holds an arbitrary
+object graph and is owned as a unit, which is what a connection table is and what
+a fixed-arity register file is not. **Tempered domination** relaxes global
+domination for tracked isolated fields, permitting cycles and free field
+reassignment — the property `table-grows-in-a-loop` failed to have.
+`Send`/`Receive` on an empty tracking context is a discipline for moving a whole
+region between threads, which is the contention axis nothing has tested (I20).
+And `if disconnected` is a **runtime test establishing a static property**, which
+is the hybrid posture `RUNTIME-OBLIGATION-BRIEF.md` argues for, already
+load-bearing in a published system. The paper is pitched as *more flexible than
+Rust*; perturb's problem is that it refuses code that runs.
+
+**The tension this creates, and it is the important part.** §1.2 dropped
+**locality — regions — by design**, citing Yarrow: regions are the specific
+feature that makes effects unsound, because non-local control breaks stack
+discipline and multi-shot handlers break exit-at-most-once. This is a region
+system that delivers what §4.6 says is missing. E20 found that D4's
+no-resumption rule may remove the reason regions were dropped — that was an
+argument; this is a concrete instance of what the argument would license, and it
+should be settled by reading rather than by inference.
+
+*Flo → the layered-event architecture.* Its **bounded vs unbounded** distinction
+is the principled form of a defect E23 found independently: `perturb.wire`'s
+`recv` returns an empty octet view for **both** "end of stream" and "nothing
+queued", a distinction `teensyp.stream` had and perturb cannot express. "Bounded
+streams allow operators to block on termination" is exactly the property that
+makes that distinction matter. Nested graphs with cycles is the keep-alive loop
+and the layer stack; determinism is what perturb and jolt-sim both exist for.
+
+---
 ---
 
 ## 7. Scoping correction — jolt-sim is input, not authority

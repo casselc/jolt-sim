@@ -41,7 +41,8 @@ them.
 > sentence from an abstract, applied to a case the paper does not cover.
 >
 > **The claims, in priority order. The first three are load-bearing on decisions
-> already taken.**
+> already taken; item 12 was added later and is the only one whose sources are
+> in hand.**
 >
 > 1. **The linear conditional rule.** E20 claims that in a linear/session-typed
 >    language a conditional types **both branches in the same linear context**,
@@ -156,6 +157,54 @@ them.
 >     defect).
 >     For each: found or not found, with what you searched.
 >
+> 12. **The two papers we actually have — and the live fork.** Added after the
+>     first eleven. Both are **committed under `docs/research/papers/`**, both
+>     CC-BY 4.0, and unlike everything else in Appendix D they can be read in
+>     full. See **Appendix D.8**. This item is not a verification of E20; it is
+>     the question §4.6 now turns on, and these are the sources for it.
+>
+>     (a) **Milano, Turcotti, Myers, *A Flexible Type System for Fearless
+>     Concurrency*, PLDI 2022** ([10.1145/3519939.3523443](https://doi.org/10.1145/3519939.3523443)).
+>     §4.6's root cause, from E23 and E24, is that **a capability may live only
+>     in a binding of statically-known shape** — not in a collection, not in one
+>     that grows, not selected by a runtime value, not passed to a
+>     function-valued parameter. Read this paper against that. Does **region
+>     domination** give a connection table — an arbitrary object graph owned as a
+>     unit? Does **tempered domination** permit the growth and reassignment that
+>     `perturb.evt/table-grows-in-a-loop` was rejected for? What exactly do
+>     `Send`/`Receive` require of an **empty tracking context**, and does that
+>     bear on the contention axis (I20), which nothing has ever tested? And
+>     `if disconnected` appears to be a **runtime test establishing a static
+>     property** — if so, say precisely how it is discharged, because that is the
+>     posture `RUNTIME-OBLIGATION-BRIEF.md` argues for and a published instance
+>     of it is worth more than the argument.
+>
+>     **Then the question that decides it.** §1.2 dropped **locality — regions —
+>     by design**, citing Yarrow: regions are named there as the specific feature
+>     that makes effects unsound. This is a region system delivering what §4.6
+>     says is missing. E20 concluded that D4's no-resumption rule places perturb
+>     outside the analogous handler/linearity tension (claim 2 above). **Does
+>     that argument extend to regions?** If it does, §1.2's locality decision
+>     should be reopened and this paper is the design. If it does not, say why,
+>     because §4.6 currently treats the collection problem as open when it may be
+>     foreclosed.
+>
+>     (b) **Laddad, Cheung, Hellerstein, Milano, *Flo: A Semantic Foundation for
+>     Progressive Stream Processing*, 2025** ([10.1145/3704845](https://doi.org/10.1145/3704845)).
+>     The target architecture is events over HTTP over TLS over TCP over a
+>     descriptor, composing, with the same shape for gRPC, Kafka/NATS and
+>     inotify. Flo claims two properties — *streaming progress* and *eager
+>     execution* — and a type system distinguishing **bounded** streams, whose
+>     operators may block on termination, from **unbounded** ones. E23 found
+>     independently that `perturb.wire`'s `recv` returns an empty octet view for
+>     **both** end-of-stream and nothing-queued, a distinction `teensyp.stream`
+>     had and perturb cannot express. **Is Flo's bounded/unbounded typing the
+>     principled form of that distinction, and what does it require of the
+>     operators?** Also: do its constructs for **nested graphs with cycles**
+>     cover a keep-alive loop and a protocol layer stack, and does modelling
+>     Flink/LVars/DBSP in one framework suggest a composition law perturb could
+>     adopt for framing layers?
+>
 > **Rules of engagement.**
 >
 > - **Do not repair E20 by softening it.** If a claim is wrong, say so plainly
@@ -198,6 +247,9 @@ them.
 
 ## Notes for whoever runs it
 
+- **Item 12 can be done first and needs no network** — both PDFs are in the
+  repo. If access to the other hosts stays blocked, item 12 is still fully
+  answerable, and it is the one that bears on a decision nobody has taken yet.
 - **The four E20 refutations are the priority.** Claims 1, 4 and 5 are tally
   rows 27–29; claim 2 is the basis on which §1.4's D4 decision is now defended.
   If only part of this brief gets done, do those.
