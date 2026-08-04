@@ -218,16 +218,13 @@ jobs:
           cd "$GITHUB_WORKSPACE/jolt-sim"
           export JOLT_SIM_CASE_ARTIFACT_DIR="$PWD/target/outbox-case-artifacts"
           export JOLT_SIM_CASE_TEMP_DIR="$PWD/target/outbox-case-runs"
-          mkdir -p "$JOLT_SIM_CASE_ARTIFACT_DIR" "$JOLT_SIM_CASE_TEMP_DIR"
-          "$sim" -A:hegel-explore-test -m hegel.install
+          export JOLT_SIM_GATE_PARENT="$PWD/target/hegel-gates"
+          mkdir -p \
+            "$JOLT_SIM_CASE_ARTIFACT_DIR" \
+            "$JOLT_SIM_CASE_TEMP_DIR" \
+            "$JOLT_SIM_GATE_PARENT"
           JOLT_SIM_BIN="$sim" JOLT_SIM_PROJECT_DIR="$PWD" \
-            "$sim" -M:hegel-explore-test
-          # All Hegel aliases pin the same exact jolt-hegel commit, so the
-          # verified native library installed above is reused here.
-          JOLT_SIM_BIN="$sim" JOLT_SIM_PROJECT_DIR="$PWD" \
-            "$sim" -M:tcp-bencode-hegel-test
-          JOLT_SIM_BIN="$sim" JOLT_SIM_PROJECT_DIR="$PWD" \
-            "$sim" -M:outbox-delivery-hegel-test
+            script/run-hegel-gates.sh
 
       - name: Render retained whole-application case reports
         if: always() && matrix.hegel
@@ -264,6 +261,7 @@ jobs:
           path: |
             jolt-sim/target/outbox-case-artifacts/
             jolt-sim/target/outbox-case-runs/
+            jolt-sim/target/hegel-gates/
           if-no-files-found: ignore
           retention-days: 14
 

@@ -191,19 +191,37 @@
 
 (def ^:private bounded-outcome-keys
   "Only these outcome fields may cross the require-completed! failure boundary."
-  [:status :schedule :reason :exit :error])
+  [:status :schedule :reason :exit :error :artifact-dir])
+
+(defn- non-completed-data [outcome]
+  (cond-> {}
+    (map? outcome) (into (select-keys outcome bounded-outcome-keys))))
 
 (defn require-completed!
   "Returns `outcome` unchanged when it is a :completed supervisor outcome.
-  Otherwise throws an ex-info tagged :jolt.sim.hegel/non-completed with
-  :hegel/origin \"jolt.sim.hegel/require-completed\" and, when `outcome` is a
-  map, only the bounded :status/:schedule/:reason/:exit/:error fields."
+
+  A :worker-error is infrastructure, not a generated application witness. It
+  throws :jolt.sim.hegel/infrastructure-error with :hegel/usage-error? true so
+  the pinned Hegel engine aborts immediately instead of shrinking or repeating
+  the same broken worker bootstrap. Other non-completed outcomes remain
+  shrinkable property failures tagged :jolt.sim.hegel/non-completed.
+
+  Both errors carry only the bounded
+  :status/:schedule/:reason/:exit/:error/:artifact-dir fields from a map
+  outcome."
   [outcome]
-  (if (= :completed (:status outcome))
-    outcome
+  (case (:status outcome)
+    :completed outcome
+    :worker-error
+    (throw
+     (ex-info
+      "jolt.sim.hegel exploration worker failed before producing a usable case"
+      (merge {:hegel/usage-error? true
+              :type ::infrastructure-error}
+             (non-completed-data outcome))))
     (throw
      (ex-info
       "jolt.sim.hegel expected a :completed process-explorer outcome"
-      (cond-> {:hegel/origin "jolt.sim.hegel/require-completed"
-               :type ::non-completed}
-        (map? outcome) (into (select-keys outcome bounded-outcome-keys)))))))
+      (merge {:hegel/origin "jolt.sim.hegel/require-completed"
+              :type ::non-completed}
+             (non-completed-data outcome))))))

@@ -61,18 +61,19 @@
 ;; watchdog below and runs serially. Nominal initial-case ceilings are:
 ;;
 ;;   parity witness       1 * (30000 + 500) =  30500 ms /  60000 ms watchdog
-;;   finite-domain lane  15 * (15000 + 500) = 232500 ms / 450000 ms watchdog
-;;   UTF-8 lane           5 * (15000 + 500) =  77500 ms / 300000 ms watchdog
+;;   finite-domain lane  15 * (20000 + 500) = 307500 ms / 450000 ms watchdog
+;;   UTF-8 lane           5 * (20000 + 500) = 102500 ms / 300000 ms watchdog
 ;;
 ;; The remaining per-property time belongs to Hegel shrinking/final replay.
 ;; Hegel does not expose a separate shrink-time budget, so the parent watchdog
-;; is an infrastructure bound, not a falsification result. The 15000 ms child
-;; deadline is measured rather than speculative: under the isolated exact-pin
-;; probe, ordinary cases completed in 6.3--7.7 seconds and the three cases that
-;; crossed the old 8000 ms boundary all completed at 12000 ms, the slowest in
-;; 10.9 seconds.
+;; is an infrastructure bound, not a falsification result. The 20000 ms child
+;; deadline matches the other cold process-backed gates. Under the isolated
+;; exact-pin probe, ordinary cases completed in 6.3--7.7 seconds and the three
+;; cases that crossed the old 8000 ms boundary completed within 10.9 seconds.
+;; Hosted Linux later completed 34 cases around 9--10 seconds before one empty-
+;; output worker exhausted the obsolete 15000 ms allowance.
 (def ^:private witness-timeout-ms 30000)
-(def ^:private case-timeout-ms 15000)
+(def ^:private case-timeout-ms 20000)
 (def ^:private kill-grace-ms 500)
 
 (defn- positive-integer? [value]

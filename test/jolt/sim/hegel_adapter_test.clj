@@ -198,6 +198,42 @@
     (is (= #{:type :hegel/origin :status :schedule :reason :exit}
            (set (keys data))))))
 
+(deftest require-completed-aborts-hegel-immediately-on-worker-infrastructure-error
+  (let [calls (atom 0)
+        artifact-dir "/tmp/retained-worker"
+        thrown
+        (try
+          (h/run-test!
+           (assoc hegel-run-opts :test-cases 20)
+           (fn [_]
+             (swap! calls inc)
+             (sim-hegel/require-completed!
+              {:status :worker-error
+               :schedule [1 0]
+               :exit 1
+               :error {:phase :nonzero-exit}
+               :artifact-dir artifact-dir
+               :diagnostics {:stderr {:text "git clone failed"}}})))
+          nil
+          (catch :default error
+            error))
+        data (ex-data thrown)]
+    (is (some? thrown))
+    (is (= 1 @calls)
+        "a worker bootstrap failure must not enter Hegel generation/shrinking")
+    (is (= :jolt.sim.hegel/infrastructure-error (:type data)))
+    (is (true? (:hegel/usage-error? data)))
+    (is (= :worker-error (:status data)))
+    (is (= [1 0] (:schedule data)))
+    (is (= 1 (:exit data)))
+    (is (= {:phase :nonzero-exit} (:error data)))
+    (is (= artifact-dir (:artifact-dir data)))
+    (is (not (contains? data :hegel/origin)))
+    (is (not (contains? data :diagnostics)))
+    (is (= #{:type :hegel/usage-error? :status :schedule :exit :error
+             :artifact-dir}
+           (set (keys data))))))
+
 (deftest only-the-reverse-schedule-fails-and-replays-without-flakiness
   ;; Deterministic failing property: over the two-element domain, only [1 0]
   ;; violates the invariant. The minimized final replay re-throws with that
