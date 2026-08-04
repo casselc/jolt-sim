@@ -118,7 +118,7 @@ only the application surfaces and modes exercised by a durable gate.
 | HTTP Hello World | `jolt-http`, `jolt-tcp`, `jolt.net`, `jolt.ffi` | Not in the durable gate | Modeled POSIX loopback | One request; public CI, no faults |
 | HTTP SQLite BLOB | `jolt-http`, `jolt-tcp`, `jolt.net`, `jdbc.core`, `db.sqlite`, `jolt.ffi`, byte arrays | Host sockets plus system SQLite | Shared FFI-memory, POSIX, and SQLite worlds | One request at one-byte capacities plus one captured first-poll `EINTR`; local gate, no generated schedule/fault search |
 | Length-framed TCP bencode echo | `teensyp.server`, `teensyp.client`, `teensyp.buffer`, `jolt.bytes`, `jolt.bencode`, `jolt.net`, `jolt.ffi` | Host loopback parity witness | Modeled POSIX loopback and native memory | Pipelined requests, finite stream/self-pipe capacities, captured `EINTR`, and Hegel-generated UTF-8; no half-close or concurrent clients |
-| HTTP SQLite outbox delivery | `jolt-http`, `jdbc.core`, `db.sqlite`, `teensyp.server/client`, `jolt.bytes`, `jolt.bencode`, `jolt.net`, `jolt.ffi` | Host HTTP/TCP sockets plus system SQLite | Shared FFI-memory, POSIX, and exact-plan SQLite worlds | HTTP returns after COMMIT; ordinary and scoped-reset retry paths validate the correlated ack before a guarded `pending` → `delivered` transaction and final reload; Hegel varies payload bytes, capacities, poll interruption, and ordinary-lane semantic admission; no general scheduler, cancellation, close/reopen, crash-durability, or exactly-once claim |
+| HTTP SQLite outbox delivery | `jolt-http`, `jdbc.core`, `db.sqlite`, `teensyp.server/client`, `jolt.bytes`, `jolt.bencode`, `jolt.net`, `jolt.ffi` | Host HTTP/TCP sockets plus system SQLite | Shared FFI-memory, POSIX, and exact-plan SQLite worlds | Ordinary, scoped-reset retry, clean close/reopen, and deliberate post-COMMIT process-exit/recovery witnesses; Hegel varies payload bytes, capacities, poll interruption, and admission; no general scheduler, cancellation, power-loss, or exactly-once claim |
 | Maelstrom Echo | `jolt.maelstrom` node/handler code | JSON-lines lane reviewed but not integrated | Deterministic memory transport | FIFO/history integrity only; no nemesis or liveness claim |
 
 These capabilities belong to two deliberately different execution tracks:
@@ -907,7 +907,17 @@ export JOLT_SIM_PROJECT_DIR=/absolute/path/to/jolt-sim
 "$JOLT_SIM_BIN" -M:outbox-delivery-sim-test
 "$JOLT_SIM_BIN" -A:outbox-delivery-hegel-test -m hegel.install
 "$JOLT_SIM_BIN" -M:outbox-delivery-hegel-test
+export JOLT_SIM_CRASH_ARTIFACT_DIR="$PWD/target/outbox-crash-artifacts"
+"$JOLT_SIM_BIN" -M:outbox-crash-recovery-test
 ```
+
+The crash-recovery gate retains every case, including passes. After the
+producer has exited and been reaped, but before the recovery worker starts, it
+copies the quiescent SQLite database, closed post-COMMIT checkpoint, and every
+present WAL/SHM/rollback-journal sidecar into `post-producer/`. Recovery uses
+the original database, so the raw pending-state image and the final delivered
+image remain separately inspectable. This is forensic preservation, not an
+fsync, power-loss, WAL-recovery, or crash-safe-journal claim.
 
 Each direct integration command prints the path of an append-only EDN progress
 file. Set `JOLT_SIM_OUTBOX_DELIVERY_PROGRESS_FILE` to retain it at a chosen
@@ -960,11 +970,19 @@ control stops before the mark transaction, and a concurrent model control
 allows exactly one of two racing guarded markers to apply. The retry lane
 additionally injects one receiver-port-scoped read reset, requires the first
 TCP connection to cleanly close, proves the row still pending before retry,
-and observes attempts 1 and 2 before attempt 2 authorizes marking. Completed
-child artifacts survive until the parent verdict, while passing cases clean
-them up. The current whole-application simulation slices do not prove
-close/reopen persistence, crash durability, exactly-once behavior, real-kernel
-reset parity, or extreme one- and two-byte HTTP fragmentation.
+and observes attempts 1 and 2 before attempt 2 authorizes marking. The clean
+reopen lane runs the same ordinary application across two sequential SQLite
+connections and checks pending-to-delivered image continuity in both real and
+hermetic paths; its Hegel lane explores that modeled reopen path in fresh
+workers. The real process-boundary gate exits its producer with status 86 after
+COMMIT and a closed checkpoint, requires the producer result to remain absent,
+and gives only the retained database path to a fresh recovery worker, which
+reloads the pending row before TCP delivery and durable marking. Its database,
+checkpoint, worker request/result/log trees, progress records, and sidecar
+manifest remain retained even on success. This is deliberate process-exit and
+file-survival evidence, not SIGKILL, machine-crash, fsync, power-loss,
+WAL/torn-write, exactly-once, real-kernel reset parity, or extreme one- and
+two-byte HTTP fragmentation evidence.
 
 ### Composing handler packs
 
@@ -1090,11 +1108,13 @@ extension boundaries rather than growing a parallel simulator architecture.
 
 The live implementation order and release boundary are maintained in
 [`docs/ROADMAP.md`](docs/ROADMAP.md). The ordinary HTTP -> SQLite -> TCP/bencode
-outbox application and its first generated workload/capacity/poll-fault lane
-are now executable. The immediate path is schedule/admission exploration,
-followed by retry, cancellation, close/reopen, restart/crash durability, and
-hybrid-native scenarios. Causal monitors, the crash-safe journal, broader
-runtime hooks, and release hardening build on that application evidence.
+outbox application, generated workload/capacity/poll-fault lanes, clean
+close/reopen persistence, and deliberate post-COMMIT process-exit recovery are
+now executable. The immediate path is cancellation/deadline and broader
+schedule exploration around that same application, followed by stronger crash
+boundaries and hybrid-native scenarios. Causal monitors, the crash-safe
+journal, broader runtime hooks, and release hardening build on that application
+evidence.
 
 The original P0-P5 research packet and adversarial reviews remain preserved in
 [`casselc/jolt-sim-planning`](https://github.com/casselc/jolt-sim-planning);

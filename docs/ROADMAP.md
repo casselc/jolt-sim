@@ -183,9 +183,9 @@ real and hermetic modes. The acknowledgement does not mark the row delivered;
 retry, marking, cancellation, schedule/admission search, and POSIX hybrid
 classification remain later feature slices rather than hidden claims of this
 witness.
-The first slice uses one in-memory SQLite connection and therefore establishes
-post-COMMIT reload only; close/reopen and crash durability require the later
-file-backed restart witness.
+The first slice used one in-memory SQLite connection and therefore established
+post-COMMIT reload only. Later stacked slices now add clean file-backed
+close/reopen continuity and a separate real process-exit/recovery witness.
 
 The next stacked slice, draft PR `casselc/jolt-sim#29`, keeps that application
 body unchanged and runs every case in a fresh sim-enabled process. Hegel owns
@@ -250,8 +250,26 @@ failure. The statement scripts now consume 24 plans for ordinary delivery and
 27 for retry. On the exact v0.5.20 image, the final serial gates reported unit
 `557 / 4,677`, SQLite parity `1 / 47`, sim-only delivery `3 / 51`, real/hermetic
 delivery `3 / 52`, and fresh-process Hegel `9 / 48`, all green. Delivery remains
-at least once: close/reopen persistence is unproved, and a crash after remote
-acknowledgement but before durable marking may redeliver.
+at least once: a crash after remote acknowledgement but before durable marking
+may redeliver.
+
+Draft PRs `casselc/jolt-sim#41` through `#43` add an immutable modeled SQLite
+file image, run the unchanged application across two sequential connections,
+and exercise that clean reopen path in fresh Hegel workers. The focused real
+and hermetic gate proves pending-to-delivered continuity across clean reopen;
+the modeled campaign does not claim pager/WAL or power-loss behavior.
+
+The next real-native slice exits a producer worker with status 86 after the
+ordinary HTTP command has returned across SQLite COMMIT and written a closed
+checkpoint, then starts a fresh recovery worker with only the retained database
+path. Recovery reloads the pending row before any TCP send, validates the
+correlated bencode acknowledgement, marks the row delivered, and closes. The
+parent snapshots the quiescent post-producer database, checkpoint, and every
+present SQLite sidecar before recovery can mutate them. It retains that raw
+pending-state image, the final delivered database, both worker trees, parent
+outcomes, progress records, and a final manifest even on success. This is
+deliberate process-exit/file-survival evidence, not SIGKILL, machine-crash,
+fsync, power-loss, torn-write, append-only-journal, or exactly-once evidence.
 
 The simulation layer may provide boundary handlers and models. It must not
 replace the HTTP, DB, TCP, codec, or application implementation with a second
@@ -266,12 +284,13 @@ embedded-zero values, durable restart/retry, and one injected native failure.
 Status: workload/capacity/poll-fault search is implemented in draft PR
 `casselc/jolt-sim#29`; semantic FFI admission-order search is stacked in PRs
 `#30` and `#31`; scoped-reset retry is exercised in PR `#33`; the canonical
-Case/Outcome/reporter spine is stacked in PRs `#35` through `#38`; and the
-current slice carries ack-gated durable marking through both generated
+Case/Outcome/reporter spine is stacked in PRs `#35` through `#38`; and
+ack-gated durable marking and clean reopen paths now run through generated
 campaigns. The current lanes do not yet vary cancellation, crash actions,
-deadlines, broader future admission, or one- and two-byte HTTP fragmentation.
-Those are the next bounded slices around the same ordinary application, not
-alternate simulator implementations.
+deadlines, broader future admission, or one- and two-byte HTTP fragmentation;
+the real process-exit witness is one fixed boundary rather than a generated
+crash axis. Those are the next bounded slices around the same ordinary
+application, not alternate simulator implementations.
 
 As the complete app gains those modes:
 

@@ -823,3 +823,155 @@
      (assoc (:value body)
             :receiver {:requests @received
                        :server-errors @receiver-errors}))))
+
+(defn exercise-outbox-commit-before-close
+  "Runs the ordinary bencoded HTTP command through the existing
+  command-handler/post-request path on one ordinary JDBC SQLite
+  connection to `spec`, requires the command evidence to exist (the
+  handler returned after COMMIT and the HTTP server quiesced), builds a
+  closed immutable evidence value carrying the ordinary application
+  command semantics and the decoded HTTP response, and then invokes
+  `after-commit!` exactly once INSIDE the connection callback -- after
+  COMMIT and HTTP-server quiescence but BEFORE with-sqlite-connection
+  gets a chance to close the connection.
+
+  The intended producer callback writes a checkpoint and then calls
+  System/exit, so the OS kills the process while this ordinary
+  connection is still live: this is the post-COMMIT crash seam, not a
+  close/reopen, retry, or exactly-once witness.
+
+  If `after-commit!` returns, the same evidence is returned and the
+  connection closes normally. If `after-commit!` throws, the throw is
+  preserved as the primary error through with-sqlite-connection's
+  existing cleanup logic.
+
+  Returns a closed immutable evidence value with no DB spec/path,
+  handle, pointer, byte array, atom, server object, port,
+  simulator/controller value, or function:
+
+    {:application {:identities ...
+                   :command {:value ... :result ... :emitted ...}
+                   :committed-state ...}
+     :http {:status ... :content-type ... :content-length ...
+            :response <decoded bencode> :server-errors ...
+            :close-results ...}}
+
+  This namespace has no simulator dependency."
+  ([spec after-commit!]
+   (exercise-outbox-commit-before-close spec default-command after-commit!))
+  ([spec command after-commit!]
+   (when-not (fn? after-commit!)
+     (fail! :invalid-after-commit-callback {:value after-commit!}))
+   (let [command-evidence* (atom nil)
+         body
+         (try
+           {:value
+            (with-sqlite-connection
+             spec
+             (fn [conn]
+               (store/init-schema! conn)
+               (let [http-cycle
+                     (http-fixture/run-request-cycle
+                      (command-handler conn command-evidence*)
+                      (fn [host port]
+                        (post-request-bytes command host port)))
+                     command-evidence @command-evidence*
+                     _ (when-not command-evidence
+                         (fail! :missing-application-evidence {}))
+                     parsed (:parsed http-cycle)
+                     response
+                     (decode-bencode-exact :http-response (:body parsed))
+                     evidence
+                     {:application command-evidence
+                      :http {:status (:status parsed)
+                             :content-type
+                             (get (:headers parsed) "content-type")
+                             :content-length
+                             (get (:headers parsed) "content-length")
+                             :response response
+                             :server-errors (:server-errors http-cycle)
+                             :close-results (:close-results http-cycle)}}]
+                 ;; after-commit! runs INSIDE the connection callback,
+                 ;; after COMMIT and HTTP-server quiescence but BEFORE
+                 ;; with-sqlite-connection closes the connection. Its
+                 ;; return value is discarded; if it throws, the throw
+                 ;; becomes the primary error through the existing
+                 ;; cleanup logic. The intended callback calls
+                 ;; System/exit, so the OS terminates the process here
+                 ;; while the ordinary connection is still open.
+                 (after-commit! evidence)
+                 evidence)))}
+           (catch :default error
+             {:error error}))]
+     (throw-with-cleanup! (:error body) [])
+     (:value body))))
+
+(defn exercise-outbox-recovery
+  "Starts the existing ordinary framed TCP/bencode receiver using the same
+  exact correlated ack logic and cleanup behavior, opens a fresh ordinary
+  JDBC SQLite connection to `spec`, reloads the pending committed outbox
+  state BEFORE any TCP delivery send, delivers the materialized pending
+  row through the existing ordinary deliver-messages! path, validates the
+  correlated ack, marks exactly that outbox row delivered using the
+  existing mark-delivered-and-reload!, and closes.
+
+  This is the recovery companion to
+  exercise-outbox-commit-before-close: it assumes the schema and one
+  committed pending row already exist on `spec` (a file-backed 'sqlite:'
+  spec whose image survived a producer process exit). It performs no
+  schema initialization and no HTTP phase. It is still not an
+  exactly-once claim: a crash after the remote acknowledgement but before
+  durable marking can still redeliver.
+
+  Returns a closed immutable evidence shape with no path/spec/native or
+  mutable values:
+
+    {:application {:pending-state ... :store-state ... :marking ...
+                   :delivery ...}
+     :receiver {:requests ... :server-errors ...}}
+
+  Reuses existing private helpers and primary/cleanup exception behavior.
+  This namespace has no simulator dependency."
+  ([spec]
+   (let [receiver-errors (atom [])
+         received (atom [])
+         receiver
+         (tcp/run-server
+          :port 0
+          :reuse-address? true
+          :handler (framed/framed-handler
+                    (receiver-reply received expected-ack))
+          :error-logger
+          #(swap! receiver-errors conj (stable-error-summary %)))
+         body
+         (try
+           {:value
+            (with-sqlite-connection
+             spec
+             (fn [conn]
+               ;; Reload the committed pending state BEFORE any delivery.
+               ;; The schema and committed row must already exist on spec
+               ;; (left by a prior producer phase); no init-schema! runs.
+               (let [pending (load-pending-delivery conn)
+                     pending-state (:state pending)
+                     delivery (deliver-messages! "127.0.0.1"
+                                                 (:port receiver)
+                                                 (:messages pending))
+                     outbox-id (:outbox-id (first (:outbox pending-state)))
+                     marked (mark-delivered-and-reload! conn outbox-id)]
+                 {:application {:pending-state pending-state
+                                :store-state (:state marked)
+                                :marking (:marking marked)
+                                :delivery delivery}})))}
+           (catch :default error
+             {:error error}))
+         cleanup-errors
+         (vec
+          (keep identity
+                [(cleanup-attempt :receiver-stop
+                                  #(tcp/stop-server receiver))]))]
+     (throw-with-cleanup! (:error body) cleanup-errors)
+     ;; stop-server quiesces the receiver before its final error snapshot.
+     (assoc (:value body)
+            :receiver {:requests @received
+                       :server-errors @receiver-errors}))))
