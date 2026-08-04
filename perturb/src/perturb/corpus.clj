@@ -136,6 +136,36 @@
         c2 (n/close! c1)]
     :done))
 
+(defn destructure-and-close
+  "ACCEPT, AND IT RUNS. The pair is taken apart by DESTRUCTURING — which is how
+  anyone would actually write this — rather than by an explicit `first`.
+
+  This was a FALSE REJECT until it was measured. `report-limits` item 8 claimed
+  destructuring lost the capability to opaque *silently*, and called that the
+  most likely place a false accept was hiding. Both halves were wrong. Nothing
+  was silent: the tuple drew `no-signature` at the callee and `dangling` at
+  scope exit, four diagnostics in all. And the cause was arity, not analysis —
+  `(let [[c frames] r] …)` lowers to `(nth G__287 0 nil)`, three arguments, and
+  `projection-index` demanded exactly two."
+  [host port code]
+  (let [r (n/request (n/open host port) {"op" "eval" "code" code})]
+    (let [[c1 _frames] r]
+      (n/close! c1)
+      :done)))
+
+(defn uses-destructuring-in-a-loop
+  "ACCEPT, AND IT RUNS. The same destructuring bind at a loop back edge, so the
+  shape rule sees it too."
+  [host port codes]
+  (let [c0 (n/open host port)
+        c1 (loop [c c0 fs codes]
+             (if (empty? fs)
+               c
+               (let [[c' _frames] (n/request c {"op" "eval" "code" (first fs)})]
+                 (recur c' (rest fs)))))
+        c2 (n/close! c1)]
+    :done))
+
 ;; ===========================================================================
 ;; REJECT
 ;; ===========================================================================
@@ -171,6 +201,15 @@
 
 (cap/annotate-op! (var unpositioned-ping)
                   (:perturb.cap/op (meta (var unpositioned-ping))))
+
+(defn destructure-and-drop
+  "REJECT. The negative half of the pair above: destructures, uses only the
+  non-capability half, and the connection at position 0 is never closed. The fix
+  that made `destructure-and-close` work must not also make this pass."
+  [host port code]
+  (let [r (n/request (n/open host port) {"op" "eval" "code" code})]
+    (let [[_c1 frames] r]
+      frames)))
 
 (defn use-after-close
   "INHERITED I16, verbatim: `(let [c (open …)] (close! c) (request c …))`
@@ -331,6 +370,10 @@
    ;; run via uses-ping-with-code-first
    {:var 'perturb.corpus/ping-with-code-first :expect :accept}
    {:var 'perturb.corpus/uses-ping-with-code-first :expect :accept :run ["in-memory" 0]}
+   {:var 'perturb.corpus/destructure-and-close :expect :accept :run ["in-memory" 0 "(+ 1 1)"]}
+   {:var 'perturb.corpus/uses-destructuring-in-a-loop :expect :accept
+    :run ["in-memory" 0 ["(+ 1 1)" "(+ 2 2)"]]}
+   {:var 'perturb.corpus/destructure-and-drop :expect :reject :kind :dangling}
 
    {:var 'perturb.corpus/use-after-close        :expect :reject :kind :use-after-move}
    {:var 'perturb.corpus/double-close           :expect :reject :kind :typestate}

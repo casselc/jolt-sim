@@ -834,13 +834,20 @@
   "`first`, `second`, and `nth` with a constant index are TUPLE ELIMINATORS: they
   are how a capability gets back out of a positioned :produces. They move
   nothing and consume nothing. Any other function applied to a value holding a
-  capability is a boundary and is reported."
+  capability is a boundary and is reported.
+
+  THE 3-ARITY IS DESTRUCTURING. `(let [[c frames] r] …)` lowers to
+  `(nth G__287 0 nil)` — a THIRD argument, the not-found default — and requiring
+  exactly two arguments here rejected every destructuring bind of a capability.
+  Found by testing `report-limits` item 8, which had claimed the opposite risk.
+  The not-found default is sound to ignore: an index past the end of the
+  abstract tuple already yields OPAQUE."
   [opsym args]
   (cond
     (= 'clojure.core/first opsym)  0
     (= 'clojure.core/second opsym) 1
     (and (= 'clojure.core/nth opsym)
-         (= 2 (count args))
+         (contains? #{2 3} (count args))
          (= :const (:op (nth args 1)))
          (integer? (:val (nth args 1))))
     (:val (nth args 1))
@@ -1515,10 +1522,26 @@
    "  7. The IR it reads is post-const-fold (perturb.ir), and only for namespaces"
    "     required AFTER the tap is installed."
    ""
-   "  8. Only `first`, `second` and `nth`-with-a-constant eliminate a tuple."
-   "     Destructuring, `peek`, `last`, or a computed index lose the capability"
-   "     to OPAQUE — which is silent, not a diagnostic. This is the most likely"
-   "     place for a FALSE ACCEPT to hide today."
+   "  8. CORRECTED, BY MEASUREMENT. This item used to read: destructuring,"
+   "     `peek`, `last` or a computed index `lose the capability to OPAQUE —"
+   "     which is silent, not a diagnostic. This is the most likely place for a"
+   "     FALSE ACCEPT to hide today.` That was wrong in both halves. Probed with"
+   "     one program per eliminator: NONE is silent. A tuple holding a live"
+   "     capability passed to an unannotated callee draws `no-signature`, and"
+   "     the capability then draws `dangling` at scope exit. There was no false"
+   "     accept to find."
+   ""
+   "     The real defect was the opposite one and it was worse in practice: a"
+   "     FALSE REJECT on idiomatic Clojure. `(let [[c frames] r] …)` lowers to"
+   "     `(nth G__287 0 nil)` — three arguments, the third a not-found default —"
+   "     and `projection-index` demanded exactly two, so every destructuring"
+   "     bind of a capability was refused with four diagnostics. Fixed; the"
+   "     corpus now carries `destructure-and-close` (accept, and it runs) and"
+   "     `destructure-and-drop` (reject, dangling)."
+   ""
+   "     What remains true: `peek`, `last` and `nth` with a COMPUTED index are"
+   "     still not eliminators, and reject. That is a real limit, but it is a"
+   "     loud one, and the item overstated it as a soundness risk."
    ""
    "  9. AN OPERATION MAY NOW ADVANCE TWO MACHINES, AND NOTHING CHECKS THAT IT"
    "     DOES. The primitive table is keyed [capability operation], so"
