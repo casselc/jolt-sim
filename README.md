@@ -94,10 +94,20 @@ trace plus already-computed monitor decisions or one validated ordinary-runtime
 Case/Outcome document into a self-contained deterministic HTML report. It is
 packaged separately so ordinary simulator consumers do not pull in Selmer or
 its Jolt host-support dependencies. Human-facing Case/Outcome sections use the
-contract's public restoration API while the complete canonical replay document
+contract's public restoration API. Report v2 shows the exact validated Case
+coordinate, every completed-result section, and an evidence-only semantic
+journey for the canonical outbox scenarios; the complete canonical document
 remains available in a collapsed section. The same data-only view models are
-intended to feed the later live web/GTK viewer; rendering does not run monitor
-functions or introduce another evidence schema.
+intended to feed the later live web/GTK viewer. Rendering does not run monitor
+functions, execute application logic, or introduce another evidence schema.
+
+From a project nREPL, `jolt.sim.repl/replay-document!` accepts the retained
+document separately from ambient worker configuration. The document owns
+scenario, input, and schedule; conflicting ambient keys fail closed, and the
+existing process supervisor runs one fresh worker while preserving failed,
+timed-out, and worker-error outcomes. Case `:mode` is validated provenance,
+not an override: the current supervisor has no mode argument and the scenario
+owns its controller configuration.
 
 From the report dependency root, select the document schema explicitly:
 
