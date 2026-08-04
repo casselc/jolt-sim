@@ -4,32 +4,38 @@
   -> committed SQLite outbox -> framed TCP/bencode delivery/ack) under the
   shared hermetic SQLite plus POSIX loopback handler packs.
 
-  Two deterministic boundary cases run first as the payload-semantics witness:
-  the empty payload and the [0 127 128 255] payload (embedded zero, 0x7f,
-  0x80, and 0xff octets) at the fixed smoke capacities, the second with one
-  captured first-poll EINTR. Real/sim parity is deliberately NOT rerun in this
-  lane; the existing real-plus-hermetic PR #28 gate (:outbox-delivery-test)
-  remains the parity evidence for the unchanged application.
+   Two deterministic boundary cases run first as the payload-semantics witness:
+   the empty payload and the [0 127 128 255] payload (embedded zero, 0x7f,
+   0x80, and 0xff octets) at the fixed smoke capacities, the second with one
+   captured first-poll EINTR. Each witness carries one of the two
+   discriminating first-poll admission plans, so both release orders hold
+   outside generation. Real/sim parity is deliberately NOT rerun in this lane;
+   the existing real-plus-hermetic PR #28 gate (:outbox-delivery-test) remains
+   the parity evidence for the unchanged application.
 
-  Every generated case draws a Hegel-owned, shrinkable scenario input --
-  command payload octet vector, stream capacity, pipe capacity, and an
-  optional captured poll EINTR activation ordinal -- and runs the unchanged
-  fixture once in a fresh sim-enabled Jolt worker through
-  jolt.sim.process-explorer/run-case (protocol-v2 :input). The worker loads
-  jolt.sim.fixtures.outbox-delivery-scenarios, builds the shared hermetic
-  worlds from the drawn input (including the exact SQLite plan world
-  parameterized with the same payload), and returns one canonical evidence
-  map. Request and entity IDs stay fixed for this slice; extreme 1--2 byte
-  HTTP fragmentation is explicitly later work.
+   Every generated case draws a Hegel-owned, shrinkable scenario input --
+   command payload octet vector, stream capacity, pipe capacity, an optional
+   captured poll EINTR activation ordinal, and one of two discriminating
+   first-poll admission plans (receiver reactor before HTTP reactor, or the
+   reverse) -- and runs the unchanged fixture once in a fresh sim-enabled Jolt
+   worker through jolt.sim.process-explorer/run-case (protocol-v2 :input). The
+   worker loads jolt.sim.fixtures.outbox-delivery-scenarios, builds the shared
+   hermetic worlds from the drawn input (including the exact SQLite plan world
+   parameterized with the same payload), wraps the composed handlers with
+   jolt.sim.ffi-schedule semantic selector steps over occurrence 1 of each
+   reactor's poll role, and returns one canonical evidence map. Request and
+   entity IDs stay fixed for this slice; extreme 1--2 byte HTTP fragmentation
+   is explicitly later work.
 
-  Each completed case checks exact command/store/delivery/ack results derived
-  from the drawn input, exact SQLite plan consumption, handler-only routing,
-  fault activation identity, bounded capacity participation, and all-world
-  cleanup. A regression failure carries the bounded drawn input so Hegel can
-  replay and shrink it: a non-:completed outcome is enriched with :input (and
-  the worker :artifact-dir coordinates when retained) around
-  jolt.sim.hegel/require-completed!, and every assertion site throws a typed
-  ex-info carrying :hegel/origin and the same input.
+   Each completed case checks exact command/store/delivery/ack results derived
+   from the drawn input, exact SQLite plan consumption, handler-only routing,
+   fault activation identity, bounded capacity participation, exact plan-order
+   coordinator releases with quiesced diagnostics and per-role poll label
+   counts, and all-world cleanup. A regression failure carries the bounded
+   drawn input so Hegel can replay and shrink it: a non-:completed outcome is
+   enriched with :input (and the worker :artifact-dir coordinates when
+   retained) around jolt.sim.hegel/require-completed!, and every assertion
+   site throws a typed ex-info carrying :hegel/origin and the same input.
 
   Process-isolated like :tcp-bencode-hegel-test: each case spawns a fresh
   worker, and the parent supplies the worker command through JOLT_SIM_BIN and
@@ -64,6 +70,32 @@
 (def ^:private pipe-capacity-domain [1 2 4])
 (def ^:private poll-eintr-domain [nil 1 2 4 8])
 (def ^:private max-payload-octets 32)
+;; Exactly two discriminating first-poll admission orders, mirrored from the
+;; scenario namespace's closed domain: the receiver reactor's first poll
+;; released before the HTTP reactor's first poll, or the reverse. There is no
+;; nil/unscheduled value; every case exercises the semantic-selector
+;; coordinator. The step ids are the scenario namespace's own ::receiver-poll
+;; and ::http-poll literals, mirrored here for the exact release-order
+;; assertion (release evidence carries step ids, never selectors).
+(def ^:private admission-plan-domain
+  [:receiver-poll-then-http-poll :http-poll-then-receiver-poll])
+(def ^:private receiver-poll-step-id
+  :jolt.sim.fixtures.outbox-delivery-scenarios/receiver-poll)
+(def ^:private http-poll-step-id
+  :jolt.sim.fixtures.outbox-delivery-scenarios/http-poll)
+
+(defn- expected-release-evidence
+  "The exact coordinator release log one drawn plan must produce: [:release
+   step-id] pairs in the plan's own order. Release order is plan-driven and
+   therefore exact replay evidence; arrival and completion order stay
+   diagnostic and are never asserted here."
+  [plan]
+  (mapv (fn [id] [:release id])
+        (case plan
+          :receiver-poll-then-http-poll
+          [receiver-poll-step-id http-poll-step-id]
+          :http-poll-then-receiver-poll
+          [http-poll-step-id receiver-poll-step-id])))
 
 ;; ---- Worker/case budgets and serial ownership -----------------------------
 ;; Nominal initial-case ceilings are:
@@ -136,23 +168,26 @@
                      "outbox-id" 1}}))
 
 (defn- input-generator
-  "Returns a Hegel generator over the scenario input domain. The four draws
-  are composed with g/tuple and g/fmap so the whole input shrinks as one
-  unit and threads through run-case's :input unchanged. Selection and
-  shrinking stay engine-owned: this wrapper performs no selection of its
-  own. The payload vector shrinks toward empty; every octet spans the full
-  unsigned 0--255 wire domain."
+  "Returns a Hegel generator over the scenario input domain. The five draws
+   are composed with g/tuple and g/fmap so the whole input shrinks as one
+   unit and threads through run-case's :input unchanged. Selection and
+   shrinking stay engine-owned: this wrapper performs no selection of its
+   own. The payload vector shrinks toward empty; every octet spans the full
+   unsigned 0--255 wire domain; the admission plan shrinks toward
+   receiver-poll-first."
   []
   (g/fmap
-   (fn [[payload stream-capacity pipe-capacity ordinal]]
+   (fn [[payload stream-capacity pipe-capacity ordinal admission-plan]]
      {:payload payload
       :stream-capacity stream-capacity
       :pipe-capacity pipe-capacity
-      :poll-eintr-ordinal ordinal})
+      :poll-eintr-ordinal ordinal
+      :admission-plan admission-plan})
    (g/tuple (g/vector {:max-size max-payload-octets} (g/octet))
             (g/sampled-from stream-capacity-domain)
             (g/sampled-from pipe-capacity-domain)
-            (g/sampled-from poll-eintr-domain))))
+            (g/sampled-from poll-eintr-domain)
+            (g/sampled-from admission-plan-domain))))
 
 (defn- required-environment [name]
   (let [value (System/getenv name)]
@@ -220,7 +255,7 @@
                  input
                  {:evidence-class (str (class evidence))}))
     (let [{:keys [application http receiver routes sqlite capacity fault
-                  clean?]} evidence]
+                  admission clean?]} evidence]
       ;; Evidence is the versioned boundary between the fresh worker and this
       ;; parent property. Reject missing, extra, or malformed fields here so a
       ;; truthy value or a host predicate exception cannot masquerade as a
@@ -228,7 +263,7 @@
       (when-not (exact-map-keys?
                  evidence
                  #{:application :http :receiver :routes :sqlite :capacity
-                   :fault :clean?})
+                   :fault :admission :clean?})
         (violation "jolt.sim.outbox-delivery-hegel-test/evidence-keys"
                    input
                    {:keys (when (map? evidence)
@@ -478,6 +513,76 @@
                      input
                      {:fault fault
                       :expected-fired-attempts expected-fired-attempts})))
+      ;; First-poll admission evidence: the drawn plan echoed back, the exact
+      ;; plan-order coordinator releases, a quiesced completed schedule, and
+      ;; bounded per-role poll label counts proving both reactor roles were
+      ;; classified from modeled resource facts while unlabeled (client/other)
+      ;; polls delegated unchanged. A classification or scheduling regression
+      ;; surfaces here as an exact mismatch, never as a weakened invariant.
+      (when-not (exact-map-keys?
+                 admission
+                 #{:plan :release-evidence :coordinator-diagnostics
+                   :label-counts :routes})
+        (violation "jolt.sim.outbox-delivery-hegel-test/admission-shape"
+                   input
+                   {:admission admission}))
+      (when-not (= (:admission-plan input) (:plan admission))
+        (violation "jolt.sim.outbox-delivery-hegel-test/admission-plan"
+                   input
+                   {:admission admission}))
+      (when-not (= (expected-release-evidence (:admission-plan input))
+                   (:release-evidence admission))
+        (violation "jolt.sim.outbox-delivery-hegel-test/admission-releases"
+                   input
+                   {:release-evidence (:release-evidence admission)
+                    :expected (expected-release-evidence
+                               (:admission-plan input))}))
+      (let [diagnostics (:coordinator-diagnostics admission)]
+        (when-not (exact-map-keys?
+                   diagnostics
+                   #{:in-flight :due-index :arrival-order :release-order
+                     :completion-order :arrived :released :completed
+                     :aborted?})
+          (violation
+           "jolt.sim.outbox-delivery-hegel-test/admission-diagnostics-shape"
+           input
+           {:diagnostics diagnostics}))
+        (when-not (and (zero? (:in-flight diagnostics))
+                       (= 2 (:due-index diagnostics))
+                       (false? (:aborted? diagnostics))
+                       (= #{receiver-poll-step-id http-poll-step-id}
+                          (:arrived diagnostics))
+                       (= #{receiver-poll-step-id http-poll-step-id}
+                          (:released diagnostics))
+                       (= #{receiver-poll-step-id http-poll-step-id}
+                          (:completed diagnostics)))
+          (violation
+           "jolt.sim.outbox-delivery-hegel-test/admission-diagnostics"
+           input
+           {:diagnostics diagnostics})))
+      (let [label-counts (:label-counts admission)]
+        (when-not (exact-map-keys?
+                   label-counts
+                   #{:role/receiver :role/http :unlabeled})
+          (violation
+           "jolt.sim.outbox-delivery-hegel-test/admission-label-counts-shape"
+           input
+           {:label-counts label-counts}))
+        (when-not (and (positive-integer? (:role/receiver label-counts))
+                       (positive-integer? (:role/http label-counts))
+                       (positive-integer? (:unlabeled label-counts)))
+          (violation
+           "jolt.sim.outbox-delivery-hegel-test/admission-label-counts"
+           input
+           {:label-counts label-counts})))
+      (let [poll-routes (:routes admission)]
+        (when-not (and (exact-map-keys? poll-routes
+                                        #{:count :all-handled?})
+                       (positive-integer? (:count poll-routes))
+                       (true? (:all-handled? poll-routes)))
+          (violation "jolt.sim.outbox-delivery-hegel-test/admission-routes"
+                     input
+                     {:routes poll-routes})))
       ;; Cleanup: the shared worlds retired every resource; a leaked socket,
       ;; pipe, SQLite handle, or native allocation is a bypass.
       (when-not (= {:memory true :sqlite true :posix true} clean?)
@@ -580,27 +685,32 @@
 ;; The deterministic payload-semantics boundary witness: the empty payload
 ;; and the [0 127 128 255] payload (embedded zero, 0x7f, 0x80, 0xff) at the
 ;; fixed smoke capacities, the second with one captured first-poll EINTR as
-;; the smoke-capacity fault control. These run outside Hegel generation so
-;; the boundary semantics hold even if a future generator edit stops drawing
-;; them.
+;; the smoke-capacity fault control. The two witnesses carry the two
+;; discriminating first-poll admission plans, so both release orders hold
+;; even if a future generator edit stops drawing them. These run outside
+;; Hegel generation so the boundary semantics hold even if a future generator
+;; edit stops drawing them.
 (def ^:private boundary-witness-inputs
   [{:payload []
     :stream-capacity 8
     :pipe-capacity 1
-    :poll-eintr-ordinal nil}
+    :poll-eintr-ordinal nil
+    :admission-plan :receiver-poll-then-http-poll}
    {:payload [0 127 128 255]
     :stream-capacity 8
     :pipe-capacity 1
-    :poll-eintr-ordinal 1}])
+    :poll-eintr-ordinal 1
+    :admission-plan :http-poll-then-receiver-poll}])
 
 (deftest outbox-delivery-payload-boundary-witness
   (doseq [[index input] (map-indexed vector boundary-witness-inputs)]
     (check-case-with-progress! :boundary (inc index) input)))
 
-(deftest hegel-outbox-delivery-holds-across-payload-capacities-and-eintr
+(deftest hegel-outbox-delivery-holds-across-payload-capacities-eintr-and-plans
   (let [seen-stream-capacities (atom #{})
         seen-pipe-capacities (atom #{})
         seen-poll-ordinals (atom #{})
+        seen-admission-plans (atom #{})
         case-ordinal (atom 0)
         result
         (h/run-test!
@@ -609,8 +719,9 @@
           ;; intentionally slower than Hegel's unit-test health threshold.
           :suppress-health-checks [:too-slow]
           ;; Parent-only sampling verified that this fixed seed exercises every
-          ;; declared finite capacity and EINTR ordinal in 15 cases. The
-          ;; assertions below keep that coverage from silently drifting.
+          ;; declared finite capacity, EINTR ordinal, and first-poll admission
+          ;; plan in 15 cases. The assertions below keep that coverage from
+          ;; silently drifting.
           :seed 3
           :database ""
           :report-multiple-failures? false
@@ -622,6 +733,7 @@
              (swap! seen-stream-capacities conj (:stream-capacity input))
              (swap! seen-pipe-capacities conj (:pipe-capacity input))
              (swap! seen-poll-ordinals conj (:poll-eintr-ordinal input))
+             (swap! seen-admission-plans conj (:admission-plan input))
              nil)))]
     (is (true? (:passed? result))
         (pr-str {:status (:status result)
@@ -642,11 +754,14 @@
              (pr-str @seen-pipe-capacities)))
     (is (= (set poll-eintr-domain) @seen-poll-ordinals)
         (str "Hegel did not exercise the full poll-EINTR domain: "
-             (pr-str @seen-poll-ordinals)))))
+             (pr-str @seen-poll-ordinals)))
+    (is (= (set admission-plan-domain) @seen-admission-plans)
+        (str "Hegel did not exercise both first-poll admission plans: "
+             (pr-str @seen-admission-plans)))))
 
 (def ^:private serial-test-vars
   [#'outbox-delivery-payload-boundary-witness
-   #'hegel-outbox-delivery-holds-across-payload-capacities-and-eintr])
+   #'hegel-outbox-delivery-holds-across-payload-capacities-eintr-and-plans])
 
 (defn- counter-snapshot []
   {:test (:test @test/counters)
