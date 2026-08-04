@@ -82,12 +82,14 @@ The complete current tally of claims this document made and then refuted:
 | 49 | E23/E24/E26: a capability may only live in a binding of statically known shape, the **single root cause** behind every rejection measured | measured against a library with a test suite rather than a corpus this project shaped: **4 of 23 substantive rejections, 17%**. Twelve are **in-place typestate** (a stable name over a mutable atom — not a binding-shape problem at all) and six are the `:from`/`:to` pairing. **78% of rejections have causes that were never on the list**, and the density of the known `try` limit is now a number too: one `unsupported-construct` per `clojure.test/is` | E30 |
 | 50 | `:arg` on a `:produces` entry is part of the declaration language | it is **accepted and silently ignored** — no `annotation-unsupported`, no declaration diagnostic, and the capability lands on the result anyway. A key the language takes and does not implement, which is the in-place fix already having a syntax that does nothing | E30 |
 | 51 † | §1.4's **"no resumption"**, and every argument resting on it | a misclassification. A handler that supplies a validated result after which the caller continues is an **implicit tail resumption** — the case the handler literature singles out as efficiently compilable — and only the failure path is abortive. D4 occupies two points on the control axis rather than a point below it, and the property that actually buys the resource reasoning is **no first-class continuation** | E31 |
-| 52 † | `SOTA-POSITIONING-BRIEF` and E27 finding 3: Fowler's "linear effect handlers … left as future work" means we may be standing in an **open gap** | closed. Tang et al. (POPL 2024) give control-flow linearity with an inference calculus and repair the Links bug; Brachthäuser & Leijen classify control flow as linear/affine/abortive/unrestricted; van Rooij & Krebbers (*Affect*, POPL 2025) track continuations through mutable references. The 2019 sentence can no longer be cited. My stated prediction — "still open but narrower" — was wrong in degree | E31 |
+| 52 † | `SOTA-POSITIONING-BRIEF` and E27 finding 3: Fowler's "linear effect handlers … left as future work" means we may be standing in an **open gap** | **partly** closed — E31 recorded "closed" from one survey and E32's second, independent reading of the full text (now in `papers/`) narrows it: control-flow linearity gives a direct theory for continuation/resource integrity, and **cancellation protocol obligations remain separate**; it proves nothing about our checker, external declarations, refined typestate, native resources or `abort!` cleanup. Tang et al. (POPL 2024) give control-flow linearity with an inference calculus and repair the Links bug; Brachthäuser & Leijen classify control flow as linear/affine/abortive/unrestricted; van Rooij & Krebbers (*Affect*, POPL 2025) track continuations through mutable references. The 2019 sentence can no longer be cited. My stated prediction — "still open but narrower" — was wrong in degree | E31 |
 | 53 † | E29: handler-over-handler layering as a result in itself | generic composition and outward forwarding are standard, and scoped-effect calculi formalise them. The narrow obligation — same-effect forwarding through several protocol layers **preserving typestate-linear obligations** — was not found, and is sharpened rather than answered. Separately, the nearest formal family for D4 is **runners** (Ahman & Bauer, ESOP 2020), not a handler calculus | E31 |
 | 54 ◆† | `SOTA-POSITIONING-BRIEF`: core.typed was "largely abandoned", and its retrospective may make **E6 unnecessary to measure** | both unsupported. The repository and site remain active enough to advertise a stable release, and no metric anywhere states how often a rule forced an idiomatic rewrite. What it does supply is burden data — **407 of 1,834 definitions checked (22%)** on a 19k-LOC production corpus — and the warning that adoption may require partial coverage or deliberate unsoundness (NullAway bought ~1.15× build overhead against 2.8–5.1× by choosing unsound defaults) | E31 |
 | 55 † | E26 finding 7 / `report-limits` 14(f): the declared discriminator is a **new class of axiom** we invented | it is **occurrence typing with a trusted proposition** — Typed Racket is the direct dynamic-Lisp precedent. The sound alternatives are named and materially different: a genuine tagged sum eliminated by constructor matching, an existential/GADT carrying a state witness, or SMT/proof-term verification. The axis correction is that it belongs under **trusted/assumed** until a structural witness connects predicate to transition | E31 |
 | 56 † | E25: §1.3's Content-Length arithmetic and Flo's boundedness are **the same obligation stated twice** | refuted. Flo's boundedness guarantees an evolving collection eventually becomes fixed; a length prefix states an expected cardinality and guarantees nothing about delivery. They relate only after a **transport premise** plus a decoder consuming exactly n. The right neighbours are EverParse, Vest and Narcissus | E31 |
 | 57 † | `RUNTIME-OBLIGATION-BRIEF` item 5's hope that a check beside real I/O is **dwarfed by it** | refuted in the blanket form. Draco reports ~25% on a repeated `getppid` microbenchmark and ~20% on ARM for simple checks; SFP a low average with materially higher worst case. And on yield, Legunsen et al. found **82.81% false alarms for handwritten specifications** (97.89% mined) with 11/182 specs leading to a bug. O(1) lookup is the right architecture, not a negligible constant, and alert triage is part of the design | E31 |
+| 58 † | E25: Milano's regions admit a connection table because intra-region references are untracked, so **it needs no annotation** | narrower than recorded. Regions give ownership of a graph **as a unit**; the paper does **not** establish independent lookup, removal or transfer of a single member of a growable `ConnId → session` table, which is exactly what a server does, and its virtual-transformation search carries a **stated worst-case exponential cost**. It covers neither handlers, exceptions nor multi-shot control, so adopting regions is a distinct effects-aware language design rather than an extension of this checker | E32 |
+| 59 † | §1.4: "no continuations at that layer" | wrong twice, for independent reasons. E31: a handler that substitutes a result and lets the caller continue is an **implicit tail resumption**. E32: the `proceed` seam is scoped and single-use, which is a **one-shot resumption / linear continuation** — E14 had already recorded the delivered controller dispatching substitute / abort / **proceed-once**. The guards that make it safe (scope, owner thread, single use) are load-bearing and undocumented as such | E31, E32 |
 
 ‡ Eight rows are the exception the sentence above does not cover: 17 and 18
 arrived from re-examining the argument and from the literature; 27–29 came from
@@ -120,7 +122,7 @@ worse ratio than E20's literature survey achieved and was obtained for a
 fraction of the effort. The standing commitment covers rows 1–26 and 33–35.
 
 **How to read this document.** §1 is the settled design, stated once in final
-corrected form. §2 is the divergence register. §3 is the findings E1–E31, each
+corrected form. §2 is the divergence register. §3 is the findings E1–E32, each
 stated as currently believed rather than as first written. §4 is the open
 questions. §5 is the v0 ladder. §6 is the nonclaims. Appendix A is the
 correction history, Appendix B holds the superseded ladders in full,
@@ -397,7 +399,13 @@ a point below it:
 > abortive (zero-shot) → **implicit tail-resumptive** → explicit affine/one-shot
 > → multi-shot
 
-D4 is *implicit tail-resumptive on success, abortive on failure*. Every argument
+D4 is *implicit tail-resumptive on success, abortive on failure*. **And there is
+a second, independent reason the phrase is wrong (E32):** the `proceed` seam is
+scoped and single-use, which is a **one-shot resumption**, not the absence of a
+continuation — E14 recorded the delivered v0.5.17 controller dispatching
+substitute / abort / **proceed-once**. The guards that make that seam safe —
+scope, owner thread, single use — are load-bearing and are not currently
+documented as such anywhere. Every argument
 below that turns on "no resumption" should be read as turning on **no
 first-class continuation**, which is the property that actually holds and the
 one that buys the resource reasoning. In plainer systems language the mechanism
@@ -5235,6 +5243,139 @@ unsoundness; perturb should measure both rather than inherit them silently.
 4. **The reframing is a recommendation, not a result.** "Do not lead with effect
    handlers; describe D4 as substrate" is positioning advice. It does not follow
    that a runner-shaped account is achievable here.
+
+### E32 — two independent surveys against one brief: where they agree, and the four places they do not
+
+`SOTA-POSITIONING-BRIEF.md` was answered **twice**, independently:
+`SOTA-SURVEY-ROUND1.md` (E31) and `SOTA-POSITIONING-FINDINGS.md`, the latter
+run as four separate read-only passes and shipping five CC-BY papers with the
+licence basis recorded per item. Neither saw the other. That makes the
+comparison worth more than either report, and it is the reason this finding
+exists rather than a second summary.
+
+**Where they agree, independently, the finding is worth more than one survey's
+say-so:** the declared discriminator does not establish its own honesty and is
+an axiom until a structural witness is added; deriving a monitor and a checker
+from one specification does not by itself prevent drift; E25's Flo unification
+is wrong; and no measured rejection-cause distribution exists for anything
+resembling perturb, so E30's numbers are original.
+
+Two of those agreements are *sharper* in the second report and should be taken
+in its form:
+
+- **Single-source generation prevents drift only when both artifacts are
+  generated, or share a checked elaborator.** A generated monitor beside a
+  hand-written checker is not one source with two projections. `RUNTIME-OBLIGATION-BRIEF`
+  item 1 asked for "a discipline so the two cannot drift"; the answer is that
+  the *checker* must be derived too, which is a much larger commitment than the
+  brief assumed.
+- **The Flo refutation lands on a different claim than E31 recorded.** E31 has
+  Flo boundedness ≠ a length prefix (they relate only after a transport
+  premise). This report refutes the *other* half: Flo does **not** distinguish a
+  receive that currently has no bytes from one that has reached EOF, so a
+  framing source must retain an explicit `Pending | Chunk(bytes) | End` fact
+  **before** Flo-style laws can apply at all. That is E23's `recv` defect
+  directly, and it says the fix is a three-way transport status, not a
+  boundedness flag. Both refutations stand; they are not the same refutation.
+
+#### The four disagreements
+
+**1. How closed is the linear-handler gap — "closed" or "partly closed"?**
+E31 row 52 says closed. This report, having read Tang et al. in full with the
+PDF now committed to `papers/`, says **partly**: control-flow linearity gives a
+direct theory for continuation/resource integrity, and **cancellation protocol
+obligations remain separate** — it does not prove perturb's checker, external
+declarations, refined typestate, native resources, or `abort!` cleanup. The
+second reading is better supported and the text is in the repository to check.
+**Row 52 is amended accordingly.** The practical consequence is that §4.6's
+cancellation list is not superseded by Tang; E27's five pieces still have work
+to do, they just cannot be motivated by "nobody has done linear handlers".
+
+**2. Monitor cost at I/O boundaries — refuted, or no answer?** E31 refutes the
+blanket amortisation intuition with syscall-policy numbers (Draco ~25% on a
+repeated `getppid` microbenchmark, SysXCHG 0–2.74%, SFP low average with a worse
+tail). This report returns **NO ANSWER**, on the narrower ground that Takikawa
+measures boundary contracts in CPU-hot paths rather than monitors adjacent to
+host I/O, so it neither proves nor refutes. Both are right about different
+questions: E31 brought outside evidence about a *different* monitor, and the
+transfer to perturb's boundary is an argument rather than a measurement. The
+two agree on what to do, and it is the only part that binds: **measure our own
+event boundary, with a disabled baseline, a positive control, and
+frequency-sensitive workloads.**
+
+**3. core.typed burden data — numbers, or none?** E31 reports 407 of 1,834
+definitions checked (22%) on a 19k-LOC production corpus, from the dissertation
+read in full. This report says no peer-reviewed measured burden was found.
+**E31 is right and this pass missed it**; the dissertation exists and was read.
+Recorded because a survey missing a source it should have found is a fact about
+survey coverage, and both passes will be re-run.
+
+**4. The Client-Server Sessions licence.** This pass declined to redistribute
+the paper, finding the arXiv item labelled nonexclusive-distribution rather than
+CC-BY. The corpus already contains it as
+`ICFP21-client-server-sessions-in-linear-logic.pdf`, admitted on the Crossref
+`license` field for the ACM DOI. Not a contradiction — two different artifacts,
+the arXiv preprint and the ACM version of record — but exactly the trap that
+cost the earlier pass five papers, in the opposite direction. **The rule is the
+version of record's Crossref metadata, not the preprint's label.**
+
+#### What only the second survey found, and it is on our ladder
+
+**Cavoj, Nikitin, Perkins & Dardha (2024) implement a synchronous subset of TCP
+in Rust with session-type tokens, tested against the Linux TCP stack**
+(`papers/session-types-transport-layer.pdf`, CC-BY). E31 never surfaced it, and
+it is the closest existing work to §5's ladder — a real transport described by
+session types and checked against a real stack. It explicitly leaves **timeout
+modelling outside the type system**, and does not address asynchronous
+reordering, a dynamic connection table, or effect/capability interaction. Every
+one of those exclusions is something E30 measured us failing at, which makes it
+the best available comparison point rather than a competitor.
+
+#### Two corrections to E25 the second survey supplies
+
+**The region result is narrower than E25 recorded.** E25 concluded that "a
+connection table is one region and needs no annotation", on the strength of
+intra-region references being untracked. This report agrees regions give
+ownership of a graph *as a unit* but says Milano et al. **do not establish
+independent lookup, removal, or transfer of a single member** of a growable
+`ConnId → session` table — which is precisely what a server does — and record a
+**stated worst-case exponential cost** for the virtual-transformation search. It
+also notes the paper covers neither algebraic handlers, exceptions, nor
+multi-shot control, so adopting regions is "a distinct, effects-aware language
+design, not a small extension to the present checker". That is a third
+independent statement of E25's own sequencing conclusion, arrived at from the
+opposite direction.
+
+**And the near-term answer is named.** An owned table with **branded
+generational handles and monitored transitions** — explicitly labelled runtime
+engineering, `monitored`, not a static proof of arbitrary collection use. That
+is brief 2's Priority 1(2) question answered before it was asked, in the
+negative: this is the shape to build, and it is not a typed result.
+
+#### One thing it says about §1.4 that E31 did not
+
+E31 corrected "no resumption" to *implicit tail-resumptive on success, abortive
+on failure*. This report makes a **different and more concrete** point: the
+`proceed` seam described in the branch is scoped and single-use, which is a
+**one-shot resumption / linear continuation**, not the absence of one. E14 had
+already recorded that the delivered v0.5.17 sim controller dispatches
+substitute / abort / **proceed-once**. So §1.4's "no continuations at that
+layer" is wrong twice over, for two independent reasons, and the guards that
+make the `proceed` seam safe — scope, owner thread, single use — are load-bearing
+and currently undocumented as such.
+
+#### E32's own nonclaims
+
+1. **Nothing was executed.** Two literature surveys compared against each other.
+2. **Agreement between two surveys is not verification.** Both are agent-run,
+   and where they agree they may share a source's error. The papers are in
+   `papers/` precisely so a claim can be checked against text rather than
+   against a summary.
+3. **Disagreement 3 is a coverage fact, not a quality ranking.** One pass missed
+   a source the other read; that says nothing about the rest of either report.
+4. **Cavoj et al. was read by that pass, not by this document.** The comparison
+   to §5's ladder is from its summary and its stated exclusions, and the paper
+   is in hand to check.
 
 ## 4. Open questions
 
