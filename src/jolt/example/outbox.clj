@@ -22,13 +22,24 @@
   result   {:status :committed :request-id s :entity-id s
             :version positive-integer :outbox-id positive-integer}
   row      {:outbox-id id :request-id s :entity-id s :version v
-            :payload octet-vector :status :pending}
+            :payload octet-vector :status (:pending or :delivered)}
 
   apply-command returns {:state next-state :result result :emitted [row ...]}.
   An exact replay (same request-id, equal command) returns the recorded
   result, the unchanged state, and no emitted rows. Reusing a request-id for
   a different command throws a typed ex-info before any state is produced.
-  Outbox row ids are allocated from :next-outbox-id and are never reused.")
+  Outbox row ids are allocated from :next-outbox-id and are never reused.
+  Newly emitted rows are always :pending.
+
+  mark-delivered returns {:state next-state :row delivered-row
+  :changed? boolean}. A pending row transitions to :delivered, changing only
+  its :status. Marking an already :delivered row is idempotent: the prior
+  state is returned byte-equal and :changed? is false. An id that is not a
+  positive integer fails closed with :jolt.example.outbox/invalid-outbox-id;
+  a positive id with no matching row fails closed with
+  :jolt.example.outbox/unknown-outbox-id. State validation accepts only
+  :pending or :delivered row statuses, and history consistency remains exact
+  under marking because the replay never compares :status.")
 
 ;; ---- canonical shapes -----------------------------------------------------
 
@@ -100,7 +111,7 @@
        (id-string? (:entity-id row))
        (positive-integer? (:version row))
        (payload? (:payload row))
-       (= :pending (:status row))))
+       (contains? #{:pending :delivered} (:status row))))
 
 (defn- valid-log-entry? [request-id entry]
   (and (closed-map? entry log-entry-keys)
@@ -111,11 +122,13 @@
 
 (defn- history-consistent?
   "Replays the canonical outbox history as validation, without calling the
-  public transition. Every accepted command owns exactly one row and result;
-  row ids and per-entity versions are contiguous because this pure core has no
-  deletion, reservation, or failed-after-allocation transition. The rebuilt
-  entity projection and the complete request-id set must equal the stored
-  projections exactly."
+   public transition. Every accepted command owns exactly one row and result;
+   row ids and per-entity versions are contiguous because this pure core has no
+   deletion, reservation, or failed-after-allocation transition. The rebuilt
+   entity projection and the complete request-id set must equal the stored
+   projections exactly. Delivery marking changes only a row's :status, which
+   this replay deliberately never compares, so a marked history stays exactly
+   consistent."
   [state]
   (loop [rows (seq (:outbox state))
          expected-outbox-id 1
@@ -204,6 +217,34 @@
      :recorded recorded
      :received received})))
 
+(defn- check-outbox-id!
+  "An outbox id is canonical only as a positive integer. Anything else is
+   rejected fail closed before state validation, mirroring apply-command's
+   input-first ordering."
+  [outbox-id]
+  (when-not (positive-integer? outbox-id)
+    (throw-invalid! :jolt.example.outbox/invalid-outbox-id
+                    :bad-outbox-id
+                    {:outbox-id outbox-id})))
+
+(defn- throw-unknown-outbox-id! [outbox-id]
+  (throw
+   (ex-info
+    (str "jolt.example.outbox: no outbox row with id " outbox-id)
+    {:type :jolt.example.outbox/unknown-outbox-id
+     :reason :unknown-outbox-id
+     :outbox-id outbox-id})))
+
+(defn- outbox-index-of
+  "Returns the index of the outbox row carrying `outbox-id`, or nil when no
+   row matches. Rows are validated before lookup, so at most one can match."
+  [rows outbox-id]
+  (loop [i 0]
+    (cond
+      (>= i (count rows)) nil
+      (= outbox-id (:outbox-id (nth rows i))) i
+      :else (recur (inc i)))))
+
 ;; ---- public API -----------------------------------------------------------
 
 (defn initial-state
@@ -276,3 +317,37 @@
                 (update :outbox conj row)
                 (assoc :next-outbox-id (inc outbox-id)))]
         {:state next-state :result result :emitted [row]}))))
+
+(defn mark-delivered
+  "Marks one outbox row delivered, purely.
+
+   Returns exactly {:state next-state :row delivered-row :changed? boolean}.
+
+   A pending row transitions to :delivered: next-state differs from the prior
+   state only in that row's :status, :changed? is true, and :row is the
+   delivered row. Marking an already :delivered row is idempotent: the prior
+   state is returned byte-equal, :changed? is false, and :row is the existing
+   delivered row. Entities, request-log, next-outbox-id, and every other row
+   are never touched, and the marked state remains exactly canonical under
+   validate-state!.
+
+   An id that is not a positive integer throws
+   :jolt.example.outbox/invalid-outbox-id ex-info. A positive integer with no
+   matching row throws :jolt.example.outbox/unknown-outbox-id ex-info. A
+   malformed prior state throws :jolt.example.outbox/invalid-state ex-info.
+   Nothing is repaired. This function records the marking decision only; it
+   knows nothing about acknowledgements or transport."
+  [state outbox-id]
+  (check-outbox-id! outbox-id)
+  (check-state! state)
+  (let [rows (:outbox state)
+        index (outbox-index-of rows outbox-id)]
+    (if (nil? index)
+      (throw-unknown-outbox-id! outbox-id)
+      (let [row (nth rows index)]
+        (if (= :delivered (:status row))
+          {:state state :row row :changed? false}
+          (let [delivered-row (assoc row :status :delivered)]
+            {:state (assoc state :outbox (assoc rows index delivered-row))
+             :row delivered-row
+             :changed? true}))))))

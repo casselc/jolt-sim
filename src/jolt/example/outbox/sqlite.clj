@@ -1,12 +1,13 @@
 (ns jolt.example.outbox.sqlite
   "Durable SQLite adapter for the pure jolt.example.outbox application core.
 
-  This slice proves durable atomic enqueue and exact replay over real system
-  SQLite through public jdbc.core -- nothing more. It deliberately has no
-  delivery or marking API, no concurrency or locking claim, and no simulator
-  dependency. The connection is sequential and single-owner. Schema and load
-  operations may be reentrant, but apply-command! requires transaction depth
-  zero so a returned :committed result has crossed the durable outer boundary.
+  This slice proves durable atomic enqueue, exact replay, and guarded
+  delivery marking over real system SQLite through public jdbc.core --
+  nothing more. It deliberately has no concurrency or locking claim and no
+  simulator dependency. The connection is sequential and single-owner. Schema
+  and load operations may be reentrant, but apply-command! and
+  mark-delivered! require transaction depth zero so a returned step has
+  crossed the durable outer boundary.
 
   Storage layout (fixed private table names; never configurable):
 
@@ -28,11 +29,13 @@
   Entity rows are the current projection (one row per entity, inserted or
   updated with separate fixed statements).
   Request rows are immutable records of each accepted command and its result.
-  Outbox rows are the immutable pending issue rows. The canonical
-  :next-outbox-id is derived at load time as one more than the greatest
-  persisted outbox id; the core's own fail-closed history validation proves
-  that derivation exact (ids are contiguous from 1) before any state is
-  accepted, so tampered or inconsistent rows are rejected, never repaired.
+  Outbox rows are immutable issue rows except for their status, which moves
+  exactly once from pending to delivered through mark-delivered!'s guarded
+  update. The canonical :next-outbox-id is derived at load time as one more
+  than the greatest persisted outbox id; the core's own fail-closed history
+  validation proves that derivation exact (ids are contiguous from 1) before
+  any state is accepted, so tampered or inconsistent rows are rejected, never
+  repaired.
 
   BLOB columns carry the canonical unsigned octet vectors. Input converts
   octets 0..255 deliberately into ordinary Jolt byte arrays; output converts
@@ -75,11 +78,12 @@
   conn)
 
 (defn- check-durable-call-boundary!
-  "Rejects apply-command! inside an ambient jdbc transaction. jdbc/atomic-apply
-  is reentrant, but its nested boundary is only a savepoint: returning from it
-  cannot truthfully mean durable commit because the caller may still roll the
-  outer transaction back. The pinned jdbc connection exposes its transaction
-  bookkeeping atom in :tx-state; malformed bookkeeping also fails closed."
+  "Rejects apply-command! and mark-delivered! inside an ambient jdbc
+  transaction. jdbc/atomic-apply is reentrant, but its nested boundary is only
+  a savepoint: returning from it cannot truthfully mean durable commit because
+  the caller may still roll the outer transaction back. The pinned jdbc
+  connection exposes its transaction bookkeeping atom in :tx-state; malformed
+  bookkeeping also fails closed."
   [conn]
   (let [snapshot (try
                    @(:tx-state conn)
@@ -105,7 +109,7 @@
 
 (defn- check-affected!
   "Asserts an affected-row count where it carries a correctness invariant:
-  every fresh-command write in this slice touches exactly one row."
+  every correctness-sensitive write in this adapter touches exactly one row."
   [expected actual context]
   (when-not (= expected actual)
     (throw-adapter! :jolt.example.outbox.sqlite/unexpected-write-count
@@ -184,15 +188,18 @@
         entity-id (required-string (:entity_id row) context)
         version (required-integer (:version row) context)
         payload (required-blob (:payload row) context)
-        status (required-string (:status row) context)]
-    (when-not (= "pending" status)
-      (throw-corrupt! :invalid-status (assoc context :value status)))
+        status (required-string (:status row) context)
+        status-kw (cond
+                    (= "pending" status) :pending
+                    (= "delivered" status) :delivered
+                    :else (throw-corrupt!
+                           :invalid-status (assoc context :value status)))]
     {:outbox-id outbox-id
      :request-id request-id
      :entity-id entity-id
      :version version
      :payload (bytes->octets payload)
-     :status :pending}))
+     :status status-kw}))
 
 (defn- check-storable-command!
   "SQLite's current jdbc text binding is NUL-terminated. Reject embedded NUL
@@ -245,11 +252,13 @@
 (defn load-state
   "Reconstructs exactly jolt.example.outbox's canonical state from the
   persisted rows. Outbox rows are read in outbox-id order; BLOB payloads are
-  converted back to unsigned octet vectors; :next-outbox-id is derived as one
-  more than the greatest persisted outbox id (1 when none). The rebuilt state
-  is passed through the core's fail-closed validation before it is returned,
-  so inconsistent or tampered rows throw rather than being repaired. The
-  caller must have run init-schema! on this database."
+  converted back to unsigned octet vectors; stored pending and delivered
+  statuses are both accepted and any other stored status is rejected fail
+  closed; :next-outbox-id is derived as one more than the greatest persisted
+  outbox id (1 when none). The rebuilt state is passed through the core's
+  fail-closed validation before it is returned, so inconsistent or tampered
+  rows throw rather than being repaired. The caller must have run
+  init-schema! on this database."
   [conn]
   (check-sqlite-connection! conn)
   (let [entity-rows
@@ -365,3 +374,48 @@
          (throw-adapter! :jolt.example.outbox.sqlite/invalid-core-step
                          :emission-count
                          {:count (count emitted)}))))))
+
+(defn mark-delivered!
+  "Marks one outbox row delivered, durably: loads the canonical state, runs
+  the pure jolt.example.outbox/mark-delivered transition, and -- only when
+  the pure step reports :changed? -- performs exactly one guarded UPDATE
+  moving that outbox id's status from pending to delivered, all inside one
+  jdbc/atomic-apply transaction. The affected-row count of the guarded update
+  must be exactly 1. Returns the same {:state :row :changed?} step map the
+  pure core produced, and returns it only after atomic-apply has completed
+  COMMIT.
+
+  An idempotent call (the row is already delivered) performs no write at
+  all. The pure core's typed failures propagate unchanged: an id that is not
+  a positive integer throws :jolt.example.outbox/invalid-outbox-id and a
+  positive id with no matching row throws
+  :jolt.example.outbox/unknown-outbox-id, in both cases with no writes. Any
+  failure before COMMIT rolls the whole transaction back. Calls made inside
+  an ambient jdbc transaction are rejected before state is loaded because a
+  nested savepoint cannot satisfy this function's durable-on-return contract.
+
+  This function deliberately does not validate acknowledgements; the caller
+  validates an acknowledgement before invoking it. The caller must have run
+  init-schema! on this database."
+  [conn outbox-id]
+  (check-sqlite-connection! conn)
+  (check-durable-call-boundary! conn)
+  (jdbc/atomic-apply
+   conn
+   (fn [c]
+     (let [state (load-state c)
+           step (outbox/mark-delivered state outbox-id)]
+       (if (:changed? step)
+         (let [affected
+               (jdbc/execute!
+                c
+                [(str "update " outbox-table
+                      " set status = ? where outbox_id = ? and status = ?")
+                 "delivered"
+                 outbox-id
+                 "pending"])]
+           (check-affected! 1 affected
+                            {:statement :outbox-mark-delivered
+                             :outbox-id outbox-id})
+           step)
+         step)))))

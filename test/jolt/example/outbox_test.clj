@@ -267,3 +267,170 @@
       (is (= emitted (:outbox state)))
       (is (= (count (filter #(seq (:emitted %)) steps))
              (count (:outbox state)))))))
+
+;; ---- delivery marking -------------------------------------------------------
+
+(deftest mark-delivered-transition-locality-test
+  (let [cmd1 (command "req-1" "entity-a" [1 2 3])
+        cmd2 (command "req-2" "entity-b" [9])
+        {:keys [state]} (apply-seq [cmd1 cmd2])
+        step (outbox/mark-delivered state 1)]
+    (testing "the return shape is exactly {:state :row :changed?}"
+      (is (= #{:state :row :changed?} (set (keys step)))))
+    (testing "changed? is true and :row is the delivered row, otherwise equal"
+      (is (true? (:changed? step)))
+      (is (= :delivered (:status (:row step))))
+      (is (= (assoc (nth (:outbox state) 0) :status :delivered)
+             (:row step))))
+    (testing "transition locality: only that row's :status differs in state"
+      (is (= (:entities state) (:entities (:state step))))
+      (is (= (:request-log state) (:request-log (:state step))))
+      (is (= (:next-outbox-id state) (:next-outbox-id (:state step))))
+      (is (= 2 (count (:outbox (:state step)))))
+      (is (= (nth (:outbox state) 1) (nth (:outbox (:state step)) 1)))
+      (is (= (dissoc (nth (:outbox state) 0) :status)
+             (dissoc (nth (:outbox (:state step)) 0) :status)))
+      (is (= :delivered (get-in (:state step) [:outbox 0 :status])))
+      (is (= :pending (get-in (:state step) [:outbox 1 :status]))))
+    (testing "the marked state remains exactly canonical"
+      (is (= (:state step) (outbox/validate-state! (:state step)))))
+    (testing "marking a later row leaves earlier rows untouched"
+      (let [step2 (outbox/mark-delivered state 2)]
+        (is (true? (:changed? step2)))
+        (is (= (nth (:outbox state) 0) (nth (:outbox (:state step2)) 0)))
+        (is (= :delivered (get-in (:state step2) [:outbox 1 :status])))))))
+
+(deftest mark-delivered-idempotency-test
+  (let [state (:state (apply-seq [(command "req-1" "entity-a" [1])]))
+        first-step (outbox/mark-delivered state 1)
+        second-step (outbox/mark-delivered (:state first-step) 1)]
+    (is (true? (:changed? first-step)))
+    (testing "a second marking returns the state byte-equal and changed? false"
+      (is (false? (:changed? second-step)))
+      (is (= (:state first-step) (:state second-step)))
+      (is (identical? (:state first-step) (:state second-step)))
+      (is (= (:row first-step) (:row second-step))))
+    (testing "a third marking is still stable"
+      (let [third (outbox/mark-delivered (:state second-step) 1)]
+        (is (false? (:changed? third)))
+        (is (= (:state first-step) (:state third)))
+        (is (= (:row first-step) (:row third)))))))
+
+(deftest command-replay-after-marking-test
+  (let [cmd (command "req-1" "entity-a" [7 7 7])
+        applied (outbox/apply-command (outbox/initial-state) cmd)
+        marked (outbox/mark-delivered (:state applied) 1)
+        replay (outbox/apply-command (:state marked) cmd)]
+    (testing "an exact replay of the marked command returns the recorded result"
+      (is (= (:result applied) (:result replay)))
+      (is (= [] (:emitted replay)))
+      (is (= (:state marked) (:state replay)))
+      (is (= :delivered (get-in replay [:state :outbox 0 :status]))))
+    (testing "a fresh command after marking keeps the delivered row delivered"
+      (let [step2 (outbox/apply-command (:state replay)
+                                        (command "req-2" "entity-a" [8]))]
+        (is (= 2 (get-in step2 [:result :outbox-id])))
+        (is (= :delivered (get-in step2 [:state :outbox 0 :status])))
+        (is (= :pending (get-in step2 [:state :outbox 1 :status])))
+        (is (= [{:outbox-id 1
+                 :request-id "req-1"
+                 :entity-id "entity-a"
+                 :version 1
+                 :payload [7 7 7]
+                 :status :delivered}
+                {:outbox-id 2
+                 :request-id "req-2"
+                 :entity-id "entity-a"
+                 :version 2
+                 :payload [8]
+                 :status :pending}]
+               (:outbox (:state step2))))
+        (is (= (:state step2) (outbox/validate-state! (:state step2))))))))
+
+(deftest mark-delivered-invalid-id-test
+  (let [state (:state (apply-seq [(command "req-1" "entity-a" [1])]))]
+    (testing "non-positive-integer ids fail closed with a distinct type"
+      (doseq [bad [nil 0 -1 -42 1.5 "1" [1] :one]]
+        (let [data (ex-data-of #(outbox/mark-delivered state bad))]
+          (is (= :jolt.example.outbox/invalid-outbox-id (:type data))
+              (str "id " (pr-str bad)))
+          (is (= :bad-outbox-id (:reason data)) (str "id " (pr-str bad)))
+          (is (= bad (:outbox-id (:detail data))) (str "id " (pr-str bad))))))
+    (testing "the invalid-id type is distinct from unknown-id and invalid-state"
+      (is (not= :jolt.example.outbox/unknown-outbox-id
+                (:type (ex-data-of #(outbox/mark-delivered state 0)))))
+      (is (not= :jolt.example.outbox/invalid-state
+                (:type (ex-data-of #(outbox/mark-delivered state 0))))))
+    (testing "an invalid id wins over a malformed prior state, input first"
+      (is (= :jolt.example.outbox/invalid-outbox-id
+             (:type (ex-data-of #(outbox/mark-delivered :not-a-state 0))))))
+    (testing "a malformed prior state with a valid id fails as invalid-state"
+      (is (= :jolt.example.outbox/invalid-state
+             (:type (ex-data-of #(outbox/mark-delivered
+                                  (assoc state :debug true) 1)))))
+      (is (= :jolt.example.outbox/invalid-state
+             (:type (ex-data-of
+                     #(outbox/mark-delivered
+                       (assoc (outbox/initial-state) :next-outbox-id 2)
+                       1))))))))
+
+(deftest mark-delivered-unknown-id-test
+  (testing "unknown positive ids on an empty outbox fail closed"
+    (let [data (ex-data-of #(outbox/mark-delivered (outbox/initial-state) 1))]
+      (is (= :jolt.example.outbox/unknown-outbox-id (:type data)))
+      (is (= :unknown-outbox-id (:reason data)))
+      (is (= 1 (:outbox-id data)))))
+  (let [state (:state (apply-seq [(command "r1" "a" [1])
+                                  (command "r2" "b" [2])]))]
+    (testing "unknown positive ids past the allocated range fail closed"
+      (doseq [unknown [3 4 999]]
+        (let [data (ex-data-of #(outbox/mark-delivered state unknown))]
+          (is (= :jolt.example.outbox/unknown-outbox-id (:type data))
+              (str "id " unknown))
+          (is (= unknown (:outbox-id data)) (str "id " unknown)))))
+    (testing "the failed lookups produced no state"
+      (is (= [1 2] (mapv :outbox-id (:outbox state))))
+      (is (= [:pending :pending] (mapv :status (:outbox state)))))
+    (testing "unknown is distinct from invalid even at the same magnitude"
+      (is (not= (:type (ex-data-of #(outbox/mark-delivered state 3)))
+                (:type (ex-data-of #(outbox/mark-delivered state "3"))))))))
+
+(deftest state-validation-with-delivered-status-test
+  (let [state (:state (apply-seq [(command "r1" "a" [1])
+                                  (command "r2" "b" [2])
+                                  (command "r3" "a" [3])]))
+        marked (:state (outbox/mark-delivered state 2))]
+    (testing "mixed pending/delivered states validate exactly"
+      (is (= marked (outbox/validate-state! marked)))
+      (is (= [:pending :delivered :pending] (mapv :status (:outbox marked)))))
+    (testing "marking changes no entity, request, or id-allocation history"
+      (is (= (:entities state) (:entities marked)))
+      (is (= (:request-log state) (:request-log marked)))
+      (is (= (:next-outbox-id state) (:next-outbox-id marked))))
+    (testing "every row status delivered still validates"
+      (let [all-marked (:state (outbox/mark-delivered
+                                (:state (outbox/mark-delivered marked 1))
+                                3))]
+        (is (= [:delivered :delivered :delivered]
+               (mapv :status (:outbox all-marked))))
+        (is (= all-marked (outbox/validate-state! all-marked)))))
+    (testing "any non-canonical status is still rejected fail closed"
+      (doseq [bad-status [:acked :failed "delivered" "pending" nil]]
+        (let [bad-state (assoc-in marked [:outbox 0 :status] bad-status)]
+          (is (= :jolt.example.outbox/invalid-state
+                 (:type (ex-data-of #(outbox/validate-state! bad-state))))
+              (str "status " (pr-str bad-status)))
+          (is (= :jolt.example.outbox/invalid-state
+                 (:type (ex-data-of #(outbox/mark-delivered bad-state 1))))
+              (str "status " (pr-str bad-status))))))
+    (testing "history consistency stays exact under marking"
+      (doseq [[label bad-state]
+              [["delivered row with tampered payload"
+                (assoc-in marked [:outbox 1 :payload] [0])]
+               ["delivered row with tampered version"
+                (assoc-in marked [:outbox 1 :version] 9)]
+               ["delivered row with tampered request-id"
+                (assoc-in marked [:outbox 1 :request-id] "other")]]]
+        (is (= :jolt.example.outbox/invalid-state
+               (:type (ex-data-of #(outbox/validate-state! bad-state))))
+            label)))))

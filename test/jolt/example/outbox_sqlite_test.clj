@@ -19,6 +19,10 @@
        " (outbox_id, request_id, entity_id, version, payload, status)"
        " values (?, ?, ?, ?, ?, ?)"))
 
+(def ^:private mark-delivered-sql
+  (str "update " outbox-table
+       " set status = ? where outbox_id = ? and status = ?"))
+
 (defn- fresh-conn []
   (jdbc/connection "sqlite::memory:"))
 
@@ -35,6 +39,12 @@
 
 (defn- command [request-id entity-id payload]
   {:request-id request-id :entity-id entity-id :payload payload})
+
+(defn- status-of [conn outbox-id]
+  (:status (jdbc/fetch-one
+            conn
+            [(str "select status from " outbox-table " where outbox_id = ?")
+             outbox-id])))
 
 ;; ---- vendor rejection -------------------------------------------------------
 
@@ -403,10 +413,289 @@
               (var jolt.example.outbox.sqlite/outbox-row->row)
               {:outbox_id nil :request_id "r" :entity_id "e" :version 1
                :payload (byte-array 0) :status "pending"}]
-            ["outbox status"
+             ["outbox status"
               (var jolt.example.outbox.sqlite/outbox-row->row)
               {:outbox_id 1 :request_id "r" :entity_id "e" :version 1
                :payload (byte-array 0) :status nil}]]]
       (is (= :jolt.example.outbox.sqlite/corrupt-row
              (:type (ex-data-of #(row-converter row))))
           label))))
+
+;; ---- durable delivery marking -----------------------------------------------
+
+(deftest mark-delivered-persistence-test
+  (with-open [conn (fresh-conn)]
+    (store/init-schema! conn)
+    (let [step1 (store/apply-command! conn (command "req-1" "entity-a" [0 255]))
+          step2 (store/apply-command! conn (command "req-2" "entity-b" [1 2 3]))
+          counts-before (table-counts conn)
+          mark (store/mark-delivered! conn 1)]
+      (testing "the returned step is the pure core's exact step map"
+        (is (= #{:state :row :changed?} (set (keys mark))))
+        (is (true? (:changed? mark)))
+        (is (= {:outbox-id 1
+                :request-id "req-1"
+                :entity-id "entity-a"
+                :version 1
+                :payload [0 255]
+                :status :delivered}
+               (:row mark))))
+      (testing "only the targeted row's status changed durably"
+        (is (= counts-before (table-counts conn)))
+        (is (= "delivered" (status-of conn 1)))
+        (is (= "pending" (status-of conn 2))))
+      (testing "marking touched no entity, request, or id-allocation history"
+        (is (= (:entities (:state step2)) (:entities (:state mark))))
+        (is (= (:request-log (:state step2)) (:request-log (:state mark))))
+        (is (= (:next-outbox-id (:state step2))
+               (:next-outbox-id (:state mark))))
+        (is (= (dissoc (first (:outbox (:state step1))) :status)
+               (dissoc (:row mark) :status))))
+      (testing "load-state reconstructs the marked canonical state"
+        (is (= (:state mark) (store/load-state conn)))
+        (is (= [:delivered :pending]
+               (mapv :status (:outbox (store/load-state conn)))))))))
+
+(deftest mark-delivered-idempotent-no-write-test
+  (with-open [conn (fresh-conn)]
+    (store/init-schema! conn)
+    (store/apply-command! conn (command "req-1" "entity-a" [1]))
+    (let [first-mark (store/mark-delivered! conn 1)
+          updates (atom [])
+          real-execute! jdbc/execute!
+          second-mark
+          (with-redefs
+           [jdbc/execute!
+            (fn
+              ([c q]
+               (when (= mark-delivered-sql (if (vector? q) (first q) q))
+                 (swap! updates conj q))
+               (real-execute! c q))
+              ([c q opts]
+               (real-execute! c q opts)))]
+            (store/mark-delivered! conn 1))]
+      (testing "the first mark changed; the second is idempotent"
+        (is (true? (:changed? first-mark)))
+        (is (false? (:changed? second-mark)))
+        (is (= (:state first-mark) (:state second-mark)))
+        (is (= (:row first-mark) (:row second-mark))))
+      (testing "the idempotent call issued no guarded update"
+        (is (= [] @updates)))
+      (testing "the durable status stays delivered"
+        (is (= "delivered" (status-of conn 1)))))))
+
+(deftest command-replay-after-marking-persistence-test
+  (with-open [conn (fresh-conn)]
+    (store/init-schema! conn)
+    (let [cmd (command "req-1" "entity-a" [7 7 7])
+          applied (store/apply-command! conn cmd)
+          marked (store/mark-delivered! conn 1)
+          counts-before (table-counts conn)
+          replay (store/apply-command! conn cmd)]
+      (testing "replay after marking is exact and performs no writes"
+        (is (= (:result applied) (:result replay)))
+        (is (= [] (:emitted replay)))
+        (is (= (:state marked) (:state replay)))
+        (is (= counts-before (table-counts conn)))
+        (is (= "delivered" (status-of conn 1))))
+      (testing "a fresh command after marking keeps the delivered row delivered"
+        (let [step2 (store/apply-command! conn (command "req-2" "entity-a" [8]))]
+          (is (= 2 (get-in step2 [:result :outbox-id])))
+          (is (= "delivered" (status-of conn 1)))
+          (is (= "pending" (status-of conn 2)))
+          (is (= {:entities 1 :requests 2 :outbox 2} (table-counts conn)))
+          (is (= (:state step2) (store/load-state conn))))))))
+
+(deftest mark-delivered-id-failures-test
+  (with-open [conn (fresh-conn)]
+    (store/init-schema! conn)
+    (store/apply-command! conn (command "req-1" "entity-a" [1]))
+    (let [state-before (store/load-state conn)]
+      (testing "invalid ids fail closed with the core's distinct typed ex-info"
+        (doseq [bad [nil 0 -3 1.5 "1"]]
+          (let [data (ex-data-of #(store/mark-delivered! conn bad))]
+            (is (= :jolt.example.outbox/invalid-outbox-id (:type data))
+                (str "id " (pr-str bad)))
+            (is (= :bad-outbox-id (:reason data)) (str "id " (pr-str bad))))))
+      (testing "unknown positive ids fail closed with a distinct typed ex-info"
+        (doseq [unknown [2 99]]
+          (let [data (ex-data-of #(store/mark-delivered! conn unknown))]
+            (is (= :jolt.example.outbox/unknown-outbox-id (:type data))
+                (str "id " unknown))
+            (is (= unknown (:outbox-id data)) (str "id " unknown)))))
+      (testing "every failure left the database byte-identical"
+        (is (= state-before (store/load-state conn)))
+        (is (= {:entities 1 :requests 1 :outbox 1} (table-counts conn)))
+        (is (= "pending" (status-of conn 1)))))))
+
+(deftest mark-delivered-vendor-and-boundary-rejection-test
+  (testing "a non-sqlite vendor is rejected before any statement runs"
+    (let [fake-pg {:vendor :postgresql
+                   :handle (atom nil)
+                   :close (fn [] nil)}
+          data (ex-data-of #(store/mark-delivered! fake-pg 1))]
+      (is (= :jolt.example.outbox.sqlite/unsupported-vendor (:type data)))
+      (is (= :postgresql (:vendor (:detail data))))))
+  (testing "malformed transaction bookkeeping fails closed"
+    (doseq [[label tx-state]
+            [["not dereferenceable" {}]
+             ["missing depth" (atom {})]
+             ["non-integer depth" (atom {:depth "0"})]
+             ["negative depth" (atom {:depth -1})]]]
+      (let [fake-sqlite {:vendor :sqlite
+                         :handle (atom nil)
+                         :tx-state tx-state
+                         :close (fn [] nil)}
+            data (ex-data-of #(store/mark-delivered! fake-sqlite 1))]
+        (is (= :jolt.example.outbox.sqlite/invalid-transaction-state
+               (:type data))
+            label))))
+  (testing "an ambient transaction is rejected and nothing is marked"
+    (with-open [conn (fresh-conn)]
+      (store/init-schema! conn)
+      (store/apply-command! conn (command "req-1" "entity-a" [4 2]))
+      (let [inner-outcome (atom nil)
+            outer-sentinel (ex-info "test outer rollback"
+                                    {:test/outer-rollback true})
+            outer-data
+            (ex-data-of
+             #(jdbc/atomic-apply
+               conn
+               (fn [c]
+                 (try
+                   (reset! inner-outcome {:step (store/mark-delivered! c 1)})
+                   (catch :default e
+                     (reset! inner-outcome {:error (ex-data e)})))
+                 (throw outer-sentinel))))]
+        (is (nil? (:step @inner-outcome)))
+        (is (= :jolt.example.outbox.sqlite/ambient-transaction
+               (get-in @inner-outcome [:error :type])))
+        (is (= :durable-boundary-required
+               (get-in @inner-outcome [:error :reason])))
+        (is (= 1 (get-in @inner-outcome [:error :detail :depth])))
+        (is (true? (:test/outer-rollback outer-data)))
+        (is (= "pending" (status-of conn 1)))))))
+
+(deftest mixed-status-reload-test
+  (with-open [conn (fresh-conn)]
+    (store/init-schema! conn)
+    (store/apply-command! conn (command "r1" "a" [1]))
+    (store/apply-command! conn (command "r2" "a" [2]))
+    (store/apply-command! conn (command "r3" "b" [3]))
+    (store/mark-delivered! conn 2)
+    (testing "a middle row marked delivered reloads in exact id order"
+      (let [state (store/load-state conn)]
+        (is (= [:pending :delivered :pending]
+               (mapv :status (:outbox state))))
+        (is (= [1 2 3] (mapv :outbox-id (:outbox state))))
+        (is (= {:version 2 :payload [2]} (get-in state [:entities "a"])))
+        (is (= 4 (:next-outbox-id state)))))
+    (testing "marking the remaining rows one at a time stays exact"
+      (store/mark-delivered! conn 3)
+      (is (= [:pending :delivered :delivered]
+             (mapv :status (:outbox (store/load-state conn)))))
+      (store/mark-delivered! conn 1)
+      (is (= [:delivered :delivered :delivered]
+             (mapv :status (:outbox (store/load-state conn)))))
+      (is (= (outbox/validate-state! (store/load-state conn))
+             (store/load-state conn))))))
+
+(deftest corrupt-status-rejection-test
+  (testing "non-canonical status strings are rejected without interning keywords"
+    (doseq [bad ["DELIVERED" "Pending" "delivered " " pending" ""]]
+      (with-open [conn (fresh-conn)]
+        (store/init-schema! conn)
+        (store/apply-command! conn (command "req-1" "entity-a" [1]))
+        (jdbc/execute! conn
+                       [(str "update " outbox-table
+                             " set status = ? where outbox_id = ?")
+                        bad
+                        1])
+        (let [data (ex-data-of #(store/load-state conn))]
+          (is (= :jolt.example.outbox.sqlite/corrupt-row (:type data))
+              (str "status " (pr-str bad)))
+          (is (= :invalid-status (:reason data)) (str "status " (pr-str bad)))))))
+  (testing "a non-string status storage class is rejected fail closed"
+    (with-open [conn (fresh-conn)]
+      (store/init-schema! conn)
+      (store/apply-command! conn (command "req-1" "entity-a" [1]))
+      (jdbc/execute! conn
+                     [(str "update " outbox-table
+                           " set status = ? where outbox_id = ?")
+                      1
+                      1])
+      (is (= :jolt.example.outbox.sqlite/corrupt-row
+             (:type (ex-data-of #(store/load-state conn))))))))
+
+(deftest mark-delivered-injected-failure-rollback-test
+  (with-open [conn (fresh-conn)]
+    (store/init-schema! conn)
+    (store/apply-command! conn (command "req-1" "entity-a" [9]))
+    (let [state-before (store/load-state conn)
+          sentinel (ex-info "test-injected failure after the guarded update"
+                            {:test/injected true})
+          real-execute! jdbc/execute!
+          data
+          (ex-data-of
+           (fn []
+             (with-redefs
+              [jdbc/execute!
+               (fn
+                 ([c q]
+                  (if (= mark-delivered-sql (if (vector? q) (first q) q))
+                    (do
+                      (real-execute! c q)
+                      (throw sentinel))
+                    (real-execute! c q)))
+                 ([c q opts]
+                  (real-execute! c q opts)))]
+               (store/mark-delivered! conn 1))))]
+      (testing "the injected failure propagates as primary; no step is returned"
+        (is (true? (:test/injected data))))
+      (testing "the transaction rolled back; the durable status stays pending"
+        (is (= "pending" (status-of conn 1)))
+        (is (= state-before (store/load-state conn))))
+      (testing "a clean retry marks delivered exactly once"
+        (let [step (store/mark-delivered! conn 1)]
+          (is (true? (:changed? step)))
+          (is (= :delivered (:status (:row step))))
+          (is (= "delivered" (status-of conn 1)))
+          (is (= (:state step) (store/load-state conn))))))))
+
+(deftest mark-delivered-unexpected-write-count-rollback-test
+  (with-open [conn (fresh-conn)]
+    (store/init-schema! conn)
+    (store/apply-command! conn (command "req-1" "entity-a" [5]))
+    (let [state-before (store/load-state conn)
+          real-execute! jdbc/execute!
+          data
+          (ex-data-of
+           (fn []
+             (with-redefs
+              [jdbc/execute!
+               (fn
+                 ([c q]
+                  (if (= mark-delivered-sql (if (vector? q) (first q) q))
+                    (do
+                      (real-execute! c q)
+                      0)
+                    (real-execute! c q)))
+                 ([c q opts]
+                  (real-execute! c q opts)))]
+               (store/mark-delivered! conn 1))))]
+      (testing "a zero affected-row count fails closed after the actual update"
+        (is (= :jolt.example.outbox.sqlite/unexpected-write-count (:type data)))
+        (is (= :unexpected-write-count (:reason data)))
+        (is (= 1 (get-in data [:detail :expected])))
+        (is (= 0 (get-in data [:detail :actual])))
+        (is (= :outbox-mark-delivered
+               (get-in data [:detail :statement])))
+        (is (= 1 (get-in data [:detail :outbox-id]))))
+      (testing "the failed invariant check rolls the actual update back"
+        (is (= "pending" (status-of conn 1)))
+        (is (= state-before (store/load-state conn))))
+      (testing "a clean retry still marks the row exactly once"
+        (let [step (store/mark-delivered! conn 1)]
+          (is (true? (:changed? step)))
+          (is (= "delivered" (status-of conn 1)))
+          (is (= (:state step) (store/load-state conn))))))))
