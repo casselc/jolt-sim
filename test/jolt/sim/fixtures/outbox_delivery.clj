@@ -60,6 +60,7 @@
     "attempt"})
 
 (def ^:private bencode-content-type "application/x-bencode")
+(def ^:private ack-withheld-type ::ack-withheld)
 
 (defn- fail! [reason detail]
   (throw
@@ -78,6 +79,20 @@
            (into {}
                  (map (fn [[k v]] [(str k) (pr-str v)]))
                  data))})
+
+(defn- cancellation-error-summary [error]
+  (let [data (ex-data error)
+        err (:err data)
+        operation (:teensyp.client/op data)
+        kind (:teensyp.client/kind data)
+        summary (stable-error-summary error)]
+    (when-not (= [::client/closed :receive :closed]
+                 [err operation kind])
+      (fail! :unexpected-cancellation-error {:error summary}))
+    (assoc summary
+           :err err
+           :operation operation
+           :kind kind)))
 
 (defn- cleanup-attempt [operation thunk]
   (try
@@ -386,6 +401,157 @@
         (throw-with-cleanup! nil cleanup-errors)
         {:status :delivered :exchange (:value body)}))))
 
+(defn- withhold-ack-reply
+  "Builds the ordinary framed-handler reply function that decodes and records
+   each delivery message, signals `decoded-promise` once attempt 1 has been
+   decoded/recorded, and then withholds its acknowledgement until `ack-gate`
+   is delivered -- the causal handshake that lets a separate ordinary future
+   close the client after decode and before an ack is sent. Once released, the
+   callback records the withheld outcome and throws a private sentinel instead
+   of returning a reply, so the generic framed handler never races a native
+   write against the already-closed peer."
+  [received ack-outcomes decoded-promise ack-gate]
+  (fn [message]
+    (when-not (and (map? message)
+                   (= delivery-wire-keys (set (keys message)))
+                   (= "outbox_delivery" (get message "type")))
+      (fail! :invalid-delivery-wire {:value message}))
+    (swap! received conj message)
+    (deliver decoded-promise :decoded)
+    (when (= ::ack-timeout (deref ack-gate 10000 ::ack-timeout))
+      (fail! :ack-release-timeout {}))
+    (swap! ack-outcomes conj {:status :withheld})
+    (throw
+     (ex-info "outbox receiver: acknowledgement withheld after cancellation"
+              {:type ack-withheld-type}))))
+
+(defn- cancel-before-ack-delivery!
+  "One ordinary framed delivery attempt whose receiver withholds its
+   acknowledgement at a causal handshake. The receiver delivers
+   `decoded-promise` after it decodes and records attempt 1, then derefs
+   `ack-gate` to withhold its ack until released. A separate ordinary Jolt
+   future waits for `decoded-promise`, then calls public
+   teensyp.client/close! on the delivery connection -- the one cancellation
+   owner -- and delivers `ack-gate` to release the receiver; future-cancel is
+   never used and the helper always completes normally (it stores any failure
+   as a bounded outcome rather than throwing). The blocked client receive in
+   this thread must wake with the canonical teensyp closed/receive
+   cancellation outcome.
+
+   After the exchange wakes, a second ordinary close! from this thread proves
+   idempotent ownership (the first close owned cancellation, the second does
+   not). Returns
+
+     {:status :cancelled
+      :exchange-error <bounded stable summary of the cancellation error>
+      :close-result   <first close result -- true, owns cancellation>
+      :cleanup-close  <second close result -- false, idempotent>
+      :helper         <bounded helper outcome map>}
+
+   or throws a typed violation when the cancellation is not exercised.
+   Primary/cleanup error semantics mirror attempt-delivery!: the exchange
+   cancellation is the expected primary path, while any connection or helper
+   cleanup failure attaches bounded diagnostics and still fails the case."
+  [host port messages decoded-promise ack-gate]
+  (let [connection* (atom nil)
+        helper* (atom nil)
+        helper-error* (atom nil)
+        helper-outcome* (atom nil)
+        body
+        (try
+          {:value
+           (let [connection (client/connect host port
+                                            {:connect-timeout-ms 5000})
+                 _ (reset! connection* connection)
+                 helper
+                 (future
+                   (try
+                     (let [decoded (deref decoded-promise 10000 ::decode-timeout)]
+                       (if (= ::decode-timeout decoded)
+                         (do (deliver ack-gate true)
+                             (reset! helper-outcome* {:status :decode-timeout})
+                             :decode-timeout)
+                         (let [first-close (client/close! connection)]
+                           (deliver ack-gate true)
+                           (reset! helper-outcome*
+                                   {:status :closed
+                                    :close-result first-close})
+                           :closed)))
+                     (catch :default error
+                       ;; Release the receiver even on a helper failure so it
+                       ;; never blocks past this future's lifetime; store the
+                       ;; bounded failure rather than throwing so the helper
+                       ;; completes normally without future-cancel.
+                       (deliver ack-gate true)
+                       (reset! helper-error* error)
+                       (reset! helper-outcome*
+                               {:status :helper-error
+                                :error (stable-error-summary error)})
+                       :helper-error)))
+                 _ (reset! helper* helper)
+                 exchange-outcome
+                 (try
+                   {:delivered (framed/exchange! connection messages)}
+                   (catch :default error
+                     {:exchange-error error}))
+                 _ (when (:delivered exchange-outcome)
+                     ;; The ack was not withheld/cancelled: release the
+                     ;; receiver and fail closed rather than treat an ack'd
+                     ;; exchange as the cancellation witness.
+                     (deliver ack-gate true)
+                     (fail! :cancel-before-ack-not-exercised
+                            {:exchange (:delivered exchange-outcome)
+                             :helper @helper-outcome*}))
+                 exchange-error (:exchange-error exchange-outcome)
+                 cancel-error (cancellation-error-summary exchange-error)
+                 ;; Release the receiver if the helper has not already (the
+                 ;; helper delivers ack-gate right after close!; this is the
+                 ;; idempotent no-op on the happy path and the release on any
+                 ;; path where the helper deferred it).
+                 _ (deliver ack-gate true)
+                 helper-status (deref helper 10000 ::join-timeout)
+                 _ (when (= ::join-timeout helper-status)
+                     (fail! :helper-join-timeout
+                            {:exchange-error
+                             (stable-error-summary exchange-error)
+                             :helper @helper-outcome*}))
+                 helper-outcome @helper-outcome*
+                 _ (when-let [helper-error @helper-error*]
+                     (throw helper-error))
+                 cancel-close (:close-result helper-outcome)
+                 _ (when-not (true? cancel-close)
+                     (fail! :cancel-close-not-owned
+                            {:helper helper-outcome}))
+                 cleanup-close (client/close! connection)
+                 _ (when-not (false? cleanup-close)
+                     (fail! :cleanup-close-not-idempotent
+                            {:cleanup-close cleanup-close}))]
+             {:status :cancelled
+              :exchange-error cancel-error
+              :close-result cancel-close
+              :cleanup-close cleanup-close
+              :helper helper-outcome})}
+          (catch :default error
+            {:error error}))
+        cleanup-errors
+        (vec
+         (keep identity
+               [(cleanup-attempt :release-ack-gate #(deliver ack-gate true))
+                (cleanup-attempt :release-decoded
+                                 #(deliver decoded-promise :cleanup))
+                (when-let [helper @helper*]
+                  (cleanup-attempt :helper-join
+                                   #(let [status
+                                          (deref helper 10000 ::join-timeout)]
+                                      (when (= ::join-timeout status)
+                                        (fail! :helper-cleanup-timeout {}))
+                                      status)))
+                (when-let [connection @connection*]
+                  (cleanup-attempt :delivery-connection-close
+                                   #(client/close! connection)))]))]
+    (throw-with-cleanup! (:error body) cleanup-errors)
+    (:value body)))
+
 (defn- command-handler [conn command-evidence]
   (fn [request]
     (when-not (= [:post "/commands"]
@@ -692,6 +858,130 @@
      ;; stop-server quiesces the receiver before its final error snapshot.
      (assoc (:value body)
             :receiver {:requests @received
+                       :server-errors @receiver-errors}))))
+
+(defn exercise-outbox-delivery-cancel-before-ack
+  "Runs the ordinary HTTP -> SQLite outbox -> framed TCP path, but cancels the
+   client after the receiver decodes attempt 1 and before it acknowledges. The
+   blocked exchange must report canonical closed/receive cancellation; the
+   same still-open SQLite connection must then reload the exact committed
+   pending state. No mark-delivered! call or delivered claim exists on this
+   path.
+
+   A normal future owns the first close and an ordinary promise handshake
+   withholds the ack. Cleanup releases both handshakes, joins the future,
+   closes idempotently, and quiesces the receiver. Returned evidence is
+   canonical immutable data under :application, :http, and :receiver; it
+   contains no futures, promises, atoms, native handles, or ephemeral ports.
+
+   This is unchanged ordinary application/library code with no simulator
+   dependency. It proves at-least-once retryability after cancellation, not
+   exactly-once delivery or every possible ack/close race."
+  ([]
+   (exercise-outbox-delivery-cancel-before-ack default-command))
+  ([command]
+   (let [receiver-errors (atom [])
+         received (atom [])
+         ack-outcomes (atom [])
+         ;; Causal handshake shared between the receiver reply and the
+         ;; closing helper future. Both are ordinary Clojure promises; neither
+         ;; appears in the returned evidence.
+         decoded-promise (promise)
+         ack-gate (promise)
+         receiver
+         (tcp/run-server
+          :port 0
+          :reuse-address? true
+          :handler (framed/framed-handler
+                    (withhold-ack-reply received ack-outcomes
+                                        decoded-promise ack-gate))
+          :error-logger
+          #(when-not (= ack-withheld-type (:type (ex-data %)))
+             (swap! receiver-errors conj (stable-error-summary %))))
+         command-evidence* (atom nil)
+         body
+         (try
+           {:value
+            ;; The SQLite connection deliberately stays OPEN across the
+            ;; delivery attempt and post-cancellation reload: the pre-delivery
+            ;; reload and the post-cancellation reload both flow through the
+            ;; same ordinary connection, proving the committed state without
+            ;; any close/reopen or crash-durability claim.
+            (with-sqlite-connection
+             "sqlite::memory:"
+             (fn [conn]
+               (store/init-schema! conn)
+               (let [http-cycle
+                     (http-fixture/run-request-cycle
+                      (command-handler conn command-evidence*)
+                      (fn [host port]
+                        (post-request-bytes command host port)))
+                     command-evidence @command-evidence*
+                     _ (when-not command-evidence
+                         (fail! :missing-application-evidence {}))
+                     ;; The explicit post-COMMIT/pre-delivery reload. The
+                     ;; emitted command row remains :pending evidence on this
+                     ;; side of the delivery boundary.
+                     pending (load-pending-delivery conn)
+                     pending-state (:state pending)
+                     _ (when-not (= (:committed-state command-evidence)
+                                    pending-state)
+                         (fail! :committed-state-mismatch
+                                {:step-state
+                                 (:committed-state command-evidence)
+                                 :loaded-state pending-state}))
+                     ;; Delivery attempt: connect, the closing helper future
+                     ;; calls teensyp.client/close! after the receiver decodes
+                     ;; attempt 1 and before its withheld ack, and the blocked
+                     ;; client exchange wakes with the canonical closed/receive
+                     ;; cancellation outcome.
+                     cancel (cancel-before-ack-delivery!
+                             "127.0.0.1" (:port receiver)
+                             (:messages pending) decoded-promise ack-gate)
+                     _ (when-not (= :cancelled (:status cancel))
+                         (fail! :cancel-before-ack-not-exercised
+                                {:cancel (dissoc cancel :status)}))
+                     ;; The post-cancellation reload through the same
+                     ;; still-open connection must observe the exact committed
+                     ;; state: no ack was validated, so no marking ran and the
+                     ;; row is still :pending here.
+                     reloaded (load-pending-delivery conn)
+                     _ (when-not (= pending-state (:state reloaded))
+                         (fail! :post-cancel-state-changed
+                                {:committed-state pending-state
+                                 :loaded-state (:state reloaded)}))
+                     app (-> command-evidence
+                             (dissoc :committed-state)
+                             (assoc :pending-state pending-state
+                                    :store-state (:state reloaded)
+                                    :cancel (dissoc cancel :status)))
+                     parsed (:parsed http-cycle)
+                     response
+                     (decode-bencode-exact :http-response (:body parsed))]
+                 {:application app
+                  :http {:status (:status parsed)
+                         :content-type
+                         (get (:headers parsed) "content-type")
+                         :content-length
+                         (get (:headers parsed) "content-length")
+                         :response response
+                         :server-errors (:server-errors http-cycle)
+                         :close-results (:close-results http-cycle)}})))}
+           (catch :default error
+             {:error error}))
+         cleanup-errors
+         (vec
+          (keep identity
+                [(cleanup-attempt :release-ack-gate #(deliver ack-gate true))
+                 (cleanup-attempt :release-decoded
+                                  #(deliver decoded-promise :cleanup))
+                 (cleanup-attempt :receiver-stop
+                                  #(tcp/stop-server receiver))]))]
+     (throw-with-cleanup! (:error body) cleanup-errors)
+     ;; stop-server quiesces the receiver before its final error snapshot.
+     (assoc (:value body)
+            :receiver {:requests @received
+                       :ack-outcomes @ack-outcomes
                        :server-errors @receiver-errors}))))
 
 (defn exercise-outbox-delivery-reopen
