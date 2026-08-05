@@ -13,10 +13,10 @@
     3. `perturb.b63`       — ONE B6 clause re-expressed as a fold, and
                              DIFFERENTIALLY TESTED against `perturb.layer`'s
                              own arm on pass, violation and vacuity controls.
-    4.                     — the bounded-schedule arm. NOT RUN. See the
-                             residuals at the bottom: it needs
-                             `jolt.sim.process-explorer`, which is JVM Clojure,
-                             and the `clojure` CLI is not installed here.
+    4.                     — the bounded-schedule arm. Executed separately by
+                              `jolt.sim.convergence-b63-test`, because it needs
+                              a sim-enabled image and a fresh worker. This
+                              local gate still covers steps 1--3 only.
 
   THE GATE. Proceed only if, on every fixture, the two implementations agree on
   the STATUS and on the EXERCISED COUNT, the evidence value is byte-stable, the
@@ -185,23 +185,19 @@
           (println (str "    an INCONCLUSIVE control was exercised  : " (pr-str (boolean has-inconc))))
 
           (banner "RESIDUALS, NAMED")
-          (println "    1. STEP 4 WAS NOT RUN. The bounded-schedule arm needs")
-          (println "       jolt.sim.process-explorer, which is JVM Clojure; the clojure")
-          (println "       CLI is not installed here (E39 nonclaim 1's wall). So no")
-          (println "       schedule witness exists and nothing is claimed about running")
-          (println "       this property under an explored schedule.")
-          (println "    2. THE LIFT IS BY CONSTRUCTION, NOT BY EXECUTION.")
-          (println "       perturb.semantic/run-monitor mirrors jolt.sim.monitor's spec,")
-          (println "       step-result and decision contracts, and was written against")
-          (println "       that source — but the SAME monitor has not been run under both")
-          (println "       runners, for the same reason as residual 1.")
-          (println "    3. ONE CONTRACT DIFFERENCE, DELIBERATE. :finish here takes")
-          (println "       [state case] because a semantic monitor needs the declaration")
-          (println "       set and a scheduler trace has none. A lift must reconcile it.")
-          (println "    4. ONE CLAUSE, SIX FIXTURES. B6.3 only. Nothing here says the")
-          (println "       other five clauses project, and B6.1's credit fold is the one")
-          (println "       with an ordering hazard (E35 finding 3).")
-          (println "    5. THE PROJECTION IS LOSSY BY DESIGN and drops every event B6.3")
+           (println "    1. STEP 4 IS A SEPARATE FRESH-WORKER GATE.")
+           (println "       `jolt.sim.convergence-b63-test` runs one exact [1 0] schedule")
+           (println "       per selected fixture, then stores the returned semantic-monitor")
+           (println "       decision in Case/Outcome v1. This gate does not rerun it.")
+           (println "    2. THE REPLAY-RUNNER LIFT REMAINS REJECTED, NOT BY CONSTRUCTION.")
+           (println "       perturb.semantic/run-monitor mirrors jolt.sim.monitor's spec,")
+           (println "       step-result and decision shapes, but its semantic document is")
+           (println "       rejected by jolt.sim.monitor before callbacks. The unary B6.3")
+           (println "       factory reconciles declarations for the semantic runner only.")
+           (println "    3. ONE CLAUSE, SIX FIXTURES. B6.3 only. Nothing here says the")
+           (println "       other five clauses project, and B6.1's credit fold is the one")
+           (println "       with an ordering hazard (E35 finding 3).")
+           (println "    4. THE PROJECTION IS LOSSY BY DESIGN and drops every event B6.3")
           (println "       does not adjudicate. That is what makes it a test of the")
           (println "       clause rather than of the trace.")
 
@@ -212,7 +208,8 @@
                 (println "                  a semantic projection, agrees on status and on")
                 (println "                  denominator on every fixture, with a pass, a")
                 (println "                  violation and an inconclusive control all")
-                (println "                  exercised. Read the residuals: step 4 did not run.")
+                 (println "                  exercised. Read the residuals: step 4 is a separate")
+                 (println "                  fresh-worker gate; replay-runner lifting remains rejected.")
                 (println line))
             (do (println "SLICE GATE FAIL — see the table above.")
                 (println line)

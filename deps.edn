@@ -44,6 +44,29 @@
   {:extra-paths ["test"]
    :main-opts ["-m" "jolt.sim.explore-process-test"]}
 
+  ;; Convergence slice step 4 (PROGRESSIVE-FORMALISM-DESIGN 7.2b), parent
+  ;; lane: the B6.3 monitor evaluated through perturb.semantic/run-monitor in
+  ;; ONE exact-scheduled ([1 0]) fresh worker per fixture, with the returned
+  ;; monitor decision stored in a parent-side jolt.sim.case-outcome v1
+  ;; document. Requires JOLT_SIM_BIN naming a sim-enabled image (plus
+  ;; JOLT_SIM_PROJECT_DIR). Without an image the image-free unit coverage
+   ;; runs and the worker acceptance lane exits 2 as explicitly skipped, never
+   ;; fabricated as a green acceptance result.
+  :convergence-b63-test
+  {:extra-paths ["test"]
+   :main-opts ["-m" "jolt.sim.convergence-b63-test"]}
+
+  ;; Child side of :convergence-b63-test. The in-tree perturb subproject is
+  ;; resolved from its local root so the fresh worker loads the unchanged
+  ;; perturb.layercheck fixtures, perturb.layer's B6.3 projection, and
+  ;; perturb.b63's monitor with no git fetch.
+  :convergence-b63-explore-worker
+  {:extra-paths ["test"]
+   :extra-deps
+   {io.github.casselc/perturb
+    {:local/root "perturb"}}
+   :main-opts ["-m" "jolt.sim.explore-worker"]}
+
   ;; Optional Hegel generator/shrinker adapter and its fresh-process
   ;; exploration witness. Keep the released dependency out of the ordinary
   ;; compatibility suite and pin the peeled v0.1.2 commit exactly.

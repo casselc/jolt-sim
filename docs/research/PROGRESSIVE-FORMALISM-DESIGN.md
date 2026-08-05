@@ -855,6 +855,15 @@ force — that nonclaim has now been proven right once (§7.2 Merge 1).
    versioning discipline* rather than the whole thing. **The convergence slice's
    step 2 changes from "define a new document" to "decide whether Case/Outcome
    v1 extends, or whether events need a sibling."**
+
+   **Decision after E43 (branch `claude/ocaml-effect-based-language-gsg316` at
+   `7513cb1`): sibling.** Keep Case/Outcome v1 closed as the per-case container;
+   do not add events or causal fields to it and do not widen the kernel replay
+   trace. Semantic events need their own versioned document and a future explicit
+   correlation reference to the case record. A direct attempt to feed that
+   document to `jolt.sim.monitor/run-monitor` was rejected at its exact replay
+   document validator before a callback, so a shared fold shape is not a shared
+   document schema.
 2. **`jolt.sim.fault` is §6.1's `:failure` as a value** — "transport-neutral
    deterministic fault-plan director… plain immutable data built from a closed
    fault plan", pure, frozen through `jolt.sim.trace`. And it already draws the

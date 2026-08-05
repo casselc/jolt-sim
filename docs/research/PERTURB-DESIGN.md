@@ -98,6 +98,7 @@ The complete current tally of claims this document made and then refuted:
 | 65 | `schedule-plans` and `bounded-complete` | two documents in this directory say **opposite things** — the adoption audit proposes `:coverage :bounded-complete` for it, the temporal-ledger sketch says it "does not establish bounded completeness". Both are defensible under different readings: it completely enumerates **its own output domain** while establishing nothing about the system explored through it. The record must say which it means | E39 |
 | 75 | the review's evidence rule — reject nonzero strength with zero checked units unless explicitly inconclusive — is sufficient | **it permits findings with an empty denominator.** Measured: a value with `:findings 2` and `:checked 0` passes that rule and is rejected only by the converse, `:vacuity-accounting`. Both directions now reject | E42 |
 | 76 | re-expressing a B6 clause as a monitor fold is a rewrite whose agreement has to be assumed | **six of six fixtures agree on status AND exercised count, with byte-identical rendered evidence.** The incumbent is an indexed nested loop and the candidate is a left fold; the equivalence argument was written before it was measured | E42 |
+| 77 | E42's runner contracts are sufficiently identical that the same B6.3 monitor can be executed through `jolt.sim.monitor/run-monitor` after reconciling `:finish` | **false.** At `7513cb1`, `run-monitor` rejects the separate semantic document's exact keys before any callback; closing over the case reconciles arity only, not the replay-vs-semantic document grammar. The attempted unit is one spec/document lift and it reached zero monitor events | E43 |
 | 72 | `PROGRESSIVE-FORMALISM-DESIGN` §7.2 Merge 1: perturb's effect log and capability ledger "become event kinds in `jolt.sim.trace`, validated by `kernel/validate-trace!`" | **rejected by source.** `validate-trace!` checks every event's FIXED-POSITION shape and requires a vector beginning with exactly one `:run/initial`; `replay` compares the FULL sequence via `first-difference-index` and throws `replay-diverged` on the first difference. Widening it would break exact replay of every existing trace, and `README.md:416` already says a unified causal trace is later work. **One trace must begin as a new, separately versioned semantic projection that REFERENCES the replay trace** | external review, verified 2026-08-04; design §7.2 STRUCK and rewritten |
 | 73 | §1.1's falsification criterion: a property moves from `:sampled` to `:exhausted` to a production counter "by changing a domain declaration and nothing else" | **false.** A common predicate still needs an explicit OBSERVATION ADAPTER — for the exhaustive consumer you construct the arguments, for the monitor you must find them in a trace — and a trace lacking those observations must be `:inconclusive`, never a pass. The criterion now reads "`:holds` is unchanged; the domain declaration and a declared adapter change" | external review; design §1.1 CORRECTED |
 | 74 | §7's five merges, and the shared name implying one runtime | **conditional go for a narrow shared-assurance seam only.** No production API may depend on the simulator; Jolt core gets only minimal disabled-by-default hooks; the other four merges sit behind an acceptance gate on ONE B6 clause | external review; design §7.2a, §7.2b |
@@ -6648,6 +6649,65 @@ empty document is not a clean bill of health.
    trace, and also means it establishes nothing about a general trace
    projection.
 
+### E43 — the requested runner lift is rejected before the fold; Case/Outcome v1 remains the container, not the event log
+
+E42 called the two runners contract-identical while retaining a nonclaim about
+the `:finish` arity. That was too loose to carry a lift claim. On
+`claude/ocaml-effect-based-language-gsg316` at `7513cb1`, under Jolt 0.5.17 on
+Linux x86_64, the direct attempted lift was executed:
+
+```clojure
+(monitor/run-monitor b63/spec (semantic/document {} []))
+```
+
+It returns `{:type :jolt.sim.trace/invalid-document :reason :wrong-keys}`
+before a B6.3 callback runs. This is expected from the source, but was not
+previously executed: `jolt.sim.monitor/run-monitor` first validates exactly the
+version-1 cooperative replay document, whereas `perturb.semantic/document`
+has a separate closed top-level shape and `:layer/*` events. It is not a kernel
+replay trace and must not be made to look like one merely to enter the runner.
+The test's denominator is **one attempted B6.3 spec/document lift**; it reached
+zero monitor events, so its evidence is `:unknown`, not a passing monitor
+result.
+
+The arity is a second, independent mismatch: `perturb.semantic/run-monitor`
+calls `:finish` as `[state case]`; `jolt.sim.monitor/run-monitor` calls it as
+`[state]`. Closing the case map in `(fn [state] (b63/finish state case-map))`
+reconciles that arity without changing B6.3 logic, but cannot bridge the two
+document grammars. `jolt -Sdeps '{:paths ["src" "test"]}'` ran the incumbent
+monitor gate separately: 19 tests / 64 assertions, zero failures. `jolt
+-M:slice` still passes its six-fixture differential gate; that remains evidence
+about the semantic runner, not an execution through `jolt.sim.monitor`.
+
+#### The document decision
+
+**Semantic events need a sibling document; Case/Outcome v1 does not extend.**
+At `7513cb1`, `jolt.sim.case-outcome` is already a closed, versioned per-case
+container for case provenance, outcome and stored monitor decisions. It has no
+event vector or causal-correlation fields, and widening its exact v1 keys would
+change its persisted contract without making B6.3's event grammar a replay
+trace. Keep it as the outer case/result record. The semantic document remains a
+separately versioned sibling, linked only by an explicit future correlation
+reference once one is specified; it must not be inferred from host PID,
+supervision data or event position.
+
+#### E43's nonclaims
+
+1. **The lift acceptance gate failed.** No claim is made that B6.3 runs under
+   `jolt.sim.monitor/run-monitor`; the direct attempt is a typed schema
+   rejection, not `:inconclusive` and not a B6.3 verdict.
+2. **Step 4 remains unexecuted.** The available Jolt reports
+   `jolt.sim.runtime/available?` false, so no sim-enabled image was available
+   to run a scheduled fresh worker. No schedule witness, canonical worker
+   result, or host-supervision claim exists.
+3. **The JVM suite did not become a valid substitute.** `clojure -M:test`
+   stops compiling Jolt-source `catch :default`; it is not evidence about the
+   monitor or process explorer. `bin/verify-ansatz` and `bin/test-jvm` are not
+   present in this checkout, so E39's two named gates remain unexecuted here.
+4. **This does not refute B6.3's fold equivalence.** The six semantic fixtures
+   still agree on status and exercised count. It refutes only the asserted
+   shared-runner seam as currently shaped.
+
 ## 4. Open questions
 
 Q1–Q5 are §4.1–§4.5; §4.6 collects open items that never carried a Q number.
@@ -7497,6 +7557,8 @@ rejected alternatives and superseded verdicts rather than deleting them (see
 | 40 | structural properties are "finite in the way the neighbouring lanes' domains are finite", so `proved` and `bounded-complete` are attainable there | `STRUCTURAL-TIER-BRIEF.md` §"The diagnosis" and §2 of the build half | E37 — both passes: `bounded-complete` needs an explicitly finite domain, a surjective generator, sound pruning, a total independent oracle, and recorded counts. Shrinking is `sampled`; replay is reproducibility of one witness, not exploration | E37; tally row 58 |
 | 41 | E35 finding: "**Known-good passes every clause**" — reported as a result of B6 being made executable | E40 — five of six. `check-error-mapping` folds over refusals inside a declared layer's extent; the known-good has **0 refusals**, so the clause emitted nothing and its silence read as a pass. The defect was invisible mechanically: the old report was assembled by **grouping violations**, and a report grouped by violations cannot show an absence | E35, amended in place; E40; tally row 66 |
 | 42 | `ASSURANCE-DIRECTION-BRIEF` rev 1: perturb returns "I will not say" in four places, one of them `perturb.layer`'s `:inconclusive` | reading — `inconclusive` appeared nowhere in `layer.clj`; the checker was binary. The brief's own correction then predicted **one** vacuous clause on **one** fixture; E40 measured **nine clause verdicts across six**, two of them unpredicted | brief rev 2 §CORRECTED; E40; tally row 67 |
+| 43 | E42's runner contracts are contract-identical enough that the B6.3 monitor can be lifted by reconciling only its `:finish` arity | E43 — an executed direct call at `7513cb1` is rejected as `:jolt.sim.trace/invalid-document :wrong-keys` before a callback. The semantic document is not a cooperative replay document, and a closure over the case map does not change that | E43; tally row 77 |
+| 44 | E43 nonclaim 2: no sim-enabled image was available, so step 4 could not run | E44 — the permitted `ai-src` workspace contained a local sim image. It ran two selected fixtures under `[1 0]`, stored their semantic decisions in Case/Outcome v1, and retained timeout as `:deadline`, not deadlock | E44; tally row 78 |
 
 ### A.2 The method notes, in order
 

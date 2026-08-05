@@ -23,7 +23,13 @@
   was found; `:inconclusive` if the fold adjudicated ZERO (request, refusal)
   pairs; `:pass` otherwise. A trace with no refusal inside any declared
   layer's extent contains no instance of the thing this clause forbids, and
-  saying `pass` about it is the defect E40 removed."
+  saying `pass` about it is the defect E40 removed.
+
+  STEP 4 ADDITION. `spec-for` below is the SAME monitor as a unary factory
+  over the declaration set, so a fresh exploration worker can bind the
+  declarations it received as scenario input before folding, instead of
+  trusting the case a document happens to carry. The fold logic is
+  unchanged."
   (:require [perturb.semantic :as sem]
             [perturb.evidence :as ev]))
 
@@ -124,6 +130,31 @@
    :initial initial
    :step    step
    :finish  finish})
+
+(defn spec-for
+  "The B6.3 monitor as a UNARY FACTORY over the declaration set — step 4's
+  entrypoint.
+
+  `declarations` is the semantic case map `{:layers {name [[op abort] ...]}}`,
+  exactly the second argument `finish` already takes. The returned spec has
+  `perturb.semantic/run-monitor`'s shape and runs the UNCHANGED `step` and
+  `finish` logic; its `:finish` closes over `declarations` and does not read
+  the document's `:case`, so the decision is made against the declaration set
+  the CALLER bound, not whatever an event document happens to carry.
+
+  WHY A FACTORY. Step 4 runs this monitor in a fresh exploration worker,
+  where the declaration set arrives as scenario input and must be bound
+  before the fold begins — a document is an event carrier, not a declaration
+  authority. Closing over the declarations also removes, for this monitor,
+  the one contract difference `perturb.semantic/run-monitor` names: the
+  decision no longer depends on the document's case. (`:finish` still ACCEPTS
+  `[state case]`, because the runner calls it with both; it ignores the
+  case.)"
+  [declarations]
+  {:id      :perturb.b63/error-mapping
+   :initial initial
+   :step    step
+   :finish  (fn [st _case] (finish st declarations))})
 
 (defn run
   "-> {:id :status :detail :index}"
