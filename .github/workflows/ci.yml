@@ -20,9 +20,11 @@ jobs:
   sim-posix:
     name: sim image (${{ matrix.name }})
     runs-on: ${{ matrix.runner }}
-    # The Linux x86_64 lane reserves time after bounded Hegel execution for
-    # report rendering and unconditional raw-artifact upload.
-    timeout-minutes: 60
+    # The Linux x86_64 lane runs two independently bounded Hegel campaigns
+    # after the ordinary gates and still reserves time for report rendering
+    # and unconditional raw-artifact upload. Other platforms retain the
+    # existing one-hour ceiling.
+    timeout-minutes: ${{ matrix.job-timeout }}
     strategy:
       fail-fast: false
       matrix:
@@ -33,24 +35,28 @@ jobs:
             machine: ta6le
             chez-sha256: 16476cd98fb5cb2e2c0285e88fcd6d57ade9392ca8d7cf603ca38432b4118526
             hegel: true
+            job-timeout: 120
           - name: Linux aarch64
             runner: ubuntu-24.04-arm
             toolchain: linux-aarch64
             machine: tarm64le
             chez-sha256: b5b2306d3d6468b5fc7d5836721b09c704c7750f887a6232f1aeeb567d55f5d9
             hegel: false
+            job-timeout: 60
           - name: macOS x86_64
             runner: macos-15-intel
             toolchain: macos-x86_64
             machine: ta6osx
             chez-sha256: e4577ad71b1f1e1062c361fa612af60d75378e64dc2869d8c8eefd3d7efdbc62
             hegel: false
+            job-timeout: 60
           - name: macOS arm64
             runner: macos-15
             toolchain: macos-arm64
             machine: tarm64osx
             chez-sha256: d5b5a504eed1e0f117b4a3dd23ad0030bb3e5c0da6d6b9d9f990f5f2fa32478f
             hegel: false
+            job-timeout: 60
     steps:
       - name: Checkout jolt-sim
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
@@ -261,7 +267,8 @@ jobs:
         # always() forensic-retention steps can start. The terminal-boundary
         # campaign adds 18 fresh worker cases to a gate whose prior hosted
         # runtime was about 22 minutes, so retain bounded headroom beneath the
-        # unchanged 60-minute job ceiling.
+        # expanded Linux/Hegel job ceiling and ahead of the independent
+        # webhook campaign.
         timeout-minutes: 35
         shell: bash
         env:
@@ -283,6 +290,33 @@ jobs:
             "$JOLT_SIM_GATE_PARENT"
           JOLT_SIM_BIN="$sim" JOLT_SIM_PROJECT_DIR="$PWD" \
             script/run-hegel-gates.sh
+
+      - name: Explore JSON webhook acknowledgement boundaries
+        if: always() && matrix.hegel
+        # Keep this fresh-worker application campaign failure-independent from
+        # the already long general Hegel campaign. Both invocations retain
+        # their own mktemp gate roots beneath the shared artifact parent.
+        timeout-minutes: 25
+        shell: bash
+        env:
+          JOLT_AOT_CACHE: "0"
+        run: |
+          set -euo pipefail
+          export HOME="$RUNNER_TEMP/jolt-home"
+          export JOLT_CACHE_DIR="$RUNNER_TEMP/jolt-cache"
+          export TMPDIR="$RUNNER_TEMP/jolt-tmp"
+          mkdir -p "$HOME" "$JOLT_CACHE_DIR" "$TMPDIR"
+          sim="$GITHUB_WORKSPACE/jolt-core/target/sim/jolt"
+          cd "$GITHUB_WORKSPACE/jolt-sim"
+          export JOLT_SIM_CASE_ARTIFACT_DIR="$PWD/target/outbox-case-artifacts"
+          export JOLT_SIM_CASE_TEMP_DIR="$PWD/target/outbox-case-runs"
+          export JOLT_SIM_GATE_PARENT="$PWD/target/hegel-gates"
+          mkdir -p \
+            "$JOLT_SIM_CASE_ARTIFACT_DIR" \
+            "$JOLT_SIM_CASE_TEMP_DIR" \
+            "$JOLT_SIM_GATE_PARENT"
+          JOLT_SIM_BIN="$sim" JOLT_SIM_PROJECT_DIR="$PWD" \
+            script/run-hegel-gates.sh outbox-http-webhook-hegel-test
 
       - name: Render retained whole-application case reports
         if: always() && matrix.hegel

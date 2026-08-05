@@ -117,6 +117,9 @@
 (def ^:private json-replay-conflict-scenario-sym
   'jolt.sim.fixtures.outbox-json-delivery-scenarios/exercise-replay-or-conflict)
 
+(def ^:private http-webhook-scenario-sym
+  'jolt.sim.fixtures.outbox-http-webhook-scenarios/exercise)
+
 (def ^:private case-outcome-filename "case-outcome.edn")
 (def ^:private delivery-monitor-id :outbox/delivery-invariants)
 (def ^:private retry-monitor-id :outbox/retry-invariants)
@@ -124,6 +127,8 @@
 (def ^:private terminal-monitor-id :outbox/terminal-boundary-invariants)
 (def ^:private json-replay-conflict-monitor-id
   :outbox/json-replay-conflict-invariants)
+(def ^:private http-webhook-monitor-id
+  :outbox/http-webhook-invariants)
 
 ;; The canonical teensyp.client/closed :receive :closed cancellation the
 ;; unchanged fixture's blocked exchange wakes with after the cross-thread
@@ -148,6 +153,9 @@
 (def ^:private pipe-capacity-domain [1 2 4])
 (def ^:private poll-eintr-domain [nil 1 2 4 8])
 (def ^:private max-payload-octets 32)
+(def ^:private http-webhook-response-modes
+  [:accepted :accepted-json-whitespace :non-2xx :malformed-json
+   :trailing-json :mismatched-attempt :mismatched-durable])
 (def ^:private terminal-deadline-nanos 5000000000)
 (def ^:private terminal-deadline-boundaries
   [:after-command-commit :before-ack :before-mark])
@@ -362,6 +370,19 @@
                :min-size 1 :max-size 12})
     (g/string {:alphabet "abcdefghijklmnopqrstuvwxyz0123456789-_"
                :min-size 1 :max-size 12}))))
+
+(defn- http-webhook-input-generator
+  "One shrinkable input over the complete closed response-mode domain and
+   payload octet vectors of length 0..32. The mode draw shrinks toward the
+   accepted control and the payload shrinks toward empty; no rejection
+   sampling or simulator-selected application behavior is involved."
+  []
+  (g/fmap
+   (fn [[response-mode payload]]
+     {:payload payload :response-mode response-mode})
+   (g/tuple
+    (g/sampled-from http-webhook-response-modes)
+    (g/vector {:max-size max-payload-octets} (g/octet)))))
 
 (defn- retry-input-generator
   "Returns a Hegel generator over the retry scenario input domain: payload,
@@ -1336,6 +1357,8 @@
     (= scenario terminal-scenario-sym) terminal-monitor-id
     (= scenario json-replay-conflict-scenario-sym)
     json-replay-conflict-monitor-id
+    (= scenario http-webhook-scenario-sym)
+    http-webhook-monitor-id
     :else
     (throw
      (ex-info
@@ -1379,6 +1402,7 @@
          (= scenario cancel-scenario-sym) "outbox-cancel-"
          (= scenario terminal-scenario-sym) "outbox-terminal-"
          (= scenario json-replay-conflict-scenario-sym) "outbox-json-idempotency-"
+         (= scenario http-webhook-scenario-sym) "outbox-http-webhook-"
          :else "outbox-delivery-")
        (name lane) "-" ordinal "-"))
 
@@ -1516,6 +1540,8 @@
                 (and (= scenario terminal-scenario-sym)
                      (= :boundary lane))
                 (and (= scenario json-replay-conflict-scenario-sym)
+                     (= :boundary lane))
+                (and (= scenario http-webhook-scenario-sym)
                      (= :boundary lane)))
             persisted
             (try
@@ -2090,6 +2116,258 @@
     (is (false? (:flaky? result))
         (pr-str (select-keys result
                              [:seed :flaky? :observed-failures])))))
+
+;; ---- Ordinary JSON HTTP webhook acknowledgement lane --------------------
+
+(def ^:private http-webhook-accepted-modes
+  #{:accepted :accepted-json-whitespace})
+
+(def ^:private http-webhook-refusal-reasons
+  {:non-2xx :non-success-status
+   :malformed-json :invalid-json
+   :trailing-json :invalid-json
+   :mismatched-attempt :ack-mismatch
+   :mismatched-durable :ack-mismatch})
+
+(defn- expected-http-webhook-for [payload]
+  (let [command {:request-id "req-1"
+                 :entity-id "entity-a"
+                 :payload payload}
+        result {:status :committed
+                :request-id "req-1"
+                :entity-id "entity-a"
+                :version 1
+                :outbox-id 1}
+        row {:outbox-id 1
+             :request-id "req-1"
+             :entity-id "entity-a"
+             :version 1
+             :payload payload
+             :status :pending}
+        pending {:entities {"entity-a" {:version 1 :payload payload}}
+                 :request-log {"req-1" {:command command :result result}}
+                 :next-outbox-id 2
+                 :outbox [row]}
+        durable {"outbox-id" 1
+                 "request-id" "req-1"
+                 "entity-id" "entity-a"
+                 "version" 1}
+        request {"type" "outbox_delivery"
+                 "durable" durable
+                 "attempt-id" "delivery-1-attempt-1"
+                 "payload" payload}
+        ack {"type" "outbox_delivery_ok"
+             "durable" durable
+             "attempt-id" "delivery-1-attempt-1"}
+        delivered-row (assoc row :status :delivered)]
+    {:command command
+     :result result
+     :row row
+     :pending pending
+     :delivered (assoc pending :outbox [delivered-row])
+     :request request
+     :ack ack
+     :marking {:row delivered-row :changed? true}}))
+
+(defn- assert-http-webhook-case-outcome!
+  "Asserts the acknowledgement authorization boundary over one unchanged
+   ordinary webhook application run. Exact SQLite plan exhaustion is the
+   negative execution witness: refused modes provision no mark transaction,
+   so any attempted mark makes the worker fail rather than pass here."
+  [input outcome]
+  (let [completed (require-completed-carrying-input! outcome input)
+        evidence (:result completed)
+        expected (expected-http-webhook-for (:payload input))
+        response-mode (:response-mode input)
+        accepted? (contains? http-webhook-accepted-modes response-mode)]
+    (when-not (exact-map-keys?
+               evidence #{:application :routes :sqlite :capacity :clean?})
+      (violation "jolt.sim.outbox-delivery-hegel-test/webhook-evidence-shape"
+                 input {:evidence evidence}))
+    (let [{:keys [application routes sqlite capacity clean?]} evidence
+          command (:command application)
+          delivery (:delivery application)]
+      (when-not (and (exact-map-keys?
+                      application
+                      #{:scenario :command :pending-state :delivery
+                        :store-state :receiver})
+                     (= response-mode (:scenario application)))
+        (violation "jolt.sim.outbox-delivery-hegel-test/webhook-application-shape"
+                   input {:application application}))
+      (when-not (and (exact-map-keys? command #{:evidence :http})
+                     (exact-map-keys? (:evidence command) #{:command})
+                     (exact-map-keys? (:receiver application)
+                                      #{:requests :server-errors}))
+        (violation "jolt.sim.outbox-delivery-hegel-test/webhook-boundary-shape"
+                   input {:command command
+                          :receiver (:receiver application)}))
+      (when-not (= {:value (:command expected)
+                    :result (:result expected)
+                    :emitted [(:row expected)]}
+                   (get-in command [:evidence :command]))
+        (violation "jolt.sim.outbox-delivery-hegel-test/webhook-command"
+                   input {:command command}))
+      (when-not (= {:status 201
+                    :content-type "application/json"
+                    :response {"status" "committed"
+                               "request-id" "req-1"
+                               "entity-id" "entity-a"
+                               "version" 1
+                               "outbox-id" 1}
+                    :server-errors []
+                    :close-results {:connection [true false]}}
+                   (:http command))
+        (violation "jolt.sim.outbox-delivery-hegel-test/webhook-command-http"
+                   input {:http (:http command)}))
+      (when-not (= (:pending expected) (:pending-state application))
+        (violation "jolt.sim.outbox-delivery-hegel-test/webhook-pending"
+                   input {:pending (:pending-state application)}))
+      (when-not (= [(:request expected)]
+                   (get-in application [:receiver :requests]))
+        (violation "jolt.sim.outbox-delivery-hegel-test/webhook-request"
+                   input {:receiver (:receiver application)}))
+      (when-not (= [] (get-in application [:receiver :server-errors]))
+        (violation "jolt.sim.outbox-delivery-hegel-test/webhook-receiver-errors"
+                   input {:receiver (:receiver application)}))
+      (if accepted?
+        (do
+          (when-not (= #{:request :response :marking} (set (keys delivery)))
+            (violation
+             "jolt.sim.outbox-delivery-hegel-test/webhook-accepted-shape"
+             input {:delivery delivery}))
+          (when-not (= (:request expected) (:request delivery))
+            (violation "jolt.sim.outbox-delivery-hegel-test/webhook-sent-request"
+                       input {:request (:request delivery)}))
+          (when-not (= {:status 200
+                        :content-type "application/json"
+                        :ack (:ack expected)}
+                       (:response delivery))
+            (violation "jolt.sim.outbox-delivery-hegel-test/webhook-ack"
+                       input {:response (:response delivery)}))
+          (when-not (= (:marking expected) (:marking delivery))
+            (violation "jolt.sim.outbox-delivery-hegel-test/webhook-marking"
+                       input {:marking (:marking delivery)}))
+          (when-not (= (:delivered expected) (:store-state application))
+            (violation "jolt.sim.outbox-delivery-hegel-test/webhook-delivered"
+                       input {:store-state (:store-state application)})))
+        (do
+          (when-not (= #{:refused} (set (keys delivery)))
+            (violation
+             "jolt.sim.outbox-delivery-hegel-test/webhook-refused-shape"
+             input {:delivery delivery}))
+          (when-not (exact-map-keys? (:refused delivery) #{:reason :detail})
+            (violation
+             "jolt.sim.outbox-delivery-hegel-test/webhook-refusal-shape"
+             input {:delivery delivery}))
+          (when-not (= (get http-webhook-refusal-reasons response-mode)
+                       (get-in delivery [:refused :reason]))
+            (violation "jolt.sim.outbox-delivery-hegel-test/webhook-refusal"
+                       input {:delivery delivery}))
+          (when-not (= (:pending expected) (:store-state application))
+            (violation
+             "jolt.sim.outbox-delivery-hegel-test/webhook-refusal-mutated-row"
+             input {:store-state (:store-state application)}))))
+      (let [expected-plan-count (if accepted? 24 18)]
+        (when-not (= {:plan-index expected-plan-count
+                      :plan-count expected-plan-count
+                      :open-dbs 0
+                      :active-stmts 0}
+                     sqlite)
+          (violation "jolt.sim.outbox-delivery-hegel-test/webhook-sqlite-plan"
+                     input {:sqlite sqlite})))
+      (when-not (and (positive-integer? (:count routes))
+                     (true? (:all-handled? routes))
+                     (every? (set (:foreign-symbols routes))
+                             required-foreign-symbols))
+        (violation "jolt.sim.outbox-delivery-hegel-test/webhook-routes"
+                   input {:routes routes}))
+      (when-not (and (= 8 (get-in capacity [:stream :stream-capacity]))
+                     (positive-integer?
+                      (get-in capacity
+                              [:stream :stream-capacity-limited-writes]))
+                     (= 1 (get-in capacity [:pipe :pipe-capacity])))
+        (violation "jolt.sim.outbox-delivery-hegel-test/webhook-capacity"
+                   input {:capacity capacity}))
+      (when-not (= {:memory true :sqlite true :posix true} clean?)
+        (violation "jolt.sim.outbox-delivery-hegel-test/webhook-cleanup"
+                   input {:clean? clean?})))))
+
+(def ^:private http-webhook-boundary-inputs
+  (vec
+   (cons {:payload [] :response-mode :accepted}
+         (map (fn [response-mode]
+                {:payload [0 127 128 255]
+                 :response-mode response-mode})
+              http-webhook-response-modes))))
+
+(deftest outbox-http-webhook-boundary-witness
+  (let [seen (atom #{})]
+    (doseq [[index input] (map-indexed vector http-webhook-boundary-inputs)]
+      (check-case-with-progress!
+       http-webhook-scenario-sym
+       assert-http-webhook-case-outcome!
+       :boundary (inc index) input boundary-case-timeout-ms)
+      (swap! seen conj (:response-mode input)))
+    (is (= (set http-webhook-response-modes) @seen)
+        (str "bounded webhook modes were not completely covered: "
+             (pr-str @seen)))))
+
+(deftest hegel-outbox-http-webhook-preserves-acknowledgement-boundary
+  (let [case-ordinal (atom 0)
+        result
+        (h/run-test!
+         {:test-cases 8
+          :suppress-health-checks [:too-slow]
+          :seed 11
+          :database ""
+          :report-multiple-failures? false
+          :verbosity :quiet}
+         (fn [_]
+           (let [input
+                 (h/draw! (http-webhook-input-generator)
+                          "http-webhook-input")]
+             (check-case-with-progress!
+              http-webhook-scenario-sym
+              assert-http-webhook-case-outcome!
+              :generated (swap! case-ordinal inc) input case-timeout-ms))))]
+    (is (true? (:passed? result))
+        (pr-str (select-keys result
+                             [:status :seed :n-failures :flaky? :failures
+                              :final])))
+    (is (false? (:flaky? result))
+        (pr-str (select-keys result
+                             [:seed :flaky? :observed-failures])))))
+
+(deftest hegel-http-webhook-control-shrinks-and-replays-one-refusal
+  ;; Pure negative control over the same generator: the synthetic defect
+  ;; authorizes marking for :non-2xx only. Hegel must isolate and reproduce
+  ;; that response mode while shrinking its irrelevant payload toward empty.
+  (let [result
+        (h/run-test!
+         {:test-cases 30
+          :seed 11
+          :database ""
+          :report-multiple-failures? false
+          :verbosity :quiet}
+         (fn [_]
+           (let [input (h/draw! (http-webhook-input-generator)
+                                "http-webhook-input")]
+             (when (= :non-2xx (:response-mode input))
+               (throw
+                (ex-info
+                 "synthetic non-2xx authorization defect"
+                 {:hegel/origin
+                  "jolt.sim.outbox-delivery-hegel-test/webhook-control-non-2xx"
+                  :input input}))))))]
+    (is (false? (:passed? result)))
+    (is (= :failed (:status result)))
+    (is (= 1 (:n-failures result)))
+    (is (true? (-> result :failures first :reproduced?)))
+    (is (false? (:flaky? result)))
+    (is (= :non-2xx
+           (-> result :final first :exception ex-data :input :response-mode)))
+    (is (= []
+           (-> result :final first :exception ex-data :input :payload)))))
 
 ;; ---- Two-attempt retry lane (scoped recv ECONNRESET) ----------------------
 
@@ -3363,6 +3641,11 @@
    #'expired-premark-spurious-delivery-records-monitor-violation
    #'cancellation-claim-with-marking-records-monitor-violation])
 
+(def ^:private http-webhook-test-vars
+  [#'outbox-http-webhook-boundary-witness
+   #'hegel-outbox-http-webhook-preserves-acknowledgement-boundary
+   #'hegel-http-webhook-control-shrinks-and-replays-one-refusal])
+
 (defn- counter-snapshot []
   {:test (:test @test/counters)
    :pass (test/n-pass)
@@ -3382,8 +3665,22 @@
     (test/test-var var)
     (counter-delta before (counter-snapshot))))
 
-(defn -main [& _]
-  (let [bin (required-environment "JOLT_SIM_BIN")
+(defn -main [& args]
+  (let [http-webhook-only? (= ["--http-webhook-only"] (vec args))
+        _ (when-not (or (empty? args) http-webhook-only?)
+            (throw
+             (ex-info
+              "unsupported outbox Hegel test arguments"
+              {:type
+               :jolt.sim.outbox-delivery-hegel-test/unsupported-arguments
+               :arguments (vec args)})))
+        selected-test-vars (if http-webhook-only?
+                             http-webhook-test-vars
+                             serial-test-vars)
+        worker-alias (if http-webhook-only?
+                       "outbox-http-webhook-explore-worker"
+                       "outbox-delivery-explore-worker")
+        bin (required-environment "JOLT_SIM_BIN")
         project-dir (required-environment "JOLT_SIM_PROJECT_DIR")
         export-dir (System/getenv "JOLT_SIM_CASE_ARTIFACT_DIR")
         temp-dir (System/getenv "JOLT_SIM_CASE_TEMP_DIR")
@@ -3400,7 +3697,7 @@
         result
         (binding [*process-config*
                   (cond->
-                   {:worker-command [bin "-M:outbox-delivery-explore-worker"]
+                   {:worker-command [bin (str "-M:" worker-alias)]
                     :dir project-dir
                     :startup-timeout-ms 120000}
                     temp-dir (assoc :temp-dir temp-dir))
@@ -3409,7 +3706,7 @@
                     (merge-with + summary
                                 (run-serial-test-var! test-var)))
                   {:test 0 :pass 0 :fail 0 :error 0}
-                  serial-test-vars))
+                  selected-test-vars))
         failures (+ (:fail result) (:error result))]
     (println (str (:test result) " tests, "
                   (:pass result) " assertions passed, "

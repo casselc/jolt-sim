@@ -165,7 +165,7 @@ only the application surfaces and modes exercised by a durable gate.
 | HTTP SQLite BLOB | `jolt-http`, `jolt-tcp`, `jolt.net`, `jdbc.core`, `db.sqlite`, `jolt.ffi`, byte arrays | Host sockets plus system SQLite | Shared FFI-memory, POSIX, and SQLite worlds | One request at one-byte capacities plus one captured first-poll `EINTR`; local gate, no generated schedule/fault search |
 | Length-framed TCP bencode echo | `teensyp.server`, `teensyp.client`, `teensyp.buffer`, `jolt.bytes`, `jolt.bencode`, `jolt.net`, `jolt.ffi` | Host loopback parity witness | Modeled POSIX loopback and native memory | Pipelined requests, finite stream/self-pipe capacities, captured `EINTR`, and Hegel-generated UTF-8; no half-close or concurrent clients |
 | HTTP SQLite outbox delivery | `jolt-http`, `jdbc.core`, `db.sqlite`, `teensyp.server/client`, `jolt.bytes`, `jolt.bencode`, `jolt.net`, `jolt.ffi` | Host HTTP/TCP sockets plus system SQLite | Shared FFI-memory, POSIX, exact-plan SQLite, and one shared virtual clock | Ordinary, scoped-reset retry, clean close/reopen, post-COMMIT process-exit/recovery, cancellation-before-ack, and one-operation absolute-deadline witnesses; Hegel varies payload bytes, capacities, poll interruption, admission, and a closed terminal-action axis; no general scheduler, power-loss, or exactly-once claim |
-| JSON HTTP webhook outbox delivery | `jolt-http`, `jolt.http-client`, `jdbc.core`, `db.sqlite`, `jolt-tcp`, `jolt.net`, `jolt.ffi` | Host command/webhook sockets plus system SQLite | Shared FFI-memory, POSIX, and exact-plan SQLite worlds | Fixed accepted (including legal trailing JSON whitespace) and hostile acknowledgement parity; exact correlation gates marking; no TLS, auth, concurrency, or Hegel claim |
+| JSON HTTP webhook outbox delivery | `jolt-http`, `jolt.http-client`, `jdbc.core`, `db.sqlite`, `jolt-tcp`, `jolt.net`, `jolt.ffi` | Host command/webhook sockets plus system SQLite | Shared FFI-memory, POSIX, and exact-plan SQLite worlds | Fixed real/hermetic parity plus fresh-worker Hegel payload/response-mode exploration; exact correlation gates marking; no TLS, auth, or concurrent deliveries |
 | Maelstrom Echo | `jolt.maelstrom` node/handler code | JSON-lines lane reviewed but not integrated | Deterministic memory transport | FIFO/history integrity only; no nemesis or liveness claim |
 
 These capabilities belong to two deliberately different execution tracks:
@@ -1038,11 +1038,16 @@ consumes the existing 24-statement delivery plan.
 ```sh
 "$JOLT_SIM_BIN" -M:outbox-http-webhook-test
 "$JOLT_SIM_BIN" -M:outbox-http-webhook-sim-test
+script/run-hegel-gates.sh outbox-http-webhook-hegel-test
 ```
 
-This is an additional transport; the framed TCP/bencode lane is unchanged.
-The fixed gate makes no TLS, authentication, concurrency, generated schedule,
-or Hegel claim.
+The fresh-worker Hegel lane runs this unchanged application for shrinkable
+payload octets and response modes. Its deterministic witnesses cover empty and
+`[0 127 128 255]` payloads and enumerate the complete closed response-mode
+domain. Every case retains a canonical Case/Outcome until its parent verdict;
+boundary witnesses and every failure are exported by the checked-in runner.
+This is an additional transport; the framed TCP/bencode lane is unchanged. No
+TLS, authentication, concurrent-delivery, or arbitrary schedule claim is made.
 
 ### HTTP, SQLite, and TCP outbox application
 
