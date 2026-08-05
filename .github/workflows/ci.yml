@@ -13,7 +13,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  JOLT_CORE_SHA: 9fc64f93eba8b56a319f91bb1a322e2efced9c70
+  JOLT_CORE_SHA: 9c4c75ef99bdaff106c5f36eefe8fc39d8dfe0dd
   CHEZ_RELEASE_TAG: chez-ci-10.4.1.1
 
 jobs:
@@ -129,6 +129,14 @@ jobs:
           "$sim" -M:outbox-http-json-test
           "$sim" -M:runtime-poison-test
           "$sim" -M:ffi-pointer-loan-test
+          # Linux x86_64 proves a real zero-argument native call can coexist
+          # with modeled SQLite in one hybrid run. Other POSIX hosts execute
+          # the same routing and cleanup contract without loading SQLite.
+          if [ "${{ matrix.name }}" = "Linux x86_64" ]; then
+            "$sim" -M:sqlite-test
+          else
+            "$sim" -M:sqlite-sim-test
+          fi
           # The portable loopback model runs in -M:test on every host; this
           # unchanged jolt.net integration lane is intentionally POSIX-only.
           "$sim" -M:posix-loopback-test

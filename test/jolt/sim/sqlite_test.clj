@@ -16,9 +16,8 @@
   (resolve 'jolt.sim.sqlite/register-db!))
 
 (def ^:private native-ops
-  [:load-library :loaded? :alloc :free :read :write :sizeof :read-bytes
+  [:load-library :loaded? :alloc :free :read :write :sizeof :null? :read-bytes
    :write-bytes :read-array :read-array! :write-array
-   :borrow-byte-array :release-byte-array
    :ptr->string :string->ptr])
 
 (defn- native [H op & args]
@@ -121,7 +120,7 @@
 
 ;; ---- handler shape ------------------------------------------------------
 
-(deftest handlers-merge-23-sqlite-keys-and-16-native-ops
+(deftest handlers-merge-23-sqlite-keys-and-15-native-ops
   (let [w (sqlite/world [])
         h (sqlite/handlers w)
         h-keys (set (keys h))
@@ -130,7 +129,7 @@
     (is (= 23 (count ff-keys)))
     (is (= ff-keys (set (filter #(= :foreign-function (nth % 0)) h-keys))))
     (is (= native-keys (set (filter #(= :native-operation (nth % 0)) h-keys))))
-    (is (= 39 (count h-keys)))
+    (is (= 38 (count h-keys)))
     (doseq [k sqlite/handler-keys]
       (is (ifn? (get h k))))))
 
@@ -2704,7 +2703,7 @@
 ;; [:foreign-function symbol argument-types return-type blocking?
 ;; capture-native-error? varargs-after] identity, with capture-native-error?
 ;; false and varargs-after nil. That is this repo's exact current ABI6
-;; :foreign-function descriptor identity (descriptor-version 6). Comparisons
+;; :foreign-function descriptor identity (descriptor-version 8). Comparisons
 ;; below are against jolt.sim.runtime's own public substitute/modeled-resource
 ;; constructors -- the exact wire-format values a hybrid handler returns -- so
 ;; no private decode or validation var is ever resolved.
@@ -2744,13 +2743,13 @@
 (defn- close-db-hybrid [H db]
   (is (= (runtime/substitute 0) (ff-hybrid H "sqlite3_close_v2" [db]))))
 
-(deftest hybrid-handlers-cover-the-same-39-keys-as-the-hermetic-handlers
+(deftest hybrid-handlers-cover-the-same-38-keys-as-the-hermetic-handlers
   (let [w (sqlite/world [])
         h (sqlite/handlers w)
         hybrid (sqlite/hybrid-handlers w)
         hybrid-foreign (sqlite/hybrid-foreign-handlers w)]
     (is (= (set (keys h)) (set (keys hybrid))))
-    (is (= 39 (count hybrid)))
+    (is (= 38 (count hybrid)))
     (is (= (set sqlite/handler-keys) (set (keys hybrid-foreign))))
     (is (= 23 (count hybrid-foreign)))
     (doseq [k (keys hybrid)]

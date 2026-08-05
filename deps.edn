@@ -13,8 +13,11 @@
   {:extra-paths ["test"]
    :main-opts ["-m" "jolt.sim.runtime-poison-test"]}
 
-  ;; Custom-image integration gate for the descriptor-v6 scoped byte-array
-  ;; pointer loan. Kept separate from :test because it requires the sim image.
+  ;; Custom-image integration gate for the descriptor-v8 scoped byte-array
+  ;; pointer loan: the loan lifecycle is runtime-owned, only its enclosed
+  ;; read/write operations are intercepted, and the deterministic memory
+  ;; handlers fail closed on the real loan pointer rather than recreating a
+  ;; loan. Kept separate from :test because it requires the sim image.
   :ffi-pointer-loan-test
   {:extra-paths ["test"]
    :main-opts ["-m" "jolt.sim.ffi-pointer-loan-test-main"]}

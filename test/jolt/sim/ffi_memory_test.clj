@@ -3,9 +3,8 @@
             [jolt.sim.ffi-memory :as fm]))
 
 (def ^:private all-ops
-  [:load-library :loaded? :alloc :free :read :write :sizeof
+  [:load-library :loaded? :alloc :free :read :write :sizeof :null?
    :read-bytes :write-bytes :read-array :read-array! :write-array
-   :borrow-byte-array :release-byte-array
    :ptr->string :string->ptr])
 
 (def ^:private expected-handler-keys
@@ -24,12 +23,9 @@
 (defn- ex-data-of [f]
   (try (f) nil (catch :default e (ex-data e))))
 
-(def ^:private record-uvec-range-var
-  (resolve 'jolt.sim.ffi-memory/record-uvec-range))
-
 ;; ---- handler shape ------------------------------------------------------
 
-(deftest handlers-cover-all-sixteen-native-operations
+(deftest handlers-cover-all-fifteen-native-operations
   (let [w (fm/world)
         h (fm/handlers w)]
     (is (= expected-handler-keys (set (keys h))))
@@ -451,120 +447,31 @@
              (:type (ex-data-of #(call h :read-array! 0xdeadbeef 1 dest 0)))))
       (is (= [8 8 8 8] (vec dest))))))
 
-(deftest read-array!-writes-through-a-live-byte-array-loan-window
-  (let [w (fm/world)
-        h (fm/handlers w)
-        arr (byte-array [0 0 0 0 0 0 0 0])
-        p (call h :borrow-byte-array arr 0 4)
-        src (call h :alloc 4)]
-    (call h :write-array src (byte-array [11 22 33 44]))
-    ;; The modeled write goes into the live borrowed window, aliasing arr.
-    (is (= 4 (call h :read-array! src 4 arr 0)))
-    (is (= [11 22 33 44 0 0 0 0] (vec arr)))
-    (is (= [11 22 33 44] (vec (call h :read-array p 4))))
-    (call h :release-byte-array p)
-    (call h :free src)
-    (is (true? (fm/clean? w)))))
+;; ---- null predicate ------------------------------------------------------
 
-;; ---- scoped live byte-array loans --------------------------------------
-
-(deftest loan-aliases-one-live-array-window-in-both-directions
-  (let [w (fm/world)
-        h (fm/handlers w)
-        arr (byte-array [10 20 30 40])
-        p (call h :borrow-byte-array arr 1 2)]
-    (is (pos? p))
-    (is (= 20 (call h :read p :uint8)))
-    (call h :write p :uint8 0 77)
-    (is (= [10 77 30 40] (vec arr)))
-    ;; Ordinary Jolt mutation is visible to the next modeled native access.
-    (aset arr 2 99)
-    (is (= 99 (call h :read (+ p 1) :uint8)))
-    ;; Bulk writes snapshot their source and mutate only the loan window.
-    (is (= 2 (call h :write-array p (byte-array [7 8]))))
-    (is (= [10 7 8 40] (vec arr)))
-    (is (= [7 8] (vec (call h :read-array p 2))))
-    (is (= [{:base p :size 2}] (fm/leaks w)))
-    (call h :release-byte-array p)
-    (is (true? (fm/clean? w)))
-    (is (= :jolt.sim.ffi-memory/use-after-release
-           (:type (ex-data-of #(call h :read p :uint8)))))
-    (is (= [7 8] (:bytes (first (fm/snapshot w)))))))
-
-(deftest loan-reads-materialize-only-the-requested-live-range
-  (let [w (fm/world)
-        h (fm/handlers w)
-        arr (byte-array 4096)
-        _ (aset arr 4095 123)
-        _ (aset arr 2048 7)
-        _ (aset arr 2049 8)
-        _ (aset arr 2050 9)
-        p (call h :borrow-byte-array arr 0 4096)
-        original @record-uvec-range-var
-        ranges (atom [])]
-    (with-redefs-fn
-      {record-uvec-range-var
-       (fn [record offset length]
-         (swap! ranges conj [offset length])
-         (original record offset length))}
-      #(do
-         (is (= 123 (call h :read (+ p 4095) :uint8)))
-         (is (= [7 8 9]
-                (vec (call h :read-array (+ p 2048) 3))))))
-    (is (= [[4095 1] [2048 3]] @ranges))
-    (call h :release-byte-array p)
-    (is (true? (fm/clean? w)))))
-
-(deftest empty-and-nested-loans-have-distinct-balanced-lifetimes
-  (let [w (fm/world)
-        h (fm/handlers w)
-        arr (byte-array [1 2 3 4])
-        empty (call h :borrow-byte-array arr 4 0)
-        outer (call h :borrow-byte-array arr 0 4)
-        inner (call h :borrow-byte-array arr 1 2)]
-    (is (every? pos? [empty outer inner]))
-    (is (= 3 (count (set [empty outer inner]))))
-    (call h :write inner :uint8 0 55)
-    (is (= 55 (call h :read (+ outer 1) :uint8)))
-    (call h :release-byte-array inner)
-    ;; Releasing one alias does not retire the independent outer loan.
-    (is (= 55 (call h :read (+ outer 1) :uint8)))
-    (is (= :jolt.sim.ffi-memory/use-after-release
-           (:type (ex-data-of #(call h :read inner :uint8)))))
-    (call h :release-byte-array empty)
-    (call h :release-byte-array outer)
-    (is (true? (fm/clean? w)))))
-
-(deftest loan-validation-and-release-ownership-fail-closed
-  (let [w (fm/world)
-        h (fm/handlers w)
-        arr (byte-array [1 2 3])
-        owned (call h :alloc 3)
-        loan (call h :borrow-byte-array arr 0 3)]
-    (doseq [args [["not-bytes" 0 0]
-                  [arr -1 1]
-                  [arr 0 -1]
-                  [arr 2 2]
-                  [arr 4 0]]]
-      (is (contains?
-           #{:jolt.sim.ffi-memory/invalid-argument
-             :jolt.sim.ffi-memory/out-of-bounds}
-           (:type
-            (ex-data-of
-             #(apply call h :borrow-byte-array args))))))
-    (is (= :jolt.sim.ffi-memory/invalid-free
-           (:type (ex-data-of #(call h :free loan)))))
-    (is (= :jolt.sim.ffi-memory/invalid-release
-           (:type (ex-data-of #(call h :release-byte-array owned)))))
-    (is (= :jolt.sim.ffi-memory/invalid-release
-           (:type (ex-data-of #(call h :release-byte-array (inc loan))))))
-    (call h :release-byte-array loan)
-    (is (= :jolt.sim.ffi-memory/double-release
-           (:type (ex-data-of #(call h :release-byte-array loan)))))
-    (is (= :jolt.sim.ffi-memory/unknown-pointer
-           (:type (ex-data-of #(call h :release-byte-array 999999)))))
-    (call h :free owned)
-    (is (true? (fm/clean? w)))))
+(deftest null-predicate-matches-core-truncate-to-exact-semantics
+  (let [h (fm/handlers (fm/world))]
+    (is (true? (call h :null? 0)))
+    (is (false? (call h :null? 1)))
+    (is (false? (call h :null? -1)))
+    ;; Inexact arguments truncate toward zero to an exact integer, the same
+    ;; jnum->exact rule core applies before its zero check; only that exact
+    ;; zero is null.
+    (is (true? (call h :null? 0.5)))
+    (is (true? (call h :null? -0.5)))
+    (is (true? (call h :null? 1/2)))
+    (is (false? (call h :null? 3/2)))
+    (is (false? (call h :null? 1.5)))
+    ;; A non-number is never null, mirroring core's number? guard.
+    (is (false? (call h :null? nil)))
+    (is (false? (call h :null? "0")))
+    (is (false? (call h :null? (byte-array 1))))
+    ;; A live modeled pointer is a positive exact integer: not null.
+    (let [p (call h :alloc 8)]
+      (is (false? (call h :null? p)))
+      (call h :free p))
+    (is (= :jolt.sim.ffi-memory/invalid-argument
+           (:type (ex-data-of #(call h :null? 0 0)))))))
 
 ;; ---- strings -----------------------------------------------------------
 
@@ -699,9 +606,9 @@
 
 ;; ---- hybrid handlers ------------------------------------------------------
 
-;; Both are private in jolt.sim.runtime; resolved the same way
-;; record-uvec-range-var is above, matching this file's own precedent for
-;; reaching one namespace's internals from a test in another.
+;; Both are private in jolt.sim.runtime; resolving them here matches this
+;; file's own precedent for reaching one namespace's internals from a test in
+;; another.
 (def ^:private decode-handler-result-var
   (resolve 'jolt.sim.runtime/decode-handler-result!))
 
@@ -720,7 +627,7 @@
      descriptor
      (decode-handler-result-var :hybrid descriptor (fn [_]) result))))
 
-(deftest hybrid-handlers-cover-all-sixteen-native-operations
+(deftest hybrid-handlers-cover-all-fifteen-native-operations
   (let [w (fm/world)
         h (fm/hybrid-handlers w)]
     (is (= expected-handler-keys (set (keys h))))
@@ -735,6 +642,8 @@
     (is (= {:kind :substitute :value true} (classify h :loaded? "libfoo")))
     (is (= {:kind :substitute :value false} (classify h :loaded? "libbar")))
     (is (= {:kind :substitute :value 8} (classify h :sizeof :long)))
+    (is (= {:kind :substitute :value true} (classify h :null? 0)))
+    (is (= {:kind :substitute :value false} (classify h :null? p)))
     (is (= {:kind :substitute :value nil} (classify h :write p :int 0 42)))
     (is (= {:kind :substitute :value 42} (classify h :read p :int)))
     (is (= {:kind :substitute :value 5} (classify h :write-bytes p "café")))
@@ -767,18 +676,6 @@
     (is (= :modeled-resource (:kind alloc-result)))
     (is (pos? (:value alloc-result)))
     (is (= 12 (:span alloc-result)))
-    (let [arr (byte-array [1 2 3 4])
-          borrow-result (classify h :borrow-byte-array arr 0 4)]
-      (is (= :modeled-resource (:kind borrow-result)))
-      (is (pos? (:value borrow-result)))
-      (is (= 4 (:span borrow-result)))
-      (classify h :release-byte-array (:value borrow-result)))
-    ;; A zero-length loan still reserves one live fake address.
-    (let [empty-borrow (classify h :borrow-byte-array (byte-array 0) 0 0)]
-      (is (= :modeled-resource (:kind empty-borrow)))
-      (is (pos? (:value empty-borrow)))
-      (is (= 1 (:span empty-borrow)))
-      (classify h :release-byte-array (:value empty-borrow)))
     (let [str-result (classify h :string->ptr "hello é")]
       (is (= :modeled-resource (:kind str-result)))
       (is (pos? (:value str-result)))
@@ -796,9 +693,4 @@
         h (fm/hybrid-handlers w)]
     (classify h :alloc 8)
     (is (= 1 (count (fm/snapshot w)))
-        "one hybrid :alloc call must record exactly one allocation")
-    (let [arr (byte-array [1 2 3 4])
-          borrowed (classify h :borrow-byte-array arr 0 4)]
-      (is (= 2 (count (fm/snapshot w)))
-          "one hybrid :borrow-byte-array call must record exactly one more allocation")
-      (classify h :release-byte-array (:value borrowed)))))
+        "one hybrid :alloc call must record exactly one allocation")))

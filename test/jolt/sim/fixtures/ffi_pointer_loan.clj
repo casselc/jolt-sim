@@ -3,11 +3,14 @@
 
   This namespace deliberately has no dependency on jolt.sim. Its caller
   chooses whether the standard jolt.ffi operations reach real native memory or
-  the installed current controller with FFI descriptor-version 6."
+  the installed current controller with FFI descriptor-version 8. In the
+  current contract the scoped loan lifecycle itself is runtime-owned and
+  never crosses the controller boundary; only the read/write operations
+  enclosed in the loan scope are intercepted."
   (:require [jolt.ffi :as ffi]))
 
 (defn exercise-loan
-  "Loans one byte-array window and mutates it only through modeled/native
+  "Loans one byte-array window and mutates it only through native
   memory. The caller does not access the array while its staged pointer is live;
   copy-back publishes both native writes when the loan scope exits."
   []

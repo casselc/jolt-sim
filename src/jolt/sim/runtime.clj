@@ -4,7 +4,7 @@
 
   This unreleased adapter supports one exact current controller contract: ABI
   v6, a single composite install/restore over future, FFI, and clock callbacks,
-  descriptor-version 6 FFI interception, descriptor-version 1 clock
+  descriptor-version 8 FFI interception, descriptor-version 1 clock
   interception, and scoped native proceed routing. Until jolt-sim has a public
   release, a future ABI bump replaces this contract in place; intermediate
   development ABIs remain in Git history rather than accumulating compatibility
@@ -16,6 +16,7 @@
     install-controller! / restore-controller!
     controller-errors / clear-controller-errors!
     supervisor-mono-nanos
+    read-active-byte-array-view / write-active-byte-array-view!
 
   An ordinary released image has no such namespace. Every symbol is resolved
   dynamically, never required at compile time, so this namespace still loads
@@ -85,16 +86,23 @@
     :ffi-controller-arity 2
     :clock-controller-arity 2}
    :ffi-interception
-   {:descriptor-version 6
+   {:descriptor-version 8
     :kinds [:foreign-function :native-operation]
     :arguments :live
     :task-identity :future-lifecycle
     :native-operations [:load-library :loaded? :alloc :free
-                        :read :write :sizeof :read-bytes
+                        :read :write :sizeof :null? :read-bytes
                         :write-bytes :read-array :read-array!
-                        :write-array :borrow-byte-array :release-byte-array
-                        :ptr->string :string->ptr]
-    :proceed-routing ffi-proceed-routing-contract}
+                        :write-array :ptr->string :string->ptr]
+    :proceed-routing ffi-proceed-routing-contract
+    :scoped-byte-array-view
+    {:operations [:read-active-byte-array-view
+                  :write-active-byte-array-view!]
+     :read-arity 2
+     :write-arity 2
+     :owner-thread true
+     :dynamic-extent true
+     :runtime-owned true}}
    :clock-interception
    {:descriptor-version 1
     :operations [:mono-nanos]
@@ -127,13 +135,12 @@
    :read #{2 3}
    :write #{4}
    :sizeof #{1}
+   :null? #{1}
    :read-bytes #{2}
    :write-bytes #{2}
    :read-array #{2}
    :read-array! #{4}
    :write-array #{2 4}
-   :borrow-byte-array #{3}
-   :release-byte-array #{1}
    :ptr->string #{1}
    :string->ptr #{1}})
 
@@ -159,6 +166,10 @@
 (def ^:private errors-sym 'jolt.internal.sim/controller-errors)
 (def ^:private clear-errors-sym 'jolt.internal.sim/clear-controller-errors!)
 (def ^:private supervisor-mono-nanos-sym 'jolt.internal.sim/supervisor-mono-nanos)
+(def ^:private read-active-byte-array-view-sym
+  'jolt.internal.sim/read-active-byte-array-view)
+(def ^:private write-active-byte-array-view-sym
+  'jolt.internal.sim/write-active-byte-array-view!)
 
 (def ^:private controller-abi-keys
   [:capabilities
@@ -166,7 +177,9 @@
    :restore-controller!
    :controller-errors
    :clear-controller-errors!
-   :supervisor-mono-nanos])
+   :supervisor-mono-nanos
+   :read-active-byte-array-view
+   :write-active-byte-array-view!])
 
 ;; Single run-controlled session state. Compare-and-set! claims :idle
 ;; atomically, so overlapping or nested runs fail closed without a separate
@@ -185,7 +198,10 @@
    :restore-controller! (safe-resolve restore-sym)
    :controller-errors (safe-resolve errors-sym)
    :clear-controller-errors! (safe-resolve clear-errors-sym)
-   :supervisor-mono-nanos (safe-resolve supervisor-mono-nanos-sym)})
+   :supervisor-mono-nanos (safe-resolve supervisor-mono-nanos-sym)
+   :read-active-byte-array-view (safe-resolve read-active-byte-array-view-sym)
+   :write-active-byte-array-view!
+   (safe-resolve write-active-byte-array-view-sym)})
 
 (defn- validate-descriptor [caps-value]
   (when-not (map? caps-value)
@@ -240,7 +256,10 @@
        :restore-controller! @(:restore-controller! vars)
        :controller-errors @(:controller-errors vars)
        :clear-controller-errors! @(:clear-controller-errors! vars)
-       :supervisor-mono-nanos @(:supervisor-mono-nanos vars)})))
+       :supervisor-mono-nanos @(:supervisor-mono-nanos vars)
+       :read-active-byte-array-view @(:read-active-byte-array-view vars)
+       :write-active-byte-array-view!
+       @(:write-active-byte-array-view! vars)})))
 
 (defn available?
   "True only when the exact current sim controller contract is available.
@@ -265,6 +284,22 @@
   an exact supported descriptor and operation set."
   []
   (:descriptor (resolve-controller-ops!)))
+
+(defn read-active-byte-array-view
+  "Copies len bytes from ptr only when ptr addresses a byte-array pointer loan
+  active on the calling thread. Returns a fresh byte-array on a match and nil
+  when ptr is outside every active loan. A matched but out-of-bounds span
+  fails closed. This grants no acquire, release, or lifetime ownership."
+  [ptr len]
+  ((:read-active-byte-array-view (resolve-controller-ops!)) ptr len))
+
+(defn write-active-byte-array-view!
+  "Copies the complete byte-array src into ptr only when ptr addresses a
+  byte-array pointer loan active on the calling thread. Returns the copied
+  count on a match and nil when ptr is outside every active loan. The Jolt
+  runtime retains all loan and copy-back ownership."
+  [ptr src]
+  ((:write-active-byte-array-view! (resolve-controller-ops!)) ptr src))
 
 (defn- invalid-controller-event! [reason record]
   (throw
@@ -483,7 +518,7 @@
 (def ^:private native-operation-keys
   #{:kind :task :arguments :operation})
 
-;; Exact scalar foreign argument types (descriptor-version 6). Current Jolt
+;; Exact scalar foreign argument types (descriptor-version 8). Current Jolt
 ;; scalar metadata is exact, so a public foreign argument type is a primitive
 ;; keyword only. Recursive by-value aggregate argument types remain rejected;
 ;; variadic calls are instead identified by an exact :varargs-after boundary
@@ -511,10 +546,10 @@
 
 (defn- validate-ffi-descriptor!
   "Validates one intercepted call against the exact current descriptor-version
-  6 shape. Every foreign descriptor carries Boolean :capture-native-error?
+  7 shape. Every foreign descriptor carries Boolean :capture-native-error?
   and an exact :varargs-after boundary (nil or a positive integer no greater
   than the argument-type count); native descriptors admit the current
-  16-operation set."
+  15-operation set."
   [descriptor]
   (when-not (map? descriptor)
     (invalid-ffi-descriptor! :not-a-map descriptor))
@@ -611,10 +646,9 @@
   functions must return substitute or modeled-resource so a later native
   fallback cannot silently treat an unclassified model result as real. A nil
   handler-map value remains the shorthand for an explicit nil substitution.
-  Known positive pointer-producing descriptors reject substitute;
-  borrow-byte-array specifically requires a positive modeled-resource because
-  the runtime cannot accept a null borrowed pointer. Handler packs must classify
-  integer handles hidden behind scalar ABI types themselves."
+  Known positive pointer-producing descriptors reject substitute. Handler
+  packs must classify integer handles hidden behind scalar ABI types
+  themselves."
   [value]
   {handler-result-kind-key :substitute
    handler-result-value-key value})
@@ -623,8 +657,8 @@
   "Marks value as a model-owned numeric resource for hybrid FFI routing.
 
   The optional positive span declares the half-open resource interval
-  [value,value+span). Without it, alloc and borrow-byte-array infer their span
-  from the intercepted descriptor; other calls default to one resource id.
+  [value,value+span). Without it, alloc infers its span from the intercepted
+  descriptor; other calls default to one resource id.
   Hybrid native fallback truncates numeric arguments as core does and rejects
   any result in a recorded model-owned interval. Use disjoint high fake ids in
   handler packs."
@@ -795,7 +829,7 @@
     result))
 
 (def ^:private pointer-producing-native-operations
-  #{:alloc :borrow-byte-array :string->ptr})
+  #{:alloc :string->ptr})
 
 (def ^:private pointer-result-type-names #{"pointer" "void*"})
 
@@ -830,15 +864,15 @@
       (and (= :foreign-function (:kind descriptor))
            (pointer-result-type? (:return-type descriptor)))))
 
-;; Exact pointer-bearing argument positions for the current 16-operation native
+;; Exact pointer-bearing argument positions for the current 15-operation native
 ;; contract. free/read/read-bytes/write-bytes/read-array/read-array!/
-;; write-array/release-byte-array/ptr->string each take their pointer at
-;; position 0; write additionally treats its position-3 value slot as a
-;; pointer position when its position-1 type can carry a pointer
-;; (:pointer/:void*/:iptr/:uptr). alloc,
-;; sizeof, load-library, loaded?, string->ptr, and borrow-byte-array take no
-;; pointer-typed argument (each names a scalar, string, or byte array, not a
-;; live modeled address).
+;; write-array/ptr->string each take their pointer at position 0; write
+;; additionally treats its position-3 value slot as a pointer position when
+;; its position-1 type can carry a pointer (:pointer/:void*/:iptr/:uptr).
+;; alloc, sizeof, load-library, loaded?, null?, and string->ptr take no
+;; provenance-bearing pointer argument. null? accepts a numeric pointer-shaped
+;; value but only truncates and compares it with zero; it never dereferences or
+;; reaches the OS.
 (def ^:private native-operation-pointer-positions
   {:load-library #{}
    :loaded? #{}
@@ -847,13 +881,12 @@
    :read #{0}
    :write #{0}
    :sizeof #{}
+   :null? #{}
    :read-bytes #{0}
    :write-bytes #{0}
    :read-array #{0}
    :read-array! #{0}
    :write-array #{0}
-   :borrow-byte-array #{}
-   :release-byte-array #{0}
    :ptr->string #{0}
    :string->ptr #{}})
 
@@ -885,26 +918,16 @@
 (defn- validate-hybrid-classification! [descriptor decoded]
   (let [result (:value decoded)
         primary (primary-handler-result descriptor result)
-        borrow-byte-array?
-        (and (= :native-operation (:kind descriptor))
-             (= :borrow-byte-array (:operation descriptor)))
         fixed-native-pointer?
         (and (= :native-operation (:kind descriptor))
              (contains? pointer-producing-native-operations
                         (:operation descriptor)))]
     ;; substitute asserts that a value is not a model-owned resource. Enforce
     ;; that assertion for the resource-producing signatures the generic ABI can
-    ;; identify. Most fixed native pointer producers permit only nil/zero as a
-    ;; non-resource result. borrow-byte-array is stricter: core requires a
-    ;; positive pointer, so every handled borrow must return a positive modeled
-    ;; resource. Pointer-typed reads/foreign calls may additionally use negative
-    ;; API failure sentinels. Every other numeric pointer must enter the
-    ;; provenance ledger.
-    (when (and borrow-byte-array?
-               (or (not= :modeled-resource (:kind decoded))
-                   (not (and (integer? primary) (pos? primary)))))
-      (invalid-handler-result!
-       :borrow-requires-positive-modeled-resource descriptor result))
+    ;; identify. The fixed native pointer producers permit only nil/zero as a
+    ;; non-resource result. Pointer-typed reads/foreign calls may additionally
+    ;; use negative API failure sentinels. Every other numeric pointer must
+    ;; enter the provenance ledger.
     (when (and (= :substitute (:kind decoded))
                (pointer-producing-descriptor? descriptor)
                (number? primary)
@@ -917,11 +940,9 @@
 
 (defn- inferred-resource-span [descriptor]
   (let [candidate
-        (when (= :native-operation (:kind descriptor))
-          (case (:operation descriptor)
-            :alloc (first (:arguments descriptor))
-            :borrow-byte-array (get (:arguments descriptor) 2)
-            nil))]
+        (when (and (= :native-operation (:kind descriptor))
+                   (= :alloc (:operation descriptor)))
+          (first (:arguments descriptor)))]
     (if (and (integer? candidate) (pos? candidate)) candidate 1)))
 
 (defn- additional-ledger-entries
@@ -951,7 +972,7 @@
 
   The primary entry's :domain is :pointer when pointer-producing-descriptor?
   identifies this exact call as returning a live pointer (alloc,
-  borrow-byte-array, string->ptr, a pointer-typed read, or a foreign call with
+  string->ptr, a pointer-typed read, or a foreign call with
   a :pointer/:void* return type); otherwise it is :opaque, covering a numeric
   handle the ABI types cannot identify as a pointer (e.g. a scalar handle
   returned under :int/:uptr). A :pointer resource is later checked only
@@ -1023,26 +1044,32 @@
   identify as a pointer) remains checked against every argument position,
   exactly as before this distinction existed."
   [resource-ledger descriptor]
-  (let [pointer-positions (pointer-argument-positions descriptor)]
-    (some
-     identity
-     (map-indexed
-      (fn [argument-index argument]
-        (when-let [native-argument (native-truncated-number argument)]
-          (when-let [resource
-                     (some
-                      (fn [{:keys [base span] :as resource}]
-                        (when (and (resource-checked-at-position?
-                                    resource pointer-positions argument-index)
-                                   (<= base native-argument)
-                                   (< native-argument (+ base span)))
-                          resource))
-                      @resource-ledger)]
-            {:argument-index argument-index
-             :argument argument
-             :native-argument native-argument
-             :resource resource})))
-      (:arguments descriptor)))))
+  ;; null? is a pure numeric predicate. Even opaque modeled resources, which
+  ;; are conservatively checked at every ordinary argument position, may pass
+  ;; through its native implementation safely because it cannot dereference
+  ;; the value or perform an OS operation.
+  (when-not (and (= :native-operation (:kind descriptor))
+                 (= :null? (:operation descriptor)))
+    (let [pointer-positions (pointer-argument-positions descriptor)]
+      (some
+       identity
+       (map-indexed
+        (fn [argument-index argument]
+          (when-let [native-argument (native-truncated-number argument)]
+            (when-let [resource
+                       (some
+                        (fn [{:keys [base span] :as resource}]
+                          (when (and (resource-checked-at-position?
+                                      resource pointer-positions argument-index)
+                                     (<= base native-argument)
+                                     (< native-argument (+ base span)))
+                            resource))
+                        @resource-ledger)]
+              {:argument-index argument-index
+               :argument argument
+               :native-argument native-argument
+               :resource resource})))
+        (:arguments descriptor))))))
 
 (defn- record-arrival! [effect-trace-log entry]
   "Atomically appends one route decision in interception-arrival order and

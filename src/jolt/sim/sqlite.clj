@@ -77,11 +77,11 @@
   \":memory:\" and unselected file: names, keeps independent ephemeral
   per-connection storage.
 
-  handlers returns the 16 native-operation handlers from the memory world
+  handlers returns the 15 native-operation handlers from the memory world
   merged with exactly the 23 SQLite foreign-function keys required by
   db.sqlite, so a single :ffi-handlers map drives both layers unchanged.
 
-  hybrid-handlers returns the same 39 keys classified for jolt.sim.runtime
+  hybrid-handlers returns the same 38 keys classified for jolt.sim.runtime
   :hybrid routing: memory/hybrid-handlers plus hybrid-foreign-handlers, which
   reuses foreign-handlers exactly once per call for every key except
   sqlite3_column_blob and substitutes each such result. sqlite3_column_blob
@@ -2481,7 +2481,7 @@
           handler-keys)))
 
 (defn handlers
-  "Returns the memory world's 16 native-operation handlers merged with exactly
+  "Returns the memory world's 15 native-operation handlers merged with exactly
   the 23 SQLite foreign-function keys, as one :ffi-handlers map. Both layers
   share the single memory world."
   [w]
@@ -2536,7 +2536,7 @@
           base)))
 
 (defn hybrid-handlers
-  "Returns the memory world's 16 hybrid native-operation handlers merged with
+  "Returns the memory world's 15 hybrid native-operation handlers merged with
   the 23 hybrid SQLite foreign-function handlers, as one :ffi-handlers map for
   jolt.sim.runtime :hybrid routing. The two key sets never collide: every
   memory key is a 2-element [:native-operation op] vector and every SQLite key
