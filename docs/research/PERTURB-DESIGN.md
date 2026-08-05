@@ -6323,15 +6323,28 @@ survives intact.
 
 #### E39's nonclaims
 
-1. **The audit could not run two gates** — `bin/verify-ansatz` and `bin/test-jvm`
-   are unavailable in jolt-sim (this repository has no `bin/` directory). They are
-   repository-qualified gates in the pinned jolt-bytes and jolt-bencode checkouts
-   (e.g. `jolt-bytes/bin/verify-ansatz` runs JVM Clojure Ansatz/CIC verification
-   against the generating spike; `jolt-bytes/bin/test-jvm` and
-   `jolt-bencode/bin/test-jvm` run JVM-only test suites). Both remain unexecuted
-   in this audit. The chain E4's rewritten verdict cites is therefore *read*, not
-   executed end to end. The JVM evidence those gates would produce is about the
-   generating spike and JVM test lanes, not about Jolt runtime behaviour.
+1. ~~**The audit could not run two gates**~~ **Executed 2026-08-04.**
+   `bin/verify-ansatz` and `bin/test-jvm` ran in their respective upstream
+   checkouts at the pins E4's rewritten verdict cites. Results, by lane:
+
+   - **jolt-bytes 9c3280eb / Jolt proposal 89fe46e8 / Chez 10.4.1:**
+     `bin/verify-ansatz` — pass (969 parents, 20349 slices, closure 47/56).
+     core-prereq — pass, controls 15. Jolt `-M:test` — pass, 132672 assertions.
+     JVM `-M:test` — pass, 132672 assertions.
+
+   - **jolt-bencode 6c68bf2 / same Jolt/Chez:**
+     `bin/verify-ansatz` — pass, proof-roots 7, bounded-rows 9537.
+     Jolt `-M:test` — 13 tests, 109209 assertions, pass.
+     JVM `-M:test` — same, pass.
+     Z3 `bin/verify-models` — corrected models unsat, two buggy controls sat,
+     non-vacuity sat.
+
+   The chain E4's rewritten verdict cites is now **executed end to end** on all
+   four lanes (Ansatz/CIC, Jolt runtime on Chez, JVM runtime, bounded Z3). The
+   Jolt CI runtime job's omission of `bin/verify-oracle-sync` (the uniqueness
+   and completeness checks) measured by mutation A remains; these executions do not
+   address it — they close the *run-ability* gap, not the *coverage* gap. No
+   jolt-sim simulated evidence or cross-version parity is implied.
 2. **The Hegel test was read, not run** — it launches isolated workers and needs
    an absent dependency stack. The three defects are visible in source.
 3. **The `:invalid` arm should be relabelled, not fixed.** Enumerating a finite
@@ -6639,9 +6652,10 @@ empty document is not a clean bill of health.
 
 1. **Step 4 did not run.** The bounded-schedule arm needs
    `jolt.sim.process-explorer`, which is JVM Clojure, and the `clojure` CLI is
-   not installed here — E39 nonclaim 1's wall again. **No schedule witness
-   exists**, and nothing is claimed about this property under an explored
-   schedule.
+   not installed here — the same JVM-tooling wall E39 nonclaim 1 originally
+   described (now executed in the upstream checkouts; the wall remains here).
+   **No schedule witness exists**, and nothing is claimed about this property
+   under an explored schedule.
 2. **The lift is by construction and by reading, not by execution.** The same
    monitor has not been run under both runners, for the same reason.
 3. **One contract difference, deliberate.** `:finish` here takes
@@ -6709,7 +6723,8 @@ supervision data or event position.
 3. **The JVM suite did not become a valid substitute.** `clojure -M:test`
    stops compiling Jolt-source `catch :default`; it is not evidence about the
    monitor or process explorer. `bin/verify-ansatz` and `bin/test-jvm` are not
-   present in this checkout, so E39's two named gates remain unexecuted here.
+   present in this checkout, so those lanes remain unexecuted *here*; they were
+   executed in their upstream checkouts at the pins E4 cites — see E39 nonclaim 1.
 4. **This does not refute B6.3's fold equivalence.** The six semantic fixtures
    still agree on status and exercised count. It refutes only the asserted
    shared-runner seam as currently shaped.
