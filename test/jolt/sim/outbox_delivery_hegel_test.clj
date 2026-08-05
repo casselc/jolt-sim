@@ -2162,6 +2162,11 @@
         delivered-row (assoc row :status :delivered)]
     {:command command
      :result result
+     :identities {:request-id "req-1"
+                  :transaction-id [:outbox/command "req-1"]
+                  :outbox-id 1
+                  :delivery-id [:outbox/delivery 1]
+                  :attempt-id [:outbox/delivery-attempt 1 1]}
      :row row
      :pending pending
      :delivered (assoc pending :outbox [delivered-row])
@@ -2195,16 +2200,18 @@
         (violation "jolt.sim.outbox-delivery-hegel-test/webhook-application-shape"
                    input {:application application}))
       (when-not (and (exact-map-keys? command #{:evidence :http})
-                     (exact-map-keys? (:evidence command) #{:command})
+                     (exact-map-keys? (:evidence command)
+                                      #{:command :identities})
                      (exact-map-keys? (:receiver application)
                                       #{:requests :server-errors}))
         (violation "jolt.sim.outbox-delivery-hegel-test/webhook-boundary-shape"
                    input {:command command
                           :receiver (:receiver application)}))
-      (when-not (= {:value (:command expected)
-                    :result (:result expected)
-                    :emitted [(:row expected)]}
-                   (get-in command [:evidence :command]))
+      (when-not (= {:identities (:identities expected)
+                    :command {:value (:command expected)
+                              :result (:result expected)
+                              :emitted [(:row expected)]}}
+                   (:evidence command))
         (violation "jolt.sim.outbox-delivery-hegel-test/webhook-command"
                    input {:command command}))
       (when-not (= {:status 201
