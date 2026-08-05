@@ -2,6 +2,7 @@
   (:require [clojure.edn :as edn]
             [clojure.string :as string]
             [clojure.test :as test :refer [deftest is testing]]
+            [jolt.fs :as fs]
             [jolt.http.body :as http-body]
             [jolt.sim.case-outcome :as case-outcome]
             [jolt.sim.viewer :as viewer]
@@ -62,6 +63,15 @@
               "content-length" (str (count (.getBytes ^String text "UTF-8")))
               "x-jolt-sim-capability" supplied-token}
     :body (body [(.getBytes ^String text "UTF-8")])}))
+
+(defn get-request
+  ([uri] (get-request uri token))
+  ([uri supplied-token]
+   {:request-method :get
+    :uri uri
+    :headers (if supplied-token
+               {"x-jolt-sim-capability" supplied-token}
+               {})}))
 
 (defn services [render-calls replay-calls replay-outcome]
   {:render-document
@@ -165,6 +175,10 @@
     (is (= 200 (:status script)))
     (is (string/includes? (:body script) "textContent"))
     (is (not (string/includes? (:body script) "innerHTML")))
+    (is (string/includes? (:body script) "pollGeneration"))
+    (is (string/includes? (:body script) "file.disabled = busy"))
+    (is (string/includes? (:body script)
+                          "const replayRequest = request(\"/api/replay\")"))
     (is (= "no-store" (get-in shell [:headers "Cache-Control"])))
     (is (string/includes?
          (get-in shell [:headers "Content-Security-Policy"])
@@ -243,7 +257,14 @@
                                    (case-outcome/canonical-edn doc)))]
     (is (= 200 (:status response)))
     (is (= outcome (edn/read-string (:body response))))
-    (is (= [[doc (:runtime-config config)]] @replay-calls))
+    (is (= 1 (count @replay-calls)))
+    (let [[passed-doc passed-runtime] (first @replay-calls)]
+      (is (= doc passed-doc))
+      ;; The handler augments the trusted runtime config with its own
+      ;; internal `:on-run-dir` progress-tracking observer before delegating;
+      ;; every browser-visible/ambient setting stays exactly server-owned.
+      (is (= (:runtime-config config) (dissoc passed-runtime :on-run-dir)))
+      (is (fn? (:on-run-dir passed-runtime))))
     (is (= [] @render-calls))))
 
 (deftest disallowed-scenario-never-replays
@@ -273,6 +294,78 @@
                              (case-outcome/canonical-edn (document))))]
       (is (= 200 (:status response)))
       (is (= outcome (edn/read-string (:body response)))))))
+
+(deftest replay-progress-requires-authorization-and-starts-idle
+  (let [handler (viewer/make-handler
+                 (config)
+                 {:render-document (fn [_] "unused")
+                  :replay-document (fn [_ _] {:status :completed :exit 0})})
+        unauthorized (handler (get-request "/api/replay-progress" "wrong"))
+        idle (handler (get-request "/api/replay-progress"))]
+    (is (= 403 (:status unauthorized)))
+    (is (= 200 (:status idle)))
+    (is (= "no-store" (get-in idle [:headers "Cache-Control"])))
+    (is (string/includes? (:body idle) "\"status\":\"idle\""))))
+
+(deftest replay-progress-observes-the-run-dir-then-the-terminal-snapshot
+  (let [handler* (atom nil)
+        mid-flight-progress* (atom nil)
+        run-dir "/tmp/jolt-sim-viewer-progress-test-fixture-dir"
+        outcome {:status :completed
+                 :exit 0
+                 :diagnostics {:stdout {:bytes 5 :truncated? false :text "hello"}
+                               :stderr {:bytes 0 :truncated? false :text ""}}}
+        handler
+        (viewer/make-handler
+         (config)
+         {:render-document (fn [_] "unused")
+          :replay-document
+          (fn [_doc runtime]
+            ((:on-run-dir runtime) run-dir)
+            (reset! mid-flight-progress*
+                    (@handler* (get-request "/api/replay-progress")))
+            outcome)})]
+    (reset! handler* handler)
+    (let [replay-response (handler (request "/api/replay"
+                                            (case-outcome/canonical-edn (document))))
+          terminal-progress (handler (get-request "/api/replay-progress"))]
+      (is (= 200 (:status replay-response)))
+      (is (= 200 (:status @mid-flight-progress*)))
+      ;; The fixture run-dir never exists on disk, so no ready marker or
+      ;; output is observable yet: the live-derived status is "starting".
+      (is (string/includes? (:body @mid-flight-progress*)
+                            "\"status\":\"starting\""))
+      (is (string/includes? (:body @mid-flight-progress*)
+                            "\"result-observed?\":false"))
+      (is (= 200 (:status terminal-progress)))
+      (is (string/includes? (:body terminal-progress)
+                            "\"status\":\"completed\""))
+      (is (string/includes? (:body terminal-progress) "\"text\":\"hello\"")))))
+
+(deftest active-progress-milestones-survive-run-directory-cleanup
+  (let [observe-var (resolve 'jolt.sim.viewer/observe-active-replay)
+        temp-dir (str (fs/create-temp-dir
+                       {:prefix "jolt-sim-viewer-progress-latch-"}))
+        ready-path (str (fs/path temp-dir "worker-ready.edn"))
+        result-path (str (fs/path temp-dir "result.edn"))
+        stdout-path (str (fs/path temp-dir "stdout.log"))]
+    (try
+      (spit ready-path "{:ready true}\n")
+      (spit result-path "{:status :completed}\n")
+      (spit stdout-path "retained prefix")
+      (let [observed
+            (@observe-var {:phase :active
+                           :run-dir temp-dir
+                           :status :starting
+                           :result-observed? false})]
+        (fs/delete-tree temp-dir)
+        (let [after-cleanup (@observe-var observed)]
+          (is (= :running (:status after-cleanup)))
+          (is (true? (:result-observed? after-cleanup)))
+          (is (= "retained prefix" (get-in after-cleanup [:stdout :text])))))
+      (finally
+        (when (fs/exists? temp-dir)
+          (fs/delete-tree temp-dir))))))
 
 (deftest body-consuming-posts-share-one-admission-lease
   (let [handler* (atom nil)
@@ -330,6 +423,35 @@
                              (case-outcome/canonical-edn (document))))
            nil
            (catch :default caught caught))))))
+
+(deftest bounded-progress-text-caps-a-log-larger-than-the-bound-without-a-toctou-length-check
+  (let [read-var (resolve 'jolt.sim.viewer/bounded-progress-text)
+        limit @(resolve 'jolt.sim.viewer/progress-log-byte-limit)
+        temp-dir (str (fs/create-temp-dir
+                       {:prefix "jolt-sim-viewer-bounded-text-oversized-"}))
+        path (str (fs/path temp-dir "stdout.log"))
+        oversized (apply str (repeat (+ limit 100) \a))]
+    (spit path oversized)
+    (try
+      (let [diagnostic (@read-var path)]
+        (is (= (count oversized) (:bytes diagnostic)))
+        (is (true? (:truncated? diagnostic)))
+        (is (= limit (count (:text diagnostic))))
+        (is (= (subs oversized 0 limit) (:text diagnostic))))
+      (finally (fs/delete-tree temp-dir)))))
+
+(deftest bounded-progress-text-tolerates-a-missing-file
+  (let [read-var (resolve 'jolt.sim.viewer/bounded-progress-text)
+        temp-dir (str (fs/create-temp-dir
+                       {:prefix "jolt-sim-viewer-bounded-text-missing-"}))
+        path (str (fs/path temp-dir "absent.log"))]
+    (try
+      (is (false? (fs/exists? path)))
+      (let [diagnostic (@read-var path)]
+        (is (= 0 (:bytes diagnostic)))
+        (is (false? (:truncated? diagnostic)))
+        (is (= "" (:text diagnostic))))
+      (finally (fs/delete-tree temp-dir)))))
 
 (deftest unknown-routes-do-not-read-or-run-a-document
   (let [handler (viewer/make-handler

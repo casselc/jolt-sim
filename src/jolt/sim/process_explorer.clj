@@ -21,17 +21,17 @@
 (def ^:private run-keys
   #{:worker-command :scenario :schedule :timeout-ms :startup-timeout-ms
     :kill-grace-ms
-    :dir :extra-env :temp-dir :retain-completed-artifacts?})
+    :dir :extra-env :temp-dir :retain-completed-artifacts? :on-run-dir})
 
 (def ^:private case-keys
   #{:worker-command :scenario :schedule :input :timeout-ms
     :startup-timeout-ms :kill-grace-ms
-    :dir :extra-env :temp-dir :retain-completed-artifacts?})
+    :dir :extra-env :temp-dir :retain-completed-artifacts? :on-run-dir})
 
 (def ^:private explore-keys
   #{:worker-command :scenario :schedules :timeout-ms :startup-timeout-ms
     :kill-grace-ms
-    :dir :extra-env :temp-dir :retain-completed-artifacts?})
+    :dir :extra-env :temp-dir :retain-completed-artifacts? :on-run-dir})
 
 (def ^:private diagnostic-byte-limit 65536)
 (def ^:private wait-poll-ms 10)
@@ -97,6 +97,10 @@
       (throw
        (invalid-config :invalid-retain-completed-artifacts
                        {:value (:retain-completed-artifacts? config)}))))
+  (when (contains? config :on-run-dir)
+    (when-not (fn? (:on-run-dir config))
+      (throw
+       (invalid-config :invalid-on-run-dir {:value (:on-run-dir config)}))))
   config)
 
 (defn- validate-run-config! [config]
@@ -160,15 +164,36 @@
   (try
     (if-not (fs/exists? path)
       {:bytes 0 :truncated? false :text ""}
-      (let [length (.length (java.io.File. path))]
-        (if (<= length diagnostic-byte-limit)
-          {:bytes length :truncated? false :text (slurp path)}
-          {:bytes length :truncated? true :text nil})))
+      (let [stream (java.io.FileInputStream. path)]
+        (try
+          (let [buffer (byte-array diagnostic-byte-limit)
+                filled (loop [offset 0]
+                         (if (>= offset diagnostic-byte-limit)
+                           offset
+                           (let [read-count
+                                 (.read stream buffer offset
+                                        (- diagnostic-byte-limit offset))]
+                             (if (neg? read-count)
+                               offset
+                               (recur (+ offset read-count))))))
+                extra-byte? (and (= filled diagnostic-byte-limit)
+                                 (not (neg? (.read stream))))
+                observed-length (try
+                                  (.length (java.io.File. path))
+                                  (catch :default _ filled))
+                length (max filled observed-length)]
+            {:bytes length
+             :truncated? (or extra-byte? (> length filled))
+             :text (String. (java.util.Arrays/copyOf buffer filled)
+                            "UTF-8")})
+          (finally (.close stream)))))
     (catch :default error
-      {:bytes nil
-       :truncated? false
-       :text nil
-       :error (error-summary :diagnostic-reading error)})))
+      (if-not (fs/exists? path)
+        {:bytes 0 :truncated? false :text ""}
+        {:bytes nil
+         :truncated? false
+         :text nil
+         :error (error-summary :diagnostic-reading error)}))))
 
 (defn- diagnostics [stdout-path stderr-path]
   {:stdout (file-diagnostic stdout-path)
@@ -419,12 +444,25 @@
    (assoc (or (ex-data error) {}) :artifact-dir run-dir)
    error))
 
+(defn- notify-run-dir!
+  "Best-effort notification hook: reports the trusted run directory to an
+  optional caller-supplied `:on-run-dir` once it exists, before any request is
+  written or worker spawned. Its return value and any exception are ignored.
+  The observer is trusted and synchronous, so it must normally return promptly;
+  tests may deliberately block it to inspect the pre-spawn state."
+  [config run-dir]
+  (when-let [observer (:on-run-dir config)]
+    (try
+      (observer run-dir)
+      (catch :default _ nil))))
+
 (defn- run-worker!
   "Shared spawn/supervise/cleanup machinery for one fresh worker process,
   driven by an already-validated config plus the exact schedule (nil for a
   no-schedule case) and scenario input to place in the request."
   [config schedule input]
   (let [run-dir (create-run-dir (:temp-dir config))
+        _ (notify-run-dir! config run-dir)
         request-path (path-in run-dir "request.edn")
         result-path (path-in run-dir "result.edn")
         ready-path (path-in run-dir "worker-ready.edn")
@@ -512,7 +550,11 @@
   Omitting it preserves the original single-deadline/two-argument worker path.
   Optional `:extra-env` is a string map, `:kill-grace-ms` defaults to 250,
   `:temp-dir` selects an existing parent for per-run artifacts, and
-  `:retain-completed-artifacts?` defaults to false.
+  `:retain-completed-artifacts?` defaults to false. Optional `:on-run-dir` is a
+  one-argument function invoked with the trusted run directory string once it
+  exists, before any request is written or worker spawned. Its return value and
+  any exception are ignored. It is synchronous and trusted, so production
+  observers must return promptly; tests may deliberately block it before spawn.
 
   Returns one `:completed`, `:failed`, `:timeout`, or `:worker-error` map.
   Timeout means only that the child did not exit by the deadline; it is not a
@@ -538,8 +580,8 @@
 
   Returns the same `:completed`/`:failed`/`:timeout`/`:worker-error` shape and
   artifact-retention contract as `run-schedule`, including the opt-in
-  `:retain-completed-artifacts?` option, echoing the effective schedule
-  (including nil)."
+  `:retain-completed-artifacts?` option and optional `:on-run-dir` observer,
+  echoing the effective schedule (including nil)."
   [config]
   (let [config (validate-case-config! config)]
     (run-worker! config (:schedule config) (:input config))))

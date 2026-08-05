@@ -18,7 +18,19 @@
 
   io.github.casselc/jolt-net
   {:git/url "https://github.com/casselc/jolt-net.git"
-   :git/sha "699b908ffb4eb79ad35055cdc20866bb504e6932"}}
+   :git/sha "699b908ffb4eb79ad35055cdc20866bb504e6932"}
+
+  ;; JSON wire encoding for /api/replay-progress. data.json loads
+  ;; DateTimeFormatter support when its namespace initializes, so the current
+  ;; upstream time provider is direct rather than an accidental transitive
+  ;; detail, matching the root repository's outbox JSON facade aliases.
+  io.github.casselc/data.json
+  {:git/url "https://github.com/casselc/data.json.git"
+   :git/sha "8a6dc9668e5c3596a335759defeb7ec80cd3b5f8"}
+
+  io.github.jolt-lang/time
+  {:git/url "https://github.com/jolt-lang/time.git"
+   :git/sha "da271ca302487c2c5130a0450b4ad4c78d63e656"}}
 
  :aliases
  {:test
