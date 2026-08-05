@@ -55,6 +55,7 @@
     existing reply seam. It does not replace HTTP, SQLite, TCP, cancellation,
     acknowledgement validation, or durable marking."
   (:require [jolt.net :as net]
+            [clojure.string :as string]
             [jolt.sim.clock :as clock]
             [jolt.sim.ffi-memory :as memory]
             [jolt.sim.ffi-schedule :as ffi-schedule]
@@ -64,7 +65,16 @@
             [jolt.sim.net.posix-fault :as posix-fault]
             [jolt.sim.net.posix-loopback :as posix]
             [jolt.sim.runtime :as rt]
-            [jolt.sim.sqlite :as sqlite]))
+            [jolt.sim.sqlite :as sqlite]
+            [jolt.sim.trace :as trace]))
+
+(def ^:private activity-checkpoint-env
+  "JOLT_SIM_OUTBOX_ACTIVITY_CHECKPOINT")
+
+(def ^:private activity-release-env
+  "JOLT_SIM_OUTBOX_ACTIVITY_RELEASE")
+
+(def ^:private activity-release-timeout-ms 60000)
 
 (def ^:private scenario-input-keys
   #{:payload :stream-capacity :pipe-capacity :poll-eintr-ordinal
@@ -250,6 +260,54 @@
         (pred) true
         (< (System/nanoTime) deadline) (do (Thread/yield) (recur))
         :else false))))
+
+(defn- activity-observer-from-environment
+  "Builds the optional viewer/E2E observer from one closed pair of trusted
+   worker environment paths. With neither path present, returns nil and the
+   ordinary scenario is unchanged. A partial pair fails closed before the
+   application starts. The observer appends one canonical checkpoint record,
+   then waits boundedly for the parent-created release file. Both files live
+   under the parent-owned retained artifact root; failures preserve them."
+  []
+  (let [checkpoint-path (System/getenv activity-checkpoint-env)
+        release-path (System/getenv activity-release-env)
+        configured? (or (some? checkpoint-path) (some? release-path))]
+    (cond
+      (not configured?) nil
+
+      (not (and (string? checkpoint-path)
+                (not (string/blank? checkpoint-path))
+                (string? release-path)
+                (not (string/blank? release-path))))
+      (throw
+       (ex-info "outbox activity observer requires both nonblank paths"
+                {:type ::invalid-activity-observer-environment
+                 :required [activity-checkpoint-env activity-release-env]}))
+
+      :else
+      (fn [event]
+        ;; One open/write/close preserves a complete checkpoint line across
+        ;; most worker failures. This is diagnostic evidence, not an fsync or
+        ;; machine-crash durability claim.
+        (spit checkpoint-path
+              (str (trace/canonical-edn event) "\n")
+              :append true)
+        (when-not
+         (let [deadline (+ (System/nanoTime)
+                           (* activity-release-timeout-ms 1000000))
+               release-file (java.io.File. release-path)]
+           (loop []
+             (cond
+               (.exists release-file) true
+               (< (System/nanoTime) deadline)
+               (do (Thread/sleep 10) (recur))
+               :else false)))
+          (throw
+           (ex-info "outbox activity observer release timed out"
+                    {:type ::activity-release-timeout
+                     :timeout-ms activity-release-timeout-ms
+                     :checkpoint-path checkpoint-path
+                     :release-path release-path})))))))
 
 (defn- poll-handler-key
   "The exact canonical poll handler key for the live target descriptor's
@@ -855,6 +913,7 @@
          {:classifiers {send-key classify-send
                         recv-key classify-recv}})
         diagnostics (:diagnostics coord)
+        activity-observer (activity-observer-from-environment)
         controlled
         (rt/run-controlled
          (merge {:ffi-handlers (:handlers coord) :drain-timeout-ms 10000}
@@ -862,7 +921,8 @@
          (fn []
            (try
              (let [fixture-result
-                   (fixture/exercise-outbox-delivery-retry command)]
+                   (fixture/exercise-outbox-delivery-retry
+                    command activity-observer)]
                ;; check-complete! runs only after the fixture returns, so
                ;; HTTP client close, HTTP server stop/join, both delivery
                ;; connection lifecycles, receiver stop, and SQLite close all

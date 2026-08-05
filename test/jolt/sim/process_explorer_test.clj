@@ -32,6 +32,34 @@
     (catch :default error
       error)))
 
+(deftest terminal-file-diagnostic-reads-a-bounded-prefix
+  (let [diagnostic-var (resolve 'jolt.sim.process-explorer/file-diagnostic)
+        limit @(resolve 'jolt.sim.process-explorer/diagnostic-byte-limit)
+        temp-dir (str (fs/create-temp-dir
+                       {:prefix "jolt-sim-terminal-diagnostic-"}))
+        path (str (fs/path temp-dir "stdout.log"))
+        text (apply str (repeat (+ limit 100) \a))]
+    (spit path text)
+    (try
+      (let [diagnostic (@diagnostic-var path)]
+        (is (= (count text) (:bytes diagnostic)))
+        (is (true? (:truncated? diagnostic)))
+        (is (= limit (count (:text diagnostic))))
+        (is (= (subs text 0 limit) (:text diagnostic))))
+      (finally
+        (fs/delete-tree temp-dir)))))
+
+(deftest terminal-file-diagnostic-tolerates-a-missing-file
+  (let [diagnostic-var (resolve 'jolt.sim.process-explorer/file-diagnostic)
+        temp-dir (str (fs/create-temp-dir
+                       {:prefix "jolt-sim-terminal-diagnostic-missing-"}))
+        path (str (fs/path temp-dir "stderr.log"))]
+    (try
+      (is (= {:bytes 0 :truncated? false :text ""}
+             (@diagnostic-var path)))
+      (finally
+        (fs/delete-tree temp-dir)))))
+
 (deftest run-schedule-rejects-malformed-input-before-file-or-process-access
   (let [not-a-map (ex-data-of #(process-explorer/run-schedule :bad))
         unknown
@@ -383,6 +411,89 @@
                "unused-stderr"))))]
     (is (identical? unobserved thrown))
     (is (true? (@retain-var thrown)))))
+
+(deftest malformed-on-run-dir-is-rejected-fail-closed
+  (let [run-rejected
+        (ex-data-of
+         (fn []
+           (process-explorer/run-schedule
+            (assoc base-run-config :on-run-dir :not-a-fn))))
+        case-rejected
+        (ex-data-of
+         (fn []
+           (process-explorer/run-case
+            (assoc base-case-config :on-run-dir "nope"))))]
+    (doseq [rejected [run-rejected case-rejected]]
+      (is (= :jolt.sim.process-explorer/invalid-config (:type rejected)))
+      (is (= :invalid-on-run-dir (:reason rejected))))))
+
+(deftest on-run-dir-observer-fires-once-with-the-run-dir-before-spawn
+  (let [run-var (resolve 'jolt.sim.process-explorer/run-worker!)
+        create-var (resolve 'jolt.sim.process-explorer/create-run-dir)
+        process-var (resolve 'jolt.process/process)
+        supervise-var (resolve 'jolt.sim.process-explorer/supervise-child)
+        run-dir (str (fs/create-temp-dir
+                      {:prefix "jolt-sim-on-run-dir-test-"}))
+        observed (atom [])
+        outcome
+        (with-redefs-fn
+          {create-var (fn [_] run-dir)
+           process-var
+           (fn [& _]
+             ;; The observer must have already fired by the time the worker
+             ;; is spawned.
+             (is (= [run-dir] @observed))
+             :fake-child)
+           supervise-var
+           (fn [_config schedule _child _result _ready _stdout _stderr]
+             {:status :completed :schedule schedule})}
+          #(@run-var
+            (assoc base-run-config :on-run-dir (fn [dir] (swap! observed conj dir)))
+            [0 1] nil))]
+    (is (= :completed (:status outcome)))
+    (is (= [run-dir] @observed))
+    (is (false? (fs/exists? run-dir)))))
+
+(deftest on-run-dir-observer-is-optional-and-preserves-default-behavior
+  (let [run-var (resolve 'jolt.sim.process-explorer/run-worker!)
+        create-var (resolve 'jolt.sim.process-explorer/create-run-dir)
+        process-var (resolve 'jolt.process/process)
+        supervise-var (resolve 'jolt.sim.process-explorer/supervise-child)
+        run-dir (str (fs/create-temp-dir
+                      {:prefix "jolt-sim-no-on-run-dir-test-"}))
+        outcome
+        (with-redefs-fn
+          {create-var (fn [_] run-dir)
+           process-var (fn [& _] :fake-child)
+           supervise-var
+           (fn [_config schedule _child _result _ready _stdout _stderr]
+             {:status :completed :schedule schedule})}
+          #(@run-var base-run-config [0 1] nil))]
+    (is (= :completed (:status outcome)))
+    (is (nil? (:artifact-dir outcome)))
+    (is (false? (fs/exists? run-dir)))))
+
+(deftest a-throwing-on-run-dir-observer-cannot-affect-outcome-or-cleanup
+  (let [run-var (resolve 'jolt.sim.process-explorer/run-worker!)
+        create-var (resolve 'jolt.sim.process-explorer/create-run-dir)
+        process-var (resolve 'jolt.process/process)
+        supervise-var (resolve 'jolt.sim.process-explorer/supervise-child)
+        run-dir (str (fs/create-temp-dir
+                      {:prefix "jolt-sim-throwing-on-run-dir-test-"}))
+        outcome
+        (with-redefs-fn
+          {create-var (fn [_] run-dir)
+           process-var (fn [& _] :fake-child)
+           supervise-var
+           (fn [_config schedule _child _result _ready _stdout _stderr]
+             {:status :completed :schedule schedule})}
+          #(@run-var
+            (assoc base-run-config
+                   :on-run-dir (fn [_] (throw (ex-info "observer defect" {}))))
+            [0 1] nil))]
+    (is (= :completed (:status outcome)))
+    (is (nil? (:artifact-dir outcome)))
+    (is (false? (fs/exists? run-dir)))))
 
 (deftest pid-diagnostic-failure-cannot-abandon-a-spawned-child
   (let [supervise-var

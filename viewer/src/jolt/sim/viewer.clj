@@ -15,9 +15,11 @@
   `jolt-tcp`, underneath jolt-http, binds its listener to 127.0.0.1. The token
   remains required because other local processes and browser-origin attacks
   are still inside that network boundary."
-  (:require [clojure.edn :as edn]
+  (:require [clojure.data.json :as json]
+            [clojure.edn :as edn]
             [clojure.java.io :as io]
             [clojure.string :as string]
+            [jolt.fs :as fs]
             [jolt.http.body :as http-body]
             [jolt.http.server :as http]
             [jolt.sim.case-outcome :as case-outcome]
@@ -45,6 +47,11 @@
 (def ^:private default-max-document-bytes (* 1024 1024))
 (def ^:private maximum-max-document-bytes (* 16 1024 1024))
 (def ^:private minimum-token-length 32)
+
+(def ^:private progress-log-byte-limit 65536)
+
+(def ^:private empty-progress-diagnostic
+  {:bytes 0 :truncated? false :text ""})
 
 (defn- config-error [reason detail]
   (ex-info "jolt-sim viewer rejected its startup configuration"
@@ -180,6 +187,137 @@
                 (some? detail) (assoc :detail detail))))
    :headers assoc "Connection" "close"))
 
+(defn- bounded-progress-text
+  "Reads at most `progress-log-byte-limit` bytes of a live, possibly
+  partially-written log file, through a bounded FileInputStream prefix read.
+  The read itself enforces the bound, so a file that grows between opening
+  the stream and finishing the read can never push more than the limit
+  through this path -- unlike measuring the file's length first and then
+  slurping it whole. Tolerates a missing or disappearing file. Reports the
+  file's length observed once the bounded read completes and whether the
+  file held more bytes than the returned prefix, and always closes the
+  stream."
+  [path]
+  (try
+    (let [stream (java.io.FileInputStream. path)]
+      (try
+        (let [buffer (byte-array progress-log-byte-limit)
+              filled (loop [offset 0]
+                       (if (>= offset progress-log-byte-limit)
+                         offset
+                         (let [read-count
+                               (.read stream buffer offset
+                                      (- progress-log-byte-limit offset))]
+                           (if (neg? read-count)
+                             offset
+                             (recur (+ offset read-count))))))
+              extra-byte? (and (= filled progress-log-byte-limit)
+                               (not (neg? (.read stream))))
+              observed-length (try
+                                (.length (java.io.File. path))
+                                (catch :default _ filled))
+              length (max filled observed-length)]
+          {:bytes length
+           :truncated? (or extra-byte? (> length filled))
+           :text (String. (java.util.Arrays/copyOf buffer filled)
+                          "UTF-8")})
+        (finally (.close stream))))
+    (catch :default _
+      empty-progress-diagnostic)))
+
+(defn- initial-replay-state [] {:phase :idle})
+
+(def ^:private active-status-rank
+  {:starting 0 :worker-ready 1 :running 2})
+
+(defn- later-active-status [previous observed]
+  (if (> (get active-status-rank observed -1)
+         (get active-status-rank previous -1))
+    observed
+    previous))
+
+(defn- later-diagnostic [previous observed]
+  (cond
+    (and (number? (:bytes observed))
+         (or (not (number? (:bytes previous)))
+             (>= (:bytes observed) (:bytes previous))))
+    observed
+
+    (number? (:bytes previous)) previous
+    :else observed))
+
+(defn- observe-active-replay
+  "Samples trusted replay artifacts and monotonically latches active
+   milestones. Artifact cleanup or a transient read cannot regress a replay
+   from running to starting, clear result-observed?, or discard a longer
+   bounded diagnostic prefix before the terminal outcome is installed."
+  [state]
+  (if (and (= :active (:phase state)) (:run-dir state))
+    (let [run-dir (:run-dir state)
+          ready-path (str (fs/path run-dir "worker-ready.edn"))
+          result-path (str (fs/path run-dir "result.edn"))
+          stdout (bounded-progress-text (str (fs/path run-dir "stdout.log")))
+          stderr (bounded-progress-text (str (fs/path run-dir "stderr.log")))
+          ready? (fs/exists? ready-path)
+          result? (fs/exists? result-path)
+          any-output? (or (pos? (or (:bytes stdout) 0))
+                          (pos? (or (:bytes stderr) 0)))
+          observed-status (cond
+                            (or result? (and ready? any-output?)) :running
+                            ready? :worker-ready
+                            any-output? :running
+                            :else :starting)]
+      (-> state
+          (assoc :status (later-active-status
+                          (get state :status :starting)
+                          observed-status)
+                 :result-observed? (or (:result-observed? state) result?)
+                 :stdout (later-diagnostic (:stdout state) stdout)
+                 :stderr (later-diagnostic (:stderr state) stderr))))
+    state))
+
+(defn- replay-progress-state
+  "Derives the small closed `/api/replay-progress` status from the trusted
+  active run directory's fixed basenames. `result.edn` existence is checked
+  but never parsed here: the terminal snapshot instead reuses the already
+  safely-decoded outcome diagnostics recorded once the replay call returns."
+  [state]
+  (case (:phase state)
+    :idle {:status :idle}
+
+    :terminal
+    {:status (:status state)
+     :stdout (:stdout state)
+     :stderr (:stderr state)}
+
+    :active
+    (cond-> {:status (get state :status :starting)
+             :result-observed? (boolean (:result-observed? state))}
+      (contains? state :stdout) (assoc :stdout (:stdout state))
+      (contains? state :stderr) (assoc :stderr (:stderr state)))))
+
+(defn- diagnostic-wire
+  "The closed wire projection of one bounded stdout/stderr diagnostic."
+  [{:keys [bytes truncated? text]}]
+  {"bytes" bytes "truncated?" (boolean truncated?) "text" text})
+
+(defn- progress-wire
+  "The closed wire projection of `replay-progress-state`'s small status shape."
+  [state]
+  (cond-> {"status" (name (:status state))}
+    (contains? state :result-observed?)
+    (assoc "result-observed?" (boolean (:result-observed? state)))
+    (contains? state :stdout) (assoc "stdout" (diagnostic-wire (:stdout state)))
+    (contains? state :stderr) (assoc "stderr" (diagnostic-wire (:stderr state)))))
+
+(defn- replay-progress-json [active-replay]
+  (json/write-str
+   (progress-wire
+    (replay-progress-state (swap! active-replay observe-active-replay)))))
+
+(defn- outcome->progress-status [outcome]
+  (if (= :completed (:status outcome)) :completed :failed))
+
 (defn- secure-string= [expected supplied]
   (and (string? supplied)
        (= (count expected) (count supplied))
@@ -293,10 +431,18 @@
 (defn make-handler
   "Creates a synchronous jolt-http handler.
 
-  The optional `services` map is a narrow embedding/test seam. Its only keys
-  are `:render-document` (`doc -> html`) and `:replay-document`
-  (`doc runtime-config -> outcome`). Browser data never selects either
-  function or supplies runtime configuration."
+  The optional `services` map is a narrow embedding/test seam. Its keys are
+  `:render-document` (`doc -> html`) and `:replay-document`
+  (`doc runtime-config -> outcome`), both required. Browser data never selects
+  either function or supplies runtime configuration.
+
+  `GET /api/replay-progress` reports the one active or most recently
+  completed replay's status (`:idle`, `:starting`, `:worker-ready`,
+  `:running`, `:completed`, or `:failed`) plus bounded stdout/stderr text, by
+  reading only fixed basenames (`worker-ready.edn`, `stdout.log`,
+  `stderr.log`, and -- existence only, never parsed -- `result.edn`) from the
+  trusted active run directory. It never accepts a filesystem path from the
+  browser."
   ([config]
    (make-handler config
                  {:render-document report/case-outcome->html
@@ -304,7 +450,8 @@
   ([config services]
    (let [config (validate-config! config)
          unknown-services (into #{} (remove service-keys) (keys services))
-         document-active? (atom false)]
+         document-active? (atom false)
+         active-replay (atom (initial-replay-state))]
      (when (seq unknown-services)
        (throw (config-error :unknown-service-keys unknown-services)))
      (when-not (and (fn? (:render-document services))
@@ -320,6 +467,12 @@
            (and (= :get method) (= "/viewer.js" uri))
            (response 200 "application/javascript; charset=utf-8" viewer-js)
 
+           (and (= :get method) (= "/api/replay-progress" uri))
+           (if-not (authorized? config request)
+             (error-response 403 :forbidden nil)
+             (response 200 "application/json; charset=utf-8"
+                       (replay-progress-json active-replay)))
+
            (and (= :post method) (= "/api/render" uri))
            (execute-document-request
             config document-active? request
@@ -332,10 +485,34 @@
             config document-active? request
             (fn [document]
               (allowed-replay! config document)
-              (response 200 "application/edn; charset=utf-8"
-                        (trace/canonical-edn
-                         ((:replay-document services)
-                          document (:runtime-config config))))))
+              (reset! active-replay
+                      {:phase :active
+                       :run-dir nil
+                       :status :starting
+                       :result-observed? false})
+              (try
+                (let [observer
+                      (fn [run-dir]
+                        (swap! active-replay assoc :run-dir run-dir))
+                      runtime (assoc (:runtime-config config)
+                                     :on-run-dir observer)
+                      outcome ((:replay-document services) document runtime)]
+                  (reset! active-replay
+                          {:phase :terminal
+                           :status (outcome->progress-status outcome)
+                           :stdout (get-in outcome [:diagnostics :stdout]
+                                           empty-progress-diagnostic)
+                           :stderr (get-in outcome [:diagnostics :stderr]
+                                           empty-progress-diagnostic)})
+                  (response 200 "application/edn; charset=utf-8"
+                            (trace/canonical-edn outcome)))
+                (catch :default error
+                  (reset! active-replay
+                          {:phase :terminal
+                           :status :failed
+                           :stdout empty-progress-diagnostic
+                           :stderr empty-progress-diagnostic})
+                  (throw error)))))
 
            :else
            (error-response 404 :not-found nil)))))))

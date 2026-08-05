@@ -1039,6 +1039,14 @@
    larger buffers may show no receiver error. No real-kernel ECONNRESET or
    buffering parity is claimed.
 
+   The optional second argument is a trusted test/embedding observer invoked
+   synchronously after the command transaction has committed and the pending
+   row has been reloaded and validated, but before delivery attempt 1. The
+   ordinary one-argument path supplies nil and is unchanged. The observer may
+   block to expose that organic application boundary to an external harness;
+   its exception remains the primary application failure and normal fixture
+   cleanup still runs.
+
    Returns the same canonical immutable evidence shape as
    exercise-outbox-delivery, with :application carrying :retry instead of
    :delivery:
@@ -1047,8 +1055,13 @@
       :state-unchanged-after-failure? true
       :delivery <attempt-2 exchange, the non-retry :delivery shape>}"
   ([]
-   (exercise-outbox-delivery-retry default-command))
+   (exercise-outbox-delivery-retry default-command nil))
   ([command]
+   (exercise-outbox-delivery-retry command nil))
+  ([command activity-observer]
+   (when-not (or (nil? activity-observer) (fn? activity-observer))
+     (fail! :invalid-activity-observer
+            {:value-class (str (class activity-observer))}))
    (let [receiver-errors (atom [])
          received (atom [])
          receiver
@@ -1093,6 +1106,19 @@
                                {:step-state
                                 (:committed-state command-evidence)
                                 :loaded-state pending-state}))
+                    ;; A trusted, optional observation seam at a real
+                    ;; application boundary: the HTTP command response has
+                    ;; completed, COMMIT has succeeded, and an exact reload
+                    ;; has proved the durable row pending. No simulator type,
+                    ;; schedule, or controller enters the ordinary fixture.
+                    _ (when activity-observer
+                        (activity-observer
+                         {:phase :pending-delivery
+                          :request-id (:request-id command)
+                          :outbox-id
+                          (:outbox-id (first (:outbox pending-state)))
+                          :status (:status (first (:outbox pending-state)))
+                          :attempt 1}))
                     ;; Delivery attempt 1: ordinary connect/exchange/close.
                     ;; Ordinary application code catches the transport
                     ;; failure and cleans the first connection.
