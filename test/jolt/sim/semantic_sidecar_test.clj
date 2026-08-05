@@ -83,6 +83,39 @@
       (is (= 8 @calls)
           "canonical write, read, and repeated write each evaluate twice"))))
 
+(deftest e43-deferred-correlation-nonclaim-allows-unbound-case-pairing
+  (testing "E43's deferred correlation nonclaim, not desired behavior"
+    (let [semantic-case {:layers {:record [[:recv :eof]]}
+                         :fixture :semantic-fixture}
+          case-input {:fixture :case-outcome-fixture}
+          semantic-doc
+          (semantic/document
+           semantic-case
+           (:perturb.semantic/events (semantic-document)))
+          stored (decision semantic-doc)
+          parent-edn
+          (case-outcome/canonical-edn
+           (case-outcome/document
+            (assoc (case-map) :input case-input)
+            {:status :completed :result {:semantic-events 3} :exit 0}
+            [stored]))
+          doc (sidecar/document parent-edn semantic-doc monitor-id (adapters))
+          read-back (sidecar/read-edn (sidecar/canonical-edn doc (adapters))
+                                      (adapters))]
+      ;; E43 defers an explicit correlation reference. This passing mismatch
+      ;; records that current nonclaim; it must not be read as desired pairing.
+      (is (not= semantic-case case-input))
+      (is (= :pass (:status stored)))
+      (is (= semantic-case
+             (get-in doc [:jolt.sim.semantic-sidecar/semantic-document
+                          :perturb.semantic/case])))
+      (is (= case-input
+             (:input
+              (case-outcome/restore-case
+               (case-outcome/read-edn
+                (:jolt.sim.semantic-sidecar/case-outcome-edn doc))))))
+      (is (= doc read-back)))))
+
 (deftest noncanonical-case-outcome-edn-fails-closed
   (let [semantic-doc (semantic-document)
         stored (decision semantic-doc)
@@ -158,6 +191,38 @@
         (is (= sidecar/invalid-document (:type data)))
         (is (= :nondeterministic-evaluator (:reason data)))
         (is (= 2 @calls))))))
+
+(deftest detail-only-evaluator-mismatch-fails-closed
+  (let [semantic-doc (semantic-document)
+        stored (decision semantic-doc)
+        different (assoc stored :detail
+                         (assoc (:detail stored) :reviewer-control true))
+        data
+        (caught-data
+         #(sidecar/document
+           (case-outcome-edn semantic-doc [stored])
+           semantic-doc monitor-id
+           (adapters (fn [_] different))))]
+    (is (= (dissoc stored :detail) (dissoc different :detail)))
+    (is (not= (:detail stored) (:detail different)))
+    (is (= sidecar/invalid-document (:type data)))
+    (is (= :evaluator-mismatch (:reason data)))))
+
+(deftest failed-outcome-with-stored-monitor-round-trips
+  (let [semantic-doc (semantic-document)
+        stored (decision semantic-doc)
+        outcome {:status :failed
+                 :error {:kind :application-failure :attempt 1}
+                 :exit 1}
+        parent-edn (case-outcome-edn semantic-doc [stored] outcome)
+        doc (sidecar/document parent-edn semantic-doc monitor-id (adapters))
+        printed (sidecar/canonical-edn doc (adapters))
+        read-back (sidecar/read-edn printed (adapters))
+        parent (case-outcome/read-edn parent-edn)]
+    (is (= outcome (case-outcome/restore-outcome parent)))
+    (is (= [stored] (case-outcome/restore-monitors parent)))
+    (is (= doc read-back))
+    (is (= printed (sidecar/canonical-edn read-back (adapters))))))
 
 (deftest no-monitor-timeout-and-worker-error-have-no-sidecar
   (let [semantic-doc (semantic-document)
