@@ -120,6 +120,7 @@ jobs:
           cd "$GITHUB_WORKSPACE/jolt-sim"
           "$sim" -M:test
           "$sim" -M:outbox-sqlite-test
+          "$sim" -M:outbox-http-json-test
           "$sim" -M:runtime-poison-test
           "$sim" -M:ffi-pointer-loan-test
           # The portable loopback model runs in -M:test on every host; this

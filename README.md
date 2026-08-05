@@ -972,6 +972,33 @@ application lane does not observe arbitrary ordinary array accesses or claim
 any backing-array ownership overlap proof. FFI admission-order schedules and
 broader malformed-client generation remain later slices.
 
+### Routed JSON command facade
+
+`jolt.example.outbox.http-json` is an ordinary, simulator-independent HTTP
+handler over the existing durable SQLite outbox adapter. It uses public
+`jolt-http` request bodies, unmodified Reitit core routing through the Jolt
+router shim, and `clojure.data.json`. The one route accepts a closed JSON
+octet payload and preserves the application's durable semantics: 201 for a
+fresh commit, byte-identical 200 for exact replay, and 409 with no mutation
+for conflicting request-ID reuse. Rejected streaming requests are drained so
+jolt-http's bounded parser channel cannot strand the connection; malformed
+percent encoding, malformed UTF-8, non-JSON whitespace, and non-octet payloads
+fail closed before the database transition.
+
+The focused gate invokes that production handler contract directly against
+real in-memory SQLite:
+
+```sh
+export JOLT_SIM_BIN=/path/to/current-sim/target/sim/jolt
+"$JOLT_SIM_BIN" -M:outbox-http-json-test
+```
+
+This first slice proves the ordinary route/codec/transaction boundary without
+a socket or simulator world. The next slice will put the same handler behind
+the real and hermetic HTTP servers, then feed its accepted row through the
+existing TCP/bencode delivery and Hegel exploration rather than implementing
+a second outbox application.
+
 ### HTTP, SQLite, and TCP outbox application
 
 `jolt.sim.fixtures.outbox-delivery` composes the ordinary HTTP, SQLite outbox,
