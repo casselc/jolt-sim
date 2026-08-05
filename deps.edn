@@ -67,6 +67,16 @@
     {:local/root "perturb"}}
    :main-opts ["-m" "jolt.sim.explore-worker"]}
 
+  ;; Pure semantic-sidecar acceptance: resolve the focused test namespace and
+  ;; the in-tree perturb validator/evaluator directly. This has no sim-image
+  ;; skip path; the test main exits zero only when all assertions pass.
+  :semantic-sidecar-test
+  {:extra-paths ["test"]
+   :extra-deps
+   {io.github.casselc/perturb
+    {:local/root "perturb"}}
+   :main-opts ["-m" "jolt.sim.semantic-sidecar-test"]}
+
   ;; Optional Hegel generator/shrinker adapter and its fresh-process
   ;; exploration witness. Keep the released dependency out of the ordinary
   ;; compatibility suite and pin the peeled v0.1.2 commit exactly.
