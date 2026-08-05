@@ -24,6 +24,7 @@
             [jolt.sim.repl-test]
             [jolt.sim.replay-test]
             [jolt.sim.runtime-test]
+            [jolt.sim.session-test]
             [jolt.sim.sqlite-test]))
 
 (defn -main [& _]
@@ -52,6 +53,7 @@
                         'jolt.sim.repl-test
                         'jolt.sim.replay-test
                         'jolt.sim.runtime-test
+                        'jolt.sim.session-test
                         'jolt.sim.sqlite-test)
         failures (+ (:fail result) (:error result))]
     (println (str (:test result) " tests, "
