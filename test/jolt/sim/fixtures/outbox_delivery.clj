@@ -726,7 +726,14 @@
                       :entity-id (:entity-id result)
                       :version (:version result)
                       :payload (:payload value)
-                      :status :pending}]
+                      :status :pending}
+        expected-state
+        {:entities {(:entity-id result)
+                    {:version (:version result)
+                     :payload (:payload value)}}
+         :request-log {request-id {:command value :result result}}
+         :next-outbox-id (inc outbox-id)
+         :outbox [expected-row]}]
     (when-not (and (map? command-step)
                    (= #{:value :result :emitted} (set (keys command-step)))
                    (map? value)
@@ -756,6 +763,13 @@
     (when-not (= [expected-row] emitted)
       (fail! :command-emission-mismatch
              {:evidence emitted :durable (:outbox pending-state)}))
+    ;; The shared flow initializes an empty schema and authorizes delivery for
+    ;; exactly one accepted command. Exact state equality rejects an extra
+    ;; request, entity, outbox row, or next-id advance even if a callback tried
+    ;; to hide it behind otherwise valid evidence for the first command.
+    (when-not (= expected-state pending-state)
+      (fail! :unexpected-command-phase-state
+             {:expected expected-state :durable pending-state}))
     (when (contains? evidence :committed-state)
       (when-not (= (:committed-state evidence) pending-state)
         (fail! :committed-state-mismatch
@@ -774,6 +788,163 @@
    :expected-status 200
    :decode-response
    (fn [^bytes body] (decode-bencode-exact :http-response body))})
+
+(defn- check-command-phase-outcome!
+  "Fail-closed validation for the bounded command-phase callback used by the
+   shared delivery application. The callback must return the accepted command
+   evidence and an outer result projection containing :http. A multi-request
+   phase may also return its final durable :expected-pending-state. The shared
+   flow still performs its own canonical load and requires exact equality, so
+   a callback cannot bypass storage corroboration."
+  [outcome]
+  (when-not (and (map? outcome)
+                 (contains? outcome :command-evidence)
+                 (contains? outcome :result)
+                 (every? #{:command-evidence :expected-pending-state :result}
+                         (keys outcome))
+                 (map? (:result outcome))
+                 (contains? (:result outcome) :http)
+                 (not (contains? (:result outcome) :application))
+                 (not (contains? (:result outcome) :receiver)))
+    (fail! :invalid-command-phase-outcome {:value outcome}))
+  outcome)
+
+(defn- run-single-http-command-phase
+  "Runs the historical one-request HTTP seam and returns the closed command
+   phase outcome consumed by exercise-outbox-delivery-with-command-phase."
+  [http-seam command conn operation-context]
+  (let [command-evidence* (atom nil)
+        http-outcome
+        (try
+          {:value
+           (http-fixture/run-request-cycle
+            ((:handler-for http-seam)
+             conn command command-evidence* operation-context)
+            (fn [host port]
+              ((:request-bytes-for http-seam) command host port))
+            operation-context)}
+          (catch :default error
+            {:error error}))
+        command-evidence @command-evidence*]
+    (when-let [error (:error http-outcome)]
+      (throw (phase-error :http error command-evidence)))
+    (let [http-cycle (:value http-outcome)
+          parsed (:parsed http-cycle)]
+      (when-not (= (:expected-status http-seam) (:status parsed))
+        (fail! :http-command-failed
+               {:status (:status parsed)
+                :expected-status (:expected-status http-seam)
+                :command-evidence command-evidence
+                :server-errors (:server-errors http-cycle)}))
+      (when-not command-evidence
+        (fail! :missing-application-evidence {}))
+      {:command-evidence command-evidence
+       :result
+       {:http {:status (:status parsed)
+               :content-type (get (:headers parsed) "content-type")
+               :content-length (get (:headers parsed) "content-length")
+               :response ((:decode-response http-seam) (:body parsed))
+               :server-errors (:server-errors http-cycle)
+               :close-results (:close-results http-cycle)}}})))
+
+(defn exercise-outbox-delivery-with-command-phase
+  "Runs the shared ordinary SQLite -> pending reload -> framed TCP/bencode
+   delivery -> ack-gated durable marking application around `command-phase`.
+
+   command-phase is called exactly once as (fn [conn operation-context]) while
+   the schema-initialized SQLite connection is open. It owns one or more real
+   jolt-http request cycles and returns the closed shape validated by
+   check-command-phase-outcome!. Its :command-evidence names the one accepted
+   command whose pending row may authorize delivery. Its :result is merged
+   into the returned top-level evidence and must contain :http. A phase that
+   already loaded its final durable state may supply
+   :expected-pending-state; this function still performs the historical
+   explicit post-COMMIT reload and compares it exactly.
+
+   This is a narrow fixture-composition seam, not an alternate application:
+   schema setup, connection lifetime, receiver, pending-state corroboration,
+   TCP delivery, acknowledgement validation, marking, final reload, and
+   cleanup remain here and are identical for every command phase."
+  ([command-phase]
+   (exercise-outbox-delivery-with-command-phase command-phase expected-ack nil))
+  ([command-phase reply-for]
+   (exercise-outbox-delivery-with-command-phase command-phase reply-for nil))
+  ([command-phase reply-for supplied-operation-context]
+   (when-not (fn? command-phase)
+     (fail! :invalid-command-phase {:value command-phase}))
+   (when-not (fn? reply-for)
+     (fail! :invalid-reply-function {:value reply-for}))
+   (let [receiver-errors (atom [])
+         received (atom [])
+         receiver
+         (tcp/run-server
+          :port 0
+          :reuse-address? true
+          :handler (framed/framed-handler
+                    (receiver-reply received reply-for))
+          :error-logger
+          #(swap! receiver-errors conj (stable-error-summary %)))
+         body
+         (try
+           {:value
+            (with-sqlite-connection
+             "sqlite::memory:"
+             (fn [conn]
+               (store/init-schema! conn)
+               (let [operation-context
+                     (or supplied-operation-context (new-operation-context))
+                     _ (check-operation-deadline! operation-context
+                                                  :before-http)
+                     phase-outcome
+                     (try
+                       {:value (check-command-phase-outcome!
+                                (command-phase conn operation-context))}
+                       (catch :default error
+                         {:error error}))
+                     command-evidence
+                     (get-in phase-outcome [:value :command-evidence])
+                     _ (when-let [error (:error phase-outcome)]
+                         (if (contains? (or (ex-data error) {})
+                                        :outbox-delivery/phase)
+                           (throw error)
+                           (throw (phase-error :http error command-evidence))))
+                     phase (:value phase-outcome)
+                     _ (check-operation-deadline! operation-context
+                                                  :before-pending-reload)
+                     pending (load-pending-delivery conn)
+                     _ (check-operation-deadline! operation-context
+                                                  :after-pending-reload)
+                     pending-state (:state pending)
+                     _ (when (and (contains? phase :expected-pending-state)
+                                  (not= (:expected-pending-state phase)
+                                        pending-state))
+                         (fail! :command-phase-pending-state-mismatch
+                                {:phase (:expected-pending-state phase)
+                                 :loaded pending-state}))
+                     _ (check-command-evidence! command-evidence pending-state)
+                     delivery (deliver-messages! "127.0.0.1" (:port receiver)
+                                                 (:messages pending)
+                                                 operation-context)
+                     outbox-id (:outbox-id (first (:outbox pending-state)))
+                     marked (mark-delivered-and-reload!
+                             conn outbox-id operation-context)
+                     app (-> command-evidence
+                             (dissoc :committed-state)
+                             (assoc :pending-state pending-state
+                                    :store-state (:state marked)
+                                    :marking (:marking marked)
+                                    :delivery delivery))]
+                 (assoc (:result phase) :application app))))}
+           (catch :default error
+             {:error error}))
+         cleanup-errors
+         (vec
+          (keep identity
+                [(cleanup-attempt :receiver-stop #(tcp/stop-server receiver))]))]
+     (throw-with-cleanup! (:error body) cleanup-errors)
+     (assoc (:value body)
+            :receiver {:requests @received
+                       :server-errors @receiver-errors}))))
 
 (defn exercise-outbox-delivery-via
   "Runs one ordinary HTTP -> committed SQLite outbox -> framed TCP/bencode
@@ -807,110 +978,12 @@
    (exercise-outbox-delivery-via http-seam command reply-for nil))
   ([http-seam command reply-for supplied-operation-context]
    (check-http-seam! http-seam)
-   (when-not (fn? reply-for)
-     (fail! :invalid-reply-function {:value reply-for}))
-   (let [receiver-errors (atom [])
-         received (atom [])
-         receiver
-         (tcp/run-server
-          :port 0
-          :reuse-address? true
-          :handler (framed/framed-handler
-                    (receiver-reply received reply-for))
-          :error-logger
-          #(swap! receiver-errors conj (stable-error-summary %)))
-         command-evidence* (atom nil)
-         body
-         (try
-           {:value
-            ;; The SQLite connection deliberately stays OPEN across delivery
-            ;; and durable marking: the post-COMMIT reload, the exact
-            ;; correlated ack validation, mark-delivered!, and the final
-            ;; reload all flow through the same ordinary connection. No
-            ;; close/reopen or crash-durability claim.
-            (with-sqlite-connection
-             "sqlite::memory:"
-             (fn [conn]
-               (store/init-schema! conn)
-               (let [operation-context
-                     (or supplied-operation-context (new-operation-context))
-                     _ (check-operation-deadline! operation-context
-                                                  :before-http)
-                     http-outcome
-                     (try
-                       {:value
-                        (http-fixture/run-request-cycle
-                         ((:handler-for http-seam)
-                          conn command command-evidence* operation-context)
-                         (fn [host port]
-                           ((:request-bytes-for http-seam) command host port))
-                         operation-context)}
-                       (catch :default error
-                         {:error error}))
-                     command-evidence @command-evidence*
-                     _ (when-let [error (:error http-outcome)]
-                         (throw (phase-error :http error command-evidence)))
-                     http-cycle (:value http-outcome)
-                     _ (when-not (= (:expected-status http-seam)
-                                    (get-in http-cycle [:parsed :status]))
-                         (fail! :http-command-failed
-                                {:status (get-in http-cycle [:parsed :status])
-                                 :expected-status (:expected-status http-seam)
-                                 :command-evidence command-evidence
-                                 :server-errors (:server-errors http-cycle)}))
-                     _ (when-not command-evidence
-                         (fail! :missing-application-evidence {}))
-                    ;; The explicit post-COMMIT/pre-delivery reload. The
-                    ;; emitted command row remains :pending evidence on this
-                    ;; side of the delivery boundary.
-                    _ (check-operation-deadline! operation-context
-                                                 :before-pending-reload)
-                    pending (load-pending-delivery conn)
-                    _ (check-operation-deadline! operation-context
-                                                 :after-pending-reload)
-                    pending-state (:state pending)
-                    _ (check-command-evidence! command-evidence pending-state)
-                    ;; The HTTP request has succeeded and its server is
-                    ;; quiescent; downstream delivery now begins while the
-                    ;; connection stays open. deliver-messages! performs the
-                    ;; existing exact correlated acknowledgement validation.
-                    delivery (deliver-messages! "127.0.0.1" (:port receiver)
-                                                (:messages pending)
-                                                operation-context)
-                    ;; Only after the ack validates: durable marking for the
-                    ;; one outbox id, then the final reload checks.
-                    outbox-id (:outbox-id (first (:outbox pending-state)))
-                    marked (mark-delivered-and-reload!
-                            conn outbox-id operation-context)
-                    app (-> command-evidence
-                            (dissoc :committed-state)
-                            (assoc :pending-state pending-state
-                                   :store-state (:state marked)
-                                   :marking (:marking marked)
-                                   :delivery delivery))
-                    parsed (:parsed http-cycle)
-                    response
-                    ((:decode-response http-seam) (:body parsed))]
-                {:application app
-                 :http {:status (:status parsed)
-                        :content-type
-                        (get (:headers parsed) "content-type")
-                        :content-length
-                        (get (:headers parsed) "content-length")
-                        :response response
-                        :server-errors (:server-errors http-cycle)
-                        :close-results (:close-results http-cycle)}})))}
-           (catch :default error
-             {:error error}))
-         cleanup-errors
-         (vec
-          (keep identity
-                [(cleanup-attempt :receiver-stop #(tcp/stop-server receiver))]))]
-     (throw-with-cleanup! (:error body) cleanup-errors)
-     ;; stop-server quiesces the receiver before its final error snapshot.
-     (assoc (:value body)
-            :receiver {:requests @received
-                       :server-errors @receiver-errors}))))
+   (exercise-outbox-delivery-with-command-phase
+    (fn [conn operation-context]
+      (run-single-http-command-phase
+       http-seam command conn operation-context))
+    reply-for
+    supplied-operation-context)))
 
 (defn exercise-outbox-delivery
   "Runs the ordinary bencode HTTP command phase of

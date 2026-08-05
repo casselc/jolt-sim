@@ -423,3 +423,111 @@
    (json-delivery-statement-plans default-command-payload))
   ([command-payload]
    (delivery-statement-plans command-payload)))
+
+(defn- first-command-statement-plans
+  "The exact eight-statement transaction for a fresh first command against the
+   empty initialized schema. Unlike parity-statement-plans this accepts the
+   route-safe request/entity identifiers drawn by the JSON Hegel lane."
+  [{:keys [request-id entity-id payload]}]
+  [(tx-plan "BEGIN" :begin)
+   (scan-plan entity-scan-sql ["entity_id" "version" "payload"]
+              :outbox/entities ["entity_id" "version" "payload"] ["entity_id"])
+   (scan-plan request-scan-sql
+              ["request_id" "entity_id" "payload" "version" "outbox_id"]
+              :outbox/requests
+              ["request_id" "entity_id" "payload" "version" "outbox_id"]
+              ["request_id"])
+   (scan-plan outbox-scan-sql
+              ["outbox_id" "request_id" "entity_id" "version" "payload" "status"]
+              :outbox/rows
+              ["outbox_id" "request_id" "entity_id" "version" "payload" "status"]
+              ["outbox_id"])
+   (insert-plan entity-insert-sql
+                {1 {:type :text :value entity-id}
+                 2 {:type :integer :value 1}
+                 3 {:type :blob :value (byte-array payload)}}
+                :outbox/entities [1]
+                [["entity_id" 1] ["version" 2] ["payload" 3]]
+                1 1)
+   (insert-plan request-insert-sql
+                {1 {:type :text :value request-id}
+                 2 {:type :text :value entity-id}
+                 3 {:type :blob :value (byte-array payload)}
+                 4 {:type :integer :value 1}
+                 5 {:type :integer :value 1}}
+                :outbox/requests [1]
+                [["request_id" 1] ["entity_id" 2] ["payload" 3]
+                 ["version" 4] ["outbox_id" 5]]
+                1 2)
+   (insert-plan outbox-insert-sql
+                {1 {:type :integer :value 1}
+                 2 {:type :text :value request-id}
+                 3 {:type :text :value entity-id}
+                 4 {:type :integer :value 1}
+                 5 {:type :blob :value (byte-array payload)}
+                 6 {:type :text :value "pending"}}
+                :outbox/rows [1]
+                [["outbox_id" 1] ["request_id" 2] ["entity_id" 3]
+                 ["version" 4] ["payload" 5] ["status" 6]]
+                1 3)
+   (tx-plan "COMMIT" :commit)])
+
+(defn- state-scan-statement-plans
+  []
+  [(scan-plan entity-scan-sql ["entity_id" "version" "payload"]
+              :outbox/entities ["entity_id" "version" "payload"] ["entity_id"])
+   (scan-plan request-scan-sql
+              ["request_id" "entity_id" "payload" "version" "outbox_id"]
+              :outbox/requests
+              ["request_id" "entity_id" "payload" "version" "outbox_id"]
+              ["request_id"])
+   (scan-plan outbox-scan-sql
+              ["outbox_id" "request_id" "entity_id" "version" "payload" "status"]
+              :outbox/rows
+              ["outbox_id" "request_id" "entity_id" "version" "payload" "status"]
+              ["outbox_id"])])
+
+(defn json-replay-conflict-statement-plans
+  "Returns the exact 35-statement plan for the two-request routed JSON
+   workload followed by delivery and one durable mark.
+
+   Both modes initialize the schema, commit the fresh accepted command, load
+   its state, then run request two through the same production adapter. Exact
+   replay performs BEGIN + three scans + COMMIT; conflict performs the same
+   reads followed by ROLLBACK when the typed conflict escapes the transaction
+   body. The workload then loads state again, the shared delivery boundary
+   independently reloads and corroborates it, one ack authorizes the existing
+   six-statement guarded mark, and the final state is loaded. No plan grants a
+   write to request two.
+
+   `workload` is the fixture's closed {:mode :accepted-command
+   :second-command} value. The second command affects validation and HTTP wire
+   input but has no SQLite binds because neither legal mode writes it."
+  [{:keys [mode accepted-command] :as workload}]
+  (when-not (and (map? workload)
+                 (= #{:mode :accepted-command :second-command}
+                    (set (keys workload)))
+                 (contains? #{:exact-replay :conflict} mode)
+                 (map? accepted-command))
+    (throw (ex-info "invalid JSON replay/conflict plan workload"
+                    {:type :jolt.sim.fixtures.outbox-sqlite-plans/invalid-workload
+                     :workload workload})))
+  (let [base (parity-statement-plans (:payload accepted-command))
+        scans (state-scan-statement-plans)
+        second-tx (concat [(tx-plan "BEGIN" :begin)]
+                          scans
+                          [(tx-plan (if (= :exact-replay mode)
+                                      "COMMIT"
+                                      "ROLLBACK")
+                                    (if (= :exact-replay mode)
+                                      :commit
+                                      :rollback))])]
+    (vec (concat (subvec base 0 4)
+                 (first-command-statement-plans accepted-command)
+                 scans
+                 second-tx
+                 scans
+                 ;; Independent shared pending-state corroboration.
+                 scans
+                 (mark-delivered-statement-plans base)
+                 scans))))
