@@ -251,6 +251,52 @@
      :git/sha "df8f434f7ebf5e63b3f52ab6c5c2a2b2c92d3a6d"}}
    :main-opts ["-m" "jolt.example.outbox-sqlite-test-main"]}
 
+  ;; Simulator-free JSON HTTP facade gate: the ordinary
+  ;; jolt.example.outbox.http-json facade -- public jolt-http handler
+  ;; contract, clojure.data.json at the reviewed public fork commit, and the
+  ;; current public Reitit router shim with its own manifest's reitit-core
+  ;; and meta-merge pins. data.json loads DateTimeFormatter support when its
+  ;; namespace initializes, so the current upstream time provider is direct
+  ;; rather than an accidental test-only dependency. The facade drives the
+  ;; existing real SQLite outbox
+  ;; transaction path. Handler-level: fabricated request maps through the
+  ;; public jolt.http.body/RequestBody protocol, no sockets. Uses the
+  ;; complete public DB coordinate so its native library declaration is
+  ;; available to the launcher. Sequential, single-owner, fresh in-memory
+  ;; database per test; no sim image required.
+  :outbox-http-json-test
+  {:extra-paths ["test"]
+   :extra-deps
+   {io.github.casselc/db
+    {:git/url "https://github.com/casselc/db.git"
+     :git/sha "df8f434f7ebf5e63b3f52ab6c5c2a2b2c92d3a6d"}
+    io.github.casselc/jolt-http
+    {:git/url "https://github.com/casselc/jolt-http.git"
+     :git/sha "96bd0fc93f1a2c77128d06f74802dd2a4631c0d4"}
+    io.github.casselc/jolt-tcp
+    {:git/url "https://github.com/casselc/jolt-tcp.git"
+     :git/sha "0ceaa900bfca11933d35831d7697c7e2c5b22f04"}
+    io.github.casselc/jolt-net
+    {:git/url "https://github.com/casselc/jolt-net.git"
+     :git/sha "699b908ffb4eb79ad35055cdc20866bb504e6932"}
+    io.github.casselc/data.json
+    {:git/url "https://github.com/casselc/data.json.git"
+     :git/sha "8a6dc9668e5c3596a335759defeb7ec80cd3b5f8"}
+    io.github.jolt-lang/time
+    {:git/url "https://github.com/jolt-lang/time.git"
+     :git/sha "da271ca302487c2c5130a0450b4ad4c78d63e656"}
+    jolt-lang/router
+    {:git/url "https://github.com/jolt-lang/router"
+     :git/sha "a66fc944f1b1a43d2dff9b322619159c77809885"}
+    metosin/reitit-core
+    {:git/url "https://github.com/metosin/reitit"
+     :git/sha "5d5c965deb3c7c8d64b8dd636432eaa14f0324ec"
+     :deps/root "modules/reitit-core"}
+    weavejester/meta-merge
+    {:git/url "https://github.com/weavejester/meta-merge"
+     :git/sha "c968c38baccd4219fe0ba592d89af37ea8e426bf"}}
+   :main-opts ["-m" "jolt.example.outbox-http-json-test-main"]}
+
   ;; Real/hermetic/hybrid parity gate for the unchanged jolt.example.outbox
   ;; SQLite adapter: one ordinary jdbc.core scenario run against real SQLite
   ;; and under the hermetic and hybrid SQLite handler worlds with an exact
