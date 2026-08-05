@@ -993,11 +993,28 @@ export JOLT_SIM_BIN=/path/to/current-sim/target/sim/jolt
 "$JOLT_SIM_BIN" -M:outbox-http-json-test
 ```
 
-This first slice proves the ordinary route/codec/transaction boundary without
-a socket or simulator world. The next slice will put the same handler behind
-the real and hermetic HTTP servers, then feed its accepted row through the
-existing TCP/bencode delivery and Hegel exploration rather than implementing
-a second outbox application.
+The whole-application companion puts that same production handler behind the
+real and hermetic HTTP servers. Its accepted row is observed through the
+existing post-COMMIT durable reload, delivered by the existing framed
+TCP/bencode worker, acknowledged, marked through the existing SQLite adapter,
+and reloaded once more. The JSON evidence projection must agree with the
+durable request log and pending outbox row before delivery is authorized; it
+adds no observer query to the application transcript. Both modes therefore
+consume the same exact 24-statement application plan as the original bencode
+command lane:
+
+```sh
+"$JOLT_SIM_BIN" -M:outbox-json-delivery-test
+"$JOLT_SIM_BIN" -M:outbox-json-delivery-sim-test
+```
+
+This establishes one fresh routed-JSON command end to end. Exact replay and
+conflicting request-ID reuse are already covered at the handler boundary; the
+next Hegel slice will compose those workloads with the complete delivery flow
+and retained Case/Outcome witnesses. The JSON seam currently observes the
+shared operation deadline only at the outer HTTP/reload/delivery boundaries;
+the finer bencode pre-command/post-COMMIT deadline campaign is not claimed for
+this lane.
 
 ### HTTP, SQLite, and TCP outbox application
 

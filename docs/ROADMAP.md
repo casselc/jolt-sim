@@ -197,6 +197,15 @@ The first slice used one in-memory SQLite connection and therefore established
 post-COMMIT reload only. Later stacked slices now add clean file-backed
 close/reopen continuity and a separate real process-exit/recovery witness.
 
+The routed-JSON expansion reuses that same application rather than adding a
+simulator-side controller. A production Reitit/data.json handler accepts one
+fresh command over a real or hermetic jolt-http server; the existing durable
+reload must corroborate its response projection before the existing
+TCP/bencode worker may deliver and mark the row. The wrapper adds no SQLite
+observer query, so both command encodings consume the same 24-statement
+application transcript. Generated exact-replay/conflict workloads and their
+retained viewer evidence remain the next bounded Phase 4 slice.
+
 The next stacked slice, draft PR `casselc/jolt-sim#29`, keeps that application
 body unchanged and runs every case in a fresh sim-enabled process. Hegel owns
 and shrinks the command payload octets, stream capacity, pipe capacity, and one

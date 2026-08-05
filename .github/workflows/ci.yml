@@ -133,8 +133,10 @@ jobs:
           # system SQLite as an independent control.
           if [ "${{ matrix.name }}" = "Linux x86_64" ]; then
             "$sim" -M:outbox-delivery-test
+            "$sim" -M:outbox-json-delivery-test
           else
             "$sim" -M:outbox-delivery-sim-test
+            "$sim" -M:outbox-json-delivery-sim-test
           fi
           "$sim" -M:future-schedule-poison-test
           JOLT_SIM_BIN="$sim" JOLT_SIM_PROJECT_DIR="$PWD" \

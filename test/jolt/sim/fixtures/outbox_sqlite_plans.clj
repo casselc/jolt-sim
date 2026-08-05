@@ -2,11 +2,11 @@
   "Test-only exact SQLite row-effect plans shared by the ordinary
   outbox parity fixture and the whole-application delivery fixture.
 
-  This namespace is simulator configuration, not an alternate application or
-  storage implementation. The SQL and bind positions mirror
-  jolt.example.outbox.sqlite byte for byte. Keeping the plans here gives both
-  gates one source of truth without exposing example-specific plan mechanics as
-  a production API.")
+   This namespace is simulator configuration, not an alternate application or
+   storage implementation. The SQL and bind positions mirror
+   jolt.example.outbox.sqlite byte for byte. Keeping the plans here gives the
+   bencode and JSON whole-application gates one source of truth without
+   exposing example-specific plan mechanics as a production API.")
 
 ;; ---- fixed table names and literal SQL ------------------------------------
 
@@ -399,3 +399,27 @@
                   (subvec plans 25 28)
                   (mark-delivered-statement-plans plans)
                   (subvec plans 25 28))))))
+
+(defn json-delivery-statement-plans
+  "Returns the exact 24-statement JSON-facade whole-application plan: schema
+   setup, the first fresh req-1/entity-a command through the unchanged
+   jolt.example.outbox.sqlite transaction path driven by the
+   jolt.example.outbox.http-json facade and its COMMIT, the explicit
+   post-COMMIT load-state used by the delivery worker, the 6-statement
+   mark-delivered!
+   transaction appended after the validated acknowledgement, and the three
+   explicit final reload scans.
+
+   The facade drives the same apply-command! transaction path with the same
+   canonical command as the bencode lane, so the command's SQL, binds, row
+   effects, and later delivery transcript are byte-identical. This is the
+   existing delivery-statement-plans under the JSON lane's own name; the JSON
+   evidence wrapper performs no extra storage calls.
+
+   The zero-argument arity pins the historical req-1 payload; the one-argument
+   arity rebinds the first command's three BLOB params exactly as
+   delivery-statement-plans does."
+  ([]
+   (json-delivery-statement-plans default-command-payload))
+  ([command-payload]
+   (delivery-statement-plans command-payload)))
