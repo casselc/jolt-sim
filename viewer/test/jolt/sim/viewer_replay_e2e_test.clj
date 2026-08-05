@@ -25,6 +25,19 @@
 (def ^:private replay-scenario
   'jolt.sim.fixtures.outbox-delivery-scenarios/exercise-retry-recv-reset)
 
+(def ^:private webhook-replay-scenario
+  'jolt.sim.fixtures.outbox-http-webhook-scenarios/exercise)
+
+(def ^:private webhook-semantic-identities
+  "The exact five semantic identities the unchanged JSON HTTP webhook
+   application records in its command evidence for the accepted empty-payload
+   case. Mirrors the exported PR61 evidence asserted by the Hegel gate."
+  {:request-id "req-1"
+   :transaction-id [:outbox/command "req-1"]
+   :outbox-id 1
+   :delivery-id [:outbox/delivery 1]
+   :attempt-id [:outbox/delivery-attempt 1 1]})
+
 (defn- required-environment [name]
   (let [value (System/getenv name)]
     (when (or (nil? value) (string/blank? value))
@@ -303,6 +316,126 @@
             (when-let [secondary (or service-cleanup-error
                                      replay-cleanup-error
                                      cleanup-error)]
+              (throw secondary))))))))
+
+(defn- webhook-document
+  "Builds the retained Case/Outcome document for the accepted empty-payload
+   JSON HTTP webhook case. The completed outcome is placeholder provenance
+   only: the live replay replaces it with the fresh worker's evidence. The
+   passing monitor decision records the exported webhook invariant id."
+  []
+  (case-outcome/document
+   {:scenario webhook-replay-scenario
+    :mode :hermetic
+    :input {:payload [] :response-mode :accepted}
+    :schedule nil}
+   {:status :completed
+    :result {:application {:status :ok}}
+    :exit 0}
+   [{:id :outbox/http-webhook-invariants
+     :status :pass
+     :detail nil
+     :index nil}]))
+
+(deftest webhook-case-replays-through-the-live-viewer
+  (let [artifact-root (required-environment
+                       "JOLT_SIM_VIEWER_ARTIFACT_DIR")
+        journal (str artifact-root "/viewer-replay-progress.edn")
+        server* (atom nil)
+        primary* (atom nil)]
+    (append-phase-best-effort! journal {:phase :webhook-started})
+    (try
+      (let [bin (required-environment "JOLT_SIM_BIN")
+            project-dir (required-environment "JOLT_SIM_PROJECT_DIR")
+            document (webhook-document)
+            encoded (case-outcome/canonical-edn document)
+            server
+            (viewer/start!
+             {:port 0
+              :capability-token capability-token
+              :max-document-bytes (* 1024 1024)
+              :allowed-scenarios #{webhook-replay-scenario}
+              :runtime-config
+              {:worker-command [bin "-M:outbox-http-webhook-explore-worker"]
+               :dir project-dir
+               :timeout-ms 60000
+               :startup-timeout-ms 30000
+               :kill-grace-ms 500
+               :temp-dir artifact-root
+               :retain-completed-artifacts? true}}
+             {:render-document report/case-outcome->html
+              :replay-document sim-repl/replay-document!})
+            _ (reset! server* server)
+            port (:port server)
+            _ (append-phase-best-effort! journal
+                                         {:phase :webhook-viewer-started
+                                          :port port})
+            render-raw
+            (viewer-test/request-over-loopback!
+             port "POST" "/api/render"
+             {"Content-Type" "application/edn"
+              "X-Jolt-Sim-Capability" capability-token}
+             encoded
+             5000)
+            render-body (response-body render-raw)
+            replay-raw
+            (viewer-test/request-over-loopback!
+             port "POST" "/api/replay"
+             {"Content-Type" "application/edn"
+              "X-Jolt-Sim-Capability" capability-token}
+             encoded
+             120000)
+            replay-body (response-body replay-raw)
+            outcome (edn/read-string replay-body)]
+        (append-phase-best-effort!
+         journal
+         {:phase :webhook-replay-returned
+          :status (:status outcome)
+          :exit (:exit outcome)
+          :artifact-dir (:artifact-dir outcome)})
+        (is (string/starts-with? render-raw "HTTP/1.1 200"))
+        (is (string/includes? render-body
+                              "jolt.sim.fixtures.outbox-http-webhook-scenarios/exercise")
+            "the rendered report must name the allowlisted webhook scenario")
+        (is (string/includes? render-body ":outbox/http-webhook-invariants")
+            "the rendered report must show the passing webhook monitor decision")
+        (is (string/starts-with? replay-raw "HTTP/1.1 200"))
+        (is (= :completed (:status outcome)))
+        (is (= 0 (:exit outcome)))
+        (is (= webhook-semantic-identities
+               (get-in outcome
+                       [:result :application :command :evidence :identities]))
+            "the fresh worker must record the exact five webhook semantic identities")
+        (is (= true (get-in outcome
+                            [:result :application :delivery :marking :changed?]))
+            "the accepted webhook must mark the delivered outbox row changed")
+        (is (= {:memory true :sqlite true :posix true}
+               (get-in outcome [:result :clean?]))
+            "the webhook world must release memory, sqlite, and posix cleanly")
+        (is (and (string? (:artifact-dir outcome))
+                 (not (string/blank? (:artifact-dir outcome)))))
+        (is (fs/exists? (:artifact-dir outcome))
+            "completed webhook artifacts must be retained under the artifact root"))
+      (catch :default error
+        (reset! primary* error)
+        (append-phase-best-effort! journal (bounded-error-phase error))
+        (throw error))
+      (finally
+        (let [cleanup-error
+              (try
+                (when-let [server @server*]
+                  (viewer/stop! server))
+                nil
+                (catch :default error error))]
+          (append-phase-best-effort!
+           journal
+           (cond-> {:phase :webhook-viewer-stopped}
+             cleanup-error
+             (assoc :cleanup-error (ex-message cleanup-error))))
+          ;; Cleanup failure is primary only when no earlier render, replay,
+          ;; or protocol failure is already propagating.
+          (when (nil? @primary*)
+            (when-let [secondary cleanup-error]
               (throw secondary))))))))
 
 (defn -main [& _]

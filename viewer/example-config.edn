@@ -1,10 +1,11 @@
 {:port 8788
  :max-document-bytes 1048576
  :allowed-scenarios
- #{jolt.sim.fixtures.outbox-delivery-scenarios/exercise-retry-recv-reset}
+ #{jolt.sim.fixtures.outbox-delivery-scenarios/exercise-retry-recv-reset
+   jolt.sim.fixtures.outbox-http-webhook-scenarios/exercise}
  :runtime-config
  {:worker-command ["/absolute/path/to/sim/jolt"
-                   "-M:outbox-delivery-explore-worker"]
+                   "-M:outbox-http-webhook-explore-worker"]
   :dir "/absolute/path/to/jolt-sim"
   :timeout-ms 30000
   :startup-timeout-ms 30000
