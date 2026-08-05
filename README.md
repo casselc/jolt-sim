@@ -165,6 +165,7 @@ only the application surfaces and modes exercised by a durable gate.
 | HTTP SQLite BLOB | `jolt-http`, `jolt-tcp`, `jolt.net`, `jdbc.core`, `db.sqlite`, `jolt.ffi`, byte arrays | Host sockets plus system SQLite | Shared FFI-memory, POSIX, and SQLite worlds | One request at one-byte capacities plus one captured first-poll `EINTR`; local gate, no generated schedule/fault search |
 | Length-framed TCP bencode echo | `teensyp.server`, `teensyp.client`, `teensyp.buffer`, `jolt.bytes`, `jolt.bencode`, `jolt.net`, `jolt.ffi` | Host loopback parity witness | Modeled POSIX loopback and native memory | Pipelined requests, finite stream/self-pipe capacities, captured `EINTR`, and Hegel-generated UTF-8; no half-close or concurrent clients |
 | HTTP SQLite outbox delivery | `jolt-http`, `jdbc.core`, `db.sqlite`, `teensyp.server/client`, `jolt.bytes`, `jolt.bencode`, `jolt.net`, `jolt.ffi` | Host HTTP/TCP sockets plus system SQLite | Shared FFI-memory, POSIX, exact-plan SQLite, and one shared virtual clock | Ordinary, scoped-reset retry, clean close/reopen, post-COMMIT process-exit/recovery, cancellation-before-ack, and one-operation absolute-deadline witnesses; Hegel varies payload bytes, capacities, poll interruption, admission, and a closed terminal-action axis; no general scheduler, power-loss, or exactly-once claim |
+| JSON HTTP webhook outbox delivery | `jolt-http`, `jolt.http-client`, `jdbc.core`, `db.sqlite`, `jolt-tcp`, `jolt.net`, `jolt.ffi` | Host command/webhook sockets plus system SQLite | Shared FFI-memory, POSIX, and exact-plan SQLite worlds | Fixed accepted (including legal trailing JSON whitespace) and hostile acknowledgement parity; exact correlation gates marking; no TLS, auth, concurrency, or Hegel claim |
 | Maelstrom Echo | `jolt.maelstrom` node/handler code | JSON-lines lane reviewed but not integrated | Deterministic memory transport | FIFO/history integrity only; no nemesis or liveness claim |
 
 These capabilities belong to two deliberately different execution tracks:
@@ -1015,6 +1016,33 @@ and retained Case/Outcome witnesses. The JSON seam currently observes the
 shared operation deadline only at the outer HTTP/reload/delivery boundaries;
 the finer bencode pre-command/post-COMMIT deadline campaign is not claimed for
 this lane.
+
+### JSON HTTP webhook outbox transport
+
+`jolt.example.outbox.http-webhook` adds an ordinary production transport to
+the same routed-command and SQLite pending-row flow. It uses the public
+`jolt.http-client/post` API pinned at public commit `3c76943`; it is not a
+simulator client. The request carries the exact durable outbox identity and a
+caller-owned attempt ID. Only a 2xx response with one exact JSON value and a
+closed acknowledgement correlating both values can authorize the existing
+guarded `mark-delivered!` transition.
+
+The fixed gate runs that same application code with real HTTP sockets and
+system SQLite, then beneath the existing POSIX/SQLite handler worlds. It
+accepts RFC JSON trailing whitespace, while hostile receivers cover non-2xx
+status, malformed JSON, trailing non-whitespace data, and mismatched attempt
+or durable identity. Every refusal reloads the row as pending and consumes an
+exact 18-statement plan with no marking transaction; each accepted case
+consumes the existing 24-statement delivery plan.
+
+```sh
+"$JOLT_SIM_BIN" -M:outbox-http-webhook-test
+"$JOLT_SIM_BIN" -M:outbox-http-webhook-sim-test
+```
+
+This is an additional transport; the framed TCP/bencode lane is unchanged.
+The fixed gate makes no TLS, authentication, concurrency, generated schedule,
+or Hegel claim.
 
 ### HTTP, SQLite, and TCP outbox application
 
