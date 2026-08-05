@@ -58,6 +58,7 @@
             [jolt.sim.report.outbox :as outbox]
             [jolt.sim.report-template :refer [embedded-html]]
             [jolt.sim.trace :as trace]
+            [jolt.sim.trace-index :as trace-index]
             [selmer.parser :as selmer]
             [selmer.util :as selmer-util]))
 
@@ -203,39 +204,97 @@
   a vector of rows in trace order, and `:monitors` keeps the caller's order.
   Each decision retains its own fields and gains `:status-name`, `:id-edn`, and
   `:detail-edn` rendering projections. `:canonical-edn` is the byte-stable EDN
-  of the complete validated document."
+  of the complete validated document.
+
+  Navigation: every event row gains a stable `:anchor`/`:href` and a `:nav`
+  map of first/prev/next/last fragment targets computed by
+  `jolt.sim.trace-index`. The view model also carries script-free
+  `:tag-groups`, `:task-groups`, `:site-groups`, and `:time-groups` (each a
+  vector of group rows linking back to matching events) plus a `:quick` map of
+  terminal, failure, and monitor-flagged targets. Every target is a
+  same-document fragment href so the report stays fully navigable under a
+  no-script content security policy."
   ([doc]
    (trace->view-model doc nil))
   ([doc options]
    (trace/validate-document! doc)
    (validate-options! options)
    (let [events (:jolt.sim.trace/events doc)
-         monitors (validate-monitors! (count events)
+         event-count (count events)
+         monitors (validate-monitors! event-count
                                       (get options :monitors []))
          event-registry
          (presentation/registry presentation/default-registry
                                 (get options :presentation-registry))
          monitor-rows
          (mapv (fn [decision]
-                 ;; Preserve the public decision fields and add canonical text
-                 ;; projections so nested maps never inherit host hash order in
-                 ;; the rendered HTML.
-                 (assoc decision
-                        :status-name (name (:status decision))
-                        :id-edn (trace/canonical-edn (:id decision))
-                        :detail-edn (trace/canonical-edn (:detail decision))))
-               monitors)]
+                  ;; Preserve the public decision fields and add canonical text
+                  ;; projections so nested maps never inherit host hash order in
+                  ;; the rendered HTML.
+                  (assoc decision
+                         :status-name (name (:status decision))
+                         :id-edn (trace/canonical-edn (:id decision))
+                         :detail-edn (trace/canonical-edn (:detail decision))))
+                monitors)
+         base-rows (presentation/events->rows event-registry events)
+         nav-positions (trace-index/positions event-count)
+         rows (mapv (fn [row nav]
+                      (assoc row
+                             :anchor (:anchor nav)
+                             :href (:href nav)
+                             :nav nav))
+                    base-rows nav-positions)
+         tag-groups (trace-index/tag-groups events)
+         task-groups (trace-index/task-groups events)
+         site-groups (trace-index/site-groups events)
+         time-groups (trace-index/time-groups events)
+         terminal-targets (trace-index/terminal-targets events)
+         failure-targets (trace-index/failure-targets events)
+         monitor-targets
+         (trace-index/monitor-targets (mapv :index monitor-rows))]
      (let [terminal (terminal-tag events)]
        {:view-model-version view-model-version
         :trace-version (:jolt.sim.trace/version doc)
-        :event-count (count events)
+        :event-count event-count
         :terminal-tag terminal
         :terminal-label (if terminal (keyword-text terminal) "unverified")
         :tag-counts (tag-counts events)
-        :events (presentation/events->rows event-registry events)
+        :events rows
         :monitors monitor-rows
         :has-monitors (pos? (count monitor-rows))
-        :canonical-edn (trace/canonical-edn doc)}))))
+        :canonical-edn (trace/canonical-edn doc)
+        :nav-anchor trace-index/nav-anchor
+        :nav-anchor-href trace-index/nav-anchor-href
+        :nav-href trace-index/nav-anchor-href
+        :has-nav (pos? event-count)
+        :nav {:first {:index 0
+                      :href (trace-index/event-anchor-href 0)}
+              :last {:index (max 0 (dec event-count))
+                     :href (trace-index/event-anchor-href
+                            (max 0 (dec event-count)))}
+              :has-multiple (> event-count 1)}
+        :quick {:terminal terminal-targets
+                :has-terminal (pos? (count terminal-targets))
+                :failure failure-targets
+                :has-failure (pos? (count failure-targets))
+                :monitor-targets monitor-targets
+                :has-monitor-targets (pos? (count monitor-targets))}
+        :tag-groups tag-groups
+        :has-tag-groups (pos? (count tag-groups))
+        :task-groups task-groups
+        :has-task-groups (pos? (count task-groups))
+        :site-groups site-groups
+        :has-site-groups (pos? (count site-groups))
+        :time-groups time-groups
+        :has-time-groups (pos? (count time-groups))
+        :has-index (or (pos? (count tag-groups))
+                       (pos? (count task-groups))
+                       (pos? (count site-groups))
+                       (pos? (count time-groups)))
+        :tag-index-anchor trace-index/tag-index-anchor
+        :task-index-anchor trace-index/task-index-anchor
+        :site-index-anchor trace-index/site-index-anchor
+        :time-index-anchor trace-index/time-index-anchor}))))
 
 (def ^:private report-template
   ;; `embedded-html` reads the maintainable HTML resource while this namespace
