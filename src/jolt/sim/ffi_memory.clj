@@ -291,6 +291,20 @@
            "Pointer does not address a known allocation"
            {:pointer ptr})))
 
+(defn- without-optional-sim-abi
+  "Returns nil when an ordinary Jolt image has no simulator ABI. A partial or
+  incompatible ABI, and every error raised by an available ABI, still fails
+  closed. This lets the standalone modeled-memory handlers classify a pointer
+  miss as their own unknown-pointer result when no runtime-owned loan domain
+  can possibly exist."
+  [f]
+  (try
+    (f)
+    (catch :default error
+      (if (= :jolt.sim.runtime/abi-unavailable (:type (ex-data error)))
+        nil
+        (throw error)))))
+
 (defn- resolve-live! [heap ptr length]
   (let [rec (find-containing heap ptr)]
     (when-not rec
@@ -664,7 +678,8 @@
       (let [{:keys [record offset]} (resolve-live! heap ptr len)
             uvec (record-uvec-range record offset len)]
         (uvec->byte-array uvec))
-      (if-let [view (runtime/read-active-byte-array-view ptr len)]
+      (if-let [view (without-optional-sim-abi
+                      #(runtime/read-active-byte-array-view ptr len))]
         view
         (pointer-miss! heap ptr)))))
 
@@ -677,8 +692,9 @@
     (if (find-allocation heap ptr)
       (write-uvec-at! world ptr uvec)
       (let [copied
-            (runtime/write-active-byte-array-view!
-             ptr (uvec->byte-array uvec))]
+            (without-optional-sim-abi
+             #(runtime/write-active-byte-array-view!
+               ptr (uvec->byte-array uvec)))]
         (if (nil? copied)
           (pointer-miss! heap ptr)
           copied)))))

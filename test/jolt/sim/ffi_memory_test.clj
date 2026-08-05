@@ -405,6 +405,16 @@
       (aset a 0 99)
       (is (= 1 (first (vec b)))))))
 
+(deftest unknown-array-pointers-remain-modeled-memory-errors-without-a-sim-abi
+  (let [h (fm/handlers (fm/world))
+        src (byte-array [1])]
+    (is (= :jolt.sim.ffi-memory/unknown-pointer
+           (:type (ex-data-of #(call h :read-array 0xdeadbeef 1)))))
+    (is (= :jolt.sim.ffi-memory/unknown-pointer
+           (:type (ex-data-of #(call h :write-array 0xdeadbeef src)))))
+    (is (= [1] (vec src))
+        "a failed write must leave the caller's byte array unchanged")))
+
 (deftest read-array!-copies-modeled-bytes-into-the-live-destination
   (let [h (fm/handlers (fm/world))
         p (call h :alloc 8)]
