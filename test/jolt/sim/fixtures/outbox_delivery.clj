@@ -6,6 +6,17 @@
   jolt-http, jdbc.core, teensyp TCP/client, jolt.bytes, and jolt.bencode APIs,
   plus the existing ordinary HTTP and framed-TCP fixture seams.
 
+   The HTTP command phase is a closed seam: request construction, handler
+   construction, the expected status, and response decoding are the only four
+   things a lane may replace. exercise-outbox-delivery-via runs the unchanged
+   whole-application flow against any validated seam; exercise-outbox-delivery
+   is that function with the bencode seam below. The routed JSON facade lane in
+   jolt.sim.fixtures.outbox-json-delivery reuses the same unchanged receiver,
+   SQLite connection lifecycle, post-COMMIT reload, delivery, acknowledgement
+   validation, ack-gated durable marking, final reload, evidence, and cleanup
+   -- extending this one canonical application rather than modeling a second
+   one.
+
    One HTTP POST carries a bencoded canonical command whose payload is an octet
    vector. The request handler applies the existing SQLite outbox transition and
    returns after COMMIT. Once the HTTP server is quiescent, the outer application
@@ -273,7 +284,11 @@
    "version" (:version result)
    "outbox-id" (:outbox-id result)})
 
-(defn- semantic-identities [result]
+(defn semantic-identities
+  "The canonical bounded identity projection for one committed command result:
+   request/transaction/outbox/delivery/attempt identities. Shared unchanged by
+   the bencode and JSON HTTP command-phase seams."
+  [result]
   (let [request-id (:request-id result)
         outbox-id (:outbox-id result)]
     {:request-id request-id
@@ -294,7 +309,12 @@
     "payload" (:payload row)
     "attempt" attempt}))
 
-(defn- expected-ack [message]
+(defn expected-ack
+  "The exact correlated acknowledgement one delivery message must receive:
+   the same outbox-id and the same attempt. This is the default receiver
+   reply-for for every whole-application lane; a test may instead supply a
+   hostile reply to prove that validation failure cannot authorize marking."
+  [message]
   {"type" "outbox_delivery_ok"
    "outbox-id" (get message "outbox-id")
    "attempt" (get message "attempt")})
@@ -648,34 +668,145 @@
         :headers {"Content-Type" bencode-content-type}
         :body (bencode/encode (command-response-wire result))}))))
 
-(defn exercise-outbox-delivery
+;; ---- HTTP command-phase seam ------------------------------------------------
+;;
+;; The whole-application flow below is fixed except for its HTTP command phase.
+;; A closed seam map replaces exactly four things; everything else -- the
+;; receiver, the SQLite connection lifecycle, the post-COMMIT pending reload,
+;; delivery, acknowledgement validation, ack-gated durable marking, the final
+;; reload, evidence, and cleanup -- is shared unchanged by every lane.
+
+(def ^:private http-seam-keys
+  #{:handler-for :request-bytes-for :expected-status :decode-response})
+
+(defn- check-http-seam!
+  "Fail-closed validation of one closed HTTP command-phase seam map before any
+   receiver, connection, or server exists. :handler-for is
+   (fn [conn command command-evidence* operation-context] -> synchronous
+   jolt-http handler); :request-bytes-for is (fn [command host port] -> raw
+   request byte array); :expected-status is the exact HTTP status the command
+   phase must produce; :decode-response is (fn [^bytes response-body] ->
+   decoded wire value). Returns the validated seam unchanged."
+  [http-seam]
+  (when-not (and (map? http-seam)
+                 (= http-seam-keys (set (keys http-seam))))
+    (fail! :invalid-http-seam {:value http-seam}))
+  (when-not (fn? (:handler-for http-seam))
+    (fail! :invalid-http-seam-handler {:value (:handler-for http-seam)}))
+  (when-not (fn? (:request-bytes-for http-seam))
+    (fail! :invalid-http-seam-request-bytes
+           {:value (:request-bytes-for http-seam)}))
+  (when-not (integer? (:expected-status http-seam))
+    (fail! :invalid-http-seam-expected-status
+           {:value (:expected-status http-seam)}))
+  (when-not (fn? (:decode-response http-seam))
+    (fail! :invalid-http-seam-decode-response
+           {:value (:decode-response http-seam)}))
+  http-seam)
+
+(defn- check-command-evidence!
+  "Validates the HTTP seam's bounded evidence against the ordinary durable
+   post-COMMIT reload.  A seam may project a production handler's response,
+   but it may not invent a command, result, emission, or identity that storage
+   does not corroborate.  :committed-state is optional because some public
+   handlers do not expose their internal transition step; when present (the
+   original bencode lane), it must equal the reload as an additional witness."
+  [evidence pending-state]
+  (when-not (and (map? evidence)
+                 (every? #(contains? evidence %) [:identities :command]))
+    (fail! :invalid-command-evidence {:value evidence}))
+  (let [{:keys [value result emitted] :as command-step} (:command evidence)
+        request-id (:request-id result)
+        outbox-id (:outbox-id result)
+        durable-request (get-in pending-state [:request-log request-id])
+        durable-row (first (filter #(= outbox-id (:outbox-id %))
+                                   (:outbox pending-state)))
+        expected-row {:outbox-id outbox-id
+                      :request-id request-id
+                      :entity-id (:entity-id result)
+                      :version (:version result)
+                      :payload (:payload value)
+                      :status :pending}]
+    (when-not (and (map? command-step)
+                   (= #{:value :result :emitted} (set (keys command-step)))
+                   (map? value)
+                   (= command-keys (set (keys value)))
+                   (map? result)
+                   (= #{:status :request-id :entity-id :version :outbox-id}
+                      (set (keys result)))
+                   (= :committed (:status result))
+                   (= (:request-id value) request-id)
+                   (= (:entity-id value) (:entity-id result))
+                   (vector? emitted))
+      (fail! :invalid-command-evidence {:value evidence}))
+    (when-not (= (semantic-identities result) (:identities evidence))
+      (fail! :command-identity-mismatch
+             {:evidence (:identities evidence)
+              :durable (semantic-identities result)}))
+    (when-not (= {:command value :result result} durable-request)
+      (fail! :command-result-mismatch
+             {:evidence {:command value :result result}
+              :durable durable-request}))
+    (when-not (= expected-row durable-row)
+      (fail! :command-outbox-mismatch
+             {:evidence expected-row :durable durable-row}))
+    ;; This flow initializes an empty schema and applies exactly one fresh
+    ;; command, so its production transition must report exactly one emission;
+    ;; an empty or duplicated projection must not pass by set membership.
+    (when-not (= [expected-row] emitted)
+      (fail! :command-emission-mismatch
+             {:evidence emitted :durable (:outbox pending-state)}))
+    (when (contains? evidence :committed-state)
+      (when-not (= (:committed-state evidence) pending-state)
+        (fail! :committed-state-mismatch
+               {:step-state (:committed-state evidence)
+                :loaded-state pending-state}))))
+  evidence)
+
+(def ^:private bencode-http-seam
+  "The original HTTP command phase: POST /commands carrying one bencoded
+   canonical command, the instrumented bencode command-handler, an exact 200,
+   and the exact bencode response decode."
+  {:handler-for
+   (fn [conn _command command-evidence* operation-context]
+     (command-handler conn command-evidence* operation-context))
+   :request-bytes-for post-request-bytes
+   :expected-status 200
+   :decode-response
+   (fn [^bytes body] (decode-bencode-exact :http-response body))})
+
+(defn exercise-outbox-delivery-via
   "Runs one ordinary HTTP -> committed SQLite outbox -> framed TCP/bencode
-  delivery/ack -> ack-gated durable delivery-marking flow. The same in-memory
-  SQLite connection stays open through the post-COMMIT reload, downstream TCP
-  delivery, acknowledgement validation, mark-delivered!, and the final reload;
-  this is still not a close/reopen or crash-durability witness. Returns
-  canonical immutable evidence with no native handles, pointers, byte arrays,
-  mutable values, controller objects, or ephemeral ports. The optional command
-  arity lets generated hermetic plans exercise payload variants; the real/sim
-  parity witness still uses default-command. The two-argument arity is a
-  bounded negative-control seam: reply-for receives the validated delivery
-  message and returns the receiver reply. Ordinary callers use the exact
-  correlated acknowledgement; tests may return a hostile reply to prove that
-  validation failure cannot authorize marking. The four-argument form accepts
-  an ordinary operation context. Otherwise the application creates one after
-  schema initialization and carries its single absolute deadline through HTTP,
-  the command transaction boundaries, reload, delivery, acknowledgement, and
-  the pre-mark boundary. Once mark-delivered! returns across COMMIT, that
-  durable delivered outcome wins even if the deadline elapsed inside SQLite.
-  The bencode payload is an octet vector; SQLite stores the same semantics as a
-  BLOB, but this witness does not claim bencode binary-string wire parity."
-  ([]
-   (exercise-outbox-delivery default-command))
-  ([command]
-   (exercise-outbox-delivery command expected-ack))
-  ([command reply-for]
-   (exercise-outbox-delivery command reply-for nil))
-  ([command reply-for supplied-operation-context]
+  delivery/ack -> ack-gated durable delivery-marking flow with its HTTP
+  command phase carried by `http-seam` (see check-http-seam! for the closed
+  contract). The same in-memory SQLite connection stays open through the
+  post-COMMIT reload, downstream TCP delivery, acknowledgement validation,
+  mark-delivered!, and the final reload; this is still not a close/reopen or
+  crash-durability witness. Returns canonical immutable evidence with no
+  native handles, pointers, byte arrays, mutable values, controller objects,
+  or ephemeral ports. The optional command arity lets generated hermetic plans
+  exercise payload variants; the real/sim parity witness still uses
+  default-command. The reply-for argument is a bounded negative-control seam:
+  it receives the validated delivery message and returns the receiver reply.
+  Ordinary callers use the exact correlated acknowledgement; tests may return
+  a hostile reply to prove that validation failure cannot authorize marking.
+  The four-argument form accepts an ordinary operation context. Otherwise the
+  application creates one after schema initialization and carries its single
+  absolute deadline through the outer HTTP, reload, delivery,
+  acknowledgement, and pre-mark boundaries. A handler seam receives that
+  context and owns any finer command-transaction checks: the original bencode
+  seam checks immediately before the command and after COMMIT, while a seam
+  that ignores it makes no such internal-boundary claim. Once
+  mark-delivered! returns across COMMIT, that durable delivered outcome wins
+  even if the deadline elapsed inside SQLite. The bencode payload is an octet
+  vector; SQLite stores the same semantics as a BLOB, but this witness does
+  not claim bencode binary-string wire parity."
+  ([http-seam command]
+   (exercise-outbox-delivery-via http-seam command expected-ack))
+  ([http-seam command reply-for]
+   (exercise-outbox-delivery-via http-seam command reply-for nil))
+  ([http-seam command reply-for supplied-operation-context]
+   (check-http-seam! http-seam)
    (when-not (fn? reply-for)
      (fail! :invalid-reply-function {:value reply-for}))
    (let [receiver-errors (atom [])
@@ -709,10 +840,10 @@
                      (try
                        {:value
                         (http-fixture/run-request-cycle
-                         (command-handler conn command-evidence*
-                                          operation-context)
+                         ((:handler-for http-seam)
+                          conn command command-evidence* operation-context)
                          (fn [host port]
-                           (post-request-bytes command host port))
+                           ((:request-bytes-for http-seam) command host port))
                          operation-context)}
                        (catch :default error
                          {:error error}))
@@ -720,9 +851,11 @@
                      _ (when-let [error (:error http-outcome)]
                          (throw (phase-error :http error command-evidence)))
                      http-cycle (:value http-outcome)
-                     _ (when-not (= 200 (get-in http-cycle [:parsed :status]))
+                     _ (when-not (= (:expected-status http-seam)
+                                    (get-in http-cycle [:parsed :status]))
                          (fail! :http-command-failed
                                 {:status (get-in http-cycle [:parsed :status])
+                                 :expected-status (:expected-status http-seam)
                                  :command-evidence command-evidence
                                  :server-errors (:server-errors http-cycle)}))
                      _ (when-not command-evidence
@@ -736,12 +869,7 @@
                     _ (check-operation-deadline! operation-context
                                                  :after-pending-reload)
                     pending-state (:state pending)
-                    _ (when-not (= (:committed-state command-evidence)
-                                   pending-state)
-                        (fail! :committed-state-mismatch
-                               {:step-state
-                                (:committed-state command-evidence)
-                                :loaded-state pending-state}))
+                    _ (check-command-evidence! command-evidence pending-state)
                     ;; The HTTP request has succeeded and its server is
                     ;; quiescent; downstream delivery now begins while the
                     ;; connection stays open. deliver-messages! performs the
@@ -762,7 +890,7 @@
                                    :delivery delivery))
                     parsed (:parsed http-cycle)
                     response
-                    (decode-bencode-exact :http-response (:body parsed))]
+                    ((:decode-response http-seam) (:body parsed))]
                 {:application app
                  :http {:status (:status parsed)
                         :content-type
@@ -783,6 +911,23 @@
      (assoc (:value body)
             :receiver {:requests @received
                        :server-errors @receiver-errors}))))
+
+(defn exercise-outbox-delivery
+  "Runs the ordinary bencode HTTP command phase of
+   exercise-outbox-delivery-via: one bencoded HTTP command -> committed SQLite
+   outbox -> framed TCP/bencode delivery/ack -> ack-gated durable
+   delivery-marking flow. This is exercise-outbox-delivery-via with
+   bencode-http-seam and nothing else; every behavior, witness boundary, and
+   nonclaim documented there applies unchanged."
+  ([]
+   (exercise-outbox-delivery default-command))
+  ([command]
+   (exercise-outbox-delivery command expected-ack))
+  ([command reply-for]
+   (exercise-outbox-delivery command reply-for nil))
+  ([command reply-for supplied-operation-context]
+   (exercise-outbox-delivery-via
+    bencode-http-seam command reply-for supplied-operation-context)))
 
 (defn exercise-outbox-delivery-retry
   "Runs the ordinary HTTP -> committed SQLite outbox flow exactly as
