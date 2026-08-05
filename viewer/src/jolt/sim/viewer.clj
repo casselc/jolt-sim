@@ -30,6 +30,7 @@
             [jolt.http.body :as http-body]
             [jolt.http.server :as http]
             [jolt.sim.case-outcome :as case-outcome]
+            [jolt.sim.presentation :as presentation]
             [jolt.sim.repl :as sim-repl]
             [jolt.sim.report :as report]
             [jolt.sim.trace :as trace]))
@@ -42,7 +43,7 @@
 
 (def ^:private config-keys
   #{:port :capability-token :max-document-bytes
-    :allowed-scenarios :runtime-config})
+    :allowed-scenarios :runtime-config :presentation-registry})
 
 (def ^:private replay-coordinate-keys
   #{:scenario :mode :input :schedule})
@@ -128,6 +129,17 @@
     (when-not (map? runtime)
       (throw (config-error :runtime-config-not-a-map
                            (str (class runtime)))))
+    (when (contains? config :presentation-registry)
+      (try
+        (presentation/validate-registry! (:presentation-registry config))
+        (catch :default error
+          (throw
+           (ex-info
+            "jolt-sim viewer rejected its presentation registry"
+            {:type invalid-config
+             :reason :invalid-presentation-registry
+             :detail (select-keys (ex-data error) [:reason :detail])}
+            error)))))
     (when (seq collisions)
       (throw (config-error :runtime-coordinate-collision collisions)))
     (when (seq unknown-runtime-keys)
@@ -488,6 +500,15 @@
     :trace (:render-trace services)
     :case-outcome (:render-case-outcome services)))
 
+(defn- default-services [config]
+  {:render-trace
+   (fn [document]
+     (report/trace->html
+      document
+      {:presentation-registry (:presentation-registry config)}))
+   :render-case-outcome report/case-outcome->html
+   :replay-document sim-repl/replay-document!})
+
 (defn make-handler
   "Creates a synchronous jolt-http handler.
 
@@ -513,10 +534,7 @@
   trusted active run directory. It never accepts a filesystem path from the
   browser."
   ([config]
-   (make-handler config
-                 {:render-trace report/trace->html
-                  :render-case-outcome report/case-outcome->html
-                  :replay-document sim-repl/replay-document!}))
+   (make-handler config (default-services config)))
   ([config services]
    (let [config (validate-config! config)
          unknown-services (into #{} (remove service-keys) (keys services))
@@ -600,10 +618,7 @@
   by `make-handler`; ordinary callers always use the real trace/Case/Outcome
   report and replay services."
   ([config]
-   (start! config
-           {:render-trace report/trace->html
-            :render-case-outcome report/case-outcome->html
-            :replay-document sim-repl/replay-document!}))
+   (start! config (default-services config)))
   ([config services]
    (let [config (validate-config! config)]
      (http/run-server (make-handler config services)

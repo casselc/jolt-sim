@@ -66,6 +66,18 @@
   .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
   code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.85em; }
   .edn { word-break: break-all; }
+  .kind {
+    display: inline-block;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    padding: 0.08rem 0.42rem;
+    background: var(--code-bg);
+    white-space: nowrap;
+  }
+  .event-summary { font-weight: 600; }
+  .event-fields { margin: 0.25rem 0 0; padding: 0; list-style: none; }
+  .event-fields li { margin-top: 0.15rem; }
+  .field-label { color: var(--muted); margin-right: 0.3rem; }
   .detail { word-break: break-word; }
   .status { font-weight: 600; }
   .status-pass { color: var(--pass); }
@@ -159,21 +171,37 @@
     <h2>Events</h2>
     <p class="filter-row">
       <label for="event-filter">Filter events</label>
-      <input id="event-filter" type="search" placeholder="tag, step, time, task, or EDN text" oninput="filterEvents()">
+      <input id="event-filter" type="search" placeholder="kind, tag, summary, field, or EDN text" oninput="filterEvents()">
     </p>
     <table id="event-table">
       <thead>
-        <tr><th>#</th><th>Tag</th><th>Step</th><th>Time</th><th>Task</th><th>Event (EDN)</th></tr>
+        <tr><th>#</th><th>Kind</th><th>Step</th><th>Time</th><th>Task</th><th>Event</th></tr>
       </thead>
       <tbody>
       {% for e in events %}
         <tr>
           <td class="num">{{e.index}}</td>
-          <td><code>{{e.tag}}</code></td>
+          <td>
+            <span class="kind">{{e.kind-name}}</span><br>
+            <code>{{e.tag}}</code>
+          </td>
           <td class="num">{{e.step}}</td>
           <td class="num">{{e.time}}</td>
           <td class="num">{{e.task}}</td>
-          <td class="edn"><code>{{e.edn}}</code></td>
+          <td>
+            <div class="event-summary">{{e.summary}}</div>
+            {% if e.has-fields %}
+            <ul class="event-fields">
+            {% for f in e.fields %}
+              <li><span class="field-label">{{f.label}}:</span><code>{{f.value-edn}}</code></li>
+            {% endfor %}
+            </ul>
+            {% endif %}
+            <details>
+              <summary>Complete event EDN</summary>
+              <code class="edn">{{e.edn}}</code>
+            </details>
+          </td>
         </tr>
       {% endfor %}
       </tbody>

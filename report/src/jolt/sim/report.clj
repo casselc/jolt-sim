@@ -34,13 +34,17 @@
   documents are distinct versioned contracts, and each renderer rejects the
   other's document shape rather than guessing a shared schema.
 
-  Determinism: the view models contain only ordered data (event vectors, a
+  Determinism: with the built-in presenters, or custom presenters that honor
+  the documented deterministic/data-only contract, the view models contain
+  only ordered data (event vectors, a
   sorted tag-count map, caller- or document-ordered monitor decisions, fixed
   known result sections followed by canonically ordered forward sections) and
   the rendered HTML embeds no wall-clock time,
   random ids, unordered map iteration, absolute host paths, environment data,
-  or machine identity. Rendering the same document and options twice produces
-  byte-identical HTML.
+  or machine identity. Rendering the same document and deterministic options
+  twice produces byte-identical HTML. Trusted custom presenter functions can
+  violate that contract by consulting time, randomness, or mutable state; the
+  renderer cannot prove function purity.
 
   Escaping: every value derived from a validated document and options is
   rendered inside an explicit Selmer escaping scope, so hostile strings stay
@@ -50,6 +54,7 @@
             [clojure.string :as string]
             [jolt.fs :as fs]
             [jolt.sim.case-outcome :as case-outcome]
+            [jolt.sim.presentation :as presentation]
             [jolt.sim.report.outbox :as outbox]
             [jolt.sim.report-template :refer [embedded-html]]
             [jolt.sim.trace :as trace]
@@ -58,7 +63,7 @@
 
 (def view-model-version
   "Version of the trace view-model shape this namespace emits."
-  1)
+  2)
 
 (def case-outcome-view-model-version
   "Version of the Case/Outcome view-model shape this namespace emits."
@@ -90,7 +95,7 @@
   #{:id :status :detail :index})
 
 (def ^:private option-keys
-  #{:monitors})
+  #{:monitors :presentation-registry})
 
 (defn- keyword-text [value]
   (if-let [ns (namespace value)]
@@ -109,36 +114,6 @@
 (defn- tag-counts [events]
   ;; sorted-map keeps the tag histogram byte-stable regardless of hash order.
   (into (sorted-map) (frequencies (map first events))))
-
-(defn- event-step [tag event]
-  (when-not (= :run/initial tag)
-    (nth event 1)))
-
-(defn- event-time [tag event]
-  (case tag
-    :time/advance (str (nth event 2) " -> " (nth event 3))
-    :run/initial nil
-    (nth event 2)))
-
-(defn- event-task [tag event]
-  (case tag
-    :schedule/choose (nth event 4)
-    (:task/transition :run/failed) (nth event 3)
-    nil))
-
-(defn- event-edn
-  "Byte-stable EDN of one complete event."
-  [event]
-  (trace/canonical-edn event))
-
-(defn- event-row [index event]
-  (let [tag (first event)]
-    {:index index
-     :tag (keyword-text tag)
-     :step (event-step tag event)
-     :time (event-time tag event)
-     :task (event-task tag event)
-     :edn (event-edn event)}))
 
 (defn- validate-monitor-result! [event-count decision]
   (when-not (map? decision)
@@ -209,7 +184,7 @@
   options)
 
 (defn trace->view-model
-  "Builds a deterministic, data-only view model for a trace document.
+  "Builds a data-only view model for a trace document.
 
   `doc` must be an already formed versioned trace document; it is validated
   fail-closed through `jolt.sim.trace/validate-document!` before anything is
@@ -217,7 +192,12 @@
   monitor decisions in the `jolt.sim.monitor/run-monitor` result shape
   `{:id .. :status .. :detail .. :index ..}`. Decisions are validated for their
   public shape and stable value domain only; no monitor function is ever
-  invoked while rendering.
+  invoked while rendering. `:presentation-registry` may supply an immutable
+  registry of trusted presenter functions. It is composed after
+  `jolt.sim.presentation/default-registry`, so application entries override
+  built-ins while uploaded trace data remains incapable of loading code.
+  Built-in presenters are deterministic. Custom presenters must honor the
+  same contract for the resulting view model to remain reproducible.
 
   The returned map is ordered data: `:tag-counts` is a sorted map, `:events` is
   a vector of rows in trace order, and `:monitors` keeps the caller's order.
@@ -232,6 +212,9 @@
    (let [events (:jolt.sim.trace/events doc)
          monitors (validate-monitors! (count events)
                                       (get options :monitors []))
+         event-registry
+         (presentation/registry presentation/default-registry
+                                (get options :presentation-registry))
          monitor-rows
          (mapv (fn [decision]
                  ;; Preserve the public decision fields and add canonical text
@@ -249,7 +232,7 @@
         :terminal-tag terminal
         :terminal-label (if terminal (keyword-text terminal) "unverified")
         :tag-counts (tag-counts events)
-        :events (mapv event-row (range) events)
+        :events (presentation/events->rows event-registry events)
         :monitors monitor-rows
         :has-monitors (pos? (count monitor-rows))
         :canonical-edn (trace/canonical-edn doc)}))))

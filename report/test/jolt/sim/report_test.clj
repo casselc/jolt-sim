@@ -7,6 +7,7 @@
             [jolt.sim.case-outcome :as case-outcome]
             [jolt.sim.kernel :as kernel]
             [jolt.sim.monitor :as monitor]
+            [jolt.sim.presentation :as presentation]
             [jolt.sim.report :as report]
             [jolt.sim.trace :as trace]
             [selmer.util :as selmer-util]))
@@ -45,7 +46,7 @@
 (deftest view-model-shape
   (let [doc (sample-doc)
         vm (report/trace->view-model doc)]
-    (is (= 1 (:view-model-version vm)))
+    (is (= 2 (:view-model-version vm)))
     (is (= trace/trace-version (:trace-version vm)))
     (is (= (count (:jolt.sim.trace/events doc)) (:event-count vm)))
     (is (= :run/completed (:terminal-tag vm)))
@@ -136,6 +137,208 @@
       (is (= 1 (:step (nth rows 4))))
       (is (= 5 (:time (nth rows 4))))
       (is (nil? (:task (nth rows 4)))))))
+
+(deftest event-rows-have-specialized-presentation-kinds
+  (let [projection [:jolt.sim.value/map []]
+        doc (trace/document
+             [(trace/initial-event projection)
+              (trace/choose-event 0 0 [0] 0)
+              (trace/transition-event
+               0 0 0 :sleep (trace/canonical-value :clock/wait) [] 5 projection)
+              (trace/time-event 1 0 5 [0] projection)
+              (trace/completed-event 1 5 projection)])
+        rows (:events (report/trace->view-model doc))]
+    (is (= [:jolt.sim.kind/run-initial
+            :jolt.sim.kind/schedule-choice
+            :jolt.sim.kind/task-transition
+            :jolt.sim.kind/time-advance
+            :jolt.sim.kind/run-completed]
+           (mapv :kind rows)))
+    (is (= "Task 0 chosen from 1 runnable task" (:summary (nth rows 1))))
+    (is (= "Task 0 sleep at :clock/wait" (:summary (nth rows 2))))
+    (is (= ["Operation" "Site" "Wake time"]
+           (mapv :label (:fields (nth rows 2)))))
+    (is (= "Virtual time advanced from 0 to 5"
+           (:summary (nth rows 3))))))
+
+(deftest default-registry-covers-every-v1-event-tag
+  (let [projection [:jolt.sim.value/map []]
+        events [(trace/initial-event projection)
+                (trace/choose-event 0 0 [0] 0)
+                (trace/transition-event
+                 0 0 0 :yield (trace/canonical-value nil) [] nil projection)
+                (trace/time-event 1 0 5 [0] projection)
+                (trace/completed-event 1 5 projection)
+                (trace/failed-event
+                 1 5 0 (trace/canonical-value {:message "boom"}) projection)
+                (trace/deadlock-event 1 5 [0] projection)
+                (trace/step-limit-event 1 5 projection)]
+        expected [:jolt.sim.kind/run-initial
+                  :jolt.sim.kind/schedule-choice
+                  :jolt.sim.kind/task-transition
+                  :jolt.sim.kind/time-advance
+                  :jolt.sim.kind/run-completed
+                  :jolt.sim.kind/run-failed
+                  :jolt.sim.kind/run-deadlock
+                  :jolt.sim.kind/run-step-limit]]
+    (is (= expected
+           (mapv :kind
+                 (presentation/events->rows presentation/default-registry
+                                            events))))))
+
+(deftest presentation-registry-precedence-is-site-then-op-then-tag
+  (let [projection [:jolt.sim.value/map []]
+        event (trace/transition-event
+               0 0 7 :sleep (trace/canonical-value :acme.clock/wait)
+               [] 5 projection)
+        presenter (fn [label]
+                    {:kind (keyword "acme.kind" label)
+                     :present (fn [_] {:summary label :fields []})})
+        library {:task/transition (presenter "library-tag")
+                 [:task/transition :op :sleep] (presenter "library-op")}
+        application {(presentation/site-key :acme.clock/wait)
+                     (presenter "application-site")}
+        combined (presentation/registry presentation/default-registry
+                                        library application)
+        site-row (presentation/present-event combined 0 event)
+        op-row (presentation/present-event
+                combined 1
+                (assoc event 5 (trace/canonical-value :other/site)))
+        tag-row (presentation/present-event
+                 combined 2
+                 (assoc event 4 :yield
+                        5 (trace/canonical-value :other/site)))]
+    (is (= "application-site" (:summary site-row)))
+    (is (= (presentation/site-key :acme.clock/wait)
+           (:dispatch-key site-row)))
+    (is (= "acme.kind/application-site" (:kind-name site-row)))
+    (is (= [] (:fields site-row)))
+    (is (= "library-op" (:summary op-row)))
+    (is (= [:task/transition :op :sleep] (:dispatch-key op-row)))
+    (is (= "library-tag" (:summary tag-row)))
+    (is (= :task/transition (:dispatch-key tag-row)))))
+
+(deftest site-keys-support-existing-and-structured-sites
+  (let [projection [:jolt.sim.value/map []]
+        sites [:countdown {:ns 'demo.worker :phase :wait}]
+        registry
+        (presentation/registry
+         presentation/default-registry
+         (into {}
+               (map (fn [site]
+                      [(presentation/site-key site)
+                       {:kind :demo.kind/site
+                        :present (fn [_]
+                                   {:summary (trace/canonical-edn site)
+                                    :fields []})}]))
+               sites))
+        rows
+        (mapv (fn [index site]
+                (presentation/present-event
+                 registry index
+                 (trace/transition-event
+                  index 0 index :yield (trace/canonical-value site)
+                  [] nil projection)))
+              (range) sites)]
+    (is (= [":countdown" "{:ns demo.worker, :phase :wait}"]
+           (mapv :summary rows)))
+    (is (= (mapv presentation/site-key sites)
+           (mapv :dispatch-key rows)))))
+
+(deftest incremental-event-presenter-validates-once
+  (let [calls (atom 0)
+        event (trace/completed-event 0 0 [:jolt.sim.value/map []])
+        original presentation/validate-registry!]
+    (with-redefs [presentation/validate-registry!
+                  (fn [registry]
+                    (swap! calls inc)
+                    (original registry))]
+      (let [present (presentation/event-presenter
+                     presentation/default-registry)]
+        (present 0 event)
+        (present 1 event)
+        (is (= 1 @calls))))))
+
+(deftest later-presentation-registry-overrides-win
+  (let [entry (fn [label]
+                {:kind (keyword "acme.kind" label)
+                 :present (fn [_] {:summary label :fields []})})
+        combined (presentation/registry
+                  {:run/completed (entry "default")}
+                  {:run/completed (entry "library")}
+                  {:run/completed (entry "application")})
+        event (trace/completed-event 0 0 [:jolt.sim.value/map []])]
+    (is (= "application"
+           (:summary (presentation/present-event combined 0 event))))))
+
+(deftest absent-presentation-entry-falls-back-to-raw-data
+  (let [event (trace/step-limit-event 3 8 [:jolt.sim.value/map []])
+        row (presentation/present-event {} 4 event)]
+    (is (= :jolt.sim.kind/raw-event (:kind row)))
+    (is (= "Raw event run/step-limit" (:summary row)))
+    (is (= event (edn/read-string (:edn row))))))
+
+(deftest malformed-presentation-registry-and-output-fail-closed
+  (let [event (trace/completed-event 0 0 [:jolt.sim.value/map []])
+        bad-key (caught-data
+                 #(presentation/registry
+                   {[:task/transition :site :unnamespaced]
+                    {:kind :acme.kind/x
+                     :present (fn [_] {:summary "x" :fields []})}}))
+        bad-kind (caught-data
+                  #(presentation/registry
+                    {:run/completed
+                     {:kind :unnamespaced
+                      :present (fn [_] {:summary "x" :fields []})}}))
+        bad-output (caught-data
+                    #(presentation/present-event
+                      {:run/completed
+                       {:kind :acme.kind/x
+                        :present (fn [_]
+                                   {:summary "x" :fields :not-a-vector})}}
+                      0 event))]
+    (is (= presentation/invalid-registry (:type bad-key)))
+    (is (= presentation/invalid-registry (:type bad-kind)))
+    (is (= presentation/invalid-presentation (:type bad-output)))))
+
+(deftest report-option-composes-trusted-presentation-overrides
+  (let [doc (trace/document
+             [(trace/initial-event [:jolt.sim.value/map []])
+              (trace/completed-event 0 0 [:jolt.sim.value/map []])])
+        options {:presentation-registry
+                 {:run/completed
+                  {:kind :acme.kind/success
+                   :present (fn [_]
+                              {:summary "Application finished cleanly"
+                               :fields [{:label "Meaning"
+                                         :value :ok}]})}}}
+        vm (report/trace->view-model doc options)
+        row (peek (:events vm))
+        html (report/trace->html doc options)]
+    (is (= :acme.kind/success (:kind row)))
+    (is (= "Application finished cleanly" (:summary row)))
+    (is (string/includes? html "acme.kind/success"))
+    (is (string/includes? html "Application finished cleanly"))
+    (is (string/includes? html "Meaning"))))
+
+(deftest custom-presentation-text-and-values-remain-inert
+  (let [hostile "<script>custom-presenter</script> & [:safe]"
+        doc (trace/document
+             [(trace/initial-event [:jolt.sim.value/map []])
+              (trace/completed-event 0 0 [:jolt.sim.value/map []])])
+        options {:presentation-registry
+                 {:run/completed
+                  {:kind :acme.kind/hostile
+                   :present (fn [_]
+                              {:summary hostile
+                               :fields [{:label hostile
+                                         :value [:safe hostile]}]})}}}
+        html (report/trace->html doc options)]
+    (is (string/includes? html
+                          "&lt;script&gt;custom-presenter&lt;/script&gt;"))
+    (is (string/includes? html "&amp;"))
+    (is (false? (string/includes? html hostile)))
+    (is (false? (string/includes? html "<script>custom-presenter</script>")))))
 
 (deftest event-edn-round-trips
   (let [doc (sample-doc)

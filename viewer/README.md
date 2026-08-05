@@ -17,6 +17,19 @@ Case/Outcome document; worker command, working directory, deadlines,
 environment, and artifact policy come from the trusted server configuration.
 Scenarios must be explicitly allowlisted.
 
+Programmatic and REPL-driven startup may also include a trusted
+`:presentation-registry` map. Ripple composes it after jolt-sim's built-in
+event presenters, so application entries override library/default displays
+without changing the trace or the simulator. This value contains functions
+and therefore belongs in ordinary Clojure startup code, not the EDN config
+file. Uploaded documents can only select already-registered event-tag,
+transition-operation, or canonical transition-site entries; they cannot load
+or name presenter code. Presenter implementations must nevertheless treat the
+validated event passed to them as untrusted input: they must not evaluate it,
+use it to select filesystem paths or native calls, or perform other
+input-directed side effects. See the report README for the small presenter
+shape.
+
 The server admits one body-consuming inspection or replay request at a time,
 even when several tabs share the capability. A competing request receives 429
 before its body is read. Two bounded HTTP threads let jolt-http's parser keep

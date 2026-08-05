@@ -204,6 +204,29 @@
 (deftest ephemeral-loopback-port-is-valid
   (is (= 0 (:port (viewer/validate-config! (assoc (config) :port 0))))))
 
+(deftest programmatic-presentation-registry-is-validated-at-startup
+  (let [valid (assoc
+               (config)
+               :presentation-registry
+               {:run/completed
+                {:kind :example.kind/completed
+                 :present (fn [_] {:summary "done" :fields []})}})
+        invalid (assoc
+                 (config)
+                 :presentation-registry
+                 {:run/completed
+                  {:kind :not-namespaced
+                   :present (fn [_] {:summary "done" :fields []})}})
+        data (try
+               (viewer/validate-config! invalid)
+               nil
+               (catch :default error (ex-data error)))]
+    (is (= (:presentation-registry valid)
+           (:presentation-registry (viewer/validate-config! valid))))
+    (is (= viewer/invalid-config (:type data)))
+    (is (= :invalid-presentation-registry (:reason data)))
+    (is (= :invalid-kind (get-in data [:detail :reason])))))
+
 (deftest render-validates-before-delegating-exactly-once
   (let [render-calls (atom [])
         replay-calls (atom [])
@@ -602,6 +625,26 @@
     (is (string/includes? (:body response) "run/completed"))
     (is (= (:body progress-before) (:body progress-after)))
     (is (string/includes? (:body progress-after) "\"status\":\"idle\""))))
+
+(deftest ripple-uses-the-trusted-programmatic-presentation-registry
+  (let [presenters
+        {:run/completed
+         {:kind :example.kind/success
+          :present (fn [_]
+                     {:summary "Example application completed"
+                      :fields [{:label "Result" :value :ok}]})}}
+        handler (viewer/make-handler
+                 (assoc (config) :presentation-registry presenters))
+        response (handler (request "/api/render"
+                                   (example-edn-text
+                                    "cooperative-countdown-trace.edn")
+                                   token
+                                   :trace))]
+    (is (= 200 (:status response)))
+    (is (string/includes? (:body response) "example.kind/success"))
+    (is (string/includes? (:body response)
+                          "Example application completed"))
+    (is (string/includes? (:body response) "Result"))))
 
 (deftest case-outcome-document-renders-through-the-real-case-outcome-report-path
   (let [handler (viewer/make-handler (large-document-config))
