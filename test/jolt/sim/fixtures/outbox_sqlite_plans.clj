@@ -356,6 +356,23 @@
                   (subvec plans 25 28)
                   (subvec plans 25 28))))))
 
+(defn webhook-rejected-statement-plans
+  "Returns the exact 18-statement HTTP-webhook rejection transcript: schema
+   setup and first command COMMIT, one explicit pending-state reload before
+   the outbound request, and one final reload after the response is refused.
+   There is deliberately no mark-delivered transaction. Non-2xx, malformed or
+   trailing JSON, and correlation mismatches therefore all fail exact FIFO
+   consumption if production code attempts a durable mark. This projection is
+   byte-identical to the corresponding portions of parity-statement-plans; it
+   does not model HTTP in SQLite or create a second store."
+  ([]
+   (webhook-rejected-statement-plans default-command-payload))
+  ([command-payload]
+   (let [plans (parity-statement-plans command-payload)]
+     (vec (concat (subvec plans 0 12)
+                  (subvec plans 25 28)
+                  (subvec plans 25 28))))))
+
 (defn reopen-delivery-statement-plans
   "Returns the exact 25-statement close/reopen delivery plan: the schema setup
    and first fresh req-1/entity-a command transaction on connection 0, then --
