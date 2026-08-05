@@ -114,11 +114,16 @@
 (def ^:private terminal-scenario-sym
   'jolt.sim.fixtures.outbox-delivery-scenarios/exercise-terminal-boundary)
 
+(def ^:private json-replay-conflict-scenario-sym
+  'jolt.sim.fixtures.outbox-json-delivery-scenarios/exercise-replay-or-conflict)
+
 (def ^:private case-outcome-filename "case-outcome.edn")
 (def ^:private delivery-monitor-id :outbox/delivery-invariants)
 (def ^:private retry-monitor-id :outbox/retry-invariants)
 (def ^:private cancel-monitor-id :outbox/cancellation-invariants)
 (def ^:private terminal-monitor-id :outbox/terminal-boundary-invariants)
+(def ^:private json-replay-conflict-monitor-id
+  :outbox/json-replay-conflict-invariants)
 
 ;; The canonical teensyp.client/closed :receive :closed cancellation the
 ;; unchanged fixture's blocked exchange wakes with after the cross-thread
@@ -337,6 +342,26 @@
             (g/sampled-from pipe-capacity-domain)
             (g/sampled-from poll-eintr-domain)
             (g/sampled-from admission-plan-domain))))
+
+(defn- json-replay-conflict-input-generator
+  "One shrinkable workload generator over both idempotency outcomes, payload
+   octet vectors of length 0..32, and non-empty route-safe identifiers. The
+   worker derives a distinct conflict payload structurally, so generation
+   never rejects equal conflict commands and shrinking remains stable."
+  []
+  (g/fmap
+   (fn [[mode payload request-id entity-id]]
+     {:mode mode
+      :payload payload
+      :request-id request-id
+      :entity-id entity-id})
+   (g/tuple
+    (g/sampled-from [:exact-replay :conflict])
+    (g/vector {:max-size max-payload-octets} (g/octet))
+    (g/string {:alphabet "abcdefghijklmnopqrstuvwxyz0123456789-_"
+               :min-size 1 :max-size 12})
+    (g/string {:alphabet "abcdefghijklmnopqrstuvwxyz0123456789-_"
+               :min-size 1 :max-size 12}))))
 
 (defn- retry-input-generator
   "Returns a Hegel generator over the retry scenario input domain: payload,
@@ -1309,6 +1334,8 @@
     (= scenario retry-scenario-sym) retry-monitor-id
     (= scenario cancel-scenario-sym) cancel-monitor-id
     (= scenario terminal-scenario-sym) terminal-monitor-id
+    (= scenario json-replay-conflict-scenario-sym)
+    json-replay-conflict-monitor-id
     :else
     (throw
      (ex-info
@@ -1351,6 +1378,7 @@
          (= scenario retry-scenario-sym) "outbox-retry-"
          (= scenario cancel-scenario-sym) "outbox-cancel-"
          (= scenario terminal-scenario-sym) "outbox-terminal-"
+         (= scenario json-replay-conflict-scenario-sym) "outbox-json-idempotency-"
          :else "outbox-delivery-")
        (name lane) "-" ordinal "-"))
 
@@ -1486,6 +1514,8 @@
                      (= :boundary lane)
                      (= 1 ordinal))
                 (and (= scenario terminal-scenario-sym)
+                     (= :boundary lane))
+                (and (= scenario json-replay-conflict-scenario-sym)
                      (= :boundary lane)))
             persisted
             (try
@@ -1832,6 +1862,234 @@
     (is (= (set admission-plan-domain) @seen-admission-plans)
         (str "Hegel did not exercise both first-poll admission plans: "
              (pr-str @seen-admission-plans)))))
+
+;; ---- Routed JSON exact replay / conflict lane ----------------------------
+
+(defn- json-distinct-payload [payload]
+  (if (< (count payload) max-payload-octets)
+    (conj payload 0)
+    (assoc payload 0 (bit-xor 1 (first payload)))))
+
+(defn- expected-json-workload [input]
+  (let [{:keys [mode payload request-id entity-id]} input
+        command {:request-id request-id :entity-id entity-id :payload payload}
+        second-command (if (= :exact-replay mode)
+                         command
+                         (assoc command :payload (json-distinct-payload payload)))
+        result {:status :committed
+                :request-id request-id
+                :entity-id entity-id
+                :version 1
+                :outbox-id 1}
+        row {:outbox-id 1
+             :request-id request-id
+             :entity-id entity-id
+             :version 1
+             :payload payload
+             :status :pending}
+        pending {:entities {entity-id {:version 1 :payload payload}}
+                 :request-log {request-id {:command command :result result}}
+                 :next-outbox-id 2
+                 :outbox [row]}
+        delivered-row (assoc row :status :delivered)]
+    {:command command
+     :second-command second-command
+     :result result
+     :row row
+     :pending pending
+     :delivered (assoc pending :outbox [delivered-row])
+     :marking {:row delivered-row :changed? true}
+     :identities {:request-id request-id
+                  :transaction-id [:outbox/command request-id]
+                  :outbox-id 1
+                  :delivery-id [:outbox/delivery 1]
+                  :attempt-id [:outbox/delivery-attempt 1 1]}
+     :message {"type" "outbox_delivery"
+               "outbox-id" 1
+               "request-id" request-id
+               "entity-id" entity-id
+               "version" 1
+               "payload" payload
+               "attempt" 1}
+     :wire {"status" "committed"
+            "request-id" request-id
+            "entity-id" entity-id
+            "version" 1
+            "outbox-id" 1}}))
+
+(defn- assert-json-replay-conflict-case-outcome!
+  [input outcome]
+  (let [completed (require-completed-carrying-input! outcome input)
+        evidence (:result completed)
+        expected (expected-json-workload input)]
+    (when-not (exact-map-keys?
+               evidence
+               #{:application :http :workload :receiver :routes :sqlite
+                 :capacity :clean?})
+      (violation "jolt.sim.outbox-delivery-hegel-test/json-evidence-shape"
+                 input {:evidence evidence}))
+    (let [{:keys [application http workload receiver routes sqlite capacity
+                  clean?]} evidence
+          requests (:requests http)
+          first-http (first requests)
+          second-http (second requests)]
+      (when-not (and (exact-map-keys?
+                      workload
+                      #{:mode :accepted-command :second-command
+                        :state-before-second :state-after-second
+                        :second-command-evidence
+                        :delivery-authorized-command})
+                     (= (:mode input) (:mode workload))
+                     (= (:command expected) (:accepted-command workload))
+                     (= (:second-command expected) (:second-command workload)))
+        (violation "jolt.sim.outbox-delivery-hegel-test/json-workload-shape"
+                   input {:workload workload}))
+      (when-not (exact-map-keys?
+                 application
+                 #{:identities :command :pending-state :store-state :marking
+                   :delivery})
+        (violation "jolt.sim.outbox-delivery-hegel-test/json-application-shape"
+                   input {:application application}))
+      (when-not (= {:value (:command expected)
+                    :result (:result expected)
+                    :emitted [(:row expected)]}
+                   (:command application))
+        (violation "jolt.sim.outbox-delivery-hegel-test/json-command"
+                   input {:application application}))
+      (when-not (= (:identities expected) (:identities application))
+        (violation "jolt.sim.outbox-delivery-hegel-test/json-identities"
+                   input {:identities (:identities application)}))
+      (when-not (= (:pending expected) (:pending-state application))
+        (violation "jolt.sim.outbox-delivery-hegel-test/json-pending-state"
+                   input {:pending (:pending-state application)}))
+      (when-not (= (:marking expected) (:marking application))
+        (violation "jolt.sim.outbox-delivery-hegel-test/json-marking"
+                   input {:marking (:marking application)}))
+      (when-not (= (:delivered expected) (:store-state application))
+        (violation "jolt.sim.outbox-delivery-hegel-test/json-delivered-state"
+                   input {:state (:store-state application)}))
+      (when-not (= [(:message expected)]
+                   (get-in application [:delivery :requests]))
+        (violation "jolt.sim.outbox-delivery-hegel-test/json-delivery"
+                   input {:delivery (:delivery application)}))
+      (when-not (= [201 (if (= :exact-replay (:mode input)) 200 409)]
+                   (mapv :status requests))
+        (violation "jolt.sim.outbox-delivery-hegel-test/json-http-statuses"
+                   input {:http http}))
+      (when-not (and (= 2 (count requests))
+                     (every? #(and (= "application/json" (:content-type %))
+                                   (= [] (:server-errors %))
+                                   (= {:connection [true false]}
+                                      (:close-results %))
+                                   (vector? (:body-octets %)))
+                             requests))
+        (violation "jolt.sim.outbox-delivery-hegel-test/json-http-shape"
+                   input {:http http}))
+      (when-not (= (:wire expected) (:response first-http))
+        (violation "jolt.sim.outbox-delivery-hegel-test/json-first-response"
+                   input {:response (:response first-http)}))
+      (when-not (= (:pending expected) (:state-before-second workload))
+        (violation "jolt.sim.outbox-delivery-hegel-test/json-before-second"
+                   input {:workload workload}))
+      (when-not (= (:state-before-second workload)
+                   (:state-after-second workload))
+        (violation "jolt.sim.outbox-delivery-hegel-test/json-no-mutation"
+                   input {:workload workload}))
+      (when-not (= (:command expected) (:delivery-authorized-command workload))
+        (violation "jolt.sim.outbox-delivery-hegel-test/json-authorization"
+                   input {:workload workload}))
+      (case (:mode input)
+        :exact-replay
+        (do
+          (when-not (= (:body-octets first-http) (:body-octets second-http))
+            (violation "jolt.sim.outbox-delivery-hegel-test/json-replay-bytes"
+                       input {:http http}))
+          (when-not (= {:identities (:identities expected)
+                        :command {:value (:command expected)
+                                  :result (:result expected)
+                                  :emitted []}}
+                       (:second-command-evidence workload))
+            (violation "jolt.sim.outbox-delivery-hegel-test/json-replay-evidence"
+                       input {:workload workload})))
+
+        :conflict
+        (do
+          (when (some? (:second-command-evidence workload))
+            (violation "jolt.sim.outbox-delivery-hegel-test/json-conflict-authorized"
+                       input {:workload workload}))
+          (when-not (= {"error" {"type" "request-id-conflict"
+                                  "reason" "request-id-conflict"
+                                  "request-id" (:request-id input)}}
+                       (:response second-http))
+            (violation "jolt.sim.outbox-delivery-hegel-test/json-conflict-response"
+                       input {:response (:response second-http)}))))
+      (when-not (= [(:message expected)] (:requests receiver))
+        (violation "jolt.sim.outbox-delivery-hegel-test/json-receiver"
+                   input {:receiver receiver}))
+      (when-not (= [] (:server-errors receiver))
+        (violation "jolt.sim.outbox-delivery-hegel-test/json-receiver-errors"
+                   input {:receiver receiver}))
+      (when-not (= {:plan-index 35 :plan-count 35
+                    :open-dbs 0 :active-stmts 0}
+                   sqlite)
+        (violation "jolt.sim.outbox-delivery-hegel-test/json-sqlite-plan"
+                   input {:sqlite sqlite}))
+      (when-not (and (positive-integer? (:count routes))
+                     (true? (:all-handled? routes))
+                     (every? (set (:foreign-symbols routes))
+                             required-foreign-symbols))
+        (violation "jolt.sim.outbox-delivery-hegel-test/json-routes"
+                   input {:routes routes}))
+      (when-not (= 8 (get-in capacity [:stream :stream-capacity]))
+        (violation "jolt.sim.outbox-delivery-hegel-test/json-capacity"
+                   input {:capacity capacity}))
+      (when-not (= {:memory true :sqlite true :posix true} clean?)
+        (violation "jolt.sim.outbox-delivery-hegel-test/json-cleanup"
+                   input {:clean? clean?})))))
+
+(def ^:private json-replay-conflict-boundary-inputs
+  [{:mode :exact-replay
+    :payload []
+    :request-id "r"
+    :entity-id "e"}
+   {:mode :conflict
+    :payload [0 127 128 255]
+    :request-id "req-1"
+    :entity-id "entity-a"}])
+
+(deftest outbox-json-replay-conflict-boundary-witness
+  (doseq [[index input]
+          (map-indexed vector json-replay-conflict-boundary-inputs)]
+    (check-case-with-progress!
+     json-replay-conflict-scenario-sym
+     assert-json-replay-conflict-case-outcome!
+     :boundary (inc index) input boundary-case-timeout-ms)))
+
+(deftest hegel-outbox-json-replay-conflict-preserves-idempotency
+  (let [case-ordinal (atom 0)
+        result
+        (h/run-test!
+         {:test-cases 6
+          :suppress-health-checks [:too-slow]
+          :seed 7
+          :database ""
+          :report-multiple-failures? false
+          :verbosity :quiet}
+         (fn [_]
+           (let [input
+                 (h/draw! (json-replay-conflict-input-generator)
+                          "json-replay-conflict-input")]
+             (check-case-with-progress!
+              json-replay-conflict-scenario-sym
+              assert-json-replay-conflict-case-outcome!
+              :generated (swap! case-ordinal inc) input case-timeout-ms))))]
+    (is (true? (:passed? result))
+        (pr-str (select-keys result
+                             [:status :seed :n-failures :flaky? :failures
+                              :final])))
+    (is (false? (:flaky? result))
+        (pr-str (select-keys result
+                             [:seed :flaky? :observed-failures])))))
 
 ;; ---- Two-attempt retry lane (scoped recv ECONNRESET) ----------------------
 
@@ -3094,6 +3352,8 @@
    #'supervisor-escape-does-not-copy-a-possibly-live-directory
    #'outbox-delivery-payload-boundary-witness
    #'hegel-outbox-delivery-holds-across-payload-capacities-eintr-and-plans
+   #'outbox-json-replay-conflict-boundary-witness
+   #'hegel-outbox-json-replay-conflict-preserves-idempotency
    #'outbox-delivery-retry-boundary-witness
    #'hegel-outbox-delivery-retry-holds-across-payload-capacities-and-eintr
    #'outbox-delivery-cancel-boundary-witness

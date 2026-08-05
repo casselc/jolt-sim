@@ -493,7 +493,8 @@
 
   ;; Child side of :outbox-delivery-hegel-test. Only db's source root is loaded
   ;; so real SQLite cannot initialize before the hermetic controller is
-  ;; installed; the remaining pins match :outbox-delivery-sim-test exactly.
+  ;; installed. The delivery pins match :outbox-delivery-sim-test; the routed
+  ;; JSON additions match :outbox-json-delivery-sim-test exactly.
   :outbox-delivery-explore-worker
   {:extra-paths ["test"]
    :extra-deps
@@ -515,7 +516,23 @@
      :git/sha "6c68bf2a1dbd7e438923ce38252c2abbdcb1643f"}
     io.github.casselc/jolt-bytes
     {:git/url "https://github.com/casselc/jolt-bytes.git"
-     :git/sha "9c3280eb49c00d0373e32ee6cae74f961a254712"}}
+     :git/sha "9c3280eb49c00d0373e32ee6cae74f961a254712"}
+    io.github.casselc/data.json
+    {:git/url "https://github.com/casselc/data.json.git"
+     :git/sha "8a6dc9668e5c3596a335759defeb7ec80cd3b5f8"}
+    io.github.jolt-lang/time
+    {:git/url "https://github.com/jolt-lang/time.git"
+     :git/sha "da271ca302487c2c5130a0450b4ad4c78d63e656"}
+    jolt-lang/router
+    {:git/url "https://github.com/jolt-lang/router"
+     :git/sha "a66fc944f1b1a43d2dff9b322619159c77809885"}
+    metosin/reitit-core
+    {:git/url "https://github.com/metosin/reitit"
+     :git/sha "5d5c965deb3c7c8d64b8dd636432eaa14f0324ec"
+     :deps/root "modules/reitit-core"}
+    weavejester/meta-merge
+    {:git/url "https://github.com/weavejester/meta-merge"
+     :git/sha "c968c38baccd4219fe0ba592d89af37ea8e426bf"}}
    :main-opts ["-m" "jolt.sim.explore-worker"]}
 
   ;; Hegel-owned, shrinkable command payload, capacities, and poll-fault
