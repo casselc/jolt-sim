@@ -3,9 +3,10 @@
   whose HTTP command phase is the existing jolt.example.outbox.http-json
   facade behind the same real or hermetic jolt-http server infrastructure.
 
-  This namespace owns only the JSON HTTP command-phase seam consumed by the
-  unchanged jolt.sim.fixtures.outbox-delivery/exercise-outbox-delivery-via
-  flow:
+  This namespace owns the JSON HTTP command-phase seam consumed by the
+  unchanged jolt.sim.fixtures.outbox-delivery flow, plus a two-request command
+  phase that proves exact replay or conflicting request-id reuse before the
+  same delivery boundary:
 
   - json-request-bytes builds POST /v1/entities/:entity-id/commands/:request-id
     with Content-Type application/json and the closed {\"payload\" [...]} body
@@ -33,8 +34,11 @@
   The facade percent-decodes the two route parameters, so this fixture's
   request builder deliberately fails closed on any identifier that is not
   already RFC 3986 unreserved ASCII: constructing percent escapes for
-  generated identifiers belongs to the later generated-identifier Hegel lane,
-  not to this real/hermetic parity witness. Concurrency, crash durability,
+  generated identifiers belongs to this lane's bounded Hegel campaign rather
+  than request repair. The two-request workload reuses one production facade
+  handler and SQLite connection across two ordinary jolt-http request cycles,
+  snapshots durable state before and after request two, and then delegates
+  delivery unchanged. Concurrency, crash durability,
   exactly-once delivery, and close/reopen semantics remain exactly what the
   unchanged flow does and does not claim. This namespace itself has no
   simulator dependency: whether the process's native socket and SQLite foreign
@@ -42,6 +46,8 @@
   exactly as for the bencode fixture lanes."
   (:require [clojure.data.json :as json]
             [jolt.example.outbox.http-json :as json-facade]
+            [jolt.example.outbox.sqlite :as store]
+            [jolt.sim.fixtures.http-sqlite :as http-fixture]
             [jolt.sim.fixtures.outbox-delivery :as delivery]))
 
 (def default-command
@@ -166,6 +172,35 @@
       (fail! :invalid-command-response {:wire wire}))
     result))
 
+(defn- evidence-handler
+  "Wraps one production facade handler for one submitted command and publishes
+   bounded evidence only when that request was accepted as a fresh commit or
+   exact replay. Conflict/rejection responses deliberately publish nothing."
+  [facade-handler command command-evidence*]
+  (fn [request]
+    (let [response (facade-handler request)
+          status (:status response)]
+      (when (contains? #{200 201} status)
+        (let [wire (decode-json-exact :http-command-response-evidence
+                                      (.getBytes ^String (:body response)
+                                                 "UTF-8"))
+              result (response->result wire)
+              emitted (if (= 201 status)
+                        [{:outbox-id (:outbox-id result)
+                          :request-id (:request-id result)
+                          :entity-id (:entity-id result)
+                          :version (:version result)
+                          :payload (:payload command)
+                          :status :pending}]
+                        [])
+              evidence
+              {:identities (delivery/semantic-identities result)
+               :command {:value command
+                         :result result
+                         :emitted emitted}}]
+          (reset! command-evidence* evidence)))
+      response)))
+
 (defn- json-handler-for
   "Builds the seam's handler over the open, schema-initialized connection: the
    production jolt.example.outbox.http-json/command-handler unchanged, plus
@@ -184,30 +219,9 @@
    lane does not claim the bencode handler's finer pre-command/post-COMMIT
    deadline observations and must not be used for that terminal campaign."
   [conn command command-evidence* _operation-context]
-  (let [facade-handler (json-facade/command-handler conn)]
-    (fn [request]
-      (let [response (facade-handler request)
-            status (:status response)]
-        (when (contains? #{200 201} status)
-          (let [wire (decode-json-exact :http-command-response-evidence
-                                        (.getBytes ^String (:body response)
-                                                   "UTF-8"))
-                result (response->result wire)
-                emitted (if (= 201 status)
-                          [{:outbox-id (:outbox-id result)
-                            :request-id (:request-id result)
-                            :entity-id (:entity-id result)
-                            :version (:version result)
-                            :payload (:payload command)
-                            :status :pending}]
-                          [])
-                evidence
-                {:identities (delivery/semantic-identities result)
-                 :command {:value command
-                           :result result
-                           :emitted emitted}}]
-            (reset! command-evidence* evidence)))
-        response))))
+  (evidence-handler (json-facade/command-handler conn)
+                    command
+                    command-evidence*))
 
 (def json-http-seam
   "The closed HTTP command-phase seam for
@@ -238,3 +252,162 @@
   ([command reply-for supplied-operation-context]
    (delivery/exercise-outbox-delivery-via
     json-http-seam command reply-for supplied-operation-context)))
+
+;; ---- two-request replay/conflict workload -----------------------------------
+
+(def ^:private workload-keys
+  #{:mode :accepted-command :second-command})
+
+(def ^:private workload-modes #{:exact-replay :conflict})
+
+(defn- check-workload!
+  [workload]
+  (when-not (and (map? workload)
+                 (= workload-keys (set (keys workload))))
+    (fail! :invalid-workload {:value workload}))
+  (let [{:keys [mode accepted-command second-command]} workload]
+    ;; Reuse request construction as the closed command/route-safety validator
+    ;; without opening a server or touching storage.
+    (json-request-bytes accepted-command "127.0.0.1" 1)
+    (json-request-bytes second-command "127.0.0.1" 1)
+    (when-not (contains? workload-modes mode)
+      (fail! :invalid-workload-mode {:value mode}))
+    (when-not (= (:request-id accepted-command)
+                 (:request-id second-command))
+      (fail! :request-id-not-reused {:workload workload}))
+    (case mode
+      :exact-replay
+      (when-not (= accepted-command second-command)
+        (fail! :replay-command-mismatch {:workload workload}))
+
+      :conflict
+      (when (= accepted-command second-command)
+        (fail! :conflict-command-equal {:workload workload})))
+    workload))
+
+(defn- http-cycle-evidence
+  [http-cycle]
+  (let [parsed (:parsed http-cycle)
+        body (:body parsed)]
+    {:status (:status parsed)
+     :content-type (get (:headers parsed) "content-type")
+     :content-length (get (:headers parsed) "content-length")
+     :body-octets (mapv #(bit-and % 0xff) body)
+     :response (decode-json-exact :http-workload-response body)
+     :server-errors (:server-errors http-cycle)
+     :close-results (:close-results http-cycle)}))
+
+(defn- run-json-cycle
+  [facade-handler command command-evidence* operation-context]
+  (http-fixture/run-request-cycle
+   (evidence-handler facade-handler command command-evidence*)
+   (fn [host port]
+     (json-request-bytes command host port))
+   operation-context))
+
+(defn- conflict-wire
+  [request-id]
+  {"error" {"type" "request-id-conflict"
+            "reason" "request-id-conflict"
+            "request-id" request-id}})
+
+(defn- exercise-json-command-workload
+  [workload conn operation-context]
+  (check-workload! workload)
+  (let [{:keys [mode accepted-command second-command]} workload
+        facade-handler (json-facade/command-handler conn)
+        accepted-evidence* (atom nil)
+        second-evidence* (atom nil)
+        first-cycle (run-json-cycle facade-handler accepted-command
+                                    accepted-evidence* operation-context)
+        first-http (http-cycle-evidence first-cycle)
+        accepted-evidence @accepted-evidence*]
+    (when-not (= 201 (:status first-http))
+      (fail! :fresh-command-failed
+             {:status (:status first-http)
+              :server-errors (:server-errors first-http)}))
+    (when-not accepted-evidence
+      (fail! :missing-accepted-command-evidence {}))
+    (let [state-before-second (store/load-state conn)
+          second-cycle (run-json-cycle facade-handler second-command
+                                       second-evidence* operation-context)
+          second-http (http-cycle-evidence second-cycle)
+          second-evidence @second-evidence*
+          state-after-second (store/load-state conn)
+          accepted-result (get-in accepted-evidence [:command :result])]
+      (when-not (= state-before-second state-after-second)
+        (fail! :second-request-mutated-state
+               {:mode mode
+                :before state-before-second
+                :after state-after-second}))
+      (case mode
+        :exact-replay
+        (do
+          (when-not (= 200 (:status second-http))
+            (fail! :replay-status
+                   {:status (:status second-http)
+                    :server-errors (:server-errors second-http)}))
+          (when-not (= (:body-octets first-http) (:body-octets second-http))
+            (fail! :replay-body-mismatch
+                   {:first (:body-octets first-http)
+                    :second (:body-octets second-http)}))
+          (when-not (= {:identities (:identities accepted-evidence)
+                        :command {:value accepted-command
+                                  :result accepted-result
+                                  :emitted []}}
+                       second-evidence)
+            (fail! :invalid-replay-evidence {:value second-evidence})))
+
+        :conflict
+        (do
+          (when-not (= 409 (:status second-http))
+            (fail! :conflict-status
+                   {:status (:status second-http)
+                    :server-errors (:server-errors second-http)}))
+          (when second-evidence
+            (fail! :conflict-authorized-delivery
+                   {:evidence second-evidence}))
+          (when-not (= (conflict-wire (:request-id second-command))
+                       (:response second-http))
+            (fail! :invalid-conflict-response
+                   {:response (:response second-http)}))))
+      {:command-evidence accepted-evidence
+       ;; The shared flow performs its own canonical pending reload and must
+       ;; match this phase-owned final snapshot exactly. This preserves a
+       ;; fail-closed boundary even though the workload needs both its own
+       ;; before/after-request snapshots.
+       :expected-pending-state state-after-second
+       :result
+       {:http {:requests [first-http second-http]}
+        :workload {:mode mode
+                   :accepted-command accepted-command
+                   :second-command second-command
+                   :state-before-second state-before-second
+                   :state-after-second state-after-second
+                   :second-command-evidence second-evidence
+                   :delivery-authorized-command accepted-command}}})))
+
+(defn exercise-outbox-json-replay-conflict
+  "Runs two routed JSON requests on one schema-initialized durable application
+   state, then delivers and durably marks the sole accepted pending row.
+
+   The first request must commit freshly (201). In :exact-replay mode the
+   second command is identical and must return 200 with byte-identical response
+   bytes and no emission. In :conflict mode it reuses the request id with a
+   different command and must return the exact 409 envelope without publishing
+   command evidence. Both modes require byte-equal durable snapshots before
+   and after request two, so no second row, version increment, or delivery
+   authorization can pass unnoticed. Both requests cross ordinary jolt-http
+   request cycles, use one production facade handler and the same SQLite
+   connection, and then enter the unchanged delivery/ack/marking flow."
+  ([workload]
+   (exercise-outbox-json-replay-conflict workload delivery/expected-ack nil))
+  ([workload reply-for]
+   (exercise-outbox-json-replay-conflict workload reply-for nil))
+  ([workload reply-for supplied-operation-context]
+   (check-workload! workload)
+   (delivery/exercise-outbox-delivery-with-command-phase
+    (fn [conn operation-context]
+      (exercise-json-command-workload workload conn operation-context))
+    reply-for
+    supplied-operation-context)))

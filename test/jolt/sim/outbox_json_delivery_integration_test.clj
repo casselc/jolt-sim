@@ -4,10 +4,10 @@
    jolt.example.outbox.http-json facade. One fresh JSON commit runs through
    the real and hermetic jolt-http server infrastructure; the one accepted
    durable SQLite outbox row then flows through the unchanged framed
-   TCP/bencode delivery and ack-gated marking lane. Exact replay and
-   conflicting request-id no-mutation coverage remain with the handler-level
-   :outbox-http-json-test suite and the later Hegel slice; this gate is the
-   single fresh-commit whole-application witness."
+   TCP/bencode delivery and ack-gated marking lane. The same gate also runs
+   fixed two-request exact-replay and conflict workloads through real and
+   hermetic HTTP/SQLite/TCP paths; the process-isolated Hegel campaign varies
+   payload octets and route-safe identifiers."
   (:require [clojure.test :refer [deftest is testing]]
             [jolt.net :as net]
             [jolt.sim.ffi-memory :as memory]
@@ -190,3 +190,95 @@
       (is (true? (memory/clean? mem)))
       (is (true? (sqlite/clean? sqlite-world)))
       (is (true? (posix/clean? posix-world))))))
+
+(defn- run-two-request-workload
+  [workload]
+  (let [real-result (when-not *sim-only?*
+                      (fixture/exercise-outbox-json-replay-conflict workload))
+        mem (memory/world)
+        sqlite-world
+        (sqlite/world mem (plans/json-replay-conflict-statement-plans workload))
+        posix-world (posix/world mem (net/target-descriptor)
+                                 {:progress-limit 64
+                                  :stream-capacity 8
+                                  :pipe-capacity 1})
+        handlers
+        (hp/compose
+         (hp/pack :jolt.sim/memory (memory/handlers mem))
+         (hp/pack :jolt.sim/sqlite (sqlite/foreign-handlers sqlite-world))
+         (hp/pack :jolt.sim/posix (posix/foreign-handlers posix-world)))
+        controlled
+        (runtime/run-controlled
+         {:ffi-handlers handlers
+          :drain-timeout-ms 10000}
+         #(fixture/exercise-outbox-json-replay-conflict workload))]
+    {:real real-result
+     :result (:result controlled)
+     :effect-trace (:effect-trace controlled)
+     :memory mem
+     :sqlite sqlite-world
+     :posix posix-world}))
+
+(defn- assert-two-request-workload!
+  [workload expected-second-status]
+  (let [{:keys [real result effect-trace memory sqlite posix]}
+        (run-two-request-workload workload)
+        app (:application result)
+        workload-evidence (:workload result)
+        requests (get-in result [:http :requests])]
+    (when-not *sim-only?*
+      (is (= real result)))
+    (is (= expected-state (:state-before-second workload-evidence)))
+    (is (= expected-state (:state-after-second workload-evidence)))
+    (is (= (:accepted-command workload)
+           (:delivery-authorized-command workload-evidence)))
+    (is (= [201 expected-second-status] (mapv :status requests)))
+    (is (every? #(= "application/json" (:content-type %)) requests))
+    (is (every? #(empty? (:server-errors %)) requests))
+    (is (every? #(= {:connection [true false]} (:close-results %)) requests))
+    (is (= {:value (:accepted-command workload)
+            :result expected-result
+            :emitted [expected-row]}
+           (:command app)))
+    (is (= expected-state (:pending-state app)))
+    (is (= expected-marking (:marking app)))
+    (is (= expected-delivered-state (:store-state app)))
+    (is (= [expected-message] (get-in app [:delivery :requests])))
+    (is (= [expected-message] (get-in result [:receiver :requests])))
+    (is (empty? (get-in result [:receiver :server-errors])))
+    (is (= {:plan-index 35
+            :plan-count 35
+            :open-dbs 0
+            :active-stmts 0}
+           (sqlite/summary sqlite)))
+    (is (every? #(= :handler (:route %)) effect-trace))
+    (is (true? (memory/clean? memory)))
+    (is (true? (sqlite/clean? sqlite)))
+    (is (true? (posix/clean? posix)))
+    result))
+
+(deftest routed-json-exact-replay-does-not-duplicate-delivery
+  (let [workload {:mode :exact-replay
+                  :accepted-command fixture/default-command
+                  :second-command fixture/default-command}
+        result (assert-two-request-workload! workload 200)
+        requests (get-in result [:http :requests])]
+    (is (= (:body-octets (first requests))
+           (:body-octets (second requests))))
+    (is (= {:identities expected-identities
+            :command {:value fixture/default-command
+                      :result expected-result
+                      :emitted []}}
+           (get-in result [:workload :second-command-evidence])))))
+
+(deftest routed-json-conflict-cannot-authorize-delivery
+  (let [conflicting-command (assoc fixture/default-command :payload [1 2 3])
+        workload {:mode :conflict
+                  :accepted-command fixture/default-command
+                  :second-command conflicting-command}
+        result (assert-two-request-workload! workload 409)]
+    (is (nil? (get-in result [:workload :second-command-evidence])))
+    (is (= {"error" {"type" "request-id-conflict"
+                     "reason" "request-id-conflict"
+                     "request-id" "req-1"}}
+           (get-in result [:http :requests 1 :response])))))
