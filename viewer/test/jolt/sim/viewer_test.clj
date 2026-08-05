@@ -5,6 +5,7 @@
             [jolt.fs :as fs]
             [jolt.http.body :as http-body]
             [jolt.sim.case-outcome :as case-outcome]
+            [jolt.sim.trace :as trace]
             [jolt.sim.viewer :as viewer]
             [teensyp.client :as client]))
 
@@ -55,13 +56,18 @@
         (String. (http-body/body-bytes this) charset)))))
 
 (defn request
-  ([uri text] (request uri text token))
-  ([uri text supplied-token]
+  "Builds a POST request carrying the explicitly declared document kind
+  (default `:case-outcome`). Pass a nil kind to exercise the missing-kind
+  rejection."
+  ([uri text] (request uri text token :case-outcome))
+  ([uri text supplied-token] (request uri text supplied-token :case-outcome))
+  ([uri text supplied-token kind]
    {:request-method :post
     :uri uri
-    :headers {"content-type" "application/edn"
-              "content-length" (str (count (.getBytes ^String text "UTF-8")))
-              "x-jolt-sim-capability" supplied-token}
+    :headers (cond-> {"content-type" "application/edn"
+                      "content-length" (str (count (.getBytes ^String text "UTF-8")))
+                      "x-jolt-sim-capability" supplied-token}
+               (some? kind) (assoc "x-jolt-sim-document-kind" (name kind)))
     :body (body [(.getBytes ^String text "UTF-8")])}))
 
 (defn get-request
@@ -74,10 +80,14 @@
                {})}))
 
 (defn services [render-calls replay-calls replay-outcome]
-  {:render-document
+  {:render-trace
    (fn [doc]
-     (swap! render-calls conj doc)
-     "<html>validated</html>")
+     (swap! render-calls conj [:trace doc])
+     "<html>trace</html>")
+   :render-case-outcome
+   (fn [doc]
+     (swap! render-calls conj [:case-outcome doc])
+     "<html>case-outcome</html>")
    :replay-document
    (fn [doc runtime]
      (swap! replay-calls conj [doc runtime])
@@ -165,18 +175,22 @@
 (deftest shell-is-static-and-does-not-disclose-the-token
   (let [handler (viewer/make-handler
                  (config)
-                 {:render-document identity
+                 {:render-trace identity
+                  :render-case-outcome identity
                   :replay-document (fn [_ _] nil)})
         shell (handler {:request-method :get :uri "/"})
         script (handler {:request-method :get :uri "/viewer.js"})]
     (is (= 200 (:status shell)))
-    (is (string/includes? (:body shell) "retained-case viewer"))
+    (is (string/includes? (:body shell) "Ripple"))
     (is (not (string/includes? (:body shell) token)))
     (is (= 200 (:status script)))
     (is (string/includes? (:body script) "textContent"))
     (is (not (string/includes? (:body script) "innerHTML")))
     (is (string/includes? (:body script) "pollGeneration"))
     (is (string/includes? (:body script) "file.disabled = busy"))
+    (is (string/includes? (:body script) "kind.disabled = busy"))
+    (is (string/includes? (:body script)
+                          "X-Jolt-Sim-Document-Kind"))
     (is (string/includes? (:body script)
                           "const replayRequest = request(\"/api/replay\")"))
     (is (= "no-store" (get-in shell [:headers "Cache-Control"])))
@@ -197,8 +211,8 @@
         response (handler (request "/api/render"
                                    (case-outcome/canonical-edn doc)))]
     (is (= 200 (:status response)))
-    (is (= "<html>validated</html>" (:body response)))
-    (is (= [doc] @render-calls))
+    (is (= "<html>case-outcome</html>" (:body response)))
+    (is (= [[:case-outcome doc]] @render-calls))
     (is (= [] @replay-calls))))
 
 (deftest malformed-unauthorized-and-wrong-media-requests-never-delegate
@@ -223,6 +237,25 @@
     (is (= [] @render-calls))
     (is (= [] @replay-calls))))
 
+(deftest missing-and-unknown-document-kinds-are-rejected-before-the-body
+  (let [render-calls (atom [])
+        replay-calls (atom [])
+        handler (viewer/make-handler
+                 (config)
+                 (services render-calls replay-calls {:status :completed}))
+        encoded (case-outcome/canonical-edn (document))
+        missing-kind (handler (request "/api/render" encoded token nil))
+        unknown-kind (handler (request "/api/render" encoded token :bogus))
+        missing-kind-replay (handler (request "/api/replay" encoded token nil))]
+    (is (= 400 (:status missing-kind)))
+    (is (string/includes? (:body missing-kind) ":document-kind-required"))
+    (is (= 400 (:status unknown-kind)))
+    (is (string/includes? (:body unknown-kind) ":unknown-document-kind"))
+    (is (= 400 (:status missing-kind-replay)))
+    (is (string/includes? (:body missing-kind-replay) ":document-kind-required"))
+    (is (= [] @render-calls))
+    (is (= [] @replay-calls))))
+
 (deftest declared-and-streamed-request-limits-fail-before-render
   (let [render-calls (atom [])
         replay-calls (atom [])
@@ -236,7 +269,8 @@
                   {:request-method :post
                    :uri "/api/render"
                    :headers {"content-type" "application/edn"
-                             "x-jolt-sim-capability" token}
+                             "x-jolt-sim-capability" token
+                             "x-jolt-sim-document-kind" "case-outcome"}
                    :body (body [(.getBytes "1234" "UTF-8")
                                 (.getBytes "56789" "UTF-8")])})]
     (is (= 413 (:status declared)))
@@ -287,7 +321,8 @@
                     :exit nil}]]
     (let [handler (viewer/make-handler
                    (config)
-                   {:render-document (fn [_] "unused")
+                   {:render-trace (fn [_] "unused")
+                    :render-case-outcome (fn [_] "unused")
                     :replay-document (fn [_ _] outcome)})
           response (handler
                     (request "/api/replay"
@@ -298,7 +333,8 @@
 (deftest replay-progress-requires-authorization-and-starts-idle
   (let [handler (viewer/make-handler
                  (config)
-                 {:render-document (fn [_] "unused")
+                 {:render-trace (fn [_] "unused")
+                  :render-case-outcome (fn [_] "unused")
                   :replay-document (fn [_ _] {:status :completed :exit 0})})
         unauthorized (handler (get-request "/api/replay-progress" "wrong"))
         idle (handler (get-request "/api/replay-progress"))]
@@ -318,7 +354,8 @@
         handler
         (viewer/make-handler
          (config)
-         {:render-document (fn [_] "unused")
+         {:render-trace (fn [_] "unused")
+          :render-case-outcome (fn [_] "unused")
           :replay-document
           (fn [_doc runtime]
             ((:on-run-dir runtime) run-dir)
@@ -375,7 +412,8 @@
         handler
         (viewer/make-handler
          (config)
-         {:render-document (fn [_] "unused")
+         {:render-trace (fn [_] "unused")
+          :render-case-outcome (fn [_] "unused")
           :replay-document
           (fn [_ _]
             ;; Re-enter while the outer replay owns the lease. This avoids a
@@ -387,7 +425,8 @@
               {:request-method :post
                :uri "/api/render"
                :headers {"content-type" "application/edn"
-                         "x-jolt-sim-capability" token}
+                         "x-jolt-sim-capability" token
+                         "x-jolt-sim-document-kind" "case-outcome"}
                :body
                (reify http-body/RequestBody
                  (body-recv [_]
@@ -414,7 +453,8 @@
   (let [error (ex-info "renderer defect" {:type ::renderer-defect})
         handler (viewer/make-handler
                  (config)
-                 {:render-document (fn [_] (throw error))
+                 {:render-trace (fn [_] "unused")
+                  :render-case-outcome (fn [_] (throw error))
                   :replay-document (fn [_ _] nil)})]
     (is (identical?
          error
@@ -456,7 +496,8 @@
 (deftest unknown-routes-do-not-read-or-run-a-document
   (let [handler (viewer/make-handler
                  (config)
-                 {:render-document (fn [_] (throw (ex-info "called" {})))
+                 {:render-trace (fn [_] (throw (ex-info "called" {})))
+                  :render-case-outcome (fn [_] (throw (ex-info "called" {})))
                   :replay-document (fn [_ _] (throw (ex-info "called" {})))})
         response (handler {:request-method :post
                            :uri "/api/nope"
@@ -474,15 +515,120 @@
             (request-over-loopback!
              port "POST" "/api/render"
              {"Content-Type" "application/edn"
-              "X-Jolt-Sim-Capability" token}
+              "X-Jolt-Sim-Capability" token
+              "X-Jolt-Sim-Document-Kind" "case-outcome"}
              encoded)]
         (is (pos? port))
         (is (string/starts-with? shell "HTTP/1.1 200"))
-        (is (string/includes? shell "jolt-sim retained-case viewer"))
+        (is (string/includes? shell "Ripple"))
         (is (string/starts-with? rendered "HTTP/1.1 200"))
         (is (string/includes? rendered "example.viewer/replay-case")))
       (finally
         (viewer/stop! server)))))
+
+;; Real-artifact tests. The gate runs from the viewer directory (CI: cd
+;; viewer && jolt -M:test), so the checked-in report examples resolve one
+;; level up, exactly like the report suite's own relative example paths.
+
+(defn- example-edn-text [name]
+  (slurp (str "../report/examples/" name)))
+
+(defn- large-document-config []
+  ;; The committed outbox-retry Case/Outcome artifact is ~20 KiB, larger than
+  ;; the small default test limit.
+  (assoc (config) :max-document-bytes (* 1024 1024)))
+
+(deftest render-routes-by-declared-kind-to-the-matching-service
+  (let [render-calls (atom [])
+        replay-calls (atom [])
+        handler (viewer/make-handler
+                 (large-document-config)
+                 (services render-calls replay-calls {:status :completed}))
+        trace-doc (trace/read-edn
+                   (example-edn-text "cooperative-countdown-trace.edn"))
+        case-doc (case-outcome/read-edn
+                   (example-edn-text "outbox-retry-case-outcome.edn"))
+        trace-response (handler (request "/api/render"
+                                         (trace/canonical-edn trace-doc)
+                                         token
+                                         :trace))
+        case-response (handler (request "/api/render"
+                                        (case-outcome/canonical-edn case-doc)
+                                        token
+                                        :case-outcome))]
+    (is (= 200 (:status trace-response)))
+    (is (= "<html>trace</html>" (:body trace-response)))
+    (is (= 200 (:status case-response)))
+    (is (= "<html>case-outcome</html>" (:body case-response)))
+    (is (= [[:trace trace-doc] [:case-outcome case-doc]] @render-calls))
+    (is (= [] @replay-calls))))
+
+(deftest trace-document-renders-through-the-real-trace-report-path
+  (let [handler (viewer/make-handler (config))
+        progress-before (handler (get-request "/api/replay-progress"))
+        response (handler (request "/api/render"
+                                   (example-edn-text
+                                    "cooperative-countdown-trace.edn")
+                                   token
+                                   :trace))
+        progress-after (handler (get-request "/api/replay-progress"))]
+    (is (= 200 (:status response)))
+    (is (string/includes? (:body response) "countdown"))
+    (is (string/includes? (:body response) "run/completed"))
+    (is (= (:body progress-before) (:body progress-after)))
+    (is (string/includes? (:body progress-after) "\"status\":\"idle\""))))
+
+(deftest case-outcome-document-renders-through-the-real-case-outcome-report-path
+  (let [handler (viewer/make-handler (large-document-config))
+        response (handler (request "/api/render"
+                                   (example-edn-text
+                                    "outbox-retry-case-outcome.edn")
+                                   token
+                                   :case-outcome))]
+    (is (= 200 (:status response)))
+    (is (string/includes? (:body response) "outbox"))
+    (is (string/includes?
+         (:body response)
+         "jolt.sim.fixtures.outbox-delivery-scenarios/exercise-retry-recv-reset"))))
+
+(deftest replay-rejects-trace-documents-before-restore-or-worker-execution
+  (let [render-calls (atom [])
+        replay-calls (atom [])
+        handler (viewer/make-handler
+                 (config)
+                 (services render-calls replay-calls {:status :completed}))
+        response (handler (request "/api/replay"
+                                   (example-edn-text
+                                    "cooperative-countdown-trace.edn")
+                                   token
+                                   :trace))]
+    (is (= 400 (:status response)))
+    (is (string/includes? (:body response) ":trace-not-replayable"))
+    (is (= [] @render-calls))
+    (is (= [] @replay-calls))))
+
+(deftest misdeclared-document-kind-is-rejected-by-the-declared-codec
+  (let [render-calls (atom [])
+        replay-calls (atom [])
+        handler (viewer/make-handler
+                 (large-document-config)
+                 (services render-calls replay-calls {:status :completed}))
+        trace-as-case (handler (request "/api/render"
+                                        (example-edn-text
+                                         "cooperative-countdown-trace.edn")
+                                        token
+                                        :case-outcome))
+        case-as-trace (handler (request "/api/render"
+                                        (example-edn-text
+                                         "outbox-retry-case-outcome.edn")
+                                        token
+                                        :trace))]
+    (is (= 400 (:status trace-as-case)))
+    (is (string/includes? (:body trace-as-case) ":invalid-document"))
+    (is (= 400 (:status case-as-trace)))
+    (is (string/includes? (:body case-as-trace) ":invalid-document"))
+    (is (= [] @render-calls))
+    (is (= [] @replay-calls))))
 
 (defn -main [& _]
   (let [result (test/run-tests 'jolt.sim.viewer-test)

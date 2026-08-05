@@ -146,7 +146,8 @@
                {"JOLT_SIM_OUTBOX_ACTIVITY_CHECKPOINT" activity-checkpoint
                 "JOLT_SIM_OUTBOX_ACTIVITY_RELEASE" activity-release}
                :retain-completed-artifacts? true}}
-             {:render-document report/case-outcome->html
+             {:render-trace report/trace->html
+              :render-case-outcome report/case-outcome->html
               :replay-document
               (fn [document runtime]
                 (try
@@ -180,7 +181,8 @@
                    (viewer-test/request-over-loopback!
                     port "POST" "/api/replay"
                     {"Content-Type" "application/edn"
-                     "X-Jolt-Sim-Capability" capability-token}
+                     "X-Jolt-Sim-Capability" capability-token
+                     "X-Jolt-Sim-Document-Kind" "case-outcome"}
                     (case-outcome/canonical-edn document)
                     120000)}
                   (catch :default error {:error error})))))
@@ -363,7 +365,8 @@
                :kill-grace-ms 500
                :temp-dir artifact-root
                :retain-completed-artifacts? true}}
-             {:render-document report/case-outcome->html
+             {:render-trace report/trace->html
+              :render-case-outcome report/case-outcome->html
               :replay-document sim-repl/replay-document!})
             _ (reset! server* server)
             port (:port server)
@@ -374,7 +377,8 @@
             (viewer-test/request-over-loopback!
              port "POST" "/api/render"
              {"Content-Type" "application/edn"
-              "X-Jolt-Sim-Capability" capability-token}
+              "X-Jolt-Sim-Capability" capability-token
+              "X-Jolt-Sim-Document-Kind" "case-outcome"}
              encoded
              5000)
             render-body (response-body render-raw)
@@ -382,7 +386,8 @@
             (viewer-test/request-over-loopback!
              port "POST" "/api/replay"
              {"Content-Type" "application/edn"
-              "X-Jolt-Sim-Capability" capability-token}
+              "X-Jolt-Sim-Capability" capability-token
+              "X-Jolt-Sim-Document-Kind" "case-outcome"}
              encoded
              120000)
             replay-body (response-body replay-raw)

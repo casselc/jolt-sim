@@ -1,16 +1,21 @@
-# jolt-sim retained-case viewer
+# Ripple
 
-This optional dependency root serves a small loopback-only web UI over the
-existing Case/Outcome reporter and fresh-process replay helper. It does not
-implement another scheduler, controller, monitor, evidence schema, or worker
-protocol.
+Ripple is the offline jolt-sim document viewer. This optional dependency root
+serves a small loopback-only web UI over the existing trace and Case/Outcome
+reporters and the fresh-process replay helper. It does not implement another
+scheduler, controller, monitor, evidence schema, or worker protocol.
 
 The browser keeps the selected EDN file locally until **Inspect** or **Replay
-once** is pressed. Every request requires a startup capability token. Replay
+once** is pressed. Every request requires a startup capability token. The
+upload UI requires an explicit document kind -- **Trace** or **Case/Outcome**
+-- and the server never infers or guesses a schema from the uploaded bytes.
+Trace documents render through `jolt.sim.report/trace->html` and are never
+replayable; Case/Outcome documents render through
+`jolt.sim.report/case-outcome->html` and keep the existing replay path. Replay
 uses only the scenario, input, and schedule restored from the validated
-document; worker command, working directory, deadlines, environment, and
-artifact policy come from the trusted server configuration. Scenarios must be
-explicitly allowlisted.
+Case/Outcome document; worker command, working directory, deadlines,
+environment, and artifact policy come from the trusted server configuration.
+Scenarios must be explicitly allowlisted.
 
 The server admits one body-consuming inspection or replay request at a time,
 even when several tabs share the capability. A competing request receives 429
@@ -37,13 +42,15 @@ viewer is an investigation tool. `:temp-dir` is the existing parent under
 which the process explorer creates one isolated run directory; it is not an
 output directory chosen by the uploaded document.
 
-Current boundary: inspection is a real report render, and replay delegates to
-one real fresh worker. Hosted CI drives the checked-in canonical outbox
-Case/Outcome through the live viewer HTTP API, executes its unchanged
-HTTP/SQLite/TCP/bencode scenario in that worker, and retains the complete
-worker directory plus an append-only phase log. The UI does not yet compare
-two outcomes, evaluate post-hoc invariants, or expose a general scenario
-catalog. Those are later viewer slices over the same evidence and replay APIs.
+Current boundary: inspection is a real report render (trace documents through
+the trace report, Case/Outcome documents through the Case/Outcome report), and
+replay delegates to one real fresh worker for Case/Outcome documents only.
+Hosted CI drives the checked-in canonical outbox Case/Outcome through the live
+viewer HTTP API, executes its unchanged HTTP/SQLite/TCP/bencode scenario in
+that worker, and retains the complete worker directory plus an append-only
+phase log. The UI does not yet compare two outcomes, evaluate post-hoc
+invariants, or expose a general scenario catalog. Those are later viewer
+slices over the same evidence and replay APIs.
 
 ### Replay activity panel
 

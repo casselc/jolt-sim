@@ -3,16 +3,16 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>jolt-sim viewer</title>
+  <title>Ripple</title>
   <style>
     :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
     body { margin: 0; }
     header, main { padding: 1rem 1.25rem; }
     header { border-bottom: 1px solid #8886; }
     h1 { margin: 0; font-size: 1.35rem; }
-    .controls { display: grid; gap: .8rem; grid-template-columns: minmax(15rem, 1fr) auto auto; align-items: end; }
+    .controls { display: grid; gap: .8rem; grid-template-columns: minmax(9rem, auto) minmax(15rem, 1fr) auto auto; align-items: end; }
     label { display: grid; gap: .3rem; font-size: .9rem; }
-    input, button { font: inherit; padding: .45rem .6rem; }
+    input, select, button { font: inherit; padding: .45rem .6rem; }
     button { cursor: pointer; }
     button:disabled { cursor: not-allowed; opacity: .55; }
     #status { min-height: 1.5rem; margin: .8rem 0; white-space: pre-wrap; }
@@ -24,12 +24,19 @@
 </head>
 <body>
   <header>
-    <h1>jolt-sim retained-case viewer</h1>
-    <p class="muted">The document stays in this browser until you explicitly inspect or replay it.</p>
+    <h1>Ripple</h1>
+    <p class="muted">Offline jolt-sim document viewer. The document stays in this browser until you explicitly inspect or replay it.</p>
   </header>
   <main>
     <div class="controls">
-      <label>Case/Outcome EDN
+      <label>Document kind
+        <select id="kind">
+          <option value="" selected disabled>Select kind&hellip;</option>
+          <option value="trace">Trace</option>
+          <option value="case-outcome">Case/Outcome</option>
+        </select>
+      </label>
+      <label>Document EDN
         <input id="case-file" type="file" accept=".edn,application/edn,text/plain">
       </label>
       <label>Session capability
