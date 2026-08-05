@@ -20,6 +20,13 @@ summary, and ordered fields; the complete event EDN remains available behind
 each row. The same projection is suitable for REPL/tap consumers and future
 Ripple frontends—it contains no Selmer or HTML values.
 
+Trace reports also include stable event anchors, first/previous/next/last
+links, terminal/failure/monitor shortcuts, and indexes by tag, task, canonical
+site, and virtual time. These controls use ordinary fragment links, so they
+continue to work in static files and inside Ripple's script-disabled report
+frame. Site grouping retains the collision-free canonical trace value while
+showing its restored readable form.
+
 Libraries and applications can add trusted presenters without changing trace
 documents or mutating global dispatch. Compose immutable registries in
 default, library, application order and pass the resulting overrides to the

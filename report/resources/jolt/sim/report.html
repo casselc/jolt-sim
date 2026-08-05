@@ -79,6 +79,16 @@
   .event-fields li { margin-top: 0.15rem; }
   .field-label { color: var(--muted); margin-right: 0.3rem; }
   .detail { word-break: break-word; }
+  .quick-nav { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 0.7rem 1rem; }
+  .quick-nav p { margin: 0.3rem 0; }
+  .quick-label { color: var(--muted); font-weight: 600; margin-right: 0.35rem; }
+  .quick-nav a, .event-nav a, .index-links a { margin-right: 0.35rem; white-space: nowrap; }
+  .event-nav { margin: 0 0 0.35rem; font-size: 0.82rem; line-height: 1.3; }
+  .event-nav .nav-pos { color: var(--muted); margin: 0 0.4rem; }
+  .nav-dim { color: var(--muted); margin-right: 0.35rem; }
+  .index-groups h3 { font-size: 0.95rem; margin: 0.9rem 0 0.3rem; }
+  .index-groups table { font-size: 0.85rem; }
+  .index-links { word-break: break-word; }
   .status { font-weight: 600; }
   .status-pass { color: var(--pass); }
   .status-violation { color: var(--violation); }
@@ -128,6 +138,42 @@
       <span class="card-value">{{terminal-label}}</span>
     </div>
   </section>
+
+  {% if has-nav %}
+  <section id="{{nav-anchor}}" class="quick-nav">
+    <h2>Quick navigation</h2>
+    <p>
+      <span class="quick-label">Events:</span>
+      <a href="{{nav.first.href}}">first</a>
+      <a href="{{nav.last.href}}">last</a>
+    </p>
+    {% if quick.has-terminal %}
+    <p>
+      <span class="quick-label">Terminal:</span>
+      {% for t in quick.terminal %}<a href="{{t.href}}">{{t.tag}} #{{t.index}}</a> {% endfor %}
+    </p>
+    {% endif %}
+    {% if quick.has-failure %}
+    <p>
+      <span class="quick-label">Failures:</span>
+      {% for t in quick.failure %}<a href="{{t.href}}">{{t.tag}} #{{t.index}}</a> {% endfor %}
+    </p>
+    {% endif %}
+    {% if quick.has-monitor-targets %}
+    <p>
+      <span class="quick-label">Monitor-flagged events:</span>
+      {% for t in quick.monitor-targets %}<a href="{{t.href}}">#{{t.index}}</a> {% endfor %}
+    </p>
+    {% endif %}
+    <p>
+      <span class="quick-label">Index:</span>
+      {% if has-tag-groups %}<a href="#{{tag-index-anchor}}">by tag</a> {% endif %}
+      {% if has-task-groups %}<a href="#{{task-index-anchor}}">by task</a> {% endif %}
+      {% if has-site-groups %}<a href="#{{site-index-anchor}}">by site</a> {% endif %}
+      {% if has-time-groups %}<a href="#{{time-index-anchor}}">by virtual time</a> {% endif %}
+    </p>
+  </section>
+  {% endif %}
 
   {% if has-monitors %}
   <section>
@@ -179,7 +225,7 @@
       </thead>
       <tbody>
       {% for e in events %}
-        <tr>
+        <tr id="{{e.anchor}}">
           <td class="num">{{e.index}}</td>
           <td>
             <span class="kind">{{e.kind-name}}</span><br>
@@ -189,6 +235,14 @@
           <td class="num">{{e.time}}</td>
           <td class="num">{{e.task}}</td>
           <td>
+            <nav class="event-nav">
+              <a href="{{e.nav.first-href}}">first</a>
+              {% if e.nav.prev-href %}<a href="{{e.nav.prev-href}}">prev</a>{% else %}<span class="nav-dim">prev</span>{% endif %}
+              {% if e.nav.next-href %}<a href="{{e.nav.next-href}}">next</a>{% else %}<span class="nav-dim">next</span>{% endif %}
+              <a href="{{e.nav.last-href}}">last</a>
+              <span class="nav-pos">{{e.nav.position}} / {{e.nav.total}}</span>
+              <a href="{{nav-href}}">index</a>
+            </nav>
             <div class="event-summary">{{e.summary}}</div>
             {% if e.has-fields %}
             <ul class="event-fields">
@@ -207,6 +261,87 @@
       </tbody>
     </table>
   </section>
+
+  {% if has-index %}
+  <section class="index-groups">
+    <h2>Trace index</h2>
+    <p class="filter-row">Script-free links jump to the matching event row.</p>
+    {% if has-tag-groups %}
+    <h3 id="{{tag-index-anchor}}">By tag</h3>
+    <table>
+      <thead>
+        <tr><th>Tag</th><th>Count</th><th>Events</th></tr>
+      </thead>
+      <tbody>
+      {% for g in tag-groups %}
+        <tr>
+          <td><code>{{g.key-edn}}</code></td>
+          <td class="num">{{g.count}}</td>
+          <td class="index-links">{% for ev in g.events %}<a href="{{ev.href}}">#{{ev.index}}</a> {% endfor %}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+    {% if has-task-groups %}
+    <h3 id="{{task-index-anchor}}">By task</h3>
+    <table>
+      <thead>
+        <tr><th>Task</th><th>Count</th><th>Events</th></tr>
+      </thead>
+      <tbody>
+      {% for g in task-groups %}
+        <tr>
+          <td class="num">{{g.key-edn}}</td>
+          <td class="num">{{g.count}}</td>
+          <td class="index-links">{% for ev in g.events %}<a href="{{ev.href}}">#{{ev.index}} {{ev.tag}}</a> {% endfor %}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+    {% if has-site-groups %}
+    <h3 id="{{site-index-anchor}}">By site</h3>
+    <table>
+      <thead>
+        <tr><th>Site</th><th>Count</th><th>Events</th></tr>
+      </thead>
+      <tbody>
+      {% for g in site-groups %}
+        <tr>
+          <td>
+            <code>{{g.key-edn}}</code>
+            <details>
+              <summary>Canonical site identity</summary>
+              <code>{{g.canonical-key-edn}}</code>
+            </details>
+          </td>
+          <td class="num">{{g.count}}</td>
+          <td class="index-links">{% for ev in g.events %}<a href="{{ev.href}}">#{{ev.index}} {{ev.tag}}</a> {% endfor %}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+    {% if has-time-groups %}
+    <h3 id="{{time-index-anchor}}">By virtual time</h3>
+    <table>
+      <thead>
+        <tr><th>Virtual time</th><th>Count</th><th>Events</th></tr>
+      </thead>
+      <tbody>
+      {% for g in time-groups %}
+        <tr>
+          <td class="num">{{g.key-edn}}</td>
+          <td class="num">{{g.count}}</td>
+          <td class="index-links">{% for ev in g.events %}<a href="{{ev.href}}">#{{ev.index}} {{ev.tag}}</a> {% endfor %}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+  </section>
+  {% endif %}
 
   <section>
     <h2>Canonical trace (EDN)</h2>
