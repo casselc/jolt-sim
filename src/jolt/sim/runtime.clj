@@ -187,6 +187,13 @@
 ;; must not proceed over controller state whose ownership is no longer known.
 (def ^:private session-state (atom :idle))
 
+;; Bound around the controlled body after the complete ABI has been resolved
+;; and validated once. Active byte-array views can run while Chez is holding a
+;; locked temporary, so they must not repeat namespace resolution and allocate
+;; the full capabilities descriptor inside that sensitive dynamic extent.
+;; Calls outside a controlled body retain the fail-closed resolving path.
+(def ^:dynamic ^:private *active-controller-ops* nil)
+
 (defn- safe-resolve [sym]
   (try (resolve sym) (catch :default _ nil)))
 
@@ -291,7 +298,9 @@
   when ptr is outside every active loan. A matched but out-of-bounds span
   fails closed. This grants no acquire, release, or lifetime ownership."
   [ptr len]
-  ((:read-active-byte-array-view (resolve-controller-ops!)) ptr len))
+  ((:read-active-byte-array-view
+    (or *active-controller-ops* (resolve-controller-ops!)))
+   ptr len))
 
 (defn write-active-byte-array-view!
   "Copies the complete byte-array src into ptr only when ptr addresses a
@@ -299,7 +308,9 @@
   count on a match and nil when ptr is outside every active loan. The Jolt
   runtime retains all loan and copy-back ownership."
   [ptr src]
-  ((:write-active-byte-array-view! (resolve-controller-ops!)) ptr src))
+  ((:write-active-byte-array-view!
+    (or *active-controller-ops* (resolve-controller-ops!)))
+   ptr src))
 
 (defn- invalid-controller-event! [reason record]
   (throw
@@ -1718,7 +1729,9 @@
                 (if schedule ((:wrap-thunk schedule) thunk) thunk)
                 outcome
                 (try
-                  {:ok? true :value (effective-thunk)}
+                  {:ok? true
+                   :value (binding [*active-controller-ops* ops]
+                            (effective-thunk))}
                   (catch :default error
                     {:ok? false :error error}))
                 _ (close-state! state)

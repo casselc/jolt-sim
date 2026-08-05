@@ -1885,6 +1885,37 @@
                    101 (byte-array [9 8]))))))
     (is (= [[:read 100 2] [:write 101 [9 8]]] @calls))))
 
+(deftest controlled-active-byte-array-views-reuse-the-validated-run-ops
+  ;; The host view is called while Chez owns a locked temporary. The enclosing
+  ;; run has already resolved and validated the complete ABI, so view traffic
+  ;; must not reconstruct that descriptor in the sensitive loan extent.
+  (let [resolve-calls (atom 0)
+        view-calls (atom [])
+        ops (assoc (mock-controller-ops supported-descriptor nil)
+                   :read-active-byte-array-view
+                   (fn [ptr len]
+                     (swap! view-calls conj [:read ptr len])
+                     (byte-array [7]))
+                   :write-active-byte-array-view!
+                   (fn [ptr src]
+                     (swap! view-calls conj [:write ptr (vec src)])
+                     (alength src)))
+        resolve-var (resolve 'jolt.sim.runtime/resolve-controller-ops!)]
+    (with-redefs-fn
+      {resolve-var (fn []
+                     (swap! resolve-calls inc)
+                     ops)}
+      #(let [result
+             (rt/run-controlled
+              {}
+              (fn []
+                [(vec (rt/read-active-byte-array-view 200 1))
+                 (rt/write-active-byte-array-view!
+                  201 (byte-array [8]))]))]
+         (is (= [[7] 1] (:result result)))))
+    (is (= 1 @resolve-calls))
+    (is (= [[:read 200 1] [:write 201 [8]]] @view-calls))))
+
 (defn- native-descriptor [operation arguments]
   {:kind :native-operation
     :task 0
