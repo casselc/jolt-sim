@@ -99,3 +99,30 @@ endpoint, requires `result-observed?` to be false, writes a retained release
 record, and requires the same worker's normal Case/Outcome completion. The
 default fixture and scenario path supply no observer and remain unchanged; the
 viewer does not reimplement HTTP, SQLite, TCP, bencode, or application logic.
+
+### In-process session stepping adapter
+
+`jolt.sim.viewer.session` is a UI-neutral, in-process adapter over one
+`jolt.sim.session` Session (the cooperative REPL control capability). It is
+not HTTP, a UI, a remote protocol, another scheduler, durable storage, or a
+generic effect layer: every branch preview and transition delegates to the
+Session, and the adapter owns only the bounded optimistic retry budget that
+keeps one read coherent.
+
+`read-frame` returns one coherent, closed frame: the snapshot, the isolated
+branch previews, and the append-only journal tail from a validated integer
+cursor, all at the same session revision. A concurrent REPL step cannot mix
+revisions -- the read retries (bounded) until two consecutive snapshot reads
+agree and fails closed with a typed `::coherence-failed` error otherwise. A
+malformed or out-of-range cursor fails closed with `::invalid-cursor`.
+The returned `:journal/:next-cursor` can be passed to the next read to receive
+only entries appended afterward.
+
+`step-frame!` synchronously applies one exact revision-scoped branch and
+returns an explicit command-result envelope. A committed result always carries
+its plain branch/revision acknowledgment, even if the post-commit frame cannot
+be obtained; this prevents an ambiguous retry from executing a command twice.
+A stale branch is never silently rebased just because the same action identity
+remains enabled: shared state may have changed since the displayed preview.
+Instead, the result is `:stale`, carries a refreshed frame, and requires the
+human or agent to choose again explicitly.
