@@ -526,6 +526,28 @@
       (finally
         (viewer/stop! server)))))
 
+(deftest command-line-main-remains-attached-until-the-server-stops
+  (let [stopped (promise)
+        started (promise)
+        fake-server {:port 8788 :stopped stopped}
+        read-config-var (resolve 'jolt.sim.viewer/read-main-config)
+        start-var (resolve 'jolt.sim.viewer/start!)]
+    (with-redefs-fn
+      {read-config-var (fn [path]
+                         (is (= "/tmp/ripple-config.edn" path))
+                         (config))
+       start-var (fn [validated]
+                   (is (= (viewer/validate-config! (config)) validated))
+                   (deliver started true)
+                   fake-server)}
+      #(let [main-result (future
+                           (viewer/-main "/tmp/ripple-config.edn"))]
+         (is (= true (deref started 1000 ::timeout)))
+         (is (= ::blocked (deref main-result 50 ::blocked))
+             "-main must not return while the real listener is running")
+         (deliver stopped :stopped)
+         (is (= :stopped (deref main-result 1000 ::timeout)))))))
+
 ;; Real-artifact tests. The gate runs from the viewer directory (CI: cd
 ;; viewer && jolt -M:test), so the checked-in report examples resolve one
 ;; level up, exactly like the report suite's own relative example paths.

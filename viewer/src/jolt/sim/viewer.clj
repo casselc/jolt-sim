@@ -646,6 +646,16 @@
     (assoc value :capability-token
            (System/getenv "JOLT_SIM_VIEWER_TOKEN"))))
 
+(defn- await-server-stop!
+  "Keeps the command-line process attached to the real jolt-tcp lifecycle.
+
+  `http/run-server` returns only after the listener is ready and includes the
+  server's one-shot `:stopped` promise in its handle. Programmatic callers keep
+  using `start!`/`stop!`; only `-main` waits here so returning from `-main`
+  cannot immediately tear down an otherwise healthy listener."
+  [server]
+  (deref (:stopped server)))
+
 (defn -main
   "Starts a loopback viewer from one trusted EDN config file.
 
@@ -660,4 +670,5 @@
   (let [config (validate-config! (read-main-config (first args)))
         server (start! config)]
     (println (str "Ripple: http://127.0.0.1:" (:port server)))
-    (flush)))
+    (flush)
+    (await-server-stop! server)))
