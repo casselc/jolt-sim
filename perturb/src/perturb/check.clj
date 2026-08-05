@@ -1424,6 +1424,10 @@
 ;;     rebind, so the produced capability would vanish and its obligation with
 ;;     it. That is the false accept this whole mechanism exists to avoid.
 
+;; E41's transfer notation is defined with the rest of the declaration-language
+;; rules below; invocation flow needs its output projection first.
+(declare annotation-outputs)
+
 (defn- apply-in-place
   "Land one in-place `:produces` entry on the argument it names."
   [st sp opsym entry nodes lcs states]
@@ -1483,7 +1487,11 @@
                   {:st (:st rr)
                    :ok (and (:ok acc) (:ok rr))
                    :lcs (if (:ok rr) (assoc (:lcs acc) (:cap entry) (:lc rr)) (:lcs acc))}))
-        prod  (vec (:produces ann))
+        ;; An emitted member is an ordinary abstract result after its holder has
+        ;; been checked. An absorbed member is an ordinary consumed argument,
+        ;; except its obligation remains owned by the holder named in the
+        ;; declaration rather than being discharged.
+        prod  (vec (annotation-outputs ann))
         ;; THE THIRD NOTION, DECIDED HERE AND NOWHERE ELSE (E33). A capability
         ;; the annotation produces back IN PLACE does not move: the caller's
         ;; binding is alive after this call whatever the call does. So its
@@ -1499,13 +1507,14 @@
         a2    (reduce (fn [acc e]
                         (step acc e true (contains? in-place-caps (:cap e))))
                       a1 (:consumes ann))
-        st2   (:st a2)]
+        a3    (reduce (fn [acc e] (step acc e true false)) a2 (:absorbs ann))
+        st2   (:st a3)]
     ;; the operation did not type-check, so its result has no capability type
-    (if (not (:ok a2))
+    (if (not (:ok a3))
       {:st st2 :val OPAQUE}
       ;; E33's relation, resolved once per produced entry: destination AND
       ;; obligation delta, from the source state the consumed capability is in.
-      (let [states (reduce (fn [m e] (assoc m e (resolve-produced st2 sp opsym e (:lcs a2))))
+      (let [states (reduce (fn [m e] (assoc m e (resolve-produced st2 sp opsym e (:lcs a3))))
                            {} prod)
             bad    (filter (fn [e] (not (:ok (get states e)))) prod)]
         (if (seq bad)
@@ -1515,10 +1524,10 @@
               {:st st2 :val OPAQUE})
           (let [inp  (filter in-place? prod)
                 outp (vec (remove in-place? prod))
-                st3  (reduce (fn [s e] (apply-in-place s sp opsym e nodes (:lcs a2) states))
+                st3  (reduce (fn [s e] (apply-in-place s sp opsym e nodes (:lcs a3) states))
                              st2 inp)]
             {:st st3
-             :val (with-refinements st3 sp opsym nodes (:lcs a2) outp
+             :val (with-refinements st3 sp opsym nodes (:lcs a3) outp
                                     (produced-value st3 opsym outp states))}))))))
 
 (defn- report-no-signature! [st callee vals nodes]
@@ -2065,11 +2074,72 @@
 
 (defn- entries-for [entries c] (filter (fn [e] (= c (:cap e))) entries))
 
+(defn- transfer-entries
+  "Every E41 holder-transfer entry, tagged with its direction."
+  [ann]
+  (concat (map (fn [e] (assoc e :transfer :absorbs)) (:absorbs ann))
+          (map (fn [e] (assoc e :transfer :emits)) (:emits ann))))
+
+(defn- annotation-inputs [ann]
+  (concat (:borrows ann) (:consumes ann) (:absorbs ann)))
+
+(defn- annotation-outputs [ann]
+  (concat (:produces ann) (:emits ann)))
+
+(defn- transfer-faults
+  "Shape and provenance faults for E41's `:absorbs` / `:emits` notation.
+
+  A transfer is usable only when its holder position names exactly one consumed
+  capability and that same holder capability is produced by the operation. This
+  is the escape control: an `:emits` entry cannot mint a member from an opaque
+  or borrowed argument, and `:absorbs` cannot make a member disappear into one."
+  [ann]
+  (vec
+    (mapcat
+      (fn [e]
+        (let [direction (:transfer e)
+              h (:holder-arg e)
+              holder-inputs (if (and (integer? h) (not (neg? h)))
+                              (filter (fn [x] (= h (:arg x))) (:consumes ann))
+                              [])
+              holder (first holder-inputs)
+              holder-outputs (if holder
+                               (filter (fn [x] (= (:cap holder) (:cap x)))
+                                       (:produces ann))
+                               [])]
+          (concat
+            (if (and (integer? h) (not (neg? h))) []
+              [{:fault :annotation-transfer-unpositioned :entry e}])
+            (if (contains? e :state) []
+              [{:fault :annotation-transfer-shape :entry e
+                :why "a transfer entry must write the member state it preserves"}])
+            (if (if (= :absorbs direction)
+                  (and (integer? (:arg e)) (not (neg? (:arg e)))
+                       (empty? (:at e)) (not= (:arg e) h))
+                  (and (nil? (:arg e))
+                       (or (nil? (:at e)) (vector? (:at e)))))
+              []
+              [{:fault :annotation-transfer-shape :entry e
+                :why (if (= :absorbs direction)
+                       "an :absorbs entry needs a distinct member :arg and no :at"
+                       "an :emits entry may name a result :at but not a member :arg")}])
+            (if (and (= 1 (count holder-inputs))
+                     (= 1 (count holder-outputs))
+                     (not= (:cap e) (:cap holder)))
+              []
+              [{:fault :annotation-transfer-holder :entry e
+                :holder-inputs (vec holder-inputs)
+                :holder-outputs (vec holder-outputs)}]))))
+      (transfer-entries ann))))
+
 (defn- annotation-faults
   "Faults that make an annotation UNREADABLE, as data. Returns [] for a usable
   annotation.
 
-  Two faults, both found by E18:
+  E18 supplies the original two faults. E41 adds fail-closed transfer shape and
+  holder-provenance faults: a member may move into or out of a holder only when
+  the notation names a valid holder argument which the operation both consumes
+  and produces.
 
     :annotation-unpositioned          a :consumes / :borrows entry with no `:arg`
     :annotation-duplicates-capability the same capability in :borrows and
@@ -2080,20 +2150,23 @@
   fault-free annotation — a refused annotation is not a specification, so there
   is nothing to check a body against."
   [ann]
-  (let [ins (concat (:consumes ann) (:borrows ann))]
+  (let [ins (annotation-inputs ann)]
     (vec (concat
            (map (fn [e] {:fault :annotation-unpositioned :cap (:cap e) :entry e})
                 (filter (fn [e] (nil? (:arg e))) ins))
            (map (fn [c] {:fault :annotation-duplicates-capability :cap c})
-                (filter (fn [c] (some (fn [p] (= c (:cap p))) (:produces ann)))
-                        (distinct (map :cap (:borrows ann)))))))))
+                (filter (fn [c] (some (fn [p] (= c (:cap p)))
+                                      (annotation-outputs ann)))
+                        (distinct (map :cap (:borrows ann)))))
+           (transfer-faults ann)))))
 
 (defn- check-annotation-wellformed!
   "Report every fault of `ann`. Returns true when the annotation is USABLE."
   [opsym ann]
   (let [fs (annotation-faults ann)]
     (doseq [f fs]
-      (if (= :annotation-unpositioned (:fault f))
+      (cond
+        (= :annotation-unpositioned (:fault f))
         (report! {:kind :annotation-unpositioned :op opsym :cap (:cap f)
                   :detail [(str "operation     " opsym)
                            (str "a :consumes / :borrows entry names " (:cap f) "@"
@@ -2102,6 +2175,8 @@
                            "matching specs to parameters in order was this checker's own"
                            "convention, not §1.2's, and it is removed (E17 nonclaim 4, E18 1(d))"
                            "the annotation is REFUSED and this operation's body is not checked"]})
+
+        (= :annotation-duplicates-capability (:fault f))
         (report! {:kind :annotation-duplicates-capability :op opsym :cap (:cap f)
                   :detail [(str "operation     " opsym)
                            (str (:cap f) " is both :borrows and :produces")
@@ -2111,7 +2186,35 @@
                            "not dispose of (PERTURB-DESIGN E18 finding 1(c))"
                            "write :consumes + :produces to hand it back, or :borrows alone"
                            "to look at it without taking it"
-                           "the annotation is REFUSED and this operation's body is not checked"]})))
+                           "the annotation is REFUSED and this operation's body is not checked"]})
+
+        (= :annotation-transfer-unpositioned (:fault f))
+        (report! {:kind :annotation-transfer-unpositioned :op opsym
+                  :cap (:cap (:entry f))
+                  :detail [(str "operation     " opsym " declares "
+                                (:transfer (:entry f)) " for " (:cap (:entry f)))
+                           "the transfer carries no non-negative `:holder-arg`"
+                           "a holder transfer must name the exact argument containing the holder"
+                           "the annotation is REFUSED; an unowned member is never minted or lost"]})
+
+        (= :annotation-transfer-shape (:fault f))
+        (report! {:kind :annotation-transfer-shape :op opsym
+                  :cap (:cap (:entry f))
+                  :detail [(str "operation     " opsym " declares "
+                                (:transfer (:entry f)) " for " (:cap (:entry f)))
+                           (:why f)
+                           "the annotation is REFUSED rather than interpreted as ordinary flow"]})
+
+        :else
+        (report! {:kind :annotation-transfer-holder :op opsym
+                  :cap (:cap (:entry f))
+                  :detail [(str "operation     " opsym " declares "
+                                (:transfer (:entry f)) " for " (:cap (:entry f)))
+                           (str "holder argument " (:holder-arg (:entry f))
+                                " must name exactly one :consumes entry")
+                           "that holder capability must appear exactly once in :produces"
+                           "the member and holder capabilities must be distinct"
+                           "the annotation is REFUSED; opaque or borrowed holders cannot transfer obligations"]})))
     (empty? fs)))
 
 (defn- check-annotation-consistency!
@@ -2174,7 +2277,7 @@
   ;; capability — has no edges, so "ask the machine" has no answer and the
   ;; entry is refused where it is written rather than silently admitting
   ;; everything.
-  (doseq [e (concat (:borrows ann) (:consumes ann) (:produces ann))]
+  (doseq [e (concat (annotation-inputs ann) (annotation-outputs ann))]
     (when (and (derived-state? e)
                (empty? (get (:primitives sp) [(:cap e) opsym])))
       (report! {:kind :annotation-underived-state :op opsym :cap (:cap e)
@@ -2189,7 +2292,8 @@
   (let [ts (get (:transitions-of sp) opsym)]
     (when (seq ts)
       (let [declared (set (map :cap ts))]
-        (doseq [c (distinct (map :cap (concat (:consumes ann) (:produces ann))))]
+        (doseq [c (distinct (map :cap (concat (:consumes ann) (:produces ann)
+                                              (:absorbs ann) (:emits ann))))]
           (when (not (contains? declared c))
             (report! {:kind :annotation-undeclared-transition :op opsym :cap c
                       :detail [(str "operation     " opsym " is a declared transition of "
@@ -2209,8 +2313,13 @@
         (let [c    (first (first g))
               from-decl (second (first g))
               tos  (vec (distinct (map :to (second g))))
-              cs   (entries-for (:consumes ann) c)
-              ps   (entries-for (:produces ann) c)]
+              ;; A transfer entry is BOTH sides of the member edge. It says
+              ;; the member remains live in the same state while ownership
+              ;; crosses the holder boundary; it is not nil->state minting or
+              ;; state->nil destruction.
+              xs   (entries-for (transfer-entries ann) c)
+              cs   (concat (entries-for (:consumes ann) c) xs)
+              ps   (concat (entries-for (:produces ann) c) xs)]
           (if (or (> (count cs) 1) (> (count ps) 1))
             (report! {:kind :annotation-ambiguous-edge :op opsym :cap c
                       :detail [(str "operation     " opsym " declares the edge "
@@ -2516,7 +2625,7 @@
                 ;; parameters, and every entry says which parameter exactly.
                 ;; `ann-ok` above guarantees `:arg` is present on all of them:
                 ;; the in-order fallback is gone.
-                specs (vec (concat (:borrows ann) (:consumes ann)))
+                specs (vec (annotation-inputs ann))
                 spec-for (fn [i] (first (filter (fn [e] (= i (:arg e))) specs)))
                 ;; IN-PLACE `:produces` ENTRIES, BY ARGUMENT. A parameter that is
                 ;; consumed and produced back IN PLACE stays the caller's — the
@@ -2617,7 +2726,7 @@
                 (let [want (vec (sort-by (fn [e] (str (:path e)))
                                          (map (fn [p] {:path (entry-path p) :cap (:cap p)
                                                        :state (:state p)})
-                                              (remove in-place? (:produces ann)))))]
+                                              (remove in-place? (annotation-outputs ann)))))]
                   (cond
                     (not= (map :path want) (map :path got))
                     (report! {:kind :produces-mismatch :op opsym
@@ -3780,4 +3889,3 @@
                             "  verdicts " (vec (concat fails hfails sfails))
                             "  runs " (vec (concat rfails hrfails srfails))))
               (System/exit 1)))))))
-

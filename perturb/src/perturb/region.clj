@@ -23,8 +23,8 @@
   than driver A's register file establishes, and strictly more than nothing,
   which is what driver B establishes today.
 
-  WHY THERE IS ONE OPERATION PER MEMBER STATE. `:produces` is a static
-  annotation, so `take` cannot decide at run time which state to mint its member
+  WHY THERE IS ONE OPERATION PER MEMBER STATE. `:emits` is a static annotation,
+  so `take` cannot decide at run time which state to emit its member
   at. `take-reading` and `take-responding` are two operations because ServerConn
   has two states driver B holds members in. A real implementation would generate
   these per (capability × state); doing it by hand is a NOTATIONAL COST the
@@ -221,31 +221,35 @@
   "Admit a ServerConn@:reading. CONSUMES the connection: after this call the
   caller does not have it, which is what removes `dangling` and `no-signature`
   from driver B's table write."
-  {:perturb.cap/op {:consumes [{:cap 'perturb.region/Region   :state :open    :arg 0}
-                               {:cap 'perturb.http/ServerConn :state :reading :arg 2}]
-                    :produces [{:cap 'perturb.region/Region :state :open}]}}
+  {:perturb.cap/op {:consumes [{:cap 'perturb.region/Region :state :open :arg 0}]
+                     :absorbs [{:cap 'perturb.http/ServerConn :state :reading
+                                :arg 2 :holder-arg 0}]
+                     :produces [{:cap 'perturb.region/Region :state :open}]}}
   [r k c] (put* r k c :reading :perturb.region/put-reading))
 
 (defn put-responding!
   "Admit a ServerConn@:responding."
-  {:perturb.cap/op {:consumes [{:cap 'perturb.region/Region   :state :open       :arg 0}
-                               {:cap 'perturb.http/ServerConn :state :responding :arg 2}]
-                    :produces [{:cap 'perturb.region/Region :state :open}]}}
+  {:perturb.cap/op {:consumes [{:cap 'perturb.region/Region :state :open :arg 0}]
+                     :absorbs [{:cap 'perturb.http/ServerConn :state :responding
+                                :arg 2 :holder-arg 0}]
+                     :produces [{:cap 'perturb.region/Region :state :open}]}}
   [r k c] (put* r k c :responding :perturb.region/put-responding))
 
 (defn take-reading
-  "-> [region' conn@:reading]. PRODUCES a tracked ServerConn, which is what
+  "-> [region' conn@:reading]. EMITS a tracked ServerConn, which is what
   removes `untracked-consume` from every operation driver B performs on a member."
   {:perturb.cap/op {:consumes [{:cap 'perturb.region/Region :state :open :arg 0}]
-                    :produces [{:cap 'perturb.region/Region   :state :open    :at [0]}
-                               {:cap 'perturb.http/ServerConn :state :reading :at [1]}]}}
+                     :produces [{:cap 'perturb.region/Region :state :open :at [0]}]
+                     :emits [{:cap 'perturb.http/ServerConn :state :reading
+                              :at [1] :holder-arg 0}]}}
   [r k] (take* r k :reading :perturb.region/take-reading))
 
 (defn take-responding
   "-> [region' conn@:responding]."
   {:perturb.cap/op {:consumes [{:cap 'perturb.region/Region :state :open :arg 0}]
-                    :produces [{:cap 'perturb.region/Region   :state :open       :at [0]}
-                               {:cap 'perturb.http/ServerConn :state :responding :at [1]}]}}
+                     :produces [{:cap 'perturb.region/Region :state :open :at [0]}]
+                     :emits [{:cap 'perturb.http/ServerConn :state :responding
+                              :at [1] :holder-arg 0}]}}
   [r k] (take* r k :responding :perturb.region/take-responding))
 
 ;; --- queries ----------------------------------------------------------------

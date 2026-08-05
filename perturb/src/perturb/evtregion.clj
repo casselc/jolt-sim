@@ -71,7 +71,7 @@
 
   DRIVER B's `read-round` DREW `untracked-consume`: `(get t i)` is opaque, so
   `read-request` was handed something that was not a tracked capability of any
-  type. `region/take-reading` PRODUCES a ServerConn@:reading, so the argument
+  type. `region/take-reading` EMITS a ServerConn@:reading, so the argument
   arrives tracked and in a state, and the typestate axis is switched back on."
   {:perturb.cap/op {:consumes [{:cap 'perturb.region/Region :state :open :arg 0}]
                     :produces [{:cap 'perturb.region/Region :state :open :at [0]}]}}

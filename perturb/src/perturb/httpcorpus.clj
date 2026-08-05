@@ -940,7 +940,64 @@
      :operations
      {fixture/derived {:consumes [{:cap fixture/Conn :state :active}]
                        :produces [{:cap fixture/Conn :state :closed}]}}
-     :expect [:annotation-unpositioned]}])
+     :expect [:annotation-unpositioned]}
+
+    {:name holder-absorption-and-emission
+     :doc  "E41, positive. A member stays active while an owning Holder absorbs
+            it and later emits it. Both transfer entries name holder argument 0;
+            neither edge is misread as destruction or minting."
+     :declarations
+     {fixture/Holder {:perturb.cap/typestate
+                      {:states [:open :closed] :initial :open :terminal :closed
+                       :transitions [{:op fixture/put :from :open :to :open}
+                                     {:op fixture/take :from :open :to :open}]}}
+      fixture/Member {:perturb.cap/typestate
+                      {:states [:active :done] :initial :active :terminal :done
+                       :transitions [{:op fixture/put :from :active :to :active}
+                                     {:op fixture/take :from :active :to :active}]}}}
+     :operations
+     {fixture/put {:consumes [{:cap fixture/Holder :state :open :arg 0}]
+                   :absorbs [{:cap fixture/Member :state :active
+                              :arg 1 :holder-arg 0}]
+                   :produces [{:cap fixture/Holder :state :open}]}
+      fixture/take {:consumes [{:cap fixture/Holder :state :open :arg 0}]
+                    :produces [{:cap fixture/Holder :state :open :at [0]}]
+                    :emits [{:cap fixture/Member :state :active
+                             :at [1] :holder-arg 0}]}}
+     :expect []}
+
+    {:name transfer-without-holder-position-fails-closed
+     :doc  "E41 malformed control. An emit with no holder position is refused;
+            it is never treated as a creating edge."
+     :declarations
+     {fixture/Holder {:perturb.cap/typestate
+                      {:states [:open :closed] :initial :open :terminal :closed
+                       :transitions [{:op fixture/take :from :open :to :open}]}}
+      fixture/Member {:perturb.cap/typestate
+                      {:states [:active :done] :initial :active :terminal :done
+                       :transitions [{:op fixture/take :from :active :to :active}]}}}
+     :operations
+     {fixture/take {:consumes [{:cap fixture/Holder :state :open :arg 0}]
+                    :produces [{:cap fixture/Holder :state :open :at [0]}]
+                    :emits [{:cap fixture/Member :state :active :at [1]}]}}
+     :expect [:annotation-transfer-unpositioned :annotation-transfer-holder]}
+
+    {:name transfer-from-opaque-holder-fails-closed
+     :doc  "E41 escape control. The claimed holder position is not a consumed
+            capability, so the annotation is refused rather than minting Member."
+     :declarations
+     {fixture/Holder {:perturb.cap/typestate
+                      {:states [:open :closed] :initial :open :terminal :closed
+                       :transitions [{:op fixture/take :from :open :to :open}]}}
+      fixture/Member {:perturb.cap/typestate
+                      {:states [:active :done] :initial :active :terminal :done
+                       :transitions [{:op fixture/take :from :active :to :active}]}}}
+     :operations
+     {fixture/take {:consumes [{:cap fixture/Holder :state :open :arg 0}]
+                    :produces [{:cap fixture/Holder :state :open :at [0]}]
+                    :emits [{:cap fixture/Member :state :active
+                             :at [1] :holder-arg 1}]}}
+     :expect [:annotation-transfer-holder]}])
 
 ;; ===========================================================================
 ;; what the checker must say — and, for every accept, that it RUNS

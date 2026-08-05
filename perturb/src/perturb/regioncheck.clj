@@ -18,12 +18,11 @@
        to say no;
     5. the LEAK CONTROL.
 
-  IT IS NOT A GATE. Like `perturb.evtcheck` it records no expectations about
-  the verdicts — the point is to find out what the checker says. It exits
-  non-zero only if the code fails to RUN, or if driver B' and driver B disagree
-  about the octets under `:report`, because that comparison is the experiment's
-  own control and a difference there would mean the two drivers are not
-  comparable at all."
+  E41'S ORIGINAL MEASUREMENT was not a gate. The absorption/emission follow-up
+  keeps the measurement but gates the now-explicit claims: every namespace must
+  be captured non-vacuously, the region primitive and driver B' must check, and
+  the application's two capability-escape controls must still reject. It also
+  retains the byte-for-byte driver comparison."
   (:require [perturb.ir :as pir]
             [perturb.check :as chk]
             [perturb.effect :as fx]
@@ -149,7 +148,13 @@
         re (report-ns sp "perturb.evtregion"
              ["DRIVER B'. The same driver, the same application, the same"
               "helpers, the same fixtures — with the table replaced by a region"
-              "and nothing else changed."])]
+              "and nothing else changed."])
+        non-vacuous? (every? pos? (map :total [rb ra rr re]))
+        escape-vars #{'perturb.evtapp/stashes-the-connection-in-app-state
+                      'perturb.evtapp/returns-the-connection-in-an-effect}
+        escape-control? (= escape-vars (set (map :var (:rejected ra))))
+        notation-checks? (and (empty? (:rejected rr))
+                              (empty? (:rejected re)))]
 
     (banner "THE COMPARISON")
     (println (str "  driver B  rejected : "
@@ -160,6 +165,9 @@
                   (pr-str (vec (map :var (:rejected rr))))))
     (println (str "  evtapp    rejected : "
                   (pr-str (vec (map :var (:rejected ra))))))
+    (println (str "  non-vacuous captures                    : " non-vacuous?))
+    (println (str "  absorption/emission notation checks    : " notation-checks?))
+    (println (str "  application escape control unchanged   : " escape-control?))
 
     ;; --- run driver B, the baseline octets -----------------------------------
     (banner "RUN: driver B (the map), scripted network")
@@ -229,12 +237,11 @@
               ;; --- verdict ------------------------------------------------
               (println)
               (println line)
-              (if same
+              (if (and same non-vacuous? notation-checks? escape-control?)
                 (do (println "REGIONCHECK COMPLETED — read the three verdict blocks and the")
-                    (println "                        comparison above, not this line.")
+                    (println "                        gated controls above, not only this line.")
                     (println line))
-                (do (println "REGIONCHECK FAILED — driver B' and driver B disagree about the")
-                    (println "                     octets under :report, so the two drivers are")
-                    (println "                     not comparable and the experiment is void.")
+                (do (println "REGIONCHECK FAILED — notation, non-vacuity, escape-control, or")
+                    (println "                     byte-parity evidence did not hold.")
                     (println line)
                     (System/exit 1))))))))))

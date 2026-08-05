@@ -257,6 +257,28 @@
   derivation reproduces the pre-E33 behaviour byte for byte."
   #{:acquire :retain :discharge})
 
+;; --- OBLIGATION TRANSFER TO AND FROM A HOLDER (E41) -------------------------
+;;
+;; `:consumes` plus no `:produces` means consumed and gone. `:consumes` plus a
+;; `:produces` result means consumed and returned. Neither says that a capability
+;; remains live while held inside another capability. E41's region experiment
+;; needs that third case in both directions:
+;;
+;;   :absorbs [{:cap Member :state :open :arg 2 :holder-arg 0}]
+;;   :emits   [{:cap Member :state :open :at [1] :holder-arg 0}]
+;;
+;; `:holder-arg` names the argument containing the tracked holder. The holder
+;; must itself be consumed and produced by the same operation. An absorbed
+;; member is consumed from `:arg` but is not gone; an emitted member comes from
+;; the holder and lands at its result position. In both cases the member's
+;; machine edge preserves the state written on the transfer entry. The notation
+;; transfers the obligation; it does not expose or statically enumerate the
+;; holder's run-time membership.
+
+(def transfer-keys
+  "The two E41 operation-annotation keys that transfer a capability obligation."
+  [:absorbs :emits])
+
 ;; --- RESULT-LABELLED TRANSITIONS (E33: the established syntax) ---------------
 ;;
 ;; Both round-2 surveys independently name the same primitive relation, and it

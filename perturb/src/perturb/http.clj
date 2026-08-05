@@ -400,17 +400,15 @@
                       ;; names a specific region implementation, which wants to be
                       ;; a marker on the capability rather than four edges.
                       ;;
-                      ;; READ `take-*`'s :from CAREFULLY. It is `nil` — the same
-                      ;; :from `accept` has — because a take CONSUMES no ServerConn
-                      ;; and PRODUCES one. From the checker's side a region take
-                      ;; MINTS a connection it never saw enter, and the only thing
-                      ;; standing behind the minted state is the region's run-time
-                      ;; check. That is the soundness trade, written where it is
-                      ;; made rather than in a document.
+                      ;; E41'S TRANSFER NOTATION. Put and take preserve the
+                      ;; member's protocol state while ownership crosses the
+                      ;; Region boundary. `:absorbs` / `:emits` name that boundary
+                      ;; explicitly, so take is no longer written as a mint from
+                      ;; nil and put is no longer mistaken for destruction.
                       {:op 'perturb.region/put-reading!    :from :reading    :to :reading}
                       {:op 'perturb.region/put-responding! :from :responding :to :responding}
-                      {:op 'perturb.region/take-reading    :from nil         :to :reading}
-                      {:op 'perturb.region/take-responding :from nil         :to :responding}]}
+                      {:op 'perturb.region/take-reading    :from :reading    :to :reading}
+                      {:op 'perturb.region/take-responding :from :responding :to :responding}]}
        :perturb.cap/representation []
        :perturb.cap/obligations
        '[{:name one-response-per-request
