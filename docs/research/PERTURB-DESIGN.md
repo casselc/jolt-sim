@@ -6324,8 +6324,14 @@ survives intact.
 #### E39's nonclaims
 
 1. **The audit could not run two gates** — `bin/verify-ansatz` and `bin/test-jvm`
-   need a `clojure` CLI that is not installed here. The chain E4's rewritten
-   verdict cites is therefore *read*, not executed end to end.
+   are unavailable in jolt-sim (this repository has no `bin/` directory). They are
+   repository-qualified gates in the pinned jolt-bytes and jolt-bencode checkouts
+   (e.g. `jolt-bytes/bin/verify-ansatz` runs JVM Clojure Ansatz/CIC verification
+   against the generating spike; `jolt-bytes/bin/test-jvm` and
+   `jolt-bencode/bin/test-jvm` run JVM-only test suites). Both remain unexecuted
+   in this audit. The chain E4's rewritten verdict cites is therefore *read*, not
+   executed end to end. The JVM evidence those gates would produce is about the
+   generating spike and JVM test lanes, not about Jolt runtime behaviour.
 2. **The Hegel test was read, not run** — it launches isolated workers and needs
    an absent dependency stack. The three defects are visible in source.
 3. **The `:invalid` arm should be relabelled, not fixed.** Enumerating a finite
