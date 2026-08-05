@@ -299,6 +299,10 @@ jobs:
           JOLT_SIM_BIN="$sim" \
           JOLT_SIM_PROJECT_DIR="$repo" \
           JOLT_SIM_VIEWER_ARTIFACT_DIR="$viewer_artifacts" \
+            test/cli-sigint-smoke.sh
+          JOLT_SIM_BIN="$sim" \
+          JOLT_SIM_PROJECT_DIR="$repo" \
+          JOLT_SIM_VIEWER_ARTIFACT_DIR="$viewer_artifacts" \
           JOLT_SIM_VIEWER_DOCUMENT="$repo/report/examples/outbox-retry-case-outcome.edn" \
             "$sim" -M:e2e-test
 

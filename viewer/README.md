@@ -47,6 +47,18 @@ JOLT_SIM_VIEWER_TOKEN='replace-with-at-least-32-random-characters' \
 
 Port `0` selects an ephemeral loopback port and the startup message prints the
 actual URL. A fixed port such as `8788` is more convenient for repeated use.
+Press Ctrl+C in the foreground viewer process to stop the listener and handler
+pool cleanly; the command-line entry point owns SIGINT and runs server shutdown
+before exiting.
+
+The Linux CI gate exercises that real signal path in a fresh process and
+retains the config, stdout, and stderr for every run:
+
+```sh
+JOLT_SIM_BIN=/absolute/path/to/sim/jolt \
+JOLT_SIM_PROJECT_DIR=/absolute/path/to/jolt-sim \
+  test/cli-sigint-smoke.sh
+```
 
 The configuration is deliberately closed. Ambient replay keys are limited to
 the public process-explorer settings; browser data cannot replace them. The

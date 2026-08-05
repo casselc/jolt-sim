@@ -552,27 +552,47 @@
       (finally
         (viewer/stop! server)))))
 
-(deftest command-line-main-remains-attached-until-the-server-stops
+(deftest command-line-main-owns-sigint-and-stops-the-server-once
   (let [stopped (promise)
         started (promise)
         fake-server {:port 8788 :stopped stopped}
+        events (atom [])
+        shutdown-hook (atom nil)
         read-config-var (resolve 'jolt.sim.viewer/read-main-config)
-        start-var (resolve 'jolt.sim.viewer/start!)]
+        start-var (resolve 'jolt.sim.viewer/start!)
+        stop-var (resolve 'jolt.sim.viewer/stop!)
+        block-var (resolve 'jolt.host/block-sigint)
+        add-hook-var (resolve 'jolt.host/add-shutdown-hook)
+        park-var (resolve 'jolt.host/park-until-interrupt)]
     (with-redefs-fn
       {read-config-var (fn [path]
                          (is (= "/tmp/ripple-config.edn" path))
                          (config))
        start-var (fn [validated]
                    (is (= (viewer/validate-config! (config)) validated))
+                   (swap! events conj :start)
                    (deliver started true)
-                   fake-server)}
+                   fake-server)
+       stop-var (fn [server]
+                  (is (= fake-server server))
+                  (swap! events conj :stop)
+                  (deliver stopped :stopped))
+       block-var (fn [] (swap! events conj :block-sigint))
+       add-hook-var (fn [hook]
+                      (swap! events conj :add-shutdown-hook)
+                      (reset! shutdown-hook hook))
+       park-var (fn []
+                  (swap! events conj :park)
+                  (is (fn? @shutdown-hook))
+                  (@shutdown-hook)
+                  @stopped)}
       #(let [main-result (future
                            (viewer/-main "/tmp/ripple-config.edn"))]
          (is (= true (deref started 1000 ::timeout)))
-         (is (= ::blocked (deref main-result 50 ::blocked))
-             "-main must not return while the real listener is running")
-         (deliver stopped :stopped)
-         (is (= :stopped (deref main-result 1000 ::timeout)))))))
+         (is (= :stopped (deref main-result 1000 ::timeout)))
+         (is (= [:block-sigint :start :add-shutdown-hook :park :stop]
+                @events)
+             "SIGINT must be blocked before workers start and shutdown once")))))
 
 ;; Real-artifact tests. The gate runs from the viewer directory (CI: cd
 ;; viewer && jolt -M:test), so the checked-in report examples resolve one

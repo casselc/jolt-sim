@@ -661,29 +661,41 @@
     (assoc value :capability-token
            (System/getenv "JOLT_SIM_VIEWER_TOKEN"))))
 
-(defn- await-server-stop!
-  "Keeps the command-line process attached to the real jolt-tcp lifecycle.
-
-  `http/run-server` returns only after the listener is ready and includes the
-  server's one-shot `:stopped` promise in its handle. Programmatic callers keep
-  using `start!`/`stop!`; only `-main` waits here so returning from `-main`
-  cannot immediately tear down an otherwise healthy listener."
-  [server]
-  (deref (:stopped server)))
-
 (defn -main
   "Starts a loopback viewer from one trusted EDN config file.
 
   Usage: JOLT_SIM_VIEWER_TOKEN=<32+ chars> jolt -M:viewer CONFIG.edn
 
   The token is deliberately supplied through the environment rather than the
-  config file. Port 0 selects an ephemeral loopback port. The process remains
-  alive until stopped externally."
+  config file. Port 0 selects an ephemeral loopback port. The primordial
+  thread owns SIGINT. On POSIX, server workers inherit its blocked signal mask;
+  on Windows, the host uses console-interrupt delivery. In both cases,
+  `park-until-interrupt` handles Ctrl+C, runs the registered server shutdown,
+  and exits cleanly. Programmatic callers continue to use `start!`/`stop!`."
   [& args]
   (when-not (= 1 (count args))
     (throw (config-error :wrong-argument-count {:args (vec args)})))
-  (let [config (validate-config! (read-main-config (first args)))
-        server (start! config)]
-    (println (str "Ripple: http://127.0.0.1:" (:port server)))
-    (flush)
-    (await-server-stop! server)))
+  (let [config (validate-config! (read-main-config (first args)))]
+    ;; On POSIX, block before the listener, accept loop, and handler executor
+    ;; start so every worker inherits the blocked SIGINT mask. On Windows this
+    ;; host operation is intentionally a no-op and the primordial thread owns
+    ;; console-interrupt delivery instead. This prevents Ctrl+C from landing in
+    ;; a worker's foreign wait or interrupting a mutex-backed promise deref.
+    (jolt.host/block-sigint)
+    (let [server (start! config)
+          stopped? (atom false)
+          stop-once! (fn []
+                       (when (compare-and-set! stopped? false true)
+                         (stop! server)))]
+      (try
+        (jolt.host/add-shutdown-hook stop-once!)
+        (println (str "Ripple: http://127.0.0.1:" (:port server)))
+        (flush)
+        ;; On POSIX this interruptible main-thread pump installs the SIGINT
+        ;; handler and unblocks SIGINT only here. On every host it invokes the
+        ;; registered hooks and exits 0 for Ctrl+C.
+        (jolt.host/park-until-interrupt)
+        (finally
+          ;; Also cover output, hook-registration, or host-pump failures. The
+          ;; hook and fallback share one ownership transition.
+          (stop-once!))))))
