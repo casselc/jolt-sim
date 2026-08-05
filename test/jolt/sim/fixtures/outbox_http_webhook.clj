@@ -170,19 +170,30 @@
       (fail! :unexpected-pending-count {:count (count rows)}))
     (first rows)))
 
-(defn exercise
-  "Runs one fixed command and one webhook scenario.
+(defn exercise-command
+  "Runs one ordinary command and one webhook scenario.
+
+  `command` has the same closed shape accepted by the routed JSON command
+  seam, and `attempt-id` is passed unchanged to the production webhook
+  sender. This parameterized entry point exists so fresh-worker exploration
+  can vary application inputs without replacing any command, HTTP, SQLite,
+  or durable-marking implementation.
 
   `scenario` is one of accepted-scenarios or hostile-scenarios. Hostile
   webhook refusals are captured as bounded evidence only when they carry the
   production sender's typed refusal; every unrelated failure propagates. The
   connection remains open through command COMMIT, pending reload, webhook
   exchange, optional mark, and final reload."
-  ([] (exercise :accepted))
-  ([scenario]
+  [scenario command attempt-id]
    (when-not (contains? (set (concat accepted-scenarios hostile-scenarios))
                         scenario)
      (fail! :unknown-scenario {:scenario scenario}))
+   (when-not (and (map? command)
+                  (= #{:request-id :entity-id :payload}
+                     (set (keys command))))
+     (fail! :invalid-command {:command command}))
+   (when-not (and (string? attempt-id) (seq attempt-id))
+     (fail! :invalid-attempt-id {:attempt-id attempt-id}))
    (let [received (atom [])
          receiver-errors (atom [])
          server
@@ -198,7 +209,7 @@
             (let [conn (jdbc/connection "sqlite::memory:")
                   _ (reset! connection* conn)
                   _ (store/init-schema! conn)
-                  command (command-phase! conn default-command)
+                  command-result (command-phase! conn command)
                   pending-state (store/load-state conn)
                   row (one-pending-row! pending-state)
                   url (str "http://127.0.0.1:" (:port server)
@@ -206,7 +217,7 @@
                   delivery-outcome
                   (try
                     {:value (webhook/deliver-pending!
-                             conn url row default-attempt-id)}
+                             conn url row attempt-id)}
                     (catch :default error
                       (if (= :jolt.example.outbox.http-webhook/delivery-refused
                              (:type (ex-data error)))
@@ -221,7 +232,7 @@
                        {:scenario scenario
                         :delivery (:value delivery-outcome)}))
               {:scenario scenario
-               :command command
+               :command command-result
                :pending-state pending-state
                :delivery (if-let [value (:value delivery-outcome)]
                            value
@@ -240,4 +251,10 @@
      (throw-with-cleanup! (:error body) cleanup-errors)
      (assoc (:value body)
             :receiver {:requests @received
-                       :server-errors @receiver-errors}))))
+                       :server-errors @receiver-errors})))
+
+(defn exercise
+  "Runs the historical fixed command and one webhook scenario."
+  ([] (exercise :accepted))
+  ([scenario]
+   (exercise-command scenario default-command default-attempt-id)))

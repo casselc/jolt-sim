@@ -140,9 +140,12 @@ for gate in "$@"; do
     outbox-delivery-hegel-test)
       worker_alias=outbox-delivery-explore-worker
       ;;
+    outbox-http-webhook-hegel-test)
+      worker_alias=outbox-http-webhook-explore-worker
+      ;;
     *)
       echo "unknown Hegel gate: $gate" >&2
-      echo "allowed: hegel-explore-test http-sqlite-hegel-test tcp-bencode-hegel-test outbox-delivery-hegel-test" >&2
+      echo "allowed: hegel-explore-test http-sqlite-hegel-test tcp-bencode-hegel-test outbox-delivery-hegel-test outbox-http-webhook-hegel-test" >&2
       echo "retained gate root: $gate_root" >&2
       exit 2
       ;;
