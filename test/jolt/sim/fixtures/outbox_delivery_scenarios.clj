@@ -1159,7 +1159,8 @@
            (fixture/exercise-outbox-delivery-cancel-before-ack command)))
         result (:result controlled)
         effect-trace (:effect-trace controlled)]
-    {:application (:application result)
+    {:application-body-id (:application-body-id result)
+     :application (:application result)
      :http (:http result)
      :receiver (:receiver result)
      :routes
