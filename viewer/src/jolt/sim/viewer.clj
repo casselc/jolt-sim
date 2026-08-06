@@ -36,7 +36,8 @@
             [jolt.sim.repl :as sim-repl]
             [jolt.sim.report :as report]
             [jolt.sim.trace :as trace]
-            [jolt.sim.viewer.experiment :as experiment-viewer]))
+            [jolt.sim.viewer.experiment :as experiment-viewer]
+            [jolt.sim.viewer.session :as viewer-session]))
 
 (def invalid-config ::invalid-config)
 (def request-too-large ::request-too-large)
@@ -44,6 +45,8 @@
 (def unknown-document-kind ::unknown-document-kind)
 (def trace-not-replayable ::trace-not-replayable)
 (def experiment-plan-not-replayable ::experiment-plan-not-replayable)
+(def invalid-session-cursor ::invalid-session-cursor)
+(def ^:private invalid-session-frame ::invalid-session-frame)
 
 (def ^:private config-keys
   #{:port :capability-token :max-document-bytes
@@ -57,13 +60,16 @@
     :dir :extra-env :temp-dir :retain-completed-artifacts?})
 
 (def ^:private service-keys
-  #{:render-trace :render-case-outcome :replay-document})
+  #{:render-trace :render-case-outcome :replay-document
+    :read-session-frame})
 
 (def ^:private default-max-document-bytes (* 1024 1024))
 (def ^:private maximum-max-document-bytes (* 16 1024 1024))
 (def ^:private minimum-token-length 32)
 
 (def ^:private progress-log-byte-limit 65536)
+(def ^:private session-journal-page-size 256)
+(def ^:private maximum-session-cursor-digits 19)
 
 (def ^:private empty-progress-diagnostic
   {:bytes 0 :truncated? false :text ""})
@@ -360,6 +366,115 @@
   (secure-string= (:capability-token config)
                   (get-in request [:headers "x-jolt-sim-capability"])))
 
+(defn- session-cursor!
+  "Reads the optional unsigned decimal journal cursor without interning or
+  evaluating browser-controlled data. Missing means the complete journal
+  from cursor zero; malformed or overflowing values fail closed."
+  [request]
+  (let [raw (get-in request [:headers "x-jolt-sim-journal-cursor"])]
+    (cond
+      (nil? raw) 0
+      (and (string? raw) (> (count raw) maximum-session-cursor-digits))
+      (throw
+       (ex-info "viewer session cursor is outside the integer range"
+                {:type invalid-session-cursor
+                 :reason :out-of-range}))
+      (and (string? raw) (re-matches #"[0-9]+" raw))
+      (or (parse-long raw)
+          (throw
+           (ex-info "viewer session cursor is outside the integer range"
+                    {:type invalid-session-cursor
+                     :reason :out-of-range})))
+      :else
+      (throw
+       (ex-info "viewer session cursor must be unsigned decimal"
+                {:type invalid-session-cursor
+                 :reason :not-unsigned-decimal})))))
+
+(defn- session-frame-error-response [error]
+  (let [data (ex-data error)]
+    (case (:type data)
+      :jolt.sim.viewer.session/invalid-cursor
+      (error-response 400 :invalid-session-cursor
+                      (select-keys data [:reason :cursor :journal-count]))
+
+      :jolt.sim.viewer.session/coherence-failed
+      (error-response 409 :session-frame-incoherent
+                      (select-keys data [:attempts :max-attempts]))
+
+      ::invalid-session-cursor
+      (error-response 400 :invalid-session-cursor
+                      (select-keys data [:reason]))
+
+      nil)))
+
+(defn- bounded-session-frame
+  "Validates the trusted reader's closed journal coordinates and returns one
+  bounded page. The Session adapter may have read a longer tail internally,
+  but neither the HTTP response nor browser retains more than this page."
+  [frame cursor]
+  (let [journal (:journal frame)
+        count (:count journal)
+        entries (:entries journal)]
+    (when-not (and (map? frame)
+                   (= :frame (:jolt.sim.viewer.session/type frame))
+                   (map? journal)
+                   (= cursor (:cursor journal))
+                   (integer? count)
+                   (<= cursor count)
+                   (vector? entries)
+                   (= (- count cursor) (clojure.core/count entries)))
+      (throw (ex-info "trusted session reader returned an invalid frame"
+                      {:type invalid-session-frame})))
+    (let [page (vec (take session-journal-page-size entries))
+          next-cursor (+ cursor (clojure.core/count page))]
+      (assoc frame :journal
+             (assoc journal
+                    :entries page
+                    :next-cursor next-cursor
+                    :page-size (clojure.core/count page)
+                    :remaining? (< next-cursor count))))))
+
+(defn- session-frame-response [config services request]
+  (if-let [read-frame (:read-session-frame services)]
+    (try
+      (let [cursor (session-cursor! request)
+            frame (bounded-session-frame (read-frame cursor) cursor)
+            body (trace/canonical-edn frame)
+            byte-count (alength (.getBytes ^String body "UTF-8"))]
+        (if (> byte-count (:max-document-bytes config))
+          (error-response 413 :session-frame-too-large
+                          {:limit (:max-document-bytes config)
+                           :actual byte-count})
+          (update
+           (response 200 "application/edn; charset=utf-8" body)
+           :headers assoc
+           "X-Jolt-Sim-Journal-Next-Cursor"
+           (str (get-in frame [:journal :next-cursor])))))
+      (catch :default error
+        (if-let [expected (session-frame-error-response error)]
+          expected
+          (error-response 500 :session-frame-unavailable nil))))
+    (error-response 404 :session-unavailable nil)))
+
+(defn- execute-session-frame-request
+  "Admits at most one expensive coherent-frame read at a time. Authorization
+  is checked first so an untrusted local caller cannot observe whether a
+  trusted client is currently inspecting a session."
+  [config services session-frame-active? request]
+  (cond
+    (not (authorized? config request))
+    (error-response 403 :forbidden nil)
+
+    (not (compare-and-set! session-frame-active? false true))
+    (error-response 429 :session-frame-busy nil)
+
+    :else
+    (try
+      (session-frame-response config services request)
+      (finally
+        (reset! session-frame-active? false)))))
+
 (defn- edn-content-type? [request]
   (let [value (get-in request [:headers "content-type"])]
     (and (string? value)
@@ -529,15 +644,28 @@
   is rejected before the request body is read, and the server never infers a
   schema from the uploaded bytes.
 
-  The optional `services` map is a narrow embedding/test seam. Its keys are
+  The optional `services` map is a narrow embedding/test seam. Its required
+  keys are
   `:render-trace` (`trace-doc -> html`), `:render-case-outcome`
   (`case-outcome-doc -> html`), and `:replay-document`
-  (`case-outcome-doc runtime-config -> outcome`), all required. Browser data
-  never selects any function or supplies runtime configuration. Replay
+  (`case-outcome-doc runtime-config -> outcome`). The optional
+  `:read-session-frame` key is a trusted `(cursor -> coherent-frame)` closure;
+  no mutating Session operation is accepted. Browser data never selects any
+  function or supplies runtime configuration. Replay
   accepts only Case/Outcome documents: declared `:trace` and
   `:experiment-plan` kinds are rejected explicitly before any restore or
   worker execution. Experiment-plan rendering bypasses the service seam and
   accepts only the closed inert inspector document.
+
+  `GET /api/session-frame` is an optional embedding-only, inspection surface.
+  When the trusted services map supplies `:read-session-frame`, it returns one
+  coherent canonical Session projection, enabled branch references, isolated
+  successor previews, and append-only journal tail. Browser data supplies
+  only an unsigned journal cursor. No step or other mutating Session function
+  is installed in the handler. Computing successor previews does invoke the
+  Session's cooperative step callback, so attached sessions must satisfy its
+  deterministic, effect-free contract. A dedicated single-flight gate admits
+  only one frame computation at a time.
 
   `GET /api/replay-progress` reports the one active or most recently
   completed replay's status (`:idle`, `:starting`, `:worker-ready`,
@@ -552,12 +680,15 @@
    (let [config (validate-config! config)
          unknown-services (into #{} (remove service-keys) (keys services))
          document-active? (atom false)
+         session-frame-active? (atom false)
          active-replay (atom (initial-replay-state))]
      (when (seq unknown-services)
        (throw (config-error :unknown-service-keys unknown-services)))
      (when-not (and (fn? (:render-trace services))
                     (fn? (:render-case-outcome services))
-                    (fn? (:replay-document services)))
+                    (fn? (:replay-document services))
+                    (or (not (contains? services :read-session-frame))
+                        (fn? (:read-session-frame services))))
        (throw (config-error :invalid-services (set (keys services)))))
      (fn [request]
        (let [method (:request-method request)
@@ -574,6 +705,10 @@
              (error-response 403 :forbidden nil)
              (response 200 "application/json; charset=utf-8"
                        (replay-progress-json active-replay)))
+
+           (and (= :get method) (= "/api/session-frame" uri))
+           (execute-session-frame-request
+            config services session-frame-active? request)
 
            (and (= :post method) (= "/api/render" uri))
            (execute-document-request
@@ -637,7 +772,9 @@
 
   The optional services arity is the same narrow embedding/test seam accepted
   by `make-handler`; ordinary callers always use the real trace/Case/Outcome
-  report and replay services plus the inert experiment-plan inspector."
+  report and replay services plus the inert experiment-plan inspector.
+  `start-session!` is the narrower convenience for a trusted, read-only
+  in-process Session attachment."
   ([config]
    (start! config (default-services config)))
   ([config services]
@@ -650,6 +787,25 @@
                       ;; make-handler's shared single-flight gate.
                       :pool-size 2
                       :reuse-address? true))))
+
+(defn start-session!
+  "Starts Ripple with one trusted in-process Session attached for inspection.
+
+  The resulting HTTP handler receives only a closure over
+  `viewer-session/read-frame`. It does not receive `step-frame!`, the Session
+  value, or any browser-selected function. This is the initial REPL/embedding
+  seam for inspecting canonical projections, enabled choices, successor
+  previews, and journal tails without calling `session/step!`. Previewing does
+  evaluate the Session's cooperative step callback; attach only sessions whose
+  callback obeys the deterministic, effect-free contract. Frames can contain
+  application data, so callers must keep the loopback capability token
+  private."
+  [config sim-session]
+  (start! config
+          (assoc (default-services config)
+                 :read-session-frame
+                 (fn [cursor]
+                   (viewer-session/read-frame sim-session cursor)))))
 
 (defn stop!
   "Stops a viewer returned by `start!`."

@@ -10,8 +10,13 @@
   const report = document.getElementById("report");
   const activity = document.getElementById("activity");
   const outcome = document.getElementById("outcome");
+  const sessionRefresh = document.getElementById("session-refresh");
+  const sessionReset = document.getElementById("session-reset");
+  const sessionStatus = document.getElementById("session-status");
+  const sessionFrame = document.getElementById("session-frame");
   let documentText = null;
   let busy = false;
+  let sessionCursor = "0";
 
   const enhanceExperimentReport = () => {
     const doc = report.contentDocument;
@@ -242,6 +247,8 @@
     capability.disabled = busy;
     inspect.disabled = busy || !ready;
     replay.disabled = busy || !ready || kind.value !== "case-outcome";
+    sessionRefresh.disabled = busy || capability.value.length === 0;
+    sessionReset.disabled = busy;
   };
 
   const request = async (path) => {
@@ -284,6 +291,46 @@
 
   capability.addEventListener("input", updateButtons);
   kind.addEventListener("change", updateButtons);
+
+  sessionRefresh.addEventListener("click", async () => {
+    if (busy) return;
+    busy = true;
+    updateButtons();
+    sessionStatus.textContent = "Reading one coherent session frame...";
+    sessionFrame.textContent = "Refreshing; no current session frame.";
+    try {
+      const response = await fetch("/api/session-frame", {
+        method: "GET",
+        headers: {
+          "X-Jolt-Sim-Capability": capability.value,
+          "X-Jolt-Sim-Journal-Cursor": sessionCursor
+        },
+        cache: "no-store",
+        credentials: "omit"
+      });
+      const text = await response.text();
+      if (!response.ok) throw new Error(`${response.status} ${text}`);
+      const nextCursor = response.headers.get("X-Jolt-Sim-Journal-Next-Cursor");
+      if (!nextCursor || !/^[0-9]+$/.test(nextCursor)) {
+        throw new Error("session frame omitted its next journal cursor");
+      }
+      sessionCursor = nextCursor;
+      sessionFrame.textContent = text;
+      sessionStatus.textContent = `Coherent frame loaded; journal cursor is ${sessionCursor}.`;
+    } catch (error) {
+      sessionFrame.textContent = "No current session frame; the last refresh failed.";
+      sessionStatus.textContent = `Session refresh failed: ${error.message}`;
+    } finally {
+      busy = false;
+      updateButtons();
+    }
+  });
+
+  sessionReset.addEventListener("click", () => {
+    sessionCursor = "0";
+    sessionFrame.textContent = "No current session frame; refresh from cursor zero.";
+    sessionStatus.textContent = "Journal cursor reset; refresh to read from the beginning.";
+  });
 
   inspect.addEventListener("click", async () => {
     if (busy) return;
