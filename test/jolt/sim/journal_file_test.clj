@@ -1,7 +1,7 @@
 (ns jolt.sim.journal-file-test
   "Executable companions for the process-crash diagnostic file adapter:
   existing-target refusal under the narrowed trusted-parent contract,
-  replacement-after-open descriptor stability, valid header+records
+  platform-honest replacement-after-open behavior, valid header+records
   recovery, idempotent close, append-after-close/failure behavior,
   incomplete final frame preserving the valid prefix, bounded read before
   recover with hard-cap rejection, bounded path-free diagnostics, and
@@ -132,15 +132,14 @@
       (is (= :create-failed (:reason (:failure s))))
       (is (false? (.exists (java.io.File. path)))))))
 
-;; ---- 1b. replacement after open: descriptor stability, path-based reads ------------
+;; ---- 1b. replacement after open: platform-honest, path-based reads -----------------
 
-(deftest replacement-after-open-does-not-clobber-and-path-stays-refused
-  ;; The narrowed contract does not claim exclusivity. This is the
-  ;; strongest deterministic witness available without unsupported host
-  ;; APIs: after an untrusted actor deletes and replaces the target, the
-  ;; open adapter's writes still go to its own descriptor (never the
-  ;; replacement), the replaced path is still refused by a new open, and
-  ;; read-bounded-image reads whatever is at the path now.
+(deftest replacement-after-open-is-platform-honest-and-path-stays-refused
+  ;; Replacement is outside the trusted-parent contract. POSIX commonly
+  ;; detaches the open descriptor from a recreated path; Windows may keep
+  ;; the open handle associated with that path even after File.delete
+  ;; reports success. Prove the portable guarantees and retain the stronger
+  ;; detached-descriptor witness only when the host actually provides it.
   (let [path (fresh-path)
         w (jf/open-process-crash-writer! (open-opts path))
         _ (jf/append! w {:kind 1 :payload (ba 1 2 3)})
@@ -148,23 +147,27 @@
     (if unlinked?
       (let [replacement (java.io.FileOutputStream. path)
             _ (.write replacement (byte-array (map unchecked-byte [0x58])))
-            _ (.close replacement)]
+            _ (.close replacement)
+            replacement-before-append (file-bytes path)]
+        (is (bytes= (ba 0x58) replacement-before-append))
         (testing "the replaced path is still refused by a new open"
           (let [w2 (jf/open-process-crash-writer! (open-opts path))
                 s2 (jf/writer-status w2)]
             (is (= :failed (:health s2)))
             (is (= {:phase :open :reason :target-exists} (:failure s2)))))
-        (testing "the open adapter's writes go to its own descriptor, never the replacement"
+        (testing "the original adapter remains healthy after out-of-contract replacement"
           (let [s (jf/append! w {:kind 2 :payload (ba 4 5)})]
             (is (= :healthy (:health s)))
             (is (= 2 (:sequence s)))))
         (jf/close! w)
-        (testing "the replacement file on disk is untouched by the adapter's writes"
-          (is (bytes= (ba 0x58) (file-bytes path))))
-        (testing "read-bounded-image reads whatever is at the path now (path-based read)"
-          (let [read (jf/read-bounded-image w)]
-            (is (= :ok (:status read)))
-            (is (bytes= (ba 0x58) (:image read))))))
+        (let [path-image (file-bytes path)]
+          (when (bytes= (ba 0x58) path-image)
+            (testing "a detached descriptor does not clobber the replacement"
+              (is (bytes= (ba 0x58) path-image))))
+          (testing "read-bounded-image reflects the host's current path bytes"
+            (let [read (jf/read-bounded-image w)]
+              (is (= :ok (:status read)))
+              (is (bytes= path-image (:image read)))))))
       (testing "targets without unlink-open semantics retain ordinary writer behavior"
         (let [s (jf/append! w {:kind 2 :payload (ba 4 5)})]
           (is (= :healthy (:health s)))
