@@ -1,5 +1,6 @@
 (ns jolt.sim.viewer-test
   (:require [clojure.edn :as edn]
+            [clojure.data.json :as json]
             [clojure.string :as string]
             [clojure.test :as test :refer [deftest is testing]]
             [jolt.fs :as fs]
@@ -218,7 +219,12 @@
     (is (string/includes? (:body shell) "id=\"session-frame\""))
     (is (string/includes? (:body script) "fetch(\"/api/session-frame\""))
     (is (string/includes? (:body script) "X-Jolt-Sim-Journal-Cursor"))
-    (is (string/includes? (:body script) "sessionFrame.textContent = text"))
+    (is (string/includes? (:body script) "sessionFrame.textContent = body.frameEdn"))
+    (is (string/includes? (:body shell) "id=\"session-choices\""))
+    (is (string/includes? (:body shell) "id=\"session-step-retry\""))
+    (is (string/includes? (:body script) "Retry sends the identical command bytes"))
+    (is (string/includes? (:body script) "exactCoordinate"))
+    (is (string/includes? (:body script) "canonicalUnsignedDecimal"))
     (is (string/includes? (:body script)
                           "No current session frame; the last refresh failed."))
     (is (string/includes? (:body script)
@@ -1083,6 +1089,103 @@
     (is (= before-journal (session/journal s))
         "reading through HTTP neither steps nor appends to the Session")))
 
+(deftest session-frame-json-is-explicit-closed-and-preserves-the-edn-frame
+  (let [s (session/start (session-sim-config))
+        base-services
+        (assoc (services (atom []) (atom []) {:status :completed})
+               :read-session-frame #(viewer-session/read-frame s %))
+        viewer-config (assoc (config) :max-document-bytes (* 1024 1024))
+        read-only (viewer/make-handler viewer-config base-services)
+        steppable (viewer/make-handler
+                   viewer-config
+                   (assoc base-services :step-session-frame! (fn [& _] nil)))
+        json-request (assoc-in (get-request "/api/session-frame")
+                               [:headers "accept"]
+                               "text/plain, application/json; q=1")
+        read-only-response (read-only json-request)
+        steppable-response (steppable json-request)
+        wildcard-response
+        (read-only (assoc-in (get-request "/api/session-frame")
+                             [:headers "accept"] "*/*"))
+        refused-json-response
+        (read-only (assoc-in (get-request "/api/session-frame")
+                             [:headers "accept"] "application/json;q=0"))
+        invalid-quality-response
+        (read-only (assoc-in (get-request "/api/session-frame")
+                             [:headers "accept"] "application/json;q=bogus"))
+        wire (json/read-str (:body read-only-response))]
+    (is (= 200 (:status read-only-response)))
+    (is (= "application/json; charset=utf-8"
+           (get-in read-only-response [:headers "Content-Type"])))
+    (is (= #{"version" "revision" "nextCursor" "stepEnabled"
+             "frameEdn" "choices"}
+           (set (keys wire))))
+    (is (= 1 (get wire "version")))
+    (is (= "0" (get wire "revision")))
+    (is (= "1" (get wire "nextCursor")))
+    (is (false? (get wire "stepEnabled")))
+    (is (= [{"revision" "0" "kind" "run" "value" "0" "label" "run 0"}
+            {"revision" "0" "kind" "run" "value" "2" "label" "run 2"}]
+           (get wire "choices")))
+    (is (= (edn/read-string (get wire "frameEdn"))
+           (edn/read-string (:body wildcard-response))))
+    (is (= "application/edn; charset=utf-8"
+           (get-in wildcard-response [:headers "Content-Type"])))
+    (is (= "application/edn; charset=utf-8"
+           (get-in refused-json-response [:headers "Content-Type"])))
+    (is (= "application/edn; charset=utf-8"
+           (get-in invalid-quality-response [:headers "Content-Type"])))
+    (is (true? (get (json/read-str (:body steppable-response))
+                    "stepEnabled")))
+    (is (= "1" (get-in read-only-response
+                         [:headers "X-Jolt-Sim-Journal-Next-Cursor"])))))
+
+(deftest session-frame-json-rejects-defective-trusted-branch-projections
+  (let [s (session/start (session-sim-config))
+        response
+        ((viewer/make-handler
+          (assoc (config) :max-document-bytes (* 1024 1024))
+          (assoc (services (atom []) (atom []) {:status :completed})
+                 :read-session-frame
+                 (fn [cursor]
+                   (update (viewer-session/read-frame s cursor)
+                           :branches
+                           assoc 0
+                           {:revision 0 :action [:run 0] :secret "nope"}))))
+         (assoc-in (get-request "/api/session-frame")
+                   [:headers "accept"] "application/json"))]
+    (is (= 500 (:status response)))
+    (is (= "application/edn; charset=utf-8"
+           (get-in response [:headers "Content-Type"])))
+    (is (string/includes? (:body response) ":session-frame-unavailable"))
+    (is (not (string/includes? (:body response) "nope")))))
+
+(deftest session-frame-json-envelope-is-counted-against-the-response-limit
+  (let [s (session/start (session-sim-config))
+        service-map
+        (assoc (services (atom []) (atom []) {:status :completed})
+               :read-session-frame #(viewer-session/read-frame s %))
+        wide-handler
+        (viewer/make-handler
+         (assoc (config) :max-document-bytes (* 1024 1024))
+         service-map)
+        edn-response (wide-handler (get-request "/api/session-frame"))
+        edn-bytes (alength (.getBytes ^String (:body edn-response) "UTF-8"))
+        tight-handler
+        (viewer/make-handler
+         (assoc (config) :max-document-bytes edn-bytes)
+         service-map)
+        tight-edn (tight-handler (get-request "/api/session-frame"))
+        tight-json
+        (tight-handler
+         (assoc-in (get-request "/api/session-frame")
+                   [:headers "accept"] "application/json"))]
+    (is (= 200 (:status tight-edn))
+        "the unchanged EDN representation still fits its exact byte limit")
+    (is (= 413 (:status tight-json))
+        "duplicated JSON metadata and frameEdn are measured, not appended after the bound")
+    (is (string/includes? (:body tight-json) ":session-frame-too-large"))))
+
 (deftest session-frame-endpoint-validates-and-forwards-the-journal-cursor
   (let [cursors (atom [])
         handler
@@ -1532,6 +1635,64 @@
     (is (= 1 (:revision (session/snapshot s))))
     (is (= 2 (count (session/journal s)))
         "the identical request retried after commit is stale and never advances the revision again")))
+
+(deftest session-step-json-acknowledges-the-exact-coordinate-and-stale-retry
+  (let [s (session/start (session-sim-config))
+        step-calls (atom [])
+        handler (viewer/make-handler (config) (steppable-services s step-calls))
+        request-json
+        (fn []
+          (assoc-in (step-request (step-body "0" "0" "run" "2"))
+                    [:headers "accept"] "application/json"))
+        committed (handler (request-json))
+        stale (handler (request-json))
+        committed-wire (json/read-str (:body committed))
+        stale-wire (json/read-str (:body stale))]
+    (is (= 200 (:status committed)))
+    (is (= 409 (:status stale)))
+    (is (= "application/json; charset=utf-8"
+           (get-in committed [:headers "Content-Type"])))
+    (is (= #{"version" "outcome" "committed" "revision" "kind"
+             "value" "receiptEdn"}
+           (set (keys committed-wire))))
+    (is (= {"version" 1 "outcome" "committed" "committed" true
+            "revision" "0" "kind" "run" "value" "2"}
+           (dissoc committed-wire "receiptEdn")))
+    (is (= {"version" 1 "outcome" "stale" "committed" false
+            "revision" "0" "kind" "run" "value" "2"}
+           (dissoc stale-wire "receiptEdn")))
+    (is (= :committed
+           (:status (edn/read-string (get committed-wire "receiptEdn")))))
+    (is (= :stale
+           (:status (edn/read-string (get stale-wire "receiptEdn")))))
+    (is (= 1 (:revision (session/snapshot s))))))
+
+(deftest session-step-json-distinguishes-safe-errors-from-ambiguous-server-errors
+  (let [s (session/start (session-sim-config))
+        handler (viewer/make-handler (config) (steppable-services s (atom [])))
+        forbidden-request
+        (assoc-in (step-request (step-body "0" "0" "run" "2") "wrong")
+                  [:headers "accept"] "application/json")
+        forbidden (handler forbidden-request)
+        defective
+        ((viewer/make-handler
+          (config)
+          (assoc (services (atom []) (atom []) {:status :completed})
+                 :step-session-frame!
+                 (fn [& _]
+                   {:jolt.sim.viewer.session/type :wrong
+                    :secret "must-not-cross"})))
+         (assoc-in (step-request (step-body "0" "0" "run" "2"))
+                   [:headers "accept"] "application/json"))]
+    (is (= 403 (:status forbidden)))
+    (is (= {"version" 1 "outcome" "error" "committed" false
+            "error" "forbidden"}
+           (json/read-str (:body forbidden))))
+    (is (= 500 (:status defective)))
+    (is (= "application/edn; charset=utf-8"
+           (get-in defective [:headers "Content-Type"])))
+    (is (string/includes? (:body defective) ":session-step-error"))
+    (is (not (string/includes? (:body defective) "must-not-cross")))))
 
 (deftest session-step-orders-authority-before-availability-gates-and-body
   (let [step-calls (atom [])

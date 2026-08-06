@@ -14,9 +14,57 @@
   const sessionReset = document.getElementById("session-reset");
   const sessionStatus = document.getElementById("session-status");
   const sessionFrame = document.getElementById("session-frame");
+  const sessionChoicesList = document.getElementById("session-choices");
+  const sessionStepStatus = document.getElementById("session-step-status");
+  const sessionStepRetryRow = document.getElementById("session-step-retry-row");
+  const sessionStepRetry = document.getElementById("session-step-retry");
   let documentText = null;
   let busy = false;
   let sessionCursor = "0";
+  let sessionStepEnabled = false;
+  let sessionChoices = [];
+  let lastStepStatus = null;
+  // Set only for an ambiguous step outcome (network failure or an
+  // unrecognized response): the exact serialized request bytes, so Retry
+  // can resend byte-identical and never synthesize a new coordinate.
+  let pendingRetry = null;
+
+  const canonicalUnsignedDecimal = (value) =>
+    typeof value === "string" && /^(0|[1-9][0-9]*)$/.test(value);
+
+  const canonicalSignedDecimal = (value) =>
+    canonicalUnsignedDecimal(value) ||
+    (typeof value === "string" && /^-[1-9][0-9]*$/.test(value));
+
+  const exactKeys = (value, expected) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+    const actual = Object.keys(value).sort();
+    const wanted = expected.slice().sort();
+    return actual.length === wanted.length &&
+      actual.every((key, index) => key === wanted[index]);
+  };
+
+  const validChoice = (choice, revision) =>
+    exactKeys(choice, ["revision", "kind", "value", "label"]) &&
+    choice.revision === revision &&
+    canonicalUnsignedDecimal(choice.revision) &&
+    (choice.kind === "run" || choice.kind === "advance") &&
+    (choice.kind === "run"
+      ? canonicalUnsignedDecimal(choice.value)
+      : canonicalSignedDecimal(choice.value)) &&
+    typeof choice.label === "string";
+
+  const safeStepErrors = new Set([
+    "400:invalid-session-step",
+    "400:invalid-session-cursor",
+    "403:forbidden",
+    "404:session-step-unavailable",
+    "409:session-step-rejected",
+    "413:request-too-large",
+    "415:expected-application-json",
+    "429:session-step-busy",
+    "429:viewer-busy"
+  ]);
 
   const enhanceTraceReport = () => {
     const doc = report.contentDocument;
@@ -302,8 +350,42 @@
     capability.disabled = busy;
     inspect.disabled = busy || !ready;
     replay.disabled = busy || !ready || kind.value !== "case-outcome";
-    sessionRefresh.disabled = busy || capability.value.length === 0;
+    // An unresolved ambiguous step outcome blocks a fresh frame read too, so
+    // the only available action stays Retry until it resolves or Reset runs.
+    sessionRefresh.disabled = busy || capability.value.length === 0 || pendingRetry !== null;
     sessionReset.disabled = busy;
+    syncSessionChoiceUI();
+  };
+
+  const renderChoices = () => {
+    sessionChoicesList.textContent = "";
+    if (sessionChoices.length === 0) {
+      if (pendingRetry === null) {
+        const empty = document.createElement("li");
+        empty.className = "muted";
+        empty.textContent = "No branch choices available.";
+        sessionChoicesList.appendChild(empty);
+      }
+      return;
+    }
+    sessionChoices.forEach((choice) => {
+      const item = document.createElement("li");
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent =
+        `${choice.label} — ${choice.kind} ${choice.value} (revision ${choice.revision})`;
+      button.disabled = busy || !sessionStepEnabled ||
+        capability.value.length === 0 || pendingRetry !== null;
+      button.addEventListener("click", () => submitChoice(choice));
+      item.appendChild(button);
+      sessionChoicesList.appendChild(item);
+    });
+  };
+
+  const syncSessionChoiceUI = () => {
+    sessionStepRetryRow.hidden = pendingRetry === null;
+    sessionStepRetry.disabled = busy;
+    renderChoices();
   };
 
   const request = async (path) => {
@@ -347,7 +429,7 @@
   capability.addEventListener("input", updateButtons);
   kind.addEventListener("change", updateButtons);
 
-  sessionRefresh.addEventListener("click", async () => {
+  const refreshSessionFrame = async () => {
     if (busy) return;
     busy = true;
     updateButtons();
@@ -357,34 +439,169 @@
       const response = await fetch("/api/session-frame", {
         method: "GET",
         headers: {
+          "Accept": "application/json",
           "X-Jolt-Sim-Capability": capability.value,
           "X-Jolt-Sim-Journal-Cursor": sessionCursor
         },
         cache: "no-store",
         credentials: "omit"
       });
-      const text = await response.text();
-      if (!response.ok) throw new Error(`${response.status} ${text}`);
-      const nextCursor = response.headers.get("X-Jolt-Sim-Journal-Next-Cursor");
-      if (!nextCursor || !/^[0-9]+$/.test(nextCursor)) {
-        throw new Error("session frame omitted its next journal cursor");
+      const body = await response.json().catch(() => null);
+      if (!response.ok ||
+          !exactKeys(body, ["version", "revision", "nextCursor", "stepEnabled",
+            "frameEdn", "choices"]) ||
+          body.version !== 1 ||
+          !canonicalUnsignedDecimal(body.revision) ||
+          !canonicalUnsignedDecimal(body.nextCursor) ||
+          typeof body.stepEnabled !== "boolean" ||
+          typeof body.frameEdn !== "string" ||
+          !Array.isArray(body.choices) ||
+          !body.choices.every((choice) => validChoice(choice, body.revision))) {
+        throw new Error(`${response.status} ${body ? JSON.stringify(body) : "unparseable response"}`);
       }
-      sessionCursor = nextCursor;
-      sessionFrame.textContent = text;
+      sessionCursor = body.nextCursor;
+      sessionFrame.textContent = body.frameEdn;
+      sessionStepEnabled = body.stepEnabled === true;
+      sessionChoices = Array.isArray(body.choices) ? body.choices : [];
+      const availability = sessionChoices.length === 0
+        ? `No branch choices available at revision ${body.revision}.`
+        : sessionStepEnabled
+          ? `${sessionChoices.length} branch choice(s) available at revision ${body.revision}.`
+          : `${sessionChoices.length} branch choice(s) shown for a read-only session ` +
+            `(revision ${body.revision}); controls are disabled.`;
+      sessionStepStatus.textContent = lastStepStatus
+        ? `${lastStepStatus} ${availability}`
+        : availability;
       sessionStatus.textContent = `Coherent frame loaded; journal cursor is ${sessionCursor}.`;
     } catch (error) {
       sessionFrame.textContent = "No current session frame; the last refresh failed.";
       sessionStatus.textContent = `Session refresh failed: ${error.message}`;
+      sessionStepEnabled = false;
+      sessionChoices = [];
     } finally {
       busy = false;
       updateButtons();
     }
+  };
+
+  sessionRefresh.addEventListener("click", refreshSessionFrame);
+
+  const submitStepRequest = (bodyText) => fetch("/api/session-step", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Accept": "application/json",
+      "X-Jolt-Sim-Capability": capability.value
+    },
+    body: bodyText,
+    cache: "no-store",
+    credentials: "omit"
+  });
+
+  const performStep = async (bodyText, isRetry) => {
+    busy = true;
+    updateButtons();
+    sessionStepStatus.textContent = isRetry
+      ? "Retrying the identical branch-choice command..."
+      : "Sending branch-choice command...";
+    let outcome = "ambiguous";
+    let receipt = null;
+    const command = JSON.parse(bodyText).branch;
+    try {
+      let response;
+      try {
+        response = await submitStepRequest(bodyText);
+      } catch (networkError) {
+        sessionStepStatus.textContent =
+          `Network failure before any server acknowledgment; not confirmed committed. ` +
+          `(${networkError.message}) Retry sends the identical command bytes.`;
+        return;
+      }
+      receipt = await response.json().catch(() => null);
+      const jsonResponse = (response.headers.get("Content-Type") || "")
+        .toLowerCase().startsWith("application/json");
+      const exactCoordinate = receipt &&
+        receipt.revision === command.revision &&
+        receipt.kind === command.kind &&
+        receipt.value === command.value;
+      const committedReceipt = jsonResponse && response.ok &&
+        exactKeys(receipt, ["version", "outcome", "committed", "revision", "kind",
+          "value", "receiptEdn"]) &&
+        receipt.version === 1 && receipt.outcome === "committed" &&
+        receipt.committed === true && exactCoordinate &&
+        typeof receipt.receiptEdn === "string";
+      const staleReceipt = jsonResponse && response.status === 409 &&
+        exactKeys(receipt, ["version", "outcome", "committed", "revision", "kind",
+          "value", "receiptEdn"]) &&
+        receipt.version === 1 && receipt.outcome === "stale" &&
+        receipt.committed === false && exactCoordinate &&
+        typeof receipt.receiptEdn === "string";
+      const rejectedReceipt = jsonResponse &&
+        exactKeys(receipt, ["version", "outcome", "committed", "error"]) &&
+        receipt.version === 1 && receipt.outcome === "error" &&
+        receipt.committed === false && typeof receipt.error === "string" &&
+        safeStepErrors.has(`${response.status}:${receipt.error}`);
+      if (committedReceipt) {
+        outcome = "committed";
+        lastStepStatus =
+          `Committed revision ${receipt.revision} (${receipt.kind} ${receipt.value}); ` +
+          `server acknowledged the exact command.`;
+        sessionStepStatus.textContent = `${lastStepStatus} Refreshing session frame.`;
+      } else if (staleReceipt) {
+        outcome = "stale";
+        lastStepStatus =
+          `Not committed (${receipt.outcome}); refresh the session for current choices.`;
+        sessionStepStatus.textContent = lastStepStatus;
+      } else if (rejectedReceipt) {
+        outcome = "rejected";
+        lastStepStatus =
+          `Not committed (${receipt.error}); refresh after correcting the request or capability.`;
+        sessionStepStatus.textContent = lastStepStatus;
+      } else {
+        sessionStepStatus.textContent =
+          `Unacknowledged: server returned ${response.status} without a recognizable receipt; ` +
+          `not confirmed committed. Retry sends the identical command bytes.`;
+      }
+    } finally {
+      pendingRetry = outcome === "ambiguous" ? bodyText : null;
+      sessionChoices = [];
+      busy = false;
+      updateButtons();
+    }
+    if (outcome === "committed") {
+      await refreshSessionFrame();
+    }
+  };
+
+  const submitChoice = (choice) => {
+    if (busy || pendingRetry !== null) return;
+    const bodyText = JSON.stringify({
+      version: 1,
+      cursor: sessionCursor,
+      branch: {
+        revision: String(choice.revision),
+        kind: choice.kind,
+        value: String(choice.value)
+      }
+    });
+    return performStep(bodyText, false);
+  };
+
+  sessionStepRetry.addEventListener("click", () => {
+    if (busy || pendingRetry === null) return;
+    performStep(pendingRetry, true);
   });
 
   sessionReset.addEventListener("click", () => {
     sessionCursor = "0";
     sessionFrame.textContent = "No current session frame; refresh from cursor zero.";
     sessionStatus.textContent = "Journal cursor reset; refresh to read from the beginning.";
+    sessionStepEnabled = false;
+    sessionChoices = [];
+    lastStepStatus = null;
+    pendingRetry = null;
+    sessionStepStatus.textContent = "No branch choice sent.";
+    updateButtons();
   });
 
   inspect.addEventListener("click", async () => {
