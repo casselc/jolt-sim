@@ -31,6 +31,7 @@
             [jolt.fs :as fs]
             [jolt.http.body :as http-body]
             [jolt.http.server :as http]
+            [jolt.sim.activity-view :as activity-view]
             [jolt.sim.case-outcome :as case-outcome]
             [jolt.sim.presentation :as presentation]
             [jolt.sim.process-explorer :as process-explorer]
@@ -463,17 +464,16 @@
   "The closed JSON-safe projection of one recovered activity event:
   sequence, tag, kind, summary, EDN-string fields, and the complete canonical
   event EDN. Raw values never cross; only their EDN strings do."
-  [present entry]
-  (let [row (present (:sequence entry) (:event entry))]
-    {"sequence" (:sequence entry)
-     "tag" (:tag row)
-     "kind" (:kind-name row)
-     "summary" (:summary row)
-     "fields" (mapv (fn [field]
-                      {"label" (:label field)
-                       "valueEdn" (:value-edn field)})
-                    (:fields row))
-     "edn" (:edn row)}))
+  [row]
+  {"sequence" (:sequence row)
+   "tag" (:tag row)
+   "kind" (:kind-name row)
+   "summary" (:summary row)
+   "fields" (mapv (fn [field]
+                    {"label" (:label field)
+                     "valueEdn" (:value-edn field)})
+                  (:fields row))
+   "edn" (:edn row)})
 
 (defn- activity-recovery-wire
   "The closed JSON projection of the bounded `jolt.sim.activity` recovery
@@ -519,14 +519,14 @@
 (defn- activity-page-wire
   "Projects one trusted `process-explorer/read-activity-page` page into the
   closed JSON-safe activity payload."
-  [present page]
+  [page]
   {"version" 1
    "status" "ok"
    "cursor" (:cursor page)
    "nextCursor" (:next-cursor page)
    "acceptedCount" (:accepted-count page)
    "remaining" (boolean (:remaining? page))
-   "events" (mapv #(activity-event-wire present %) (:events page))
+   "events" (mapv activity-event-wire (:events page))
    "recovery" (activity-recovery-wire (:recovery page))
    "observer" (activity-observer-wire (:observer-status page))})
 
@@ -564,20 +564,24 @@
   prefix is a typed 400 contract error. Every other presentation or recovery
   failure degrades to a closed secondary marker: it never changes the
   replay's terminal status or the HTTP outcome."
-  [config present state cursor]
+  [config registry state cursor]
   (when (and (= :terminal (:phase state))
              (activity-journal-enabled? config))
     (if-let [outcome (:outcome state)]
       (try
-        (let [page (process-explorer/read-activity-page outcome cursor)]
+        (let [page (activity-view/read-page outcome cursor registry)]
           (try
-            [(activity-page-wire present page) (:next-cursor page)]
+            [(activity-page-wire page) (:next-cursor page)]
             (catch :default _
               [(activity-unavailable-wire cursor "presentation-failed")
                cursor])))
         (catch :default error
           (let [data (ex-data error)]
             (cond
+              (= presentation/invalid-presentation (:type data))
+              [(activity-unavailable-wire cursor "presentation-failed")
+               cursor]
+
               (= :jolt.sim.activity/invalid-cursor (:type data))
               (throw
                (ex-info "viewer activity cursor is beyond the recovered prefix"
@@ -600,12 +604,12 @@
   `:activity-journal?` runtime toggle only) shares the progress body and the
   configured response cap: an oversized page fails only the activity
   projection, never the replay status or the HTTP response."
-  [config present active-replay request]
+  [config registry active-replay request]
   (try
     (let [cursor (activity-cursor! request)
           state (swap! active-replay observe-active-replay)
           base (progress-wire (replay-progress-state state))
-          activity (terminal-activity-projection config present state cursor)
+          activity (terminal-activity-projection config registry state cursor)
           [activity-wire next-cursor] activity
           body (json/write-str
                 (if activity-wire
@@ -1425,11 +1429,10 @@
           document-active? (atom false)
           session-active? (atom false)
           active-replay (atom (initial-replay-state))
-          activity-present
-          (presentation/activity-event-presenter
-           (presentation/activity-registry
-            presentation/default-activity-registry
-            (:activity-presentation-registry config)))]
+          activity-registry
+          (presentation/activity-registry
+           presentation/default-activity-registry
+           (:activity-presentation-registry config))]
      (when (seq unknown-services)
        (throw (config-error :unknown-service-keys unknown-services)))
      (when-not (and (fn? (:render-trace services))
@@ -1454,7 +1457,7 @@
             (if-not (authorized? config request)
               (error-response 403 :forbidden nil)
               (replay-progress-response
-               config activity-present active-replay request))
+               config activity-registry active-replay request))
 
            (and (= :get method) (= "/api/session-frame" uri))
            (execute-session-frame-request
