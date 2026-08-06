@@ -367,6 +367,197 @@
                    (:fields row)))
        "</article>"))
 
+(def ^:private topology-max-nodes 12)
+(def ^:private topology-max-edges 24)
+(def ^:private topology-max-columns 5)
+(def ^:private topology-node-width 196)
+(def ^:private topology-node-height 84)
+(def ^:private topology-column-gap 44)
+(def ^:private topology-row-gap 28)
+(def ^:private topology-margin 34)
+(def ^:private topology-text-limit 42)
+
+(defn- bounded-text [value]
+  (let [text (str value)]
+    (if (<= (count text) topology-text-limit)
+      text
+      (str (subs text 0 (- topology-text-limit 1)) "…"))))
+
+(defn- topology-ranks
+  "Assigns longest-path ranks through the acyclic portion of the graph.
+  Nodes left in cycles receive stable increasing fallback ranks."
+  [node-ids connections]
+  (let [node-set (set node-ids)
+        outgoing
+        (reduce (fn [result connection]
+                  (let [from (first (:from connection))
+                        to (first (:to connection))]
+                    (if (and (contains? node-set from)
+                             (contains? node-set to))
+                      (update result from (fnil conj []) to)
+                      result)))
+                {}
+                connections)
+        indegrees
+        (reduce (fn [result connection]
+                  (let [from (first (:from connection))
+                        to (first (:to connection))]
+                    (if (and (contains? node-set from)
+                             (contains? node-set to))
+                      (update result to inc)
+                      result)))
+                (zipmap node-ids (repeat 0))
+                connections)]
+    (loop [ready (vec (sort-by pr-str
+                               (filter #(zero? (get indegrees %)) node-ids)))
+           remaining-indegrees indegrees
+           ranks (zipmap ready (repeat 0))
+           visited #{}]
+      (if-let [node-id (first ready)]
+        (let [node-rank (get ranks node-id 0)
+              [next-indegrees next-ranks newly-ready]
+              (reduce
+               (fn [[degrees assigned became-ready] target]
+                 (let [degree (dec (get degrees target))]
+                   [(assoc degrees target degree)
+                    (update assigned target (fnil max 0) (inc node-rank))
+                    (cond-> became-ready (zero? degree) (conj target))]))
+               [remaining-indegrees ranks []]
+               (sort-by pr-str (get outgoing node-id [])))]
+          (recur (vec (sort-by pr-str
+                               (concat (subvec ready 1) newly-ready)))
+                 next-indegrees
+                 next-ranks
+                 (conj visited node-id)))
+        (let [unvisited (vec (sort-by pr-str (remove visited node-ids)))
+              first-fallback
+              (if (seq ranks) (inc (reduce max (vals ranks))) 0)]
+          (reduce (fn [result [index node-id]]
+                    (assoc result node-id (+ first-fallback index)))
+                  ranks
+                  (map-indexed vector unvisited)))))))
+
+(defn- topology-layout [nodes connections]
+  (let [visible-nodes (vec (take topology-max-nodes nodes))
+        visible-ids (mapv :id visible-nodes)
+        visible-set (set visible-ids)
+        visible-connections
+        (vec (take topology-max-edges
+                   (filter #(and (contains? visible-set (first (:from %)))
+                                 (contains? visible-set (first (:to %))))
+                           connections)))
+        ranks (topology-ranks visible-ids visible-connections)
+        column-of (fn [node-id]
+                    (min (get ranks node-id 0) (dec topology-max-columns)))
+        columns
+        (group-by (comp column-of :id) visible-nodes)
+        column-count (if (seq visible-nodes)
+                       (inc (reduce max (map (comp column-of :id)
+                                            visible-nodes)))
+                       1)
+        max-rows (reduce max 1 (map count (vals columns)))
+        width (+ (* 2 topology-margin)
+                 (* column-count topology-node-width)
+                 (* (dec column-count) topology-column-gap))
+        height (+ (* 2 topology-margin)
+                  (* max-rows topology-node-height)
+                  (* (dec max-rows) topology-row-gap))
+        positions
+        (reduce
+         (fn [result column]
+           (reduce
+            (fn [positions [row node]]
+              (assoc positions (:id node)
+                     {:x (+ topology-margin
+                            (* column (+ topology-node-width
+                                         topology-column-gap)))
+                      :y (+ topology-margin
+                            (* row (+ topology-node-height topology-row-gap)))
+                      :node node}))
+            result
+            (map-indexed vector
+                         (sort-by (comp pr-str :id) (get columns column [])))))
+         {}
+         (range column-count))]
+    {:width width :height height :positions positions
+     :nodes visible-nodes :connections visible-connections
+     :node-count (count nodes) :connection-count (count connections)}))
+
+(defn- port-summary [port]
+  (str (if (= :out (:direction port)) "out " "in ")
+       (bounded-text (:id port)) " "
+       (bounded-text (string/join "," (map str (sort-by pr-str
+                                                        (:capabilities port)))))))
+
+(defn- topology-edge-html [positions connection]
+  (let [from (get positions (first (:from connection)))
+        to (get positions (first (:to connection)))
+        self-loop? (= (first (:from connection)) (first (:to connection)))
+        left-to-right? (<= (:x from) (:x to))
+        x1 (if left-to-right?
+             (+ (:x from) topology-node-width)
+             (:x from))
+        x2 (if left-to-right?
+             (:x to)
+             (+ (:x to) topology-node-width))
+        y1 (+ (:y from) (quot topology-node-height 2))
+        y2 (+ (:y to) (quot topology-node-height 2))
+        label (str (bounded-text (:id connection)) " · "
+                   (bounded-text (:mode connection)) " · "
+                   (bounded-text (:pack-id connection)))]
+    (str "<g class=\"topology-edge\">"
+         (if self-loop?
+           (str "<path d=\"M " x1 " " y1 " C " (+ x1 28) " " (- y1 28)
+                ", " (+ x1 28) " " (+ y1 28) ", " x1 " " (+ y1 18)
+                "\" marker-end=\"url(#topology-arrow)\"></path>")
+           (str "<line x1=\"" x1 "\" y1=\"" y1
+                "\" x2=\"" x2 "\" y2=\"" y2
+                "\" marker-end=\"url(#topology-arrow)\"></line>"))
+         "<text x=\"" (if self-loop? (+ x1 18) (quot (+ x1 x2) 2)) "\" y=\""
+         (if self-loop? (- y1 31) (- (quot (+ y1 y2) 2) 7))
+         "\" text-anchor=\"middle\">"
+         (html-escape label) "</text></g>")))
+
+(defn- topology-node-html [{:keys [x y node]}]
+  (let [ports (:ports node)
+        shown (take 3 ports)]
+    (str "<g class=\"topology-node\" data-node=\""
+         (html-escape (:id node)) "\" aria-label=\"Node "
+         (html-escape (:id node)) "\"><rect x=\"" x "\" y=\"" y
+         "\" width=\"" topology-node-width "\" height=\""
+         topology-node-height "\" rx=\"8\"></rect>"
+         "<text class=\"node-title\" x=\"" (+ x 10) "\" y=\""
+         (+ y 18) "\">" (html-escape (bounded-text (:id node))) "</text>"
+         (apply str
+                (map-indexed
+                 (fn [index port]
+                   (str "<text class=\"node-port\" x=\"" (+ x 10)
+                        "\" y=\"" (+ y 38 (* index 15)) "\">"
+                        (html-escape (port-summary port)) "</text>"))
+                 shown))
+         (when (< 3 (count ports))
+           (str "<text class=\"node-port\" x=\"" (+ x 10) "\" y=\""
+                (+ y 78) "\">… " (- (count ports) 3) " more</text>"))
+         "</g>")))
+
+(defn- topology-html [document]
+  (let [{:keys [width height positions nodes connections
+                node-count connection-count]}
+        (topology-layout (:nodes document) (:connections document))]
+    (str "<section class=\"topology\" aria-labelledby=\"topology-heading\">"
+         "<h2 id=\"topology-heading\">Topology</h2>"
+         "<p>Showing " (count nodes) " of " node-count " nodes and "
+         (count connections) " of " connection-count " connections.</p>"
+         "<svg role=\"img\" aria-labelledby=\"topology-title topology-desc\""
+         " viewBox=\"0 0 " width " " height "\""
+         " width=\"100%\" height=\"" height "\">"
+         "<title id=\"topology-title\">Experiment connection topology</title>"
+         "<desc id=\"topology-desc\">Directed connections between experiment nodes. Detailed accessible rows follow the diagram.</desc>"
+         "<defs><marker id=\"topology-arrow\" markerWidth=\"8\" markerHeight=\"8\" refX=\"7\" refY=\"4\" orient=\"auto\" markerUnits=\"strokeWidth\"><path d=\"M0,0 L8,4 L0,8 z\"></path></marker></defs>"
+         (apply str (map #(topology-edge-html positions %) connections))
+         (apply str (map #(topology-node-html (get positions (:id %))) nodes))
+         "</svg></section>")))
+
 (defn document->html
   "Renders the safe projection only; no process-local plan value enters HTML."
   ([document] (document->html document nil))
@@ -378,6 +569,8 @@
           "body{font:15px system-ui,sans-serif;margin:1.5rem;max-width:76rem}"
           ".notice,.plan-row{border:1px solid #8886;border-radius:.5rem;padding:1rem;margin:1rem 0}"
           ".notice{border-color:#b86;background:#b861}.field{margin:.45rem 0}"
+          ".topology{border:1px solid #8886;border-radius:.5rem;padding:1rem;margin:1rem 0;overflow:auto}"
+          ".topology svg{min-width:36rem;background:#fafafa}.topology-edge line,.topology-edge path{fill:none;stroke:#667;stroke-width:1.5}.topology-edge text{font-size:10px;fill:#334}#topology-arrow path{fill:#667;stroke:none}.topology-node rect{fill:#fff;stroke:#456;stroke-width:1.5}.topology-node text{fill:#123}.node-title{font-size:13px;font-weight:700}.node-port{font-size:10px}"
           "code{white-space:pre-wrap;overflow-wrap:anywhere}button{margin-right:.5rem}"
           "</style></head><body><h1>Experiment plan</h1>"
           "<p><code>" (html-escape (:experiment-id view)) "</code> / <code>"
@@ -386,5 +579,6 @@
           "<button disabled aria-disabled=\"true\">Replay</button>"
           "<button disabled aria-disabled=\"true\">Step</button>"
           "<button disabled aria-disabled=\"true\">Perturb</button></div></section>"
+          (topology-html document)
           (apply str (map row-html (:rows view)))
           "</body></html>"))))
