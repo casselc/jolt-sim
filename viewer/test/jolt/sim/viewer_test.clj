@@ -86,6 +86,30 @@
                {"x-jolt-sim-capability" supplied-token}
                {})}))
 
+(defn json-post-request
+  ([uri value] (json-post-request uri value token))
+  ([uri value supplied-token]
+   (let [text (json/write-str value)]
+     {:request-method :post
+      :uri uri
+      :headers {"content-type" "application/json"
+                "content-length" (str (count (.getBytes ^String text "UTF-8")))
+                "x-jolt-sim-capability" supplied-token}
+      :body (body [(.getBytes ^String text "UTF-8")])})))
+
+(defn run-preset []
+  {:id :example.viewer/outbox-run
+   :label "Outbox run"
+   :scenario scenario
+   :profile-id :hermetic
+   :input {:payload [0 255]}
+   :schedule [1 0]
+   :plan-document
+   (viewer-experiment/read-edn (slurp "examples/experiment-plan.edn"))})
+
+(defn run-config []
+  (assoc (config) :run-presets [(run-preset)]))
+
 (defn services [render-calls replay-calls replay-outcome]
   {:render-trace
    (fn [doc]
@@ -179,6 +203,84 @@
       (is (= viewer/invalid-config (:type data)))
       (is (= reason (:reason data))))))
 
+(deftest run-presets-are-closed-trusted-and-profile-consistent
+  (is (= [] (:run-presets (viewer/validate-config! (config)))))
+  (is (= [(run-preset)]
+         (:run-presets (viewer/validate-config! (run-config)))))
+  (doseq [[presets reason]
+          [[{} :invalid-run-presets]
+           [[(dissoc (run-preset) :schedule)] :invalid-run-preset-shape]
+           [[(assoc (run-preset) :id :not-namespaced)]
+            :invalid-run-preset-id]
+           [[(assoc (run-preset) :label " ")] :invalid-run-preset-label]
+           [[(assoc (run-preset) :scenario other-scenario)]
+            :run-preset-scenario-not-allowed]
+           [[(assoc (run-preset) :schedule [1 1])]
+            :invalid-run-preset-schedule]
+           [[(assoc (run-preset) :input (fn [] nil))]
+            :invalid-run-preset-input]
+           [[(assoc (run-preset) :profile-id :other)]
+            :run-preset-profile-mismatch]
+           [[(assoc (run-preset) :plan-document {})]
+            :invalid-run-preset-plan]
+           [[(run-preset) (run-preset)] :duplicate-run-preset-ids]]]
+    (let [data (try
+                 (viewer/validate-config!
+                  (assoc (config) :run-presets presets))
+                 nil
+                 (catch :default error (ex-data error)))]
+      (is (= viewer/invalid-config (:type data)))
+      (is (= reason (:reason data))))))
+
+(deftest run-preset-input-is-snapshotted-at-handler-construction
+  (let [payload (byte-array [0 1])
+        preset (assoc (run-preset) :input {:payload payload})
+        submitted (atom nil)
+        handler
+        (viewer/make-handler
+         (assoc (config) :run-presets [preset])
+         {:render-trace identity
+          :render-case-outcome identity
+          :replay-document (fn [_ _] nil)
+          :run-case (fn [runtime]
+                      (reset! submitted runtime)
+                      {:status :completed :exit 0})})]
+    (aset-byte payload 1 (byte 127))
+    (is (= 200
+           (:status
+            (handler
+             (json-post-request
+              "/api/run"
+              {"version" 1 "presetId" "example.viewer/outbox-run"})))))
+    (is (= [0 1]
+           (mapv #(bit-and (long %) 0xff)
+                 (seq (get-in @submitted [:input :payload]))))
+        "later mutation of the embedding caller's byte array cannot change a preset")))
+
+(deftest run-preset-catalog-is-authenticated-and-path-free
+  (let [handler (viewer/make-handler
+                 (run-config)
+                 {:render-trace identity
+                  :render-case-outcome identity
+                  :replay-document (fn [_ _] nil)})
+        forbidden (handler (get-request "/api/run-presets" "wrong"))
+        response (handler (get-request "/api/run-presets"))
+        decoded (json/read-str (:body response))
+        preset (first (get decoded "presets"))]
+    (is (= 403 (:status forbidden)))
+    (is (= 200 (:status response)))
+    (is (= 1 (get decoded "version")))
+    (is (= #{"id" "label" "profileId" "planEdn"}
+           (set (keys preset))))
+    (is (= "example.viewer/outbox-run" (get preset "id")))
+    (is (= "Outbox run" (get preset "label")))
+    (is (= "hermetic" (get preset "profileId")))
+    (is (= (:plan-document (run-preset))
+           (viewer-experiment/read-edn (get preset "planEdn"))))
+    (doseq [private-text [(str scenario) "payload" "schedule"
+                          "/tmp/example-project" "/tmp/example-artifacts"]]
+      (is (not (string/includes? (:body response) private-text))))))
+
 (deftest shell-is-static-and-does-not-disclose-the-token
   (let [handler (viewer/make-handler
                  (config)
@@ -239,7 +341,8 @@
     (is (string/includes? (:body shell)
                           "value=\"experiment-plan\""))
     (is (string/includes? (:body script)
-                          "const replayRequest = request(\"/api/replay\")"))
+                          "requestRun: () => request(\"/api/replay\")"))
+    (is (string/includes? (:body script) "fetch(\"/api/run\""))
     (is (= "no-store" (get-in shell [:headers "Cache-Control"])))
     (is (string/includes?
          (get-in shell [:headers "Content-Security-Policy"])
@@ -740,6 +843,120 @@
       (is (= 429 (:status @busy-response*)))
       (is (= "close" (get-in @busy-response* [:headers "Connection"])))
       (is (false? @busy-body-read?)))))
+
+(deftest trusted-run-preset-uses-the-replay-supervisor-exactly-once
+  (let [handler* (atom nil)
+        calls (atom [])
+        busy-response* (atom nil)
+        outcome {:status :completed
+                 :exit 0
+                 :artifact-dir "/tmp/private-run-artifacts"
+                 :diagnostics
+                 {:stdout {:bytes 2 :truncated? false :text "ok"}
+                  :stderr {:bytes 0 :truncated? false :text ""}}}
+        handler
+        (viewer/make-handler
+         (run-config)
+         {:render-trace (fn [_] "unused")
+          :render-case-outcome (fn [_] "unused")
+          :replay-document (fn [_ _] (throw (ex-info "must not replay" {})))
+          :run-case
+          (fn [trusted-config]
+            (swap! calls conj trusted-config)
+            ;; A run owns the same body-consuming lease as replay/render.
+            (reset! busy-response*
+                    (@handler*
+                     (request "/api/replay"
+                              (case-outcome/canonical-edn (document)))))
+            ((:on-run-dir trusted-config) "/tmp/private-run-artifacts")
+            outcome)})]
+    (reset! handler* handler)
+    (let [response (handler
+                    (json-post-request
+                     "/api/run"
+                     {"version" 1
+                      "presetId" "example.viewer/outbox-run"}))
+          public-outcome (edn/read-string (:body response))
+          progress (json/read-str
+                    (:body (handler (get-request "/api/replay-progress"))))
+          submitted (first @calls)]
+      (is (= 200 (:status response)))
+      (is (= 1 (count @calls)))
+      (is (= {:scenario scenario
+              :input {:payload [0 255]}
+              :schedule [1 0]}
+             (select-keys submitted [:scenario :input :schedule])))
+      (is (= (:runtime-config (config))
+             (dissoc submitted :scenario :input :schedule :on-run-dir)))
+      (is (fn? (:on-run-dir submitted)))
+      (is (not (contains? submitted :profile-id)))
+      (is (not (contains? submitted :plan-document)))
+      (is (= (dissoc outcome :artifact-dir) public-outcome))
+      (is (not (string/includes? (:body response)
+                                 "/tmp/private-run-artifacts")))
+      (is (= 429 (:status @busy-response*)))
+      (is (= "completed" (get progress "status")))
+      (is (= "ok" (get-in progress ["stdout" "text"]))))))
+
+(deftest run-preset-rejections-never-call-the-service
+  (let [calls (atom 0)
+        handler
+        (viewer/make-handler
+         (run-config)
+         {:render-trace identity
+          :render-case-outcome identity
+          :replay-document (fn [_ _] nil)
+          :run-case (fn [_] (swap! calls inc))})
+        malformed
+        {:request-method :post
+         :uri "/api/run"
+         :headers {"content-type" "application/json"
+                   "x-jolt-sim-capability" token}
+         :body (body [(.getBytes "{" "UTF-8")])}
+        responses
+        [(handler (json-post-request "/api/run"
+                                    {"version" 1
+                                     "presetId" "example.viewer/outbox-run"}
+                                    "wrong"))
+         (handler malformed)
+         (handler (json-post-request "/api/run"
+                                     {"version" 2
+                                      "presetId" "example.viewer/outbox-run"}))
+         (handler (json-post-request "/api/run"
+                                     {"version" 1
+                                      "presetId" "example.viewer/missing"}))
+         (handler (json-post-request "/api/run"
+                                     {"version" 1
+                                      "presetId" "example.viewer/outbox-run"
+                                      "extra" true}))]]
+    (is (= [403 400 400 404 400] (mapv :status responses)))
+    (is (zero? @calls))))
+
+(deftest run-route-is-absent-without-the-optional-service
+  (let [body-read? (atom false)
+        handler (viewer/make-handler
+                 (run-config)
+                 {:render-trace identity
+                  :render-case-outcome identity
+                  :replay-document (fn [_ _] nil)})
+        response
+        (handler
+         {:request-method :post
+          :uri "/api/run"
+          :headers {"content-type" "application/json"
+                    "x-jolt-sim-capability" token}
+          :body (reify http-body/RequestBody
+                  (body-recv [_]
+                    (reset! body-read? true)
+                    (throw (ex-info "unavailable route read body" {})))
+                  (body-bytes [_]
+                    (reset! body-read? true)
+                    (throw (ex-info "unavailable route read body" {})))
+                  (body-string [_ _]
+                    (reset! body-read? true)
+                    (throw (ex-info "unavailable route read body" {}))))})]
+    (is (= 404 (:status response)))
+    (is (false? @body-read?))))
 
 (deftest unexpected-service-errors-propagate-to-the-http-error-boundary
   (let [error (ex-info "renderer defect" {:type ::renderer-defect})
@@ -2378,6 +2595,51 @@
              (fs/delete-tree ~binding))
            (println "Retained unexpected Ripple activity artifacts at"
                     ~binding))))))
+
+(deftest exceptional-run-retains-progress-diagnostics-and-journal-access
+  (with-retained-activity-dir
+    [run-dir (str (fs/create-temp-dir
+                   {:prefix "jolt-sim-viewer-exceptional-run-"}))]
+    (spit (str (fs/path run-dir "stderr.log")) "retained crash evidence")
+    (write-activity-journal!
+     run-dir
+     [[:jolt.sim.explore/scenario-started nil nil {:scenario scenario}]])
+    (let [handler
+          (viewer/make-handler
+           (-> (run-config)
+               (assoc-in [:runtime-config :activity-journal?] true)
+               (assoc-in [:runtime-config :retain-completed-artifacts?] true))
+           {:render-trace identity
+            :render-case-outcome identity
+            :replay-document (fn [_ _] nil)
+            :run-case
+            (fn [runtime]
+              ((:on-run-dir runtime) run-dir)
+              (throw (ex-info "child death was not observed"
+                              {:type :jolt.sim.process-explorer/worker-exit-unobserved
+                               :artifact-dir run-dir})))})
+          run-error
+          (try
+            (handler
+             (json-post-request
+              "/api/run"
+              {"version" 1 "presetId" "example.viewer/outbox-run"}))
+            nil
+            (catch :default error error))
+          progress-response
+          (handler
+           (assoc-in (get-request "/api/replay-progress")
+                     [:headers "x-jolt-sim-activity-cursor"] "0"))
+          progress (json/read-str (:body progress-response))]
+      (is (= :jolt.sim.process-explorer/worker-exit-unobserved
+             (:type (ex-data run-error))))
+      (is (= 200 (:status progress-response)))
+      (is (= "failed" (get progress "status")))
+      (is (= "retained crash evidence" (get-in progress ["stderr" "text"])))
+      (is (= "ok" (get-in progress ["activity" "status"])))
+      (is (= ["jolt.sim.explore/scenario-started"]
+             (mapv #(get % "tag") (get-in progress ["activity" "events"]))))
+      (is (not (string/includes? (:body progress-response) run-dir))))))
 
 (defn- replayed-activity-handler [config outcome]
   (let [handler

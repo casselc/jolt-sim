@@ -8,7 +8,8 @@
   (:require [jolt.fs :as fs]
             [jolt.sim.activity :as activity]
             [jolt.sim.report :as report]
-            [jolt.sim.viewer :as viewer]))
+            [jolt.sim.viewer :as viewer]
+            [jolt.sim.viewer.experiment :as viewer-experiment]))
 
 (def ^:private capability-token
   "ripple-browser-test-capability-0123456789abcdef")
@@ -68,25 +69,36 @@
         :stderr {:bytes 0 :truncated? false :text ""}}})))
 
 (defn- config [port]
-  {:port port
-   :capability-token capability-token
-   :max-document-bytes (* 1024 1024)
-   :allowed-scenarios #{scenario}
-   :activity-presentation-registry
-   {:jolt.sim.browser-test/activity
-    {:kind :jolt.sim.kind/browser-test-activity
-     :present browser-presentation}}
-   :runtime-config
-   {:worker-command ["browser-test-does-not-launch-a-worker"]
-    :dir "."
-    :timeout-ms 1000
-    :retain-completed-artifacts? true
-    :activity-journal? true}})
+  (let [plan (viewer-experiment/read-edn
+              (slurp "examples/outbox-cancel-before-ack-plan.edn"))]
+    {:port port
+     :capability-token capability-token
+     :max-document-bytes (* 1024 1024)
+     :allowed-scenarios #{scenario}
+     :run-presets
+     [{:id :jolt.sim.preset/outbox-cancel-before-ack-v1
+       :label "Outbox: cancel before acknowledgment"
+       :scenario scenario
+       :profile-id :hermetic
+       :input nil
+       :schedule nil
+       :plan-document plan}]
+     :activity-presentation-registry
+     {:jolt.sim.browser-test/activity
+      {:kind :jolt.sim.kind/browser-test-activity
+       :present browser-presentation}}
+     :runtime-config
+     {:worker-command ["browser-test-does-not-launch-a-worker"]
+      :dir "."
+      :timeout-ms 1000
+      :retain-completed-artifacts? true
+      :activity-journal? true}}))
 
 (defn- services [outcome]
   {:render-trace report/trace->html
    :render-case-outcome report/case-outcome->html
-   :replay-document (fn [_document _runtime] outcome)})
+   :replay-document (fn [_document _runtime] outcome)
+   :run-case (fn [_runtime] outcome)})
 
 (defn -main [& args]
   (when (seq args)

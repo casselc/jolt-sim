@@ -33,6 +33,7 @@
             [jolt.http.server :as http]
             [jolt.sim.activity-view :as activity-view]
             [jolt.sim.case-outcome :as case-outcome]
+            [jolt.sim.future-schedule :as future-schedule]
             [jolt.sim.presentation :as presentation]
             [jolt.sim.process-explorer :as process-explorer]
             [jolt.sim.repl :as sim-repl]
@@ -56,7 +57,10 @@
 (def ^:private config-keys
   #{:port :capability-token :max-document-bytes
     :allowed-scenarios :runtime-config :presentation-registry
-    :activity-presentation-registry})
+    :activity-presentation-registry :run-presets})
+
+(def ^:private run-preset-keys
+  #{:id :label :scenario :profile-id :input :schedule :plan-document})
 
 (def ^:private replay-coordinate-keys
   #{:scenario :mode :input :schedule})
@@ -68,7 +72,7 @@
 
 (def ^:private service-keys
   #{:render-trace :render-case-outcome :replay-document
-    :read-session-frame :step-session-frame!})
+    :read-session-frame :step-session-frame! :run-case})
 
 (def ^:private default-max-document-bytes (* 1024 1024))
 (def ^:private maximum-max-document-bytes (* 16 1024 1024))
@@ -77,6 +81,7 @@
 (def ^:private progress-log-byte-limit 65536)
 (def ^:private maximum-session-cursor-digits 19)
 (def ^:private session-step-body-limit 4096)
+(def ^:private run-command-body-limit 4096)
 ;; A signed decimal carries one leading minus sign plus the unsigned digit
 ;; budget, so Long/MIN_VALUE's 20 characters remain representable.
 (def ^:private maximum-step-signed-decimal-chars
@@ -106,6 +111,68 @@
                  (and (string? key) (string? value)))
                value)))
 
+(defn- namespaced-keyword? [value]
+  (and (keyword? value) (some? (namespace value))))
+
+(defn- exact-map? [value expected-keys]
+  (and (map? value)
+       (nil? (meta value))
+       (= expected-keys (set (keys value)))))
+
+(defn- validate-run-preset! [scenarios preset]
+  (when-not (exact-map? preset run-preset-keys)
+    (throw (config-error :invalid-run-preset-shape
+                         (when (map? preset) (set (keys preset))))))
+  (when-not (namespaced-keyword? (:id preset))
+    (throw (config-error :invalid-run-preset-id (:id preset))))
+  (when-not (and (string? (:label preset))
+                 (not (string/blank? (:label preset))))
+    (throw (config-error :invalid-run-preset-label (:label preset))))
+  (when-not (namespaced-symbol? (:scenario preset))
+    (throw (config-error :invalid-run-preset-scenario (:scenario preset))))
+  (when-not (contains? scenarios (:scenario preset))
+    (throw (config-error :run-preset-scenario-not-allowed
+                         (:scenario preset))))
+  (when-not (keyword? (:profile-id preset))
+    (throw (config-error :invalid-run-preset-profile
+                         (:profile-id preset))))
+  (let [input-form
+        (try
+          (trace/canonical-value (:input preset) [:run-preset :input])
+          (catch :default error
+            (throw (config-error :invalid-run-preset-input
+                                 (select-keys (ex-data error)
+                                              [:reason :path :value-class])))))
+        ;; Restore the accepted canonical value so mutable leaves such as byte
+        ;; arrays are snapshotted when the trusted catalog is installed.
+        input (trace/restore-value input-form)]
+    (when-not (or (nil? (:schedule preset))
+                  (future-schedule/valid-schedule? (:schedule preset)))
+      (throw (config-error :invalid-run-preset-schedule (:schedule preset))))
+    (let [plan (try
+                 (experiment-viewer/validate-document! (:plan-document preset))
+                 (catch :default error
+                   (throw (config-error :invalid-run-preset-plan
+                                        (select-keys (ex-data error)
+                                                     [:reason])))))]
+      (when-not (= (:profile-id preset) (:profile-id plan))
+        (throw (config-error :run-preset-profile-mismatch
+                             {:preset (:profile-id preset)
+                              :plan (:profile-id plan)})))
+      (assoc preset
+             :input input
+             :schedule (when-let [schedule (:schedule preset)] (vec schedule))
+             :plan-document plan))))
+
+(defn- validate-run-presets! [scenarios presets]
+  (when-not (and (vector? presets) (nil? (meta presets)))
+    (throw (config-error :invalid-run-presets (str (class presets)))))
+  (let [validated (mapv #(validate-run-preset! scenarios %) presets)
+        ids (mapv :id validated)]
+    (when-not (= (count ids) (count (set ids)))
+      (throw (config-error :duplicate-run-preset-ids ids)))
+    validated))
+
 (defn validate-config!
   "Validates and normalizes trusted viewer startup configuration.
 
@@ -124,6 +191,7 @@
                        default-max-document-bytes)
         scenarios (:allowed-scenarios config)
         runtime (:runtime-config config)
+        run-presets (get config :run-presets [])
         collisions (when (map? runtime)
                      (into #{}
                            (filter replay-coordinate-keys)
@@ -216,7 +284,8 @@
                             (:retain-completed-artifacts? runtime)})))
     (assoc config
            :port port
-           :max-document-bytes max-bytes)))
+           :max-document-bytes max-bytes
+           :run-presets (validate-run-presets! scenarios run-presets))))
 
 (defmacro ^:private embedded-resource [resource]
   (let [found (io/resource resource)]
@@ -644,6 +713,75 @@
   [outcome]
   (dissoc outcome :artifact-dir))
 
+(defn- execute-run-with-progress!
+  "Runs one trusted fresh-process operation through the viewer's single
+  progress/activity lifecycle. `invoke` receives only the runtime map with the
+  private run-directory observer installed and must return a process outcome."
+  [config active-replay invoke]
+  (reset! active-replay
+          {:phase :active
+           :run-dir nil
+           :status :starting
+           :result-observed? false})
+  (try
+    (let [observer (fn [run-dir]
+                     (swap! active-replay assoc :run-dir run-dir))
+          runtime (assoc (:runtime-config config) :on-run-dir observer)
+          outcome (invoke runtime)]
+      (reset! active-replay
+              (cond-> {:phase :terminal
+                       :status (outcome->progress-status outcome)
+                       :stdout (get-in outcome [:diagnostics :stdout]
+                                       empty-progress-diagnostic)
+                       :stderr (get-in outcome [:diagnostics :stderr]
+                                       empty-progress-diagnostic)}
+                (activity-journal-enabled? config)
+                (assoc :outcome outcome)))
+      (response 200 "application/edn; charset=utf-8"
+                (trace/canonical-edn (public-replay-outcome outcome))))
+    (catch :default error
+      (let [retained-run-dir (:artifact-dir (ex-data error))
+            active (cond-> @active-replay
+                     retained-run-dir
+                     (assoc :phase :active :run-dir retained-run-dir))
+            observed (observe-active-replay active)
+            run-dir (:run-dir observed)]
+        (reset! active-replay
+                (cond-> {:phase :terminal
+                         :status :failed
+                         :stdout (or (:stdout observed)
+                                     empty-progress-diagnostic)
+                         :stderr (or (:stderr observed)
+                                     empty-progress-diagnostic)}
+                  run-dir
+                  (assoc :run-dir run-dir)
+
+                  (and run-dir (activity-journal-enabled? config))
+                  ;; An escaping retained-child-death exception has no
+                  ;; ordinary outcome, but the fixed trusted journal remains
+                  ;; recoverable without exposing its directory to the wire.
+                  (assoc :outcome
+                         {:status :worker-error
+                          :artifact-dir run-dir
+                          :activity {:observer-status nil}}))))
+      (throw error))))
+
+(defn- keyword-coordinate-text [value]
+  (if-let [ns (namespace value)]
+    (str ns "/" (name value))
+    (name value)))
+
+(defn- run-preset-wire [preset]
+  {"id" (keyword-coordinate-text (:id preset))
+   "label" (:label preset)
+   "profileId" (keyword-coordinate-text (:profile-id preset))
+   "planEdn" (experiment-viewer/canonical-edn (:plan-document preset))})
+
+(defn- run-presets-response [config]
+  (json-response 200
+                 {"version" 1
+                  "presets" (mapv run-preset-wire (:run-presets config))}))
+
 (defn- secure-string= [expected supplied]
   (and (string? supplied)
        (= (count expected) (count supplied))
@@ -1031,6 +1169,101 @@
                      :reason :decimal-out-of-range})))
         [{:revision revision :action [tag payload]} cursor]))))
 
+(def ^:private run-command-keys #{"version" "presetId"})
+
+(defn- run-command!
+  "Reads the closed run-preset command and returns its opaque string ID.
+  Browser text is compared with trusted preset IDs and is never interned."
+  [request]
+  (let [bytes (bounded-body-bytes request run-command-body-limit)
+        seen-keys (atom #{})
+        value (try
+                (json/read-str
+                 (trim-json-whitespace (String. bytes "UTF-8"))
+                 :extra-data-fn json/on-extra-throw
+                 :value-fn
+                 (fn [key entry-value]
+                   (when (contains? @seen-keys key)
+                     (throw
+                      (ex-info "viewer run command repeats an object key"
+                               {:type ::invalid-run-command
+                                :reason :duplicate-key})))
+                   (swap! seen-keys conj key)
+                   entry-value))
+                (catch :default error
+                  (if (= ::invalid-run-command (:type (ex-data error)))
+                    (throw error)
+                    (throw
+                     (ex-info
+                      "viewer run command is not exactly one JSON value"
+                      {:type ::invalid-run-command
+                       :reason :malformed-json})))))]
+    (when-not (and (map? value)
+                   (= run-command-keys (set (keys value))))
+      (throw
+       (ex-info "viewer run command keys are not the closed set"
+                {:type ::invalid-run-command :reason :unexpected-keys})))
+    (when-not (and (integer? (get value "version"))
+                   (= 1 (get value "version")))
+      (throw
+       (ex-info "viewer run command version is not the integer 1"
+                {:type ::invalid-run-command
+                 :reason :unsupported-version})))
+    (let [preset-id (get value "presetId")]
+      (when-not (and (string? preset-id)
+                     (not (string/blank? preset-id)))
+        (throw
+         (ex-info "viewer run command preset ID is invalid"
+                  {:type ::invalid-run-command
+                   :reason :invalid-preset-id})))
+      preset-id)))
+
+(defn- find-run-preset [config wire-id]
+  (some #(when (= wire-id (keyword-coordinate-text (:id %))) %)
+        (:run-presets config)))
+
+(defn- execute-run-request
+  [config services document-active? active-replay request]
+  (cond
+    (not (authorized? config request))
+    (error-response 403 :forbidden nil)
+
+    (not (fn? (:run-case services)))
+    (error-response 404 :run-unavailable nil)
+
+    (not (json-content-type? request))
+    (error-response 415 :expected-application-json nil)
+
+    (not (compare-and-set! document-active? false true))
+    (error-response 429 :viewer-busy nil)
+
+    :else
+    (try
+      (let [wire-id (run-command! request)]
+        (if-let [preset (find-run-preset config wire-id)]
+          (execute-run-with-progress!
+           config active-replay
+           (fn [runtime]
+             ((:run-case services)
+              (merge runtime
+                     (select-keys preset [:scenario :input :schedule])))))
+          (error-response 404 :run-preset-not-found nil)))
+      (catch :default error
+        (let [data (ex-data error)]
+          (cond
+            (= request-too-large (:type data))
+            (error-response 413 :request-too-large
+                            (select-keys data [:limit :actual]))
+
+            (= ::invalid-run-command (:type data))
+            (error-response 400 :invalid-run-command
+                            (select-keys data [:reason]))
+
+            :else
+            (throw error))))
+      (finally
+        (reset! document-active? false)))))
+
 (defn- invalid-step-result! []
   (throw (ex-info "trusted session stepper returned an invalid result"
                   {:type invalid-session-step-result})))
@@ -1354,7 +1587,10 @@
       document
       {:presentation-registry (:presentation-registry config)}))
    :render-case-outcome report/case-outcome->html
-   :replay-document sim-repl/replay-document!})
+   :replay-document sim-repl/replay-document!
+   ;; Keep GUI-launched runs visible to the same REPL last-run/rerun workflow
+   ;; as programmatic runs; sim-repl delegates to the existing supervisor.
+   :run-case sim-repl/run-case!})
 
 (defn make-handler
   "Creates a synchronous jolt-http handler.
@@ -1379,6 +1615,18 @@
   `:experiment-plan` kinds are rejected explicitly before any restore or
   worker execution. Experiment-plan rendering bypasses the service seam and
   accepts only the closed inert inspector document.
+
+  The optional startup `:run-presets` vector is a closed trusted catalog.
+  Each preset owns its namespaced ID, label, allowlisted scenario, profile,
+  canonical input, optional exact schedule, and validated inert plan document.
+  `GET /api/run-presets` returns only ID, label, profile ID, and canonical plan
+  EDN; execution coordinates never cross the wire. `POST /api/run` accepts
+  only `{version: 1, presetId: namespace/name}` JSON and, when the optional
+  `:run-case` service is installed, merges the selected trusted coordinates
+  into the ambient runtime config and invokes that service exactly once.
+  Browser strings are never interned or treated as execution coordinates.
+  Run and replay share the same body-consuming admission lease, progress
+  state, public artifact-path redaction, and terminal activity paging.
 
   `GET /api/session-frame` is an optional embedding-only, inspection surface.
   When the trusted services map supplies `:read-session-frame`, it returns one
@@ -1444,6 +1692,8 @@
      (when-not (and (fn? (:render-trace services))
                     (fn? (:render-case-outcome services))
                     (fn? (:replay-document services))
+                    (or (not (contains? services :run-case))
+                        (fn? (:run-case services)))
                     (or (not (contains? services :read-session-frame))
                         (fn? (:read-session-frame services)))
                     (or (not (contains? services :step-session-frame!))
@@ -1459,11 +1709,16 @@
            (and (= :get method) (= "/viewer.js" uri))
            (response 200 "application/javascript; charset=utf-8" viewer-js)
 
-            (and (= :get method) (= "/api/replay-progress" uri))
+           (and (= :get method) (= "/api/replay-progress" uri))
             (if-not (authorized? config request)
               (error-response 403 :forbidden nil)
               (replay-progress-response
                config activity-registry active-replay request))
+
+           (and (= :get method) (= "/api/run-presets" uri))
+           (if-not (authorized? config request)
+             (error-response 403 :forbidden nil)
+             (run-presets-response config))
 
            (and (= :get method) (= "/api/session-frame" uri))
            (execute-session-frame-request
@@ -1472,6 +1727,10 @@
            (and (= :post method) (= "/api/session-step" uri))
            (execute-session-step-request
             config services session-active? document-active? request)
+
+           (and (= :post method) (= "/api/run" uri))
+           (execute-run-request
+            config services document-active? active-replay request)
 
            (and (= :post method) (= "/api/render" uri))
            (execute-document-request
@@ -1498,40 +1757,10 @@
                            trace-not-replayable)
                    :kind kind})))
               (allowed-replay! config document)
-              (reset! active-replay
-                      {:phase :active
-                       :run-dir nil
-                       :status :starting
-                       :result-observed? false})
-              (try
-                (let [observer
-                      (fn [run-dir]
-                        (swap! active-replay assoc :run-dir run-dir))
-                      runtime (assoc (:runtime-config config)
-                                     :on-run-dir observer)
-                      outcome ((:replay-document services) document runtime)]
-                  (reset! active-replay
-                          (cond-> {:phase :terminal
-                                   :status (outcome->progress-status outcome)
-                                   :stdout (get-in outcome [:diagnostics :stdout]
-                                                   empty-progress-diagnostic)
-                                   :stderr (get-in outcome [:diagnostics :stderr]
-                                                   empty-progress-diagnostic)}
-                            ;; The trusted outcome is retained only for the
-                            ;; opt-in activity journal; its artifact path never
-                            ;; crosses the wire.
-                            (activity-journal-enabled? config)
-                            (assoc :outcome outcome)))
-                  (response 200 "application/edn; charset=utf-8"
-                            (trace/canonical-edn
-                             (public-replay-outcome outcome))))
-                (catch :default error
-                  (reset! active-replay
-                          {:phase :terminal
-                           :status :failed
-                           :stdout empty-progress-diagnostic
-                           :stderr empty-progress-diagnostic})
-                  (throw error)))))
+              (execute-run-with-progress!
+               config active-replay
+               (fn [runtime]
+                 ((:replay-document services) document runtime)))))
 
            :else
            (error-response 404 :not-found nil)))))))
@@ -1571,7 +1800,7 @@
   private."
   [config sim-session]
   (start! config
-          (assoc (default-services config)
+          (assoc (dissoc (default-services config) :run-case)
                  :read-session-frame
                  (fn [cursor]
                    (viewer-session/read-frame sim-session cursor)))))
@@ -1601,7 +1830,7 @@
   safe stale coordinates instead of a second transition."
   [config sim-session]
   (start! config
-          (assoc (default-services config)
+          (assoc (dissoc (default-services config) :run-case)
                  :read-session-frame
                  (fn [cursor]
                    (viewer-session/read-frame sim-session cursor))

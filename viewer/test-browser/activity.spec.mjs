@@ -56,6 +56,101 @@ async function loadAndReplay(page) {
   );
 }
 
+test("runs one trusted canonical application preset and renders its topology", async ({page}, testInfo) => {
+  let releaseRun;
+  const release = new Promise((resolve) => { releaseRun = resolve; });
+  let observeRun;
+  const observed = new Promise((resolve) => { observeRun = resolve; });
+  let runBody = null;
+
+  await page.route("**/api/run", async (route) => {
+    runBody = route.request().postData();
+    observeRun();
+    await release;
+    await route.continue();
+  });
+
+  await page.goto("/");
+  await page.locator("#capability").fill(capabilityToken);
+  await expect(page.locator("#load-run-presets")).toBeEnabled();
+  await page.locator("#load-run-presets").click();
+
+  await expect(page.locator("#run-preset")).toHaveValue(
+    "jolt.sim.preset/outbox-cancel-before-ack-v1"
+  );
+  await expect(page.getByTestId("run-preset-status")).toContainText(
+    "is ready. Run new uses server-owned coordinates."
+  );
+  await expect(page.frameLocator("#report").locator(".topology-node"))
+    .toHaveCount(4);
+  await expect(page.frameLocator("#report").locator(".topology-edge"))
+    .toHaveCount(3);
+  await expect(page.frameLocator("#report").locator("body"))
+    .toContainText("cancel-before-ack-v1");
+
+  await page.getByTestId("run-new").click();
+  await observed;
+  await expect(page.getByTestId("run-new")).toBeDisabled();
+  expect(JSON.parse(runBody)).toEqual({
+    version: 1,
+    presetId: "jolt.sim.preset/outbox-cancel-before-ack-v1"
+  });
+  releaseRun();
+
+  await expect(page.locator("#status")).toHaveText(
+    "Outbox: cancel before acknowledgment completed; raw outcome and retained activity are available."
+  );
+  await expect(page.locator("#activity")).toContainText("status: completed");
+  await expect(page.getByTestId("activity-page-status")).toHaveText(
+    "Showing events 0–31 of 40."
+  );
+  await expectActivityRows(page, 0, 31);
+  await expect(page.locator("#outcome")).not.toContainText(":artifact-dir");
+  await expect(page.locator("html")).not.toContainText("activity.journal");
+  await page.screenshot({
+    path: testInfo.outputPath("run-new-canonical-outbox.png"),
+    fullPage: true
+  });
+});
+
+test("reports an empty trusted preset catalog without inventing an error", async ({page}) => {
+  await page.route("**/api/run-presets", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({version: 1, presets: []})
+    });
+  });
+  await page.goto("/");
+  await page.locator("#capability").fill(capabilityToken);
+  await page.locator("#load-run-presets").click();
+  await expect(page.getByTestId("run-preset-status")).toHaveText(
+    "No trusted runnable examples are configured."
+  );
+  await expect(page.getByTestId("run-new")).toBeDisabled();
+});
+
+test("never labels a non-completed process outcome as completed", async ({page}) => {
+  await page.goto("/");
+  await page.locator("#capability").fill(capabilityToken);
+  await page.locator("#load-run-presets").click();
+  await expect(page.getByTestId("run-new")).toBeEnabled();
+  await page.route("**/api/replay-progress", async (route) => {
+    const response = await route.fetch();
+    const body = await response.json();
+    if (body.status === "completed") body.status = "failed";
+    await route.fulfill({response, json: body});
+  });
+  await page.getByTestId("run-new").click();
+  await expect(page.locator("#status")).toContainText(
+    "failed: terminal process status failed; raw outcome preserved below."
+  );
+  await expect(page.getByTestId("run-preset-status")).toHaveText(
+    "Outbox: cancel before acknowledgment did not complete; retained evidence remains available."
+  );
+  await expect(page.locator("#status")).not.toContainText(" completed;");
+});
+
 test("replays retained semantic activity through the real Ripple handler", async ({page}, testInfo) => {
   const observedApi = [];
   page.on("response", (response) => {
