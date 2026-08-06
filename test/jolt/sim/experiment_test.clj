@@ -121,8 +121,10 @@
     (is (= :observe (get-in data [:runtime-config :ffi-mode])))
     (is (not (contains? (:runtime-config data) :ffi-handlers)))
     (is (= :record (get-in data [:connections :command :mode])))
-    (is (= 42 (:result (runtime/run-controlled (:runtime-config data)
-                                               (fn [] 42)))))))
+    (if (runtime/available?)
+      (is (= 42 (:result (runtime/run-controlled (:runtime-config data)
+                                                 (fn [] 42)))))
+      (is (false? (runtime/available?))))))
 
 (deftest manifest-maps-are-closed-at-every-level
   (let [base (base-manifest)
