@@ -25,6 +25,7 @@
             [jolt.sim.repl-test]
             [jolt.sim.replay-test]
             [jolt.sim.runtime-test]
+            [jolt.sim.schema-test]
             [jolt.sim.session-test]
             [jolt.sim.sqlite-test]))
 
@@ -55,6 +56,7 @@
                         'jolt.sim.repl-test
                         'jolt.sim.replay-test
                         'jolt.sim.runtime-test
+                        'jolt.sim.schema-test
                         'jolt.sim.session-test
                         'jolt.sim.sqlite-test)
         failures (+ (:fail result) (:error result))]
