@@ -88,12 +88,21 @@
                   (swap! descriptors conj descriptor)
                   (runtime/substitute 73))
         plan (compiled-plan handler nil)
-        controlled (executor/execute! plan #(ffi/sizeof :int))]
-    (is (= 73 (:result controlled)))
-    (is (= 1 (count @descriptors)))
-    (is (= :sizeof (:operation (first @descriptors))))
-    (is (= [:handler] (mapv :route (:effect-trace controlled))))
-    (is (= [:sizeof] (mapv :operation (:effects controlled))))))
+        data (experiment/plan-data plan)]
+    ;; Compilation and handler identity remain portable assertions. Only the
+    ;; ABI interception witness requires a sim-enabled Jolt image.
+    (is (= :hermetic (get-in data [:runtime-config :ffi-mode])))
+    (is (identical? handler
+                    (get-in data [:runtime-config :ffi-handlers
+                                  [:native-operation :sizeof]])))
+    (if (runtime/available?)
+      (let [controlled (executor/execute! plan #(ffi/sizeof :int))]
+        (is (= 73 (:result controlled)))
+        (is (= 1 (count @descriptors)))
+        (is (= :sizeof (:operation (first @descriptors))))
+        (is (= [:handler] (mapv :route (:effect-trace controlled))))
+        (is (= [:sizeof] (mapv :operation (:effects controlled)))))
+      (is (false? (runtime/available?))))))
 
 (deftest optional-drain-timeout-cannot-override-plan-control
   (let [plan (compiled-plan (fn [_] nil) nil)
