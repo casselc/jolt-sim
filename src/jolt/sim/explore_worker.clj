@@ -16,9 +16,29 @@
   `:jolt.sim.explore/input` is always present and is a `jolt.sim.trace`
   canonical projection of the caller's scenario input value (nil by default),
   restored before the scenario is invoked. There is no v1 compatibility; a v1
-  request is rejected as an ordinary protocol-version mismatch."
+  request is rejected as an ordinary protocol-version mismatch.
+
+  Opt-in activity journal. When the trusted parent reserves the activity
+  journal path in this worker's environment (exactly one key,
+  `activity-journal-env-key`, naming a fixed `<run-dir>/activity.journal` the
+  caller never supplies), the worker opens a `jolt.sim.activity` observer on
+  that path before scenario execution and emits the exact lifecycle vectors
+  for `:jolt.sim.explore/scenario-started`, `.../scenario-completed`, and
+  `.../scenario-failed`. Event data carries bounded safe identifiers only: no
+  Throwable, exception message, input, result, or path. The deterministic
+  16-byte run-id is derived from the trusted path alone with four
+  domain-separated CRC32C lanes; no random state, clock read, or new dependency
+  is involved. Any open/emit/close failure invalidates the run: an apparent
+  completion becomes a bounded `:worker-error`, while an application failure
+  or earlier worker error remains primary and carries the bounded observer
+  status as secondary diagnostics under `:jolt.sim.explore/activity`.
+  Durability is `:process-crash` only; this worker makes no fsync, power-loss,
+  or kernel-crash claim. When the key is absent or empty the disabled path is
+  behavior-identical and never creates the journal."
   (:require [clojure.edn :as edn]
+            [jolt.sim.activity :as activity]
             [jolt.sim.future-schedule :as future-schedule]
+            [jolt.sim.journal :as journal]
             [jolt.sim.trace :as trace]))
 
 (def protocol-version 2)
@@ -31,6 +51,18 @@
 (def ^:private value-key :jolt.sim.explore/value)
 (def ^:private error-key :jolt.sim.explore/error)
 (def ^:private phase-key :jolt.sim.explore/phase)
+(def ^:private activity-key :jolt.sim.explore/activity)
+
+(def activity-journal-env-key
+  "The single exact child environment key reserved for the trusted,
+  parent-owned activity journal path. `jolt.sim.process-explorer` rejects any
+  `:extra-env` collision with this key before launch, so a caller or browser
+  can never supply the activity path."
+  "JOLT_SIM_ACTIVITY_JOURNAL_PATH")
+
+(def ^:private scenario-started-tag :jolt.sim.explore/scenario-started)
+(def ^:private scenario-completed-tag :jolt.sim.explore/scenario-completed)
+(def ^:private scenario-failed-tag :jolt.sim.explore/scenario-failed)
 
 (def ^:private request-keys
   #{protocol-key scenario-key schedule-key input-key})
@@ -96,7 +128,7 @@
       (throw (protocol-error :invalid-input {:input input})))
     request))
 
-(defn- resolve-scenario! [scenario]
+(defn- resolve-scenario! [scenario activity-enabled?]
   (require (symbol (namespace scenario)))
   (let [scenario-var (resolve scenario)]
     (when-not scenario-var
@@ -106,6 +138,11 @@
     (when-not (contains? #{true false}
                          (:jolt.sim/accepts-input (meta scenario-var)))
       (throw (protocol-error :scenario-input-contract
+                             {:scenario scenario})))
+    (when (and activity-enabled?
+               (not (true? (:jolt.sim/activity-lifecycle-owned
+                            (meta scenario-var)))))
+      (throw (protocol-error :scenario-activity-lifecycle-contract
                              {:scenario scenario})))
     (when-not (fn? @scenario-var)
       (throw (protocol-error :scenario-not-callable {:scenario scenario})))
@@ -156,6 +193,176 @@
   ;; appears. It contains no application value or ambient process state.
   (spit path (trace/canonical-edn (ready-document))))
 
+;; ---- opt-in activity journal ------------------------------------------------
+
+(defn- activity-run-id
+  "Derives one deterministic 16-byte non-cryptographic identity from the full
+  trusted, parent-owned journal path. Four domain-separated CRC32C lanes reuse
+  the journal's proved bounded-u32 implementation, avoiding unchecked numeric
+  overflow in Jolt. This identifies a retained run; it is not a security or
+  content-addressing primitive."
+  [path]
+  (let [out (byte-array 16)]
+    (dotimes [lane 4]
+      (let [input (.getBytes
+                   (str "jolt.sim.explore-worker/activity-journal:"
+                        lane ":" path)
+                   "UTF-8")
+            value (journal/crc32c input)
+            offset (* lane 4)]
+        (dotimes [index 4]
+          (aset out (+ offset index)
+                (unchecked-byte
+                 (bit-and
+                  (unsigned-bit-shift-right value (* index 8)) 0xff))))))
+    out))
+
+(def ^:private activity-failure-keys
+  #{:phase :reason :class
+    :payload-length :max-payload
+    :count :remaining
+    :consecutive-eintrs :max-eintr-retries})
+
+(def ^:private activity-status-keys
+  #{:health :failure :sequence :accepted :capped? :durability :closed?})
+
+(defn- natural-integer? [value]
+  (and (integer? value) (not (neg? value))))
+
+(defn- valid-bounded-activity-failure? [failure]
+  (and (map? failure)
+       (seq failure)
+       (every? activity-failure-keys (keys failure))
+       (keyword? (:phase failure))
+       (keyword? (:reason failure))
+       (or (not (contains? failure :class))
+           (string? (:class failure)))
+       (every? (fn [key]
+                 (or (not (contains? failure key))
+                     (natural-integer? (get failure key))))
+               [:payload-length :max-payload :count :remaining
+                :consecutive-eintrs :max-eintr-retries])))
+
+(defn- valid-bounded-activity-status? [status]
+  (and (map? status)
+       (= activity-status-keys (set (keys status)))
+       (contains? #{:healthy :failed} (:health status))
+       (if (= :failed (:health status))
+         (valid-bounded-activity-failure? (:failure status))
+         (nil? (:failure status)))
+       (natural-integer? (:sequence status))
+       (natural-integer? (:accepted status))
+       (<= (:accepted status) activity/max-records)
+       (boolean? (:capped? status))
+       (= :process-crash (:durability status))
+       (boolean? (:closed? status))))
+
+(defn- bounded-activity-failure
+  "Projects an observer failure map to narrow identifier/scalar context:
+  keyword phase/reason, a class-name string, and numeric context. Raw
+  exception messages are dropped because they can embed the trusted journal
+  path and are unbounded; Throwables and byte arrays never reach this
+  boundary."
+  [failure]
+  (when (map? failure)
+    (reduce-kv
+     (fn [result key value]
+       (if (and (contains? activity-failure-keys key)
+                (or (keyword? value)
+                    (string? value)
+                    (integer? value)
+                    (boolean? value)))
+         (assoc result key value)
+         result))
+     {}
+     failure)))
+
+(defn- bounded-activity-status
+  "Bounded immutable projection of one observer status: health, narrow
+  failure, durability mode, and scalar counters only. Safe to retain in a
+  result document or secondary diagnostics."
+  [status]
+  {:health (:health status)
+   :failure (bounded-activity-failure (:failure status))
+   :sequence (:sequence status)
+   :accepted (:accepted status)
+   :capped? (:capped? status)
+   :durability (:durability status)
+   :closed? (:closed? status)})
+
+(defn- activity-error-document
+  "Bounded worker-error document for an activity-enabled run whose journal
+  observer failed. The narrow status projection carries no path, exception
+  message, Throwable, or byte array."
+  [schedule status]
+  {protocol-key protocol-version
+   status-key :worker-error
+   schedule-key schedule
+   error-key (trace/canonical-value
+              {:phase :activity-journal
+               :kind :jolt.sim/activity-failure
+               :activity (bounded-activity-status status)})})
+
+(defn- activity-adjusted-document
+  "Reconciles one result document with the final activity observer status. A
+  healthy observer leaves the document untouched. A failed observer
+  invalidates an apparent completion into a bounded activity worker-error;
+  an application failure or earlier worker error remains primary and carries
+  the bounded observer status as secondary diagnostics under
+  `:jolt.sim.explore/activity`."
+  [document schedule status]
+  (if (not= :failed (:health status))
+    document
+    (if (= :completed (get document status-key))
+      (activity-error-document schedule status)
+      (assoc document
+             activity-key
+             (trace/canonical-value (bounded-activity-status status))))))
+
+(defn- lifecycle-event
+  "One closed v1 activity event for a scenario lifecycle transition. The data
+  map carries only the bounded scenario identifier: no input, result,
+  Throwable, message, or path."
+  [tag scenario]
+  [tag nil nil {:scenario scenario}])
+
+(defn- invoke-scenario
+  "Invokes the resolved scenario var, emitting the exact started/completed/
+  failed lifecycle vectors when an activity observer is supplied. Emission
+  never throws; a substrate failure absorbs into observer state and is
+  reconciled with the result document after close. A scenario exception
+  propagates unchanged as the primary failure."
+  [scenario-var overrides input scenario observer]
+  (if (nil? observer)
+    (@scenario-var overrides input)
+    (activity/call-with-observer
+     observer
+     (fn []
+       (activity/emit! (lifecycle-event scenario-started-tag scenario))
+       (try
+         (let [value (@scenario-var overrides input)]
+           (activity/emit! (lifecycle-event scenario-completed-tag scenario))
+           value)
+         (catch :default error
+           (activity/emit! (lifecycle-event scenario-failed-tag scenario))
+           (throw error)))))))
+
+(defn- open-activity-observer!
+  "Opens the run's activity observer when the trusted parent reserved the
+  activity journal path in this worker's environment. Returns nil on the
+  ordinary disabled path (key absent or empty); the caller never supplies the
+  path through any other channel."
+  []
+  (let [path (System/getenv activity-journal-env-key)]
+    (when (and (string? path) (seq path))
+      (activity/open-observer! {:path path :run-id (activity-run-id path)}))))
+
+(defn- activity-open-failed?
+  "True when an opened observer already sits in the absorbing failed state."
+  [observer]
+  (and (some? observer)
+       (= :failed (:health (activity/observer-status observer)))))
+
 (defn execute-request
   "Executes one already-materialized request and returns a result document.
 
@@ -166,10 +373,16 @@
   validation, resolution, and result/error/input serialization failures are
   likewise `:worker-error`. A nil request schedule drives no
   `:future-schedule` override. The one-argument arity does no file I/O; the
-  optional `on-ready` callback may publish a sideband readiness marker."
+  optional `on-ready` callback may publish a sideband readiness marker. The
+  optional third argument is an already-open `jolt.sim.activity` observer (nil
+  for the ordinary disabled path): lifecycle events are emitted around the
+  scenario invocation, but observer open/close and health reconciliation stay
+  with the caller."
   ([request]
    (execute-request request (fn [] nil)))
   ([request on-ready]
+   (execute-request request on-ready nil))
+  ([request on-ready activity-observer]
    (let [validation
          (try
            {:request (validate-request! request)}
@@ -185,7 +398,8 @@
              schedule (get request schedule-key)]
          (try
            (let [input (trace/restore-value (get request input-key))
-                 scenario-var (resolve-scenario! scenario)
+                 scenario-var (resolve-scenario!
+                               scenario (some? activity-observer))
                  accepts-input? (:jolt.sim/accepts-input (meta scenario-var))]
              (if (and (some? input) (not accepts-input?))
                (worker-error-document
@@ -203,7 +417,9 @@
                          outcome
                          (try
                            {:ok? true
-                            :value (@scenario-var overrides input)}
+                            :value (invoke-scenario
+                                    scenario-var overrides input
+                                    scenario activity-observer)}
                            (catch :default error
                              {:ok? false :error error}))]
                      (if (:ok? outcome)
@@ -224,8 +440,11 @@
   "Validates and restores one result document for `expected-schedule`.
 
   Returns an ordinary outcome map with `:status`, `:schedule`, and either
-  `:result` or `:error`. Byte arrays and collection containers are freshly
-  restored from the canonical payload."
+  `:result` or `:error`. A failed or worker-error document may additionally
+  carry `:jolt.sim.explore/activity`, the bounded observer-status projection
+  recorded when an activity-enabled run's journal substrate failed alongside
+  the primary outcome; it is restored as `:activity`. Byte arrays and
+  collection containers are freshly restored from the canonical payload."
   [expected-schedule document]
   (when-not (valid-request-schedule? expected-schedule)
     (throw (protocol-error :invalid-expected-schedule
@@ -245,14 +464,27 @@
         expected-keys
         (if (= :completed status)
           completed-result-keys
-          error-result-keys)]
+          error-result-keys)
+        actual-keys (set (keys document))]
     (when-not (contains? #{:completed :failed :worker-error} status)
       (throw (protocol-error :result-status {:status status})))
-    (when-not (= expected-keys (set (keys document)))
+    ;; The optional activity key carries bounded secondary diagnostics on
+    ;; error documents only; a completed document must never claim them.
+    (when-not (or (= expected-keys actual-keys)
+                  (and (not= :completed status)
+                       (= (conj expected-keys activity-key) actual-keys)))
       (throw (protocol-error :result-keys
                              {:status status
                               :expected expected-keys
-                              :actual (set (keys document))})))
+                              :actual actual-keys})))
+    (when (contains? document activity-key)
+      (when-not (trace/canonical-form? (get document activity-key))
+        (throw (protocol-error :result-payload
+                               {:status status :field :activity})))
+      (when-not (valid-bounded-activity-status?
+                 (trace/restore-value (get document activity-key)))
+        (throw (protocol-error :result-payload
+                               {:status status :field :activity}))))
     (let [encoded (get document
                        (if (= :completed status) value-key error-key))]
       (when-not (trace/canonical-form? encoded)
@@ -264,7 +496,10 @@
         (assoc :result (trace/restore-value encoded))
 
         (not= :completed status)
-        (assoc :error (trace/restore-value encoded))))))
+        (assoc :error (trace/restore-value encoded))
+
+        (contains? document activity-key)
+        (assoc :activity (trace/restore-value (get document activity-key)))))))
 
 (defn decode-result-edn
   "Reads and decodes a result document from one EDN string."
@@ -296,13 +531,62 @@
     (try
       (let [request (edn/read-string (slurp request-path))]
         (reset! request-holder request)
-        (write-document!
-         result-path
-         (execute-request
-          request
-          (fn []
-            (when ready-path
-              (write-ready! ready-path))))))
+        (let [schedule (when (map? request) (get request schedule-key))
+              ;; The observer opens before scenario execution. Any failure to
+              ;; open is itself an invalidated activity-enabled run, reported
+              ;; as bounded diagnostics rather than escaping this entrypoint.
+              opened
+              (try
+                {:observer (open-activity-observer!)}
+                (catch :default _
+                  {:status {:health :failed
+                            :failure {:phase :open
+                                      :reason :observer-open-threw}
+                            :sequence 0
+                            :accepted 0
+                            :capped? false
+                            :durability :process-crash
+                            :closed? true}}))
+              observer (:observer opened)]
+          (cond
+            (some? (:status opened))
+            (write-document!
+             result-path
+             (activity-error-document schedule (:status opened)))
+
+            (nil? observer)
+            ;; Ordinary disabled path: no observer, no journal, unchanged
+            ;; request/result behavior.
+            (write-document!
+             result-path
+             (execute-request
+              request
+              (fn []
+                (when ready-path
+                  (write-ready! ready-path)))))
+
+            (activity-open-failed? observer)
+            ;; Open-time refusal or failure invalidates the run before the
+            ;; scenario executes; close best-effort to surface the preserved
+            ;; first failure (never the target path or a Throwable).
+            (write-document!
+             result-path
+             (activity-error-document
+              schedule
+              (activity/close-observer! observer)))
+
+            :else
+            (let [document
+                  (execute-request
+                   request
+                   (fn []
+                     (when ready-path
+                       (write-ready! ready-path)))
+                   observer)]
+              (write-document!
+               result-path
+               (activity-adjusted-document
+                document schedule (activity/close-observer! observer)))))))
       (catch :default error
         ;; A malformed request generated outside this library may not contain a
         ;; usable schedule. The parent will reject the nil echo as a protocol

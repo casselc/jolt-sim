@@ -21,17 +21,22 @@
 (def ^:private run-keys
   #{:worker-command :scenario :schedule :timeout-ms :startup-timeout-ms
     :kill-grace-ms
-    :dir :extra-env :temp-dir :retain-completed-artifacts? :on-run-dir})
+    :dir :extra-env :temp-dir :retain-completed-artifacts? :on-run-dir
+    :activity-journal?})
 
 (def ^:private case-keys
   #{:worker-command :scenario :schedule :input :timeout-ms
     :startup-timeout-ms :kill-grace-ms
-    :dir :extra-env :temp-dir :retain-completed-artifacts? :on-run-dir})
+    :dir :extra-env :temp-dir :retain-completed-artifacts? :on-run-dir
+    :activity-journal?})
 
 (def ^:private explore-keys
   #{:worker-command :scenario :schedules :timeout-ms :startup-timeout-ms
     :kill-grace-ms
-    :dir :extra-env :temp-dir :retain-completed-artifacts? :on-run-dir})
+    :dir :extra-env :temp-dir :retain-completed-artifacts? :on-run-dir
+    :activity-journal?})
+
+(def ^:private activity-journal-filename "activity.journal")
 
 (def ^:private diagnostic-byte-limit 65536)
 (def ^:private wait-poll-ms 10)
@@ -86,6 +91,15 @@
     (when-not (string-map? (:extra-env config))
       (throw
        (invalid-config :invalid-extra-env {:value (:extra-env config)}))))
+  ;; The activity journal path key is reserved in every child environment,
+  ;; enabled or not: the parent owns the fixed trusted
+  ;; <run-dir>/activity.journal and a caller or browser must never supply it.
+  ;; Rejection happens here, before any run directory is created or child
+  ;; spawned.
+  (when (contains? (:extra-env config) worker/activity-journal-env-key)
+    (throw
+     (invalid-config :reserved-activity-env-key
+                     {:key worker/activity-journal-env-key})))
   (when (contains? config :temp-dir)
     (let [temp-dir (:temp-dir config)]
       (when-not (and (string? temp-dir) (seq temp-dir))
@@ -97,6 +111,22 @@
       (throw
        (invalid-config :invalid-retain-completed-artifacts
                        {:value (:retain-completed-artifacts? config)}))))
+  ;; Fail closed on the opt-in activity journal: the option must be a boolean
+  ;; when present and defaults to false. When enabled, completed artifacts
+  ;; must be retained so fast successful journal evidence cannot disappear
+  ;; before the caller polls it.
+  (let [activity-journal? (get config :activity-journal? false)]
+    (when-not (boolean? activity-journal?)
+      (throw
+       (invalid-config :invalid-activity-journal
+                       {:value (:activity-journal? config)})))
+    (when (and activity-journal?
+               (not (true? (get config :retain-completed-artifacts? false))))
+      (throw
+       (invalid-config
+        :activity-journal-requires-retention
+        {:retain-completed-artifacts?
+         (:retain-completed-artifacts? config)}))))
   (when (contains? config :on-run-dir)
     (when-not (fn? (:on-run-dir config))
       (throw
@@ -311,12 +341,19 @@
                      (when-let [error (:error kill-wait)]
                        (error-summary :kill-wait error))]))})))))))
 
-(defn- process-options [config stdout-path stderr-path]
-  (cond-> {:dir (:dir config)
-           :out stdout-path
-           :err stderr-path}
-    (contains? config :extra-env)
-    (assoc :extra-env (:extra-env config))))
+(defn- process-options [config stdout-path stderr-path activity-path]
+  ;; activity-path is nil on the ordinary disabled path; when non-nil it is
+  ;; the fixed trusted <run-dir>/activity.journal this parent owns, injected
+  ;; into the child environment under the single reserved key.
+  {:dir (:dir config)
+   :out stdout-path
+   :err stderr-path
+   ;; jolt.process merges :extra-env into the ambient child environment.
+   ;; Always shadow the reserved key so an ambient value cannot silently
+   ;; enable journaling on the default-disabled path.
+   :extra-env
+   (assoc (get config :extra-env {})
+          worker/activity-journal-env-key (or activity-path ""))})
 
 (defn- worker-error-outcome
   ([schedule phase error diagnostics]
@@ -468,6 +505,11 @@
         ready-path (path-in run-dir "worker-ready.edn")
         stdout-path (path-in run-dir "stdout.log")
         stderr-path (path-in run-dir "stderr.log")
+        ;; The parent owns the fixed trusted journal path; it is computed here
+        ;; from the fresh run directory and never taken from caller config.
+        activity-path
+        (when (get config :activity-journal? false)
+          (path-in run-dir activity-journal-filename))
         keep-temp? (volatile! false)]
     (try
       (let [outcome
@@ -493,7 +535,8 @@
                         (captured
                          #(process/process
                            command
-                           (process-options config stdout-path stderr-path)))]
+                           (process-options
+                            config stdout-path stderr-path activity-path)))]
                     (if-let [error (:error spawn)]
                       (worker-error-outcome
                        schedule :process-spawn error
@@ -556,6 +599,25 @@
   any exception are ignored. It is synchronous and trusted, so production
   observers must return promptly; tests may deliberately block it before spawn.
 
+  Optional `:activity-journal?` (boolean, default false) opts the run into
+  the crash-recoverable worker lifecycle activity journal: the child opens a
+  `jolt.sim.activity` observer on the fixed trusted
+  `<run-dir>/activity.journal` before scenario execution and records the
+  scenario-started/completed/failed lifecycle with bounded identifiers only.
+  An enabled scenario must carry `:jolt.sim/activity-lifecycle-owned true`;
+  `defsim` supplies it because its controlled scope drains owned work before
+  return, while plain marked functions must explicitly promise the same.
+  The parent owns that path and injects it into the child environment under
+  one reserved key; any `:extra-env` collision with the reserved key is
+  rejected before launch, so a caller or browser never supplies an activity
+  path. Enabling it requires `:retain-completed-artifacts?` true so fast
+  successful evidence cannot disappear before polling. Activity open, emit,
+  or close failure invalidates the run into a bounded `:worker-error` (an
+  application failure remains primary with bounded secondary diagnostics).
+  Journal durability is `:process-crash` only: no fsync, power-loss, or
+  kernel-crash claim. When disabled (the default) behavior is unchanged and
+  no journal is created.
+
   Returns one `:completed`, `:failed`, `:timeout`, or `:worker-error` map.
   Timeout means only that the child did not exit by the deadline; it is not a
   proof of deadlock. Every non-completed outcome retains its per-run directory
@@ -580,8 +642,10 @@
 
   Returns the same `:completed`/`:failed`/`:timeout`/`:worker-error` shape and
   artifact-retention contract as `run-schedule`, including the opt-in
-  `:retain-completed-artifacts?` option and optional `:on-run-dir` observer,
-  echoing the effective schedule (including nil)."
+  `:retain-completed-artifacts?` option, the optional `:on-run-dir` observer,
+  and the opt-in `:activity-journal?` worker lifecycle journal (which likewise
+  requires `:retain-completed-artifacts?` true), echoing the effective
+  schedule (including nil)."
   [config]
   (let [config (validate-case-config! config)]
     (run-worker! config (:schedule config) (:input config))))
