@@ -40,12 +40,16 @@
   precedence order, and append!/close! never throw, so this layer can
   never mask an earlier application exception.
 
-  read-bounded-image caps the bytes read before jolt.sim.journal/recover
+  read-bounded-path caps the bytes read before jolt.sim.journal/recover
   because recover retains the raw tail: an unbounded read of a corrupt or
-  hostile file would retain an unbounded tail. Caps (configured at open
-  and per-call overrides) are validated against the documented inclusive
-  bound max-safe-image-bytes; allocation, read-loop, and truncation-probe
-  failures are caught into bounded error data while the stream is closed.
+  hostile file would retain an unbounded tail. It is the public trusted
+  path-level reader: the path is trusted under the same single-writer,
+  parent-owned contract and never appears in any result. Caps (configured
+  at open and per-call overrides) are validated against the documented
+  inclusive bound max-safe-image-bytes; allocation, read-loop, and
+  truncation-probe failures are caught into bounded error data while the
+  stream is closed. read-bounded-image is the adapter-level convenience
+  and delegates to read-bounded-path with the adapter's retained path.
 
   Current Jolt semantics: byte-array reads are normalized with
   (bit-and b 0xff); java.io.File/createNewFile returns false (rather than
@@ -344,10 +348,86 @@
     close-result
     read-result))
 
+(defn read-bounded-path
+  "Reads at most max-bytes bytes of a trusted path into a fresh byte-array,
+  capping input before jolt.sim.journal/recover because recover retains
+  the raw tail. Never throws.
+
+  The path is trusted under the namespace contract (single-writer,
+  parent-owned run directory) and never appears in any result. Returns
+  {:status :ok :image byte-array :bytes-read n :truncated? bool} where
+  :truncated? is true when the file holds more than max-bytes bytes, or
+  {:status :error :reason keyword} plus an optional :class string. Errors
+  never contain the path, an exception message, or any live object.
+
+  max-bytes is validated against the inclusive bound
+  1..max-safe-image-bytes; allocation, read-loop, and truncation-probe
+  failures are caught into bounded error data while the stream is closed,
+  and a close failure replaces an apparent success so resource-release
+  failure is never reported as :ok."
+  [path max-bytes]
+  (cond
+    (not (and (integer? max-bytes)
+              (pos? max-bytes)
+              (<= max-bytes max-safe-image-bytes)))
+    {:status :error :reason :invalid-max-bytes}
+
+    (not (string? path))
+    {:status :error :reason :invalid-path}
+
+    :else
+    (try
+      (let [file (java.io.File. path)]
+        (cond
+          (not (.exists file))
+          {:status :error :reason :file-missing}
+
+          (.isDirectory file)
+          {:status :error :reason :target-is-directory}
+
+          :else
+          (let [opened (try
+                         {:value (java.io.FileInputStream. path)}
+                         (catch :default t
+                           {:thrown t}))]
+            (if (contains? opened :thrown)
+              (read-error-diag :open-threw (:thrown opened))
+              (let [stream (:value opened)
+                    read-result
+                    (try
+                      (let [buffer (byte-array max-bytes)
+                            filled (loop [offset 0]
+                                     (if (>= offset max-bytes)
+                                       offset
+                                       (let [n (.read stream buffer offset
+                                                      (- max-bytes offset))]
+                                         (if (neg? n)
+                                           offset
+                                           (recur (+ offset n))))))
+                            truncated? (and (= filled max-bytes)
+                                            (not (neg? (.read stream))))
+                            image (java.util.Arrays/copyOf buffer filled)]
+                        {:status :ok
+                         :image image
+                         :bytes-read filled
+                         :truncated? truncated?})
+                      (catch :default t
+                        (read-error-diag :read-threw t)))
+                    close-result
+                    (try
+                      (.close stream)
+                      nil
+                      (catch :default t
+                        (read-error-diag :close-threw t)))]
+                (result-after-close read-result close-result))))))
+      (catch :default t
+        (read-error-diag :path-check-threw t)))))
+
 (defn read-bounded-image
   "Reads at most max-bytes bytes of the adapter's target file into a fresh
   byte-array, capping input before jolt.sim.journal/recover because
-  recover retains the raw tail. Never throws.
+  recover retains the raw tail. Never throws. Delegates to
+  read-bounded-path with the adapter's retained path.
 
   Returns {:status :ok :image byte-array :bytes-read n :truncated? bool}
   where :truncated? is true when the file holds more than max-bytes bytes,
@@ -359,55 +439,6 @@
   max-safe-image-bytes; allocation, read-loop, and truncation-probe
   failures are caught into bounded error data while the stream is closed."
   ([adapter]
-   (read-bounded-image adapter (:max-image-bytes adapter)))
+   (read-bounded-path (:path adapter) (:max-image-bytes adapter)))
   ([adapter max-bytes]
-   (if-not (and (integer? max-bytes)
-                (pos? max-bytes)
-                (<= max-bytes max-safe-image-bytes))
-     {:status :error :reason :invalid-max-bytes}
-     (try
-       (let [file (java.io.File. (:path adapter))]
-         (cond
-           (not (.exists file))
-           {:status :error :reason :file-missing}
-
-           (.isDirectory file)
-           {:status :error :reason :target-is-directory}
-
-           :else
-           (let [opened (try
-                          {:value (java.io.FileInputStream. (:path adapter))}
-                          (catch :default t
-                            {:thrown t}))]
-             (if (contains? opened :thrown)
-               (read-error-diag :open-threw (:thrown opened))
-               (let [stream (:value opened)
-                     read-result
-                     (try
-                       (let [buffer (byte-array max-bytes)
-                             filled (loop [offset 0]
-                                      (if (>= offset max-bytes)
-                                        offset
-                                        (let [n (.read stream buffer offset
-                                                       (- max-bytes offset))]
-                                          (if (neg? n)
-                                            offset
-                                            (recur (+ offset n))))))
-                             truncated? (and (= filled max-bytes)
-                                             (not (neg? (.read stream))))
-                             image (java.util.Arrays/copyOf buffer filled)]
-                         {:status :ok
-                          :image image
-                          :bytes-read filled
-                          :truncated? truncated?})
-                       (catch :default t
-                         (read-error-diag :read-threw t)))
-                     close-result
-                     (try
-                       (.close stream)
-                       nil
-                       (catch :default t
-                         (read-error-diag :close-threw t)))]
-                 (result-after-close read-result close-result))))))
-       (catch :default t
-         (read-error-diag :path-check-threw t))))))
+   (read-bounded-path (:path adapter) max-bytes)))

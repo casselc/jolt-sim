@@ -14,8 +14,10 @@
   application effect."
   (:require [jolt.fs :as fs]
             [jolt.process :as process]
+            [jolt.sim.activity :as activity]
             [jolt.sim.explore-worker :as worker]
             [jolt.sim.future-schedule :as future-schedule]
+            [jolt.sim.journal-file :as journal-file]
             [jolt.sim.trace :as trace]))
 
 (def ^:private run-keys
@@ -481,6 +483,78 @@
    (assoc (or (ex-data error) {}) :artifact-dir run-dir)
    error))
 
+(defn- failed-activity-page
+  "Returns one closed path-free page when parent-side journal recovery itself
+  cannot run. This is secondary forensic evidence only; callers retain the
+  supervised worker's primary outcome unchanged."
+  [cursor reason class]
+  {:version 1
+   :cursor cursor
+   :next-cursor cursor
+   :accepted-count 0
+   :remaining? false
+   :events []
+   :recovery {:status :failed
+              :reason reason
+              :class class
+              :sequence 0
+              :last-good-offset 0
+              :raw-tail-bytes 0
+              :image-truncated? false}})
+
+(defn- recover-activity-page
+  "Reads one page from the fixed activity journal inside trusted run-dir.
+  The path is never returned. Cursor contract errors remain typed so trusted
+  callers such as Ripple can reject them rather than disguising them as
+  journal corruption."
+  [run-dir cursor]
+  (activity/recover-page
+   (journal-file/read-bounded-path
+    (path-in run-dir activity-journal-filename)
+    activity/max-image-bytes)
+   cursor))
+
+(defn- recover-activity-page-safely
+  "Defensive outcome-attachment boundary: unexpected recovery failures are
+  secondary bounded evidence and never replace the supervised outcome."
+  [run-dir cursor]
+  (try
+    (recover-activity-page run-dir cursor)
+    (catch :default error
+      (failed-activity-page cursor :recovery-threw (str (class error))))))
+
+(defn read-activity-page
+  "Reads one retained semantic-activity page from a trusted process-explorer
+  outcome. The fixed activity.journal basename is derived here; no caller or
+  browser supplies a journal path. Throws a bounded argument error when the
+  value is not a retained activity-enabled outcome."
+  ([outcome]
+   (read-activity-page outcome 0))
+  ([outcome cursor]
+   (let [run-dir (:artifact-dir outcome)]
+     (when-not (and (map? outcome)
+                    (contains? outcome :activity)
+                    (string? run-dir)
+                    (seq run-dir))
+       (throw
+        (invalid-config :activity-outcome-not-retained
+                        {:cursor cursor})))
+     (assoc (recover-activity-page run-dir cursor)
+            :observer-status
+            (get-in outcome [:activity :observer-status])))))
+
+(defn- attach-activity-page
+  "Installs page zero without losing PR #85's worker-side bounded observer
+  status. A journal substrate failure that is already primary remains under
+  [:error :activity]; it is mirrored into the envelope only as secondary
+  status for one coherent activity surface."
+  [outcome run-dir]
+  (let [observer-status (or (:activity outcome)
+                            (get-in outcome [:error :activity]))
+        page (recover-activity-page-safely run-dir 0)]
+    (assoc outcome :activity
+           (assoc page :observer-status observer-status))))
+
 (defn- notify-run-dir!
   "Best-effort notification hook: reports the trusted run directory to an
   optional caller-supplied `:on-run-dir` once it exists, before any request is
@@ -562,12 +636,15 @@
                     (vreset! keep-temp? true)
                     (throw (retained-exception error run-dir)))
                   (throw error))))]
-        (if (or (get config :retain-completed-artifacts? false)
-                (retain-outcome-artifacts? outcome))
-          (do
-            (vreset! keep-temp? true)
-            (assoc outcome :artifact-dir run-dir))
-          outcome))
+        (let [outcome (if (get config :activity-journal? false)
+                        (attach-activity-page outcome run-dir)
+                        outcome)]
+          (if (or (get config :retain-completed-artifacts? false)
+                  (retain-outcome-artifacts? outcome))
+            (do
+              (vreset! keep-temp? true)
+              (assoc outcome :artifact-dir run-dir))
+            outcome)))
       (finally
         (when-not @keep-temp?
           (fs/delete-tree run-dir))))))
@@ -615,8 +692,13 @@
   or close failure invalidates the run into a bounded `:worker-error` (an
   application failure remains primary with bounded secondary diagnostics).
   Journal durability is `:process-crash` only: no fsync, power-loss, or
-  kernel-crash claim. When disabled (the default) behavior is unchanged and
-  no journal is created.
+  kernel-crash claim. After the child is reaped, the parent attaches page zero
+  as a closed `:activity` envelope. The envelope preserves any worker observer
+  failure under `:observer-status`; read/decode corruption remains secondary
+  and never changes the primary outcome. `read-activity-page` reads later
+  record-ordinal pages from the retained outcome without accepting a journal
+  path. When disabled (the default) behavior is unchanged and no journal or
+  `:activity` key is created.
 
   Returns one `:completed`, `:failed`, `:timeout`, or `:worker-error` map.
   Timeout means only that the child did not exit by the deadline; it is not a

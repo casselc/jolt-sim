@@ -155,12 +155,15 @@
    side's directory behind."
   [scenario input]
   (process-explorer/run-case
-   (merge (configured *process-config* :process-config)
-          {:scenario scenario
-           :input input
-           :timeout-ms worker-timeout-ms
-           :kill-grace-ms kill-grace-ms
-           :retain-completed-artifacts? true})))
+   (cond->
+    (merge (configured *process-config* :process-config)
+           {:scenario scenario
+            :input input
+            :timeout-ms worker-timeout-ms
+            :kill-grace-ms kill-grace-ms
+            :retain-completed-artifacts? true})
+     (= compiled-scenario scenario)
+     (assoc :activity-journal? true))))
 
 (defn- report-non-completed! [side outcome]
   ;; Best-effort bounded projection before the assertion boundary so a gate
@@ -171,7 +174,7 @@
               :side side
               :outcome (select-keys outcome
                                     [:status :reason :exit :error
-                                     :diagnostics :artifact-dir])}))
+                                     :activity :diagnostics :artifact-dir])}))
     (flush)))
 
 (defn- stable-projection
@@ -263,6 +266,47 @@
        (= [:command :delivery :store] (:history-projectors plan))
        (= 0 (:monitor-spec-count plan))
        (= [] (:presentation-keys plan))))
+
+(def ^:private expected-compiled-activity-tags
+  [:jolt.sim.explore/scenario-started
+   :jolt.example.outbox/experiment-compiled
+   :jolt.example.outbox/application-started
+   :jolt.example.outbox/cancel-before-ack-observed
+   :jolt.example.outbox/application-completed
+   :jolt.sim.explore/scenario-completed])
+
+(defn- compiled-activity-complete?
+  "The compiled lane must expose one complete, ordered semantic journal while
+  retaining the exact ordinary application result used by every other parity
+  check. The direct lane stays uninstrumented in this first witness."
+  [activity-envelope compiled-evidence]
+  (and (map? activity-envelope)
+       (= 1 (:version activity-envelope))
+       (nil? (:observer-status activity-envelope))
+       (false? (:remaining? activity-envelope))
+       (= :complete (get-in activity-envelope [:recovery :status]))
+       (nil? (get-in activity-envelope [:recovery :reason]))
+       (false? (get-in activity-envelope
+                       [:recovery :image-truncated?]))
+       (= (:accepted-count activity-envelope)
+          (:next-cursor activity-envelope)
+          (count (:events activity-envelope)))
+       (= (vec (range (:accepted-count activity-envelope)))
+          (mapv :sequence (:events activity-envelope)))
+       (= expected-compiled-activity-tags
+          (mapv (comp first :event) (:events activity-envelope)))
+       (= expected-application-body-id
+          (get-in activity-envelope [:events 2 :event 3
+                                     :application-body-id]))
+       (= {:application-body-id (:application-body-id compiled-evidence)
+           :cancel (get-in compiled-evidence [:application :cancel])
+           :http-status (get-in compiled-evidence [:http :status])
+           :request-count
+           (count (get-in compiled-evidence [:receiver :requests]))
+           :store-state (get-in compiled-evidence [:application :store-state])}
+          (get-in activity-envelope [:events 3 :event 3]))
+       (= {:application-body-id (:application-body-id compiled-evidence)}
+          (get-in activity-envelope [:events 4 :event 3]))))
 
 (defn- build-comparison
   "Derives the complete parity comparison as plain data: scenario symbols
@@ -370,6 +414,10 @@
                 (history-covers-routes? compiled-evidence)
                 {:history (:history compiled-evidence)
                  :route-count (get-in compiled-evidence [:routes :count])})
+         (check :compiled-semantic-activity-complete
+                (compiled-activity-complete? (:activity compiled)
+                                             compiled-evidence)
+                {:activity (:activity compiled)})
          (check :compiled-plan-identity
                 (expected-plan-identity? (:plan compiled-evidence))
                 {:plan (:plan compiled-evidence)})]]
@@ -381,6 +429,7 @@
                           :reason (:reason direct)
                           :error (:error direct)
                           :diagnostics (:diagnostics direct)
+                          :activity (:activity direct)
                           :artifact-dir (:artifact-dir direct)}
                  :compiled {:symbol compiled-scenario
                             :status (:status compiled)
@@ -388,6 +437,7 @@
                             :reason (:reason compiled)
                             :error (:error compiled)
                             :diagnostics (:diagnostics compiled)
+                            :activity (:activity compiled)
                             :artifact-dir (:artifact-dir compiled)}}
      :stable {:direct (stable-projection direct-evidence)
               :compiled (stable-projection compiled-evidence)}
