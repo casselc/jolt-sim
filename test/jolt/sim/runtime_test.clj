@@ -372,6 +372,8 @@
 (deftest defsim-defines-a-callable-no-arg-scenario
   (is (true? (:jolt.sim/scenario (meta #'sample-scenario))))
   (is (false? (:jolt.sim/accepts-input (meta #'sample-scenario))))
+  (is (true? (:jolt.sim/activity-lifecycle-owned
+              (meta #'sample-scenario))))
   (if (rt/available?)
     (let [result (sample-scenario)]
       (is (= :scenario-result (:result result)))
@@ -440,6 +442,8 @@
 (deftest defsim-input-binding-form-binds-the-supplied-input
   (is (true? (:jolt.sim/scenario (meta #'input-scenario))))
   (is (true? (:jolt.sim/accepts-input (meta #'input-scenario))))
+  (is (true? (:jolt.sim/activity-lifecycle-owned
+              (meta #'input-scenario))))
   (if (rt/available?)
     (do
       ;; The zero- and one-argument arities always pass nil input.

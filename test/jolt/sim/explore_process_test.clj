@@ -8,9 +8,12 @@
             [clojure.test :as test :refer [deftest is testing]]
             [jolt.fs :as fs]
             [jolt.host :as host]
+            [jolt.sim.activity :as activity]
             [jolt.sim.explore :as explore]
             [jolt.sim.explore-worker :as worker]
-            [jolt.sim.process-explorer :as process-explorer]))
+            [jolt.sim.journal :as journal]
+            [jolt.sim.process-explorer :as process-explorer]
+            [jolt.sim.trace :as trace]))
 
 (def ^:dynamic *process-config* nil)
 
@@ -43,6 +46,7 @@
    (process-config)
    {:scenario scenario
     :schedule schedule
+    :startup-timeout-ms completion-timeout-ms
     :timeout-ms timeout-ms
     :kill-grace-ms kill-grace-ms}))
 
@@ -53,6 +57,7 @@
    (merge
     (process-config)
     {:scenario scenario
+     :startup-timeout-ms completion-timeout-ms
      :timeout-ms timeout-ms
      :kill-grace-ms kill-grace-ms}
     extra)))
@@ -62,6 +67,7 @@
    (process-config)
    {:scenario scenario
     :schedules schedules
+    :startup-timeout-ms completion-timeout-ms
     :timeout-ms timeout-ms
     :kill-grace-ms kill-grace-ms}))
 
@@ -284,18 +290,21 @@
   (testing "a TERM-resistant worker is forcibly killed and reaped"
     (let [outcome
           (process-explorer/run-schedule
-           (assoc
-            (run-config
-             'jolt.sim.fixtures.explore-scenarios/independent
-             [0]
-             100)
-            ;; Ignored signal dispositions survive exec on POSIX. The shell
-            ;; becomes sleep, so SIGKILL targets the worker itself rather than
-            ;; leaving a descendant behind.
-            :worker-command
-            ["sh" "-c" "trap '' TERM; exec sleep 10"
-             "jolt-sim-term-resistant-worker"]
-            :kill-grace-ms 100))
+           (dissoc
+            (assoc
+             (run-config
+              'jolt.sim.fixtures.explore-scenarios/independent
+              [0]
+              100)
+             ;; Ignored signal dispositions survive exec on POSIX. The shell
+             ;; becomes sleep, so SIGKILL targets the worker itself rather than
+             ;; leaving a descendant behind. This synthetic worker cannot
+             ;; participate in the Jolt ready-marker handshake.
+             :worker-command
+             ["sh" "-c" "trap '' TERM; exec sleep 10"
+              "jolt-sim-term-resistant-worker"]
+             :kill-grace-ms 100)
+            :startup-timeout-ms))
           artifacts-ok?
           (retained-artifacts-match?
            outcome
@@ -527,6 +536,344 @@
           (is (every? #(= :native (:route %)) routes))
           (is (pos? (count (filter #(= "poll" (:symbol %)) routes))))
           (is (pos? (count (filter #(= "write" (:symbol %)) routes)))))))))
+
+;;; ---------------------------------------------------------------------------
+;;; Opt-in worker lifecycle activity journal
+;;; ---------------------------------------------------------------------------
+
+(defn- ex-data-of [thunk]
+  (try
+    (thunk)
+    nil
+    (catch :default error
+      (ex-data error))))
+
+(defn- read-activity-journal
+  "Reads one retained activity journal image and returns its header run-id,
+  recovery failure reason, and decoded lifecycle event vectors."
+  [path]
+  (let [file (java.io.File. path)
+        length (.length file)]
+    (when (and (fs/exists? path)
+               (<= length activity/max-image-bytes))
+      (let [stream (java.io.FileInputStream. path)]
+        (try
+          (let [buffer (byte-array length)
+                filled (loop [offset 0]
+                         (if (>= offset length)
+                           offset
+                           (let [read-count
+                                 (.read stream buffer offset (- length offset))]
+                             (if (neg? read-count)
+                               offset
+                               (recur (+ offset read-count))))))
+                image (java.util.Arrays/copyOf buffer filled)
+                recovery (journal/recover image)]
+            {:run-id (java.util.Arrays/copyOfRange image 16 32)
+             :failure-reason (:failure-reason recovery)
+             :events (mapv (fn [record]
+                             (edn/read-string (String. (:payload record) "UTF-8")))
+                           (:records recovery))})
+          (finally (.close stream)))))))
+
+(deftest activity-journal-config-is-rejected-fail-closed
+  (let [base (case-config
+              'jolt.sim.fixtures.explore-scenarios/echoes-input
+              completion-timeout-ms)
+        missing-retention
+        (ex-data-of
+         #(process-explorer/run-case
+           (assoc base :activity-journal? true)))
+        explicit-false-retention
+        (ex-data-of
+         #(process-explorer/run-case
+           (assoc base :activity-journal? true
+                  :retain-completed-artifacts? false)))
+        run-schedule-missing-retention
+        (ex-data-of
+         #(process-explorer/run-schedule
+           (assoc (run-config
+                   'jolt.sim.fixtures.explore-scenarios/fails [0]
+                   completion-timeout-ms)
+                  :activity-journal? true)))
+        non-boolean
+        (ex-data-of
+         #(process-explorer/run-case
+           (assoc base :activity-journal? :yes
+                  :retain-completed-artifacts? true)))
+        collision-enabled
+        (ex-data-of
+         #(process-explorer/run-case
+           (assoc base :activity-journal? true
+                  :retain-completed-artifacts? true
+                  :extra-env {worker/activity-journal-env-key
+                              "/tmp/caller-supplied-activity.journal"})))
+        collision-disabled
+        (ex-data-of
+         #(process-explorer/run-case
+           (assoc base :extra-env {worker/activity-journal-env-key
+                                   "/tmp/caller-supplied-activity.journal"})))
+        process-options-var
+        (resolve 'jolt.sim.process-explorer/process-options)
+        disabled-process-options
+        (@process-options-var base "stdout.log" "stderr.log" nil)]
+    (is (= "JOLT_SIM_ACTIVITY_JOURNAL_PATH" worker/activity-journal-env-key)
+        "the single reserved child environment key is exact")
+    (is (= :jolt.sim.process-explorer/invalid-config
+           (:type missing-retention)))
+    (is (= :activity-journal-requires-retention (:reason missing-retention)))
+    (is (= :activity-journal-requires-retention
+           (:reason explicit-false-retention)))
+    (is (= :activity-journal-requires-retention
+           (:reason run-schedule-missing-retention)))
+    (is (= :invalid-activity-journal (:reason non-boolean)))
+    (is (= :yes (:value non-boolean)))
+    (is (= :jolt.sim.process-explorer/invalid-config (:type collision-enabled)))
+    (is (= :reserved-activity-env-key (:reason collision-enabled)))
+    (is (= :reserved-activity-env-key (:reason collision-disabled))
+        "the reserved key is rejected even with the journal disabled")
+    (is (= ""
+           (get-in disabled-process-options
+                   [:extra-env worker/activity-journal-env-key]))
+        "disabled children explicitly shadow an ambient reserved key")))
+
+(deftest activity-run-id-is-deterministic-valid-and-path-derived
+  (let [run-id-var (resolve 'jolt.sim.explore-worker/activity-run-id)
+        first-id (@run-id-var "/tmp/jolt-sim-explore-a/activity.journal")
+        repeated (@run-id-var "/tmp/jolt-sim-explore-a/activity.journal")
+        other (@run-id-var "/tmp/jolt-sim-explore-b/activity.journal")]
+    (is (bytes? first-id))
+    (is (= 16 (alength first-id)))
+    (is (= (seq first-id) (seq repeated))
+        "the same trusted run path derives the same run-id")
+    (is (not= (seq first-id) (seq other))
+        "distinct run directories derive distinct run-ids")))
+
+(deftest disabled-activity-journal-creates-no-file-and-changes-nothing
+  (let [outcome
+        (process-explorer/run-case
+         (case-config
+          'jolt.sim.fixtures.explore-scenarios/echoes-input
+          completion-timeout-ms
+          {:retain-completed-artifacts? true}))
+        artifacts-ok?
+        (retained-artifacts-match?
+         outcome
+         {:present ["request.edn" "result.edn" "stdout.log" "stderr.log"]
+          :absent ["activity.journal"]})]
+    (is (= :completed (:status outcome)))
+    (is (= 0 (:exit outcome)))
+    (is (nil? (:activity outcome)))
+    (is (= {:echoed nil} (body-result outcome)))
+    (cleanup-expected-artifacts!
+     outcome
+     (and artifacts-ok? (= :completed (:status outcome))))))
+
+(deftest enabled-activity-journal-records-a-completed-lifecycle
+  (let [scenario 'jolt.sim.fixtures.explore-scenarios/echoes-input
+        outcome
+        (process-explorer/run-case
+         (case-config
+          scenario
+          completion-timeout-ms
+          {:activity-journal? true
+           :retain-completed-artifacts? true}))
+        artifacts-ok?
+        (retained-artifacts-match?
+         outcome
+         {:present ["request.edn" "result.edn" "stdout.log" "stderr.log"
+                    "activity.journal"]})
+        journal-path (artifact-path outcome "activity.journal")
+        recovery (when journal-path (read-activity-journal journal-path))
+        run-id-var (resolve 'jolt.sim.explore-worker/activity-run-id)
+        expected-run-id (when journal-path (@run-id-var journal-path))
+        events-ok?
+        (and (some? recovery)
+             (nil? (:failure-reason recovery))
+             (= [[:jolt.sim.explore/scenario-started nil nil
+                  {:scenario scenario}]
+                 [:jolt.sim.explore/scenario-completed nil nil
+                  {:scenario scenario}]]
+                (:events recovery)))
+        run-id-ok?
+        (and (some? recovery)
+             (= (seq expected-run-id) (seq (:run-id recovery))))]
+    (is (= :completed (:status outcome)))
+    (is (= 0 (:exit outcome)))
+    (is (some? (:artifact-dir outcome))
+        "retention is mandatory so the journal survives for polling")
+    (is (nil? (:activity outcome))
+        "a healthy observer adds no secondary diagnostics key")
+    (is (= {:echoed nil} (body-result outcome))
+        "ordinary result behavior is preserved")
+    (is (true? events-ok?)
+        (str "journal must hold exactly the started/completed lifecycle: "
+             (pr-str (:events recovery))))
+    (is (true? run-id-ok?)
+        "the header run-id is the deterministic path-derived 16-byte id")
+    (cleanup-expected-artifacts!
+     outcome
+     (and artifacts-ok? events-ok? run-id-ok?
+          (= :completed (:status outcome))))))
+
+(deftest enabled-activity-journal-records-a-failed-lifecycle-with-primary-error
+  (let [scenario 'jolt.sim.fixtures.explore-scenarios/fails
+        outcome
+        (process-explorer/run-case
+         (case-config
+          scenario
+          completion-timeout-ms
+          {:activity-journal? true
+           :retain-completed-artifacts? true}))
+        artifacts-ok?
+        (retained-artifacts-match?
+         outcome
+         {:present ["request.edn" "result.edn" "stdout.log" "stderr.log"
+                    "activity.journal"]})
+        journal-path (artifact-path outcome "activity.journal")
+        recovery (when journal-path (read-activity-journal journal-path))
+        events-ok?
+        (and (some? recovery)
+             (nil? (:failure-reason recovery))
+             (= [[:jolt.sim.explore/scenario-started nil nil
+                  {:scenario scenario}]
+                 [:jolt.sim.explore/scenario-failed nil nil
+                  {:scenario scenario}]]
+                (:events recovery)))]
+    (is (= :failed (:status outcome)))
+    (is (= 0 (:exit outcome)))
+    (is (= :jolt.sim.fixtures.explore-scenarios/deliberate-failure
+           (get-in outcome [:error :data :type]))
+        "the original application failure remains the primary outcome error")
+    (is (nil? (:activity outcome))
+        "a healthy observer adds no secondary diagnostics key")
+    (is (true? events-ok?)
+        (str "journal must hold exactly the started/failed lifecycle: "
+             (pr-str (:events recovery))))
+    (cleanup-expected-artifacts!
+     outcome
+     (and artifacts-ok? events-ok? (= :failed (:status outcome))))))
+
+(deftest activity-substrate-failure-invalidates-the-run-without-leakage
+  (let [scenario 'jolt.sim.fixtures.explore-scenarios/echoes-input
+        occupied (atom nil)
+        outcome
+        (process-explorer/run-case
+         (case-config
+          scenario
+          completion-timeout-ms
+          {:activity-journal? true
+           :retain-completed-artifacts? true
+           ;; The trusted hook pre-occupies the fixed journal path before
+           ;; spawn, so the child's open hits the adapter's :target-exists
+           ;; refusal. The child must never overwrite existing data.
+           :on-run-dir
+           (fn [dir]
+             (let [path (str (fs/path dir "activity.journal"))]
+               (spit path "occupied")
+               (reset! occupied path)))}))
+        artifacts-ok?
+        (retained-artifacts-match?
+         outcome
+         {:present ["request.edn" "result.edn" "stdout.log" "stderr.log"
+                    "activity.journal"]})
+        error-text (pr-str (:error outcome))
+        leakage-ok?
+        (and (some? @occupied)
+             (not (.contains error-text @occupied))
+             (not (.contains error-text "Exception"))
+             (not (.contains error-text "occupied")))
+        refused-untouched?
+        (and (some? @occupied)
+             (fs/exists? @occupied)
+             (= "occupied" (slurp @occupied)))]
+    (is (= :worker-error (:status outcome))
+        "an activity open failure invalidates the activity-enabled run")
+    (is (= 0 (:exit outcome)))
+    (is (= :activity-journal (get-in outcome [:error :phase])))
+    (is (= :jolt.sim/activity-failure (get-in outcome [:error :kind])))
+    (is (= :open (get-in outcome [:error :activity :failure :phase])))
+    (is (= :target-exists (get-in outcome [:error :activity :failure :reason])))
+    (is (nil? (:activity outcome))
+        "the substrate failure is the primary bounded error, not secondary")
+    (is (true? leakage-ok?)
+        (str "bounded diagnostics carry no path, Throwable, or raw content: "
+             error-text))
+    (is (true? refused-untouched?)
+        "the refused existing target is never overwritten")
+    (cleanup-expected-artifacts!
+     outcome
+     (and artifacts-ok? leakage-ok? refused-untouched?
+          (= :worker-error (:status outcome))))))
+
+(deftest activity-failure-after-application-failure-keeps-the-primary-error
+  (let [adjust-var
+        (resolve 'jolt.sim.explore-worker/activity-adjusted-document)
+        protocol-key :jolt.sim.explore/protocol
+        status-key :jolt.sim.explore/status
+        schedule-key :jolt.sim.explore/schedule
+        value-key :jolt.sim.explore/value
+        error-key :jolt.sim.explore/error
+        failed-status
+        {:health :failed
+         :failure {:phase :write
+                   :reason :write-threw
+                   :class "java.io.IOException"
+                   :message "/unbounded/secret-path raw message"}
+         :sequence 1
+         :accepted 1
+         :capped? false
+         :durability :process-crash
+         :closed? true}
+        original (ex-info "primary application failure" {:type ::primary})
+        failed-document
+        {protocol-key 2
+         status-key :failed
+         schedule-key nil
+         error-key (trace/canonical-value (trace/normalize-error original))}
+        adjusted-failed (@adjust-var failed-document nil failed-status)
+        failed-outcome (worker/decode-result nil adjusted-failed)
+        completed-document
+        {protocol-key 2
+         status-key :completed
+         schedule-key nil
+         value-key (trace/canonical-value :apparent-success)}
+        adjusted-completed (@adjust-var completed-document nil failed-status)
+        completed-outcome (worker/decode-result nil adjusted-completed)]
+    (testing "an application failure remains primary with bounded secondary diagnostics"
+      (is (= :failed (:status failed-outcome)))
+      (is (= "primary application failure"
+             (get-in failed-outcome [:error :message])))
+      (is (= ::primary (get-in failed-outcome [:error :data :type])))
+      (is (= :failed (get-in failed-outcome [:activity :health])))
+      (is (= :write-threw
+             (get-in failed-outcome [:activity :failure :reason])))
+      (is (nil? (get-in failed-outcome [:activity :failure :message])))
+      (is (not (.contains (pr-str (:activity failed-outcome)) "secret-path"))
+          "secondary diagnostics drop raw messages that can embed paths"))
+    (testing "an activity failure invalidates an apparent completion"
+      (is (= :worker-error (:status completed-outcome)))
+      (is (= :activity-journal (get-in completed-outcome [:error :phase])))
+      (is (= :jolt.sim/activity-failure
+             (get-in completed-outcome [:error :kind])))
+      (is (nil? (:result completed-outcome)))
+      (is (not (.contains (pr-str (:error completed-outcome)) "secret-path"))))
+    (testing "secondary activity diagnostics have one exact bounded schema"
+      (doseq [bad-activity
+              [{:health :failed :failure {:phase :write :reason :failed}}
+               (assoc (worker/decode-result
+                       nil
+                       adjusted-failed)
+                      :unexpected "do-not-retain-this-value")]]
+        (let [bad-document
+              (assoc failed-document
+                     :jolt.sim.explore/activity
+                     (trace/canonical-value bad-activity))
+              data (ex-data-of #(worker/decode-result nil bad-document))]
+          (is (= :jolt.sim.explore/worker-protocol-error (:type data)))
+          (is (= :result-payload (:reason data)))
+          (is (= :activity (:field data)))
+          (is (not (.contains (pr-str data) "do-not-retain-this-value"))))))))
 
 (defn -main [& _]
   (let [bin (required-environment "JOLT_SIM_BIN")

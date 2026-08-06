@@ -1848,9 +1848,11 @@
   silently discarding it. The zero- and one-argument arities always pass nil
   input, so existing calls are unaffected by this addition.
 
-  The var carries `:jolt.sim/scenario true` and a boolean
-  `:jolt.sim/accepts-input` metadata marker so a process worker can fail closed
-  before invocation instead of trusting an application-thrown exception tag.
+  The var carries `:jolt.sim/scenario true`, a boolean
+  `:jolt.sim/accepts-input`, and `:jolt.sim/activity-lifecycle-owned true`.
+  The last marker records that run-controlled drains its owned work before the
+  generated function returns, allowing an external worker to close a bound
+  activity observer without missing a later inherited emission.
 
   The expansion references the fully qualified run-controlled, so the scenario
   is callable from any namespace. Not coupled to clojure.test."
@@ -1876,7 +1878,8 @@
           (with-meta name
             (assoc (meta name)
                    :jolt.sim/scenario true
-                   :jolt.sim/accepts-input has-input?))
+                   :jolt.sim/accepts-input has-input?
+                   :jolt.sim/activity-lifecycle-owned true))
           overrides-sym (gensym "runtime-overrides")
           input-sym (gensym "input")
           base-config-sym (gensym "base-config")

@@ -80,6 +80,11 @@
   (swap! ready-order conj :body)
   {:input input :events @ready-order})
 
+(defn ^{:jolt.sim/scenario true :jolt.sim/accepts-input true}
+  marked-without-activity-lifecycle-ownership
+  [_runtime-overrides _input]
+  :must-not-run-with-activity)
+
 ;;; ---------------------------------------------------------------------------
 ;;; request-document
 ;;; ---------------------------------------------------------------------------
@@ -124,6 +129,19 @@
           schedule))
         outcome (explore/decode-result schedule document)]
     (is (= :must-not-run (unmarked-scenario nil)))
+    (is (= :worker-error (:status outcome)))
+    (is (= :scenario-resolution (get-in outcome [:error :phase])))
+    (is (= :jolt.sim/exception (get-in outcome [:error :kind])))))
+
+(deftest activity-enabled-execution-requires-lifecycle-ownership
+  (let [document
+        (explore/execute-request
+         (explore/request-document
+          'jolt.sim.explore-worker-test/marked-without-activity-lifecycle-ownership
+          nil)
+         (fn [] nil)
+         {})
+        outcome (explore/decode-result nil document)]
     (is (= :worker-error (:status outcome)))
     (is (= :scenario-resolution (get-in outcome [:error :phase])))
     (is (= :jolt.sim/exception (get-in outcome [:error :kind])))))
