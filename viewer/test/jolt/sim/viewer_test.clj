@@ -331,6 +331,77 @@
     (is (contains? kinds :jolt.sim.kind/experiment-runtime))
     (is (contains? kinds :jolt.sim.kind/experiment-controls))))
 
+(defn- cycle-experiment-document []
+  (let [document (viewer-experiment/read-edn (experiment-fixture-text))
+        capability [:example.loop/v1]
+        owner []]
+    (viewer-experiment/validate-document!
+     (-> document
+         (assoc :nodes
+                [{:id :app
+                  :ports [{:id :in :direction :in :capabilities capability}
+                          {:id :out :direction :out :capabilities capability}]}
+                 {:id :client
+                  :ports [{:id :in :direction :in :capabilities capability}
+                          {:id :out :direction :out :capabilities capability}]}]
+                :connections
+                [{:id :app-to-client
+                  :from [:app :out] :to [:client :in]
+                  :pack-id :example.connection/loop-v1 :mode :simulate
+                  :capabilities {:from capability :to capability}
+                  :handler-owners owner}
+                 {:id :client-to-app
+                  :from [:client :out] :to [:app :in]
+                  :pack-id :example.connection/loop-v1 :mode :simulate
+                  :capabilities {:from capability :to capability}
+                  :handler-owners owner}]
+                :runtime {:ffi-mode :hermetic :handler-count 0})
+         (assoc :counts
+                (assoc (:counts document)
+                       :nodes 2 :ports 4 :connections 2
+                       :handler-packs 0 :handlers 0))))))
+
+(deftest experiment-topology-svg-is-deterministic-accessible-and-specialized
+  (let [document (viewer-experiment/read-edn (experiment-fixture-text))
+        first-html (viewer-experiment/document->html document)
+        second-html (viewer-experiment/document->html document)]
+    (is (= first-html second-html))
+    (is (string/includes? first-html "<svg role=\"img\""))
+    (is (string/includes? first-html "Experiment connection topology"))
+    (is (string/includes? first-html "data-node=\":app\""))
+    (is (string/includes? first-html "data-node=\":client\""))
+    (is (string/includes? first-html ":command · :simulate · :example.connection/http-v1"))
+    (is (string/includes? first-html "out :http :example.http/client-v1"))
+    (is (string/includes? first-html "marker-end=\"url(#topology-arrow)\""))
+    ;; The specialized textual rows remain the accessible/detail view.
+    (is (string/includes? first-html "jolt.sim.kind/experiment-node"))
+    (is (string/includes? first-html "jolt.sim.kind/experiment-connection"))))
+
+(deftest experiment-topology-cycle-layout-has-stable-fallback
+  (let [document (cycle-experiment-document)
+        html (viewer-experiment/document->html document)]
+    (is (= html (viewer-experiment/document->html document)))
+    (is (string/includes? html ":app-to-client · :simulate"))
+    (is (string/includes? html ":client-to-app · :simulate"))
+    (is (= 2 (count (re-seq #"class=\"topology-node\"" html))))
+    (is (= 2 (count (re-seq #"class=\"topology-edge\"" html))))))
+
+(deftest experiment-topology-escapes-labels-and-has-no-active-svg-content
+  (let [unsafe-id (keyword "evil" "<script>alert(1)</script>")
+        unsafe-plan (assoc (unsafe-process-local-plan-data)
+                           :experiment-id unsafe-id)
+        document (-> (viewer-experiment/plan-data->document unsafe-plan)
+                     (assoc-in [:nodes 1 :id] unsafe-id)
+                     (assoc-in [:connections 0 :from 0] unsafe-id)
+                     viewer-experiment/validate-document!)
+        html (viewer-experiment/document->html document)
+        lower (string/lower-case html)]
+    (is (string/includes? html ":evil/&lt;script&gt;alert(1)&lt;/script&gt;"))
+    (is (not (string/includes? html "DO-NOT-RENDER-EXPERIMENT-SECRET")))
+    (doseq [active ["<script" "<foreignobject" "javascript:"
+                    " onload=" " onclick=" " href=" " xlink:href="]]
+      (is (not (string/includes? lower active))))))
+
 (deftest experiment-plan-validation-fails-closed
   (let [document (viewer-experiment/read-edn (experiment-fixture-text))
         cases [(assoc-in document [:counts :nodes] 99)
