@@ -12,10 +12,11 @@
   (packs/connection-pack
    {:id :http/form-session-v1
     :doc "HTTP form session connection"
-    :config-schema [:map [:csrf-required :boolean]]
+    :config-schema [:map {:closed true} [:csrf-required :boolean]]
     :template {:csrf-required true}
-    :modes {:simulate {:params-schema [:map [:latency-ms :int]]}
-            :record {:params-schema nil}}
+    :modes {:simulate {:params-schema [:map {:closed true}
+                                        [:latency-ms :int]]}
+            :record {:params-schema [:map {:closed true}]}}
     :faults {:catalog #{:drop-ack :reset :half-close}}
     :compile (fn [request]
                (packs/connection-binding
@@ -30,7 +31,8 @@
   (packs/check-pack
    {:id :example.outbox/command-atomic-v1
     :doc "command atomicity"
-    :config-schema [:map]
+    :config-schema [:map {:closed true}
+                    [:when {:optional true} [:enum :always]]]
     :template {}
     :observations [:connection/history]
     :check (fn [request]
@@ -47,9 +49,9 @@
   (packs/connection-pack
    {:id :http/form-session-v1
     :doc "d"
-    :config-schema {}
+    :config-schema [:map {:closed true}]
     :template {}
-    :modes {:simulate {:params-schema nil}}
+    :modes {:simulate {:params-schema [:map {:closed true}]}}
     :faults {}
     :compile compile-fn}))
 
@@ -59,10 +61,11 @@
   (is (= {:kind :connection
           :id :http/form-session-v1
           :doc "HTTP form session connection"
-          :config-schema [:map [:csrf-required :boolean]]
+          :config-schema [:map {:closed true} [:csrf-required :boolean]]
           :template {:csrf-required true}
-          :modes {:simulate {:params-schema [:map [:latency-ms :int]]}
-                  :record {:params-schema nil}}
+          :modes {:simulate {:params-schema [:map {:closed true}
+                                            [:latency-ms :int]]}
+                  :record {:params-schema [:map {:closed true}]}}
           :faults {:catalog #{:drop-ack :reset :half-close}}}
          (packs/describe test-registry :http/form-session-v1)))
   (is (not (contains? (packs/describe test-registry :http/form-session-v1)
@@ -72,7 +75,8 @@
   (is (= {:kind :check
           :id :example.outbox/command-atomic-v1
           :doc "command atomicity"
-          :config-schema [:map]
+          :config-schema [:map {:closed true}
+                          [:when {:optional true} [:enum :always]]]
           :template {}
           :observations [:connection/history]}
          (packs/describe test-registry :example.outbox/command-atomic-v1))))
@@ -80,8 +84,9 @@
 (deftest template-modes-and-faults-return-data-only-values
   (is (= {:csrf-required true}
          (packs/template test-registry :http/form-session-v1)))
-  (is (= {:simulate {:params-schema [:map [:latency-ms :int]]}
-          :record {:params-schema nil}}
+  (is (= {:simulate {:params-schema [:map {:closed true}
+                                        [:latency-ms :int]]}
+          :record {:params-schema [:map {:closed true}]}}
          (packs/modes test-registry :http/form-session-v1)))
   (is (= {:catalog #{:drop-ack :reset :half-close}}
          (packs/faults test-registry :http/form-session-v1)))
@@ -100,9 +105,9 @@
 (deftest descriptor-keys-must-be-exact
   (let [base {:id :http/form-session-v1
               :doc "d"
-              :config-schema {}
+              :config-schema [:map {:closed true}]
               :template {}
-              :modes {:simulate {:params-schema nil}}
+              :modes {:simulate {:params-schema [:map {:closed true}]}}
               :faults {}
               :compile (fn [_] :unused)}]
     (is (= :jolt.sim.pack-registry/invalid-descriptor
@@ -130,27 +135,27 @@
            (:type (ex-data-of #(packs/connection-pack
                                 {:id bad
                                  :doc "d"
-                                 :config-schema {}
+                                 :config-schema [:map {:closed true}]
                                  :template {}
-                                 :modes {:simulate {:params-schema nil}}
+                                 :modes {:simulate {:params-schema [:map {:closed true}]}}
                                  :faults {}
                                  :compile (fn [_] :unused)}))))
         (pr-str bad)))
   (is (some? (packs/connection-pack
               {:id :a/b-v22
                :doc "d"
-               :config-schema {}
+               :config-schema [:map {:closed true}]
                :template {}
-               :modes {:record {:params-schema nil}}
+               :modes {:record {:params-schema [:map {:closed true}]}}
                :faults {}
                :compile (fn [_] :unused)}))))
 
 (deftest discoverable-data-rejects-functions-recursively
   (let [base {:id :http/form-session-v1
               :doc "d"
-              :config-schema {}
+              :config-schema [:map {:closed true}]
               :template {}
-              :modes {:simulate {:params-schema nil}}
+              :modes {:simulate {:params-schema [:map {:closed true}]}}
               :faults {}
               :compile (fn [_] :unused)}
         cases [{:field :config-schema
@@ -184,9 +189,9 @@
         with-callback-metadata (with-meta {} {:callback (fn [_] :hidden)})
         base {:id :http/form-session-v1
               :doc "d"
-              :config-schema {}
+              :config-schema [:map {:closed true}]
               :template {}
-              :modes {:simulate {:params-schema nil}}
+              :modes {:simulate {:params-schema [:map {:closed true}]}}
               :faults {}
               :compile (fn [_] :unused)}
         lazy-data (ex-data-of
@@ -204,9 +209,9 @@
 (deftest descriptors-and-mode-maps-reject-container-metadata
   (let [base {:id :http/form-session-v1
               :doc "d"
-              :config-schema {}
+              :config-schema [:map {:closed true}]
               :template {}
-              :modes {:simulate {:params-schema nil}}
+              :modes {:simulate {:params-schema [:map {:closed true}]}}
               :faults {}
               :compile (fn [_] :unused)}
         descriptor-data
@@ -234,13 +239,13 @@
     (is (not-any? fn? (:path modes-data)))))
 
 (deftest symbols-remain-inert-discoverable-identifiers
-  (let [schema [:map [:entry 'example.outbox/run]]
+  (let [schema [:map {:closed true} [:entry [:= 'example.outbox/run]]]
         pack (packs/connection-pack
               {:id :example/entry-v1
                :doc "symbol identifiers are data, never resolved here"
                :config-schema schema
                :template {:entry 'example.outbox/run}
-               :modes {:record {:params-schema nil}}
+               :modes {:record {:params-schema [:map {:closed true}]}}
                :faults {}
                :compile (fn [request]
                           (packs/connection-binding
@@ -255,7 +260,7 @@
               #(packs/check-pack
                 {:id :example/check-v1
                  :doc "d"
-                 :config-schema {}
+                 :config-schema [:map {:closed true}]
                  :template {}
                  :observations [:ok/history (fn [_] :not-data)]
                  :check (fn [_] :unused)}))]
@@ -271,9 +276,9 @@
              #(packs/connection-pack
                {:id :http/form-session-v1
                 :doc "d"
-                :config-schema {}
+                :config-schema [:map {:closed true}]
                 :template {}
-                :modes {:shadow {:params-schema nil}}
+                :modes {:shadow {:params-schema [:map {:closed true}]}}
                 :faults {}
                 :compile (fn [_] :unused)}))]
     (is (= :jolt.sim.pack-registry/invalid-descriptor (:type bad)))
@@ -286,9 +291,9 @@
   (let [other (packs/connection-pack
                {:id :http/form-session-v1
                 :doc "different"
-                :config-schema {}
+                :config-schema [:map {:closed true}]
                 :template {}
-                :modes {:record {:params-schema nil}}
+                :modes {:record {:params-schema [:map {:closed true}]}}
                 :faults {}
                 :compile (fn [_] :other)})]
     (let [data (ex-data-of #(packs/registry [http-connection] [other]))]
@@ -308,6 +313,32 @@
          (:type (ex-data-of #(packs/registry [:not/a-pack-v1])))))
   (is (= :jolt.sim.pack-registry/not-a-pack
          (:type (ex-data-of #(packs/registry [{:id :not/a-pack-v1}]))))))
+
+(deftest registry-rejects-invalid-schemas-and-templates
+  (let [invalid-schema
+        (packs/connection-pack
+         {:id :example/invalid-schema-v1
+          :doc "d"
+          :config-schema [:map [:open :int]]
+          :template {:open 1}
+          :modes {:simulate {:params-schema [:map {:closed true}]}}
+          :faults {}
+          :compile (fn [_] :unused)})
+        invalid-template
+        (packs/connection-pack
+         {:id :example/invalid-template-v1
+          :doc "d"
+          :config-schema [:map {:closed true} [:required :int]]
+          :template {}
+          :modes {:simulate {:params-schema [:map {:closed true}]}}
+          :faults {}
+          :compile (fn [_] :unused)})]
+    (is (= :jolt.sim.schema/unsupported-schema
+           (:type (ex-data-of #(packs/registry [invalid-schema])))))
+    (let [data (ex-data-of #(packs/registry [invalid-template]))]
+      (is (= :jolt.sim.schema/invalid-value (:type data)))
+      (is (= :template (:field data)))
+      (is (not (contains? data :value))))))
 
 (deftest registry-values-are-revalidated-on-use
   (is (= :jolt.sim.pack-registry/not-a-registry
@@ -330,7 +361,31 @@
                             http-connection)]
     (is (= :jolt.sim.pack-registry/not-a-registry
            (:type (ex-data-of #(packs/describe misplaced
-                                               [:check :http/form-session-v1])))))))
+                                               [:check :http/form-session-v1]))))))
+  ;; Schema and template guarantees are rechecked on the selected entry, not
+  ;; merely when registry was first constructed.
+  (let [tampered-schema
+        (assoc-in test-registry
+                  [:packs [:connection :http/form-session-v1] :config-schema]
+                  [:map [:csrf-required :boolean]])
+        tampered-params
+        (assoc-in test-registry
+                  [:packs [:connection :http/form-session-v1]
+                   :modes :simulate :params-schema]
+                  [:map [:latency-ms :int]])
+        tampered-template
+        (assoc-in test-registry
+                  [:packs [:connection :http/form-session-v1] :template]
+                  {})]
+    (is (= :jolt.sim.schema/unsupported-schema
+           (:type (ex-data-of #(packs/describe tampered-schema
+                                               :http/form-session-v1)))))
+    (is (= :jolt.sim.schema/unsupported-schema
+           (:type (ex-data-of #(packs/modes tampered-params
+                                            :http/form-session-v1)))))
+    (is (= :jolt.sim.schema/invalid-value
+           (:type (ex-data-of #(packs/template tampered-template
+                                               :http/form-session-v1)))))))
 
 (deftest registry-revalidates-only-the-selected-entry
   (let [unrelated-tamper
@@ -371,15 +426,15 @@
   (let [dual-connection (packs/connection-pack
                          {:id :shared/dual-v1
                           :doc "dual connection"
-                          :config-schema {}
+                          :config-schema [:map {:closed true}]
                           :template {}
-                          :modes {:record {:params-schema nil}}
+                          :modes {:record {:params-schema [:map {:closed true}]}}
                           :faults {}
                           :compile (fn [_] :unused)})
         dual-check (packs/check-pack
                     {:id :shared/dual-v1
                      :doc "dual check"
-                     :config-schema {}
+                     :config-schema [:map {:closed true}]
                      :template {}
                      :observations []
                      :check (fn [_] :unused)})
@@ -391,7 +446,7 @@
       (is (= [:connection :check] (:kinds data))))
     (is (= :connection (:kind (packs/describe registry [:connection :shared/dual-v1]))))
     (is (= :check (:kind (packs/describe registry [:check :shared/dual-v1]))))
-    (is (= {:record {:params-schema nil}}
+    (is (= {:record {:params-schema [:map {:closed true}]}}
            (packs/modes registry [:connection :shared/dual-v1])))))
 
 (deftest connection-only-queries-fail-on-check-packs
@@ -450,6 +505,40 @@
       (is (= :params (:field params-fn)))
       (is (= [:retry :when] (:path params-fn))))))
 
+(deftest compile-connection-validates-schemas-before-trusted-code
+  (let [calls (atom 0)
+        pack
+        (packs/connection-pack
+         {:id :example/strict-v1
+          :doc "d"
+          :config-schema [:map {:closed true} [:enabled :boolean]]
+          :template {:enabled true}
+          :modes {:simulate
+                  {:params-schema [:map {:closed true} [:retries :int]]}}
+          :faults {}
+          :compile (fn [request]
+                     (swap! calls inc)
+                     (packs/connection-binding (:id request)
+                                               (:mode request) {}))})
+        registry (packs/registry [pack])
+        bad-config
+        (ex-data-of #(packs/compile-connection
+                      registry :example/strict-v1
+                      {:mode :simulate
+                       :config {:enabled "yes"}
+                       :params {:retries 1}}))
+        bad-params
+        (ex-data-of #(packs/compile-connection
+                      registry :example/strict-v1
+                      {:mode :simulate
+                       :config {:enabled true}
+                       :params {:retries 1 :unknown true}}))]
+    (is (= :jolt.sim.schema/invalid-value (:type bad-config)))
+    (is (= :config (:field bad-config)))
+    (is (= :jolt.sim.schema/invalid-value (:type bad-params)))
+    (is (= :params (:field bad-params)))
+    (is (zero? @calls))))
+
 (deftest compile-connection-revalidates-compiler-output
   (let [valid (packs/connection-binding :http/form-session-v1 :simulate {})
         request {:mode :simulate :config {} :params {}}
@@ -493,7 +582,7 @@
   (let [bad-binder (packs/check-pack
                     {:id :example/bad-binder-v1
                      :doc "d"
-                     :config-schema {}
+                     :config-schema [:map {:closed true}]
                      :template {}
                      :observations []
                      :check (fn [_] {:no :marker})})
@@ -502,6 +591,26 @@
            (:type (ex-data-of #(packs/compile-check
                                 registry :example/bad-binder-v1
                                 {:config {}})))))))
+
+(deftest compile-check-validates-schema-before-trusted-code
+  (let [calls (atom 0)
+        pack
+        (packs/check-pack
+         {:id :example/strict-check-v1
+          :doc "d"
+          :config-schema [:map {:closed true} [:limit :int]]
+          :template {:limit 1}
+          :observations []
+          :check (fn [request]
+                   (swap! calls inc)
+                   (packs/check-binding (:id request) {}))})
+        registry (packs/registry [pack])
+        data (ex-data-of #(packs/compile-check
+                           registry :example/strict-check-v1
+                           {:config {:limit "unbounded"}}))]
+    (is (= :jolt.sim.schema/invalid-value (:type data)))
+    (is (= :config (:field data)))
+    (is (zero? @calls))))
 
 (deftest compilation-is-kind-directed
   (is (= :jolt.sim.pack-registry/unsupported-query
@@ -522,9 +631,9 @@
   (let [manifest (edn/read-string
                   (str "{:id :http/form-session-v1"
                        " :doc \"edn descriptor\""
-                       " :config-schema [:map]"
+                       " :config-schema [:map {:closed true}]"
                        " :template {}"
-                       " :modes {:simulate {:params-schema nil}}"
+                       " :modes {:simulate {:params-schema [:map {:closed true}]}}"
                        " :faults {}"
                        " :compile some.evil/install}"))]
     (is (symbol? (:compile manifest)))

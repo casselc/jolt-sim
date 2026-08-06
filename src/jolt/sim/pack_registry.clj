@@ -18,7 +18,8 @@
   Compilation entry points resolve a pack, validate the data-only request,
   invoke the trusted function, and revalidate the returned binding's explicit
   type marker and identity. Semantic assembly of bindings into worlds,
-  handlers, or monitors belongs to the later experiment compiler, not here.")
+  handlers, or monitors belongs to the later experiment compiler, not here."
+  (:require [jolt.sim.schema :as schema]))
 
 (def ^:private type-key :jolt.sim.pack-registry/type)
 
@@ -206,8 +207,22 @@
       (connection-pack descriptor)
       (check-pack descriptor))))
 
+(defn- validate-pack-schemas! [pack]
+  (let [kind (pack-kind pack)
+        id (:id pack)
+        context {:kind kind :pack-id id :field :config-schema}
+        compiled (schema/compile! context (:config-schema pack))]
+    (schema/validate! compiled (:template pack)
+                      {:kind kind :pack-id id :field :template})
+    (when (= :connection kind)
+      (doseq [[mode entry] (:modes pack)]
+        (schema/compile! {:kind kind :pack-id id :mode mode
+                          :field :params-schema}
+                         (:params-schema entry))))
+    pack))
+
 (defn- add-pack [packs value]
-  (let [pack (ensure-pack value)
+  (let [pack (validate-pack-schemas! (ensure-pack value))
         kind (pack-kind pack)
         id (:id pack)
         key [kind id]]
@@ -255,7 +270,7 @@
     (fail! :jolt.sim.pack-registry/not-a-registry
            "registry keys are [kind id] pairs"
            {:key key}))
-  (let [rebuilt (ensure-pack pack)]
+  (let [rebuilt (validate-pack-schemas! (ensure-pack pack))]
     (when-not (and (= (nth key 0) (pack-kind rebuilt))
                    (= (nth key 1) (:id rebuilt)))
       (fail! :jolt.sim.pack-registry/not-a-registry
@@ -457,6 +472,12 @@
                                   id :config (:config request))
     (validate-data-request-field! :jolt.sim.pack-registry/invalid-request
                                   id :params (:params request))
+    (schema/validate-form! {:kind :connection :pack-id id :field :config}
+                           (:config-schema pack) (:config request))
+    (schema/validate-form! {:kind :connection :pack-id id
+                            :mode (:mode request) :field :params}
+                           (get-in pack [:modes (:mode request) :params-schema])
+                           (:params request))
     (validate-connection-binding!
      ((:compile pack) {:id id
                        :mode (:mode request)
@@ -487,6 +508,8 @@
               :actual (when (map? request) (set (keys request)))}))
     (validate-data-request-field! :jolt.sim.pack-registry/invalid-request
                                   id :config (:config request))
+    (schema/validate-form! {:kind :check :pack-id id :field :config}
+                           (:config-schema pack) (:config request))
     (validate-check-binding!
      ((:check pack) {:id id :config (:config request)})
      id)))
