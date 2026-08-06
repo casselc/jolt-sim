@@ -9,6 +9,7 @@
             [jolt.sim.session :as session]
             [jolt.sim.trace :as trace]
             [jolt.sim.viewer :as viewer]
+            [jolt.sim.viewer.experiment :as viewer-experiment]
             [jolt.sim.viewer.session :as viewer-session]
             [teensyp.client :as client]))
 
@@ -194,6 +195,8 @@
     (is (string/includes? (:body script) "kind.disabled = busy"))
     (is (string/includes? (:body script)
                           "X-Jolt-Sim-Document-Kind"))
+    (is (string/includes? (:body shell)
+                          "value=\"experiment-plan\""))
     (is (string/includes? (:body script)
                           "const replayRequest = request(\"/api/replay\")"))
     (is (= "no-store" (get-in shell [:headers "Cache-Control"])))
@@ -226,6 +229,145 @@
     (is (= viewer/invalid-config (:type data)))
     (is (= :invalid-presentation-registry (:reason data)))
     (is (= :invalid-kind (get-in data [:detail :reason])))))
+
+(defn- experiment-fixture-text []
+  (slurp "examples/experiment-plan.edn"))
+
+(defn- unsafe-process-local-plan-data []
+  (let [secret "DO-NOT-RENDER-EXPERIMENT-SECRET"
+        hidden (fn [& _] secret)]
+    {:jolt.sim.experiment/type :jolt.sim.experiment/plan
+     :jolt.sim.experiment-plan/version 1
+     :experiment-id :example.experiment/outbox-v1
+     :profile-id :hermetic
+     :manifest
+     {:jolt.sim.experiment/version 1
+      :id :example.experiment/outbox-v1
+      :nodes
+      {:client {:ports {:http {:direction :out
+                               :capabilities #{:example.http/client-v1}}}}
+       :app {:ports {:http {:direction :in
+                            :capabilities #{:example.http/server-v1}}}}}
+      :connections
+      {:command {:from [:client :http]
+                 :to [:app :http]
+                 :pack :example.connection/http-v1
+                 :config {:credential secret :callback hidden}}}
+      :profiles {:hermetic {:connections
+                            {:command {:mode :simulate
+                                       :params {:token secret}}}}}
+      :checks [{:pack :example.check/outbox-v1
+                :config {:secret secret :predicate hidden}}]}
+     :connections
+     {:command
+      {:from [:client :http]
+       :to [:app :http]
+       :pack-id :example.connection/http-v1
+       :capabilities {:from #{:example.http/client-v1}
+                      :to #{:example.http/server-v1}}
+       :mode :simulate
+       :binding
+       {:fields
+        {:consumes {:from #{:example.http/client-v1}
+                    :to #{:example.http/server-v1}}
+         :handler-packs
+         [{:jolt.sim.handler-pack/type :jolt.sim.handler-pack/pack
+           :id :example.handler/http-v1
+           :handlers {[:native-operation :send] hidden
+                      [:native-operation :recv] hidden}}]
+         :clock hidden
+         :mechanism-probe hidden
+         :history-projector hidden
+         :monitor-specs [{:id :example.monitor/secret :check hidden}]
+         :presentation-registry
+         {:secret/event {:kind :example.kind/secret :present hidden}}
+         :native-fallback #{}}}}}
+     :checks [{:fields {:monitor-specs [{:id :example.check/one :check hidden}]
+                       :presentation-registry
+                       {:check/event {:kind :example.kind/check :present hidden}}}}]
+     :runtime-config
+     {:ffi-mode :hermetic
+      :ffi-handlers {[:native-operation :send] hidden
+                     [:native-operation :recv] hidden}
+      :clock hidden}
+     :mechanism-probes {:command hidden}
+     :history-projectors {:command hidden}
+     :monitor-specs [{:id :example.monitor/secret :check hidden}
+                     {:id :example.check/one :check hidden}]
+     :presentation-registry
+     {:secret/event {:kind :example.kind/secret :present hidden}
+      :check/event {:kind :example.kind/check :present hidden}}
+     :mutable-world (atom {:secret secret})}))
+
+(deftest experiment-plan-projection-excludes-process-local-executables-and-secrets
+  (let [document (viewer-experiment/plan-data->document
+                  (unsafe-process-local-plan-data))
+        encoded (viewer-experiment/canonical-edn document)
+        html (viewer-experiment/document->html document)]
+    (is (= :example.experiment/outbox-v1 (:experiment-id document)))
+    (is (= :hermetic (:profile-id document)))
+    (is (= 2 (get-in document [:runtime :handler-count])))
+    (is (= [{:pack-id :example.handler/http-v1 :handler-count 2}]
+           (get-in document [:connections 0 :handler-owners])))
+    (doseq [output [encoded html]]
+      (is (not (string/includes? output "DO-NOT-RENDER")))
+      (is (not (string/includes? output "credential")))
+      (is (not (string/includes? output "callback")))
+      (is (not (string/includes? output "mutable-world")))
+      (is (not (string/includes? output "function"))))))
+
+(deftest experiment-plan-fixture-is-strict-deterministic-and-specialized
+  (let [text (experiment-fixture-text)
+        document (viewer-experiment/read-edn text)
+        rows (:rows (viewer-experiment/document->view-model document))
+        kinds (set (map :kind rows))]
+    (is (= document
+           (viewer-experiment/read-edn
+            (viewer-experiment/canonical-edn document))))
+    (is (contains? kinds :jolt.sim.kind/experiment-identity))
+    (is (contains? kinds :jolt.sim.kind/experiment-node))
+    (is (contains? kinds :jolt.sim.kind/experiment-connection))
+    (is (contains? kinds :jolt.sim.kind/experiment-check))
+    (is (contains? kinds :jolt.sim.kind/experiment-runtime))
+    (is (contains? kinds :jolt.sim.kind/experiment-controls))))
+
+(deftest experiment-plan-validation-fails-closed
+  (let [document (viewer-experiment/read-edn (experiment-fixture-text))
+        cases [(assoc-in document [:counts :nodes] 99)
+               (assoc document :unexpected :value)]]
+    (doseq [value cases]
+      (let [data (try
+                   (viewer-experiment/validate-document! value)
+                   nil
+                   (catch :default error (ex-data error)))]
+        (is (= viewer-experiment/invalid-document (:type data)))))
+    (let [data (try
+                 (viewer-experiment/read-edn
+                  (str (viewer-experiment/canonical-edn document) " :trailing"))
+                 nil
+                 (catch :default error (ex-data error)))]
+      (is (= viewer-experiment/invalid-document (:type data)))
+      (is (= :trailing-edn (:reason data))))))
+
+(deftest experiment-plan-http-path-is-inspection-only
+  (let [render-calls (atom [])
+        replay-calls (atom [])
+        handler (viewer/make-handler
+                 (config)
+                 (services render-calls replay-calls {:status :completed}))
+        text (experiment-fixture-text)
+        rendered (handler (request "/api/render" text token :experiment-plan))
+        replayed (handler (request "/api/replay" text token :experiment-plan))]
+    (is (= 200 (:status rendered)))
+    (is (string/includes? (:body rendered) "Inspection only"))
+    (is (string/includes? (:body rendered)
+                          "jolt.sim.kind/experiment-connection"))
+    (is (string/includes? (:body rendered) "disabled"))
+    (is (= 400 (:status replayed)))
+    (is (string/includes? (:body replayed)
+                          ":experiment-plan-not-replayable"))
+    (is (= [] @render-calls))
+    (is (= [] @replay-calls))))
 
 (deftest render-validates-before-delegating-exactly-once
   (let [render-calls (atom [])
