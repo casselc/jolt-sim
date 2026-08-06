@@ -201,6 +201,16 @@
     (is (not (string/includes? (:body script)
                                "kind.value !== \"experiment-plan\"")))
     (is (string/includes? (:body script) "row.focus({preventScroll: true})"))
+    (is (string/includes? (:body shell) "id=\"session-refresh\""))
+    (is (string/includes? (:body shell) "id=\"session-frame\""))
+    (is (string/includes? (:body script) "fetch(\"/api/session-frame\""))
+    (is (string/includes? (:body script) "X-Jolt-Sim-Journal-Cursor"))
+    (is (string/includes? (:body script) "sessionFrame.textContent = text"))
+    (is (string/includes? (:body script)
+                          "No current session frame; the last refresh failed."))
+    (is (string/includes? (:body script)
+                          "No current session frame; refresh from cursor zero."))
+    (is (not (string/includes? (:body script) "setInterval")))
     (is (string/includes? (:body script) "file.disabled = busy"))
     (is (string/includes? (:body script) "kind.disabled = busy"))
     (is (string/includes? (:body script)
@@ -1020,6 +1030,196 @@
            (mapv (fn [i] {:seq i :command (if (zero? i) :start :step)})
                  (range journal-count))))
        :step! (fn [_] (throw (ex-info "unused" {:type ::unused})))})))
+
+(deftest session-frame-endpoint-is-optional-authorized-and-read-only
+  (let [s (session/start (session-sim-config))
+        viewer-config (assoc (config) :max-document-bytes (* 1024 1024))
+        expected (viewer-session/read-frame s 0)
+        before-snapshot (session/snapshot s)
+        before-journal (session/journal s)
+        read-calls (atom [])
+        handler
+        (viewer/make-handler
+         viewer-config
+         (assoc (services (atom []) (atom []) {:status :completed})
+                :read-session-frame
+                (fn [cursor]
+                  (swap! read-calls conj cursor)
+                  (viewer-session/read-frame s cursor))))
+        unavailable
+        (viewer/make-handler
+         viewer-config
+         (services (atom []) (atom []) {:status :completed}))
+        forbidden (handler (get-request "/api/session-frame" "wrong"))
+        missing (unavailable (get-request "/api/session-frame"))
+        response (handler (get-request "/api/session-frame"))]
+    (is (= 403 (:status forbidden)))
+    (is (= 404 (:status missing)))
+    (is (string/includes? (:body missing) ":session-unavailable"))
+    (is (= [0] @read-calls)
+        "unauthorized and unavailable requests never invoke a frame reader")
+    (is (= 200 (:status response)))
+    (is (= "1" (get-in response
+                         [:headers "X-Jolt-Sim-Journal-Next-Cursor"])))
+    (is (= (trace/canonical-edn
+            (update expected :journal assoc
+                    :page-size 1 :remaining? false))
+           (:body response)))
+    (is (= (:branches expected) (mapv :branch (:previews expected))))
+    (is (= before-snapshot (session/snapshot s)))
+    (is (= before-journal (session/journal s))
+        "reading through HTTP neither steps nor appends to the Session")))
+
+(deftest session-frame-endpoint-validates-and-forwards-the-journal-cursor
+  (let [cursors (atom [])
+        handler
+        (viewer/make-handler
+         (config)
+         (assoc (services (atom []) (atom []) {:status :completed})
+                :read-session-frame
+                (fn [cursor]
+                  (swap! cursors conj cursor)
+                  {:jolt.sim.viewer.session/type :frame
+                   :revision 3 :status nil :projection {}
+                   :branches [] :previews []
+                   :journal {:cursor cursor :next-cursor 7
+                             :count 7 :entries [{:seq 6}]}})))
+        cursor-request (assoc-in (get-request "/api/session-frame")
+                                 [:headers "x-jolt-sim-journal-cursor"] "6")
+        malformed-request (assoc-in (get-request "/api/session-frame")
+                                    [:headers "x-jolt-sim-journal-cursor"] "-1")
+        overflow-request (assoc-in (get-request "/api/session-frame")
+                                   [:headers "x-jolt-sim-journal-cursor"]
+                                   "999999999999999999999999999999")
+        response (handler cursor-request)
+        malformed (handler malformed-request)
+        overflow (handler overflow-request)]
+    (is (= 200 (:status response)))
+    (is (= [6] @cursors))
+    (is (= "7" (get-in response
+                         [:headers "X-Jolt-Sim-Journal-Next-Cursor"])))
+    (is (= 400 (:status malformed)))
+    (is (= 400 (:status overflow)))
+    (is (string/includes? (:body malformed) ":invalid-session-cursor"))
+    (is (string/includes? (:body overflow) ":out-of-range"))
+    (is (= [6] @cursors)
+        "malformed cursors fail before the trusted reader is called")))
+
+(deftest session-frame-endpoint-translates-adapter-failures-without-details
+  (doseq [[type expected-status expected-error]
+          [[:jolt.sim.viewer.session/invalid-cursor
+            400 :invalid-session-cursor]
+           [:jolt.sim.viewer.session/coherence-failed
+            409 :session-frame-incoherent]]]
+    (let [handler
+          (viewer/make-handler
+           (config)
+           (assoc (services (atom []) (atom []) {:status :completed})
+                  :read-session-frame
+                  (fn [_]
+                    (throw
+                     (ex-info "private detail"
+                              {:type type :reason :ahead-of-journal
+                               :cursor 9 :journal-count 1
+                               :attempts 8 :max-attempts 8
+                               :secret "must-not-cross"})))))
+          response (handler (get-request "/api/session-frame"))]
+      (is (= expected-status (:status response)))
+      (is (string/includes? (:body response) (str expected-error)))
+      (is (not (string/includes? (:body response) "private detail")))
+      (is (not (string/includes? (:body response) "must-not-cross"))))))
+
+(deftest session-frame-endpoint-bounds-journal-pages-and-total-bytes
+  (let [entries (mapv (fn [seq] {:seq seq :payload "bounded"}) (range 300))
+        services-map
+        (assoc (services (atom []) (atom []) {:status :completed})
+               :read-session-frame
+               (fn [cursor]
+                 {:jolt.sim.viewer.session/type :frame
+                  :revision 0 :status nil :projection {}
+                  :branches [] :previews []
+                  :journal {:cursor cursor :next-cursor 300 :count 300
+                            :entries (subvec entries cursor)}}))
+        response ((viewer/make-handler
+                   (assoc (config) :max-document-bytes (* 1024 1024))
+                   services-map)
+                  (get-request "/api/session-frame"))
+        too-small ((viewer/make-handler
+                    (assoc (config) :max-document-bytes 64)
+                    services-map)
+                   (get-request "/api/session-frame"))]
+    (is (= 200 (:status response)))
+    (is (= "256" (get-in response
+                           [:headers "X-Jolt-Sim-Journal-Next-Cursor"])))
+    (is (string/includes? (:body response) ":page-size 256"))
+    (is (string/includes? (:body response) ":remaining? true"))
+    (is (not (string/includes? (:body response) ":seq 299")))
+    (is (= 413 (:status too-small)))
+    (is (string/includes? (:body too-small) ":session-frame-too-large"))))
+
+(deftest session-frame-endpoint-scrubs-unexpected-reader-errors
+  (let [handler
+        (viewer/make-handler
+         (config)
+         (assoc (services (atom []) (atom []) {:status :completed})
+                :read-session-frame
+                (fn [_]
+                  (throw (ex-info "reader secret" {:secret "must-not-cross"})))))
+        response (handler (get-request "/api/session-frame"))]
+    (is (= 500 (:status response)))
+    (is (string/includes? (:body response) ":session-frame-unavailable"))
+    (is (not (string/includes? (:body response) "reader secret")))
+    (is (not (string/includes? (:body response) "must-not-cross")))))
+
+(deftest session-frame-endpoint-admits-only-one-reader
+  (let [entered (promise)
+        release (promise)
+        reads (atom 0)
+        handler
+        (viewer/make-handler
+         (config)
+         (assoc (services (atom []) (atom []) {:status :completed})
+                :read-session-frame
+                (fn [cursor]
+                  (swap! reads inc)
+                  (deliver entered true)
+                  @release
+                  {:jolt.sim.viewer.session/type :frame
+                   :revision 0 :status nil :projection {}
+                   :branches [] :previews []
+                   :journal {:cursor cursor :next-cursor cursor
+                             :count cursor :entries []}})))
+        first-response (future (handler (get-request "/api/session-frame")))]
+    (try
+      (is (= true (deref entered 5000 ::timeout)))
+      (let [busy (handler (get-request "/api/session-frame"))]
+        (is (= 429 (:status busy)))
+        (is (string/includes? (:body busy) ":session-frame-busy"))
+        (is (= 1 @reads)))
+      (finally
+        (deliver release true)))
+    (is (= 200 (:status (deref first-response 5000 {:status ::timeout}))))
+    (is (= 200 (:status (handler (get-request "/api/session-frame")))))
+    (is (= 2 @reads))))
+
+(deftest start-session-installs-only-the-read-frame-capability
+  (let [s (session/start (session-sim-config))
+        captured (atom nil)
+        start-var (resolve 'jolt.sim.viewer/start!)]
+    (with-redefs-fn
+      {start-var
+       (fn [supplied-config supplied-services]
+         (reset! captured {:config supplied-config
+                           :services supplied-services})
+         :fake-server)}
+      #(is (= :fake-server (viewer/start-session! (config) s))))
+    (is (= (config) (:config @captured)))
+    (is (= #{:render-trace :render-case-outcome :replay-document
+             :read-session-frame}
+           (set (keys (:services @captured)))))
+    (is (nil? (get-in @captured [:services :step-session-frame])))
+    (is (= (viewer-session/read-frame s 0)
+           ((get-in @captured [:services :read-session-frame]) 0)))))
 
 (deftest session-frame-initial-read-is-coherent-and-closed
   (let [s (session/start (session-sim-config))
