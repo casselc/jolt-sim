@@ -46,7 +46,9 @@
 (def trace-not-replayable ::trace-not-replayable)
 (def experiment-plan-not-replayable ::experiment-plan-not-replayable)
 (def invalid-session-cursor ::invalid-session-cursor)
+(def invalid-session-step ::invalid-session-step)
 (def ^:private invalid-session-frame ::invalid-session-frame)
+(def ^:private invalid-session-step-result ::invalid-session-step-result)
 
 (def ^:private config-keys
   #{:port :capability-token :max-document-bytes
@@ -61,7 +63,7 @@
 
 (def ^:private service-keys
   #{:render-trace :render-case-outcome :replay-document
-    :read-session-frame})
+    :read-session-frame :step-session-frame!})
 
 (def ^:private default-max-document-bytes (* 1024 1024))
 (def ^:private maximum-max-document-bytes (* 16 1024 1024))
@@ -70,6 +72,11 @@
 (def ^:private progress-log-byte-limit 65536)
 (def ^:private session-journal-page-size 256)
 (def ^:private maximum-session-cursor-digits 19)
+(def ^:private session-step-body-limit 4096)
+;; A signed decimal carries one leading minus sign plus the unsigned digit
+;; budget, so Long/MIN_VALUE's 20 characters remain representable.
+(def ^:private maximum-step-signed-decimal-chars
+  (inc maximum-session-cursor-digits))
 
 (def ^:private empty-progress-diagnostic
   {:bytes 0 :truncated? false :text ""})
@@ -460,30 +467,22 @@
 (defn- execute-session-frame-request
   "Admits at most one expensive coherent-frame read at a time. Authorization
   is checked first so an untrusted local caller cannot observe whether a
-  trusted client is currently inspecting a session."
-  [config services session-frame-active? request]
+  trusted client is currently inspecting a session. The gate is shared with
+  `POST /api/session-step`: a simultaneous step rejects with 429 before the
+  trusted reader is invoked."
+  [config services session-active? request]
   (cond
     (not (authorized? config request))
     (error-response 403 :forbidden nil)
 
-    (not (compare-and-set! session-frame-active? false true))
+    (not (compare-and-set! session-active? false true))
     (error-response 429 :session-frame-busy nil)
 
     :else
     (try
       (session-frame-response config services request)
       (finally
-        (reset! session-frame-active? false)))))
-
-(defn- edn-content-type? [request]
-  (let [value (get-in request [:headers "content-type"])]
-    (and (string? value)
-         (= "application/edn"
-            (-> value
-                string/lower-case
-                (string/split #";" 2)
-                first
-                string/trim)))))
+        (reset! session-active? false)))))
 
 (defn- content-length-too-large? [request limit]
   (let [raw (get-in request [:headers "content-length"])
@@ -514,6 +513,369 @@
                            :actual total})))
         (recur (conj chunks chunk) total))
       (concat-chunks chunks total))))
+
+(defn- json-content-type?
+  "True when the Content-Type value carries the application/json media type:
+  case-insensitive, optional ; parameters accepted and ignored. The body is
+  always decoded as UTF-8 per RFC 8259, whatever charset parameter appears."
+  [request]
+  (let [value (get-in request [:headers "content-type"])]
+    (and (string? value)
+         (= "application/json"
+            (-> value
+                string/lower-case
+                (string/split #";" 2)
+                first
+                string/trim)))))
+
+(defn- json-whitespace?
+  "The complete RFC 8259 whitespace set. clojure.string/trim is deliberately
+  broader and would accept Unicode separators that are not JSON syntax."
+  [c]
+  (or (= c \space)
+      (= c \tab)
+      (= c \return)
+      (= c \newline)))
+
+(defn- trim-json-whitespace
+  "Removes only RFC 8259 whitespace from both ends of the text."
+  [text]
+  (let [length (count text)
+        start (loop [index 0]
+                (if (and (< index length)
+                         (json-whitespace? (nth text index)))
+                  (recur (inc index))
+                  index))
+        end (loop [index length]
+              (if (and (> index start)
+                       (json-whitespace? (nth text (dec index))))
+                (recur (dec index))
+                index))]
+    (subs text start end)))
+
+(defn- canonical-unsigned-decimal?
+  "True only for the canonical unsigned decimal strings: `0` or a nonzero
+  digit followed by digits. Leading zeros, signs, whitespace, and every
+  non-string value are rejected."
+  [text]
+  (and (string? text)
+       (or (= "0" text)
+           (re-matches #"[1-9][0-9]*" text))))
+
+(defn- canonical-signed-decimal?
+  "True only for canonical optionally-signed decimal strings. `-0` is
+  noncanonical: the canonical zero is unsigned."
+  [text]
+  (and (string? text)
+       (or (canonical-unsigned-decimal? text)
+           (re-matches #"-[1-9][0-9]*" text))))
+
+(defn- step-decimal!
+  "Returns the long named by one canonical decimal string from the step
+  contract. The digit count is bounded before parsing so an oversized or
+  overflowing literal fails closed instead of exercising an unbounded parse.
+  `reason` names the contract field in the typed error."
+  [text signed? reason]
+  (when-not (if signed?
+              (canonical-signed-decimal? text)
+              (canonical-unsigned-decimal? text))
+    (throw
+     (ex-info "viewer session step decimal is not canonical"
+              {:type invalid-session-step :reason reason})))
+  (when (> (count text)
+           (if signed?
+             maximum-step-signed-decimal-chars
+             maximum-session-cursor-digits))
+    (throw
+     (ex-info "viewer session step decimal is outside the integer range"
+              {:type invalid-session-step :reason :decimal-out-of-range})))
+  (let [value (parse-long text)]
+    ;; Jolt's numeric tower permits parse-long to return an integer outside the
+    ;; signed 64-bit range.  The HTTP coordinate contract is deliberately
+    ;; narrower, so enforce the value bounds explicitly after the cheap length
+    ;; bound instead of relying on the parser's host-specific overflow policy.
+    (when-not (and (integer? value)
+                   (<= Long/MIN_VALUE value Long/MAX_VALUE)
+                   (or signed? (not (neg? value))))
+      (throw
+       (ex-info "viewer session step decimal is outside the integer range"
+                {:type invalid-session-step :reason :decimal-out-of-range})))
+    value))
+
+(def ^:private session-step-request-keys
+  #{"version" "cursor" "branch"})
+
+(def ^:private session-step-branch-keys
+  #{"revision" "kind" "value"})
+
+(defn- session-step-command!
+  "Reads and fail-closed validates the closed session-step request contract,
+  returning `[branch cursor]`.
+
+  The body is bounded at `session-step-body-limit` bytes and must hold exactly
+  one JSON object with exactly the keys `version` (the integer 1), `cursor`
+  (a canonical nonnegative decimal string), and `branch` (an object with
+  exactly `revision`, `kind`, and `value`). `kind` is the closed string `run`
+  or `advance`; `value` is a canonical decimal string, nonnegative for `run`
+  and optionally signed for `advance`. Unknown or missing keys, wrong types,
+  noncanonical decimals, trailing JSON, and overflowing literals are all
+  rejected before any Session function is invoked.
+
+  The branch is reconstructed from the closed string match as exactly
+  `{:revision N :action [:run N]}` or `[:advance N]`. Browser strings are
+  never interned as keywords or symbols: the action tag is one of two fixed
+  keywords selected by `case`, and JSON object keys remain plain strings."
+  [request]
+  (let [bytes (bounded-body-bytes request session-step-body-limit)
+        seen-keys (atom #{})
+        reject-duplicate
+        (fn [key value]
+          ;; data.json normally keeps the last occurrence of an object key.
+          ;; This contract has disjoint outer/branch key names, so one
+          ;; request-local set detects duplicates at either depth without a
+          ;; custom JSON parser.
+          (when (contains? @seen-keys key)
+            (throw
+             (ex-info "viewer session step body repeats an object key"
+                      {:type invalid-session-step
+                       :reason :duplicate-key})))
+          (swap! seen-keys conj key)
+          value)
+        value (try
+                (json/read-str (trim-json-whitespace (String. bytes "UTF-8"))
+                               :extra-data-fn json/on-extra-throw
+                               :value-fn reject-duplicate)
+                (catch :default error
+                  (if (= invalid-session-step (:type (ex-data error)))
+                    (throw error)
+                    (throw
+                     (ex-info
+                      "viewer session step body is not exactly one JSON value"
+                      {:type invalid-session-step
+                       :reason :malformed-json})))))]
+    (when-not (and (map? value)
+                   (= session-step-request-keys (set (keys value))))
+      (throw
+       (ex-info "viewer session step request keys are not the closed set"
+                {:type invalid-session-step :reason :unexpected-keys})))
+    (when-not (and (integer? (get value "version"))
+                   (= 1 (get value "version")))
+      (throw
+       (ex-info "viewer session step version is not the integer 1"
+                {:type invalid-session-step :reason :unsupported-version})))
+    (let [cursor (step-decimal! (get value "cursor") false :invalid-cursor)
+          branch (get value "branch")]
+      (when-not (and (map? branch)
+                     (= session-step-branch-keys (set (keys branch))))
+        (throw
+         (ex-info "viewer session step branch keys are not the closed set"
+                  {:type invalid-session-step :reason :invalid-branch})))
+      (let [revision (step-decimal! (get branch "revision")
+                                    false
+                                    :invalid-branch)
+            kind (get branch "kind")
+            tag (case kind
+                  "run" :run
+                  "advance" :advance
+                  (throw
+                   (ex-info "viewer session step branch kind is unknown"
+                            {:type invalid-session-step
+                             :reason :unknown-kind})))
+            payload (step-decimal! (get branch "value")
+                                   (= :advance tag)
+                                   :invalid-value)]
+        ;; A successful command acknowledges revision+1. Keep both the request
+        ;; and acknowledgment inside the same signed-64 coordinate domain.
+        (when (= Long/MAX_VALUE revision)
+          (throw
+           (ex-info "viewer session step revision cannot be incremented"
+                    {:type invalid-session-step
+                     :reason :decimal-out-of-range})))
+        [{:revision revision :action [tag payload]} cursor]))))
+
+(defn- invalid-step-result! []
+  (throw (ex-info "trusted session stepper returned an invalid result"
+                  {:type invalid-session-step-result})))
+
+(defn- valid-frame-error? [value phase]
+  (and (map? value)
+       (keyword? (:type value))
+       (= phase (:phase value))
+       (= (contains? value :attempts)
+          (contains? value :max-attempts))
+       (or (not (contains? value :attempts))
+           (and (integer? (:attempts value))
+                (pos? (:attempts value))
+                (integer? (:max-attempts value))
+                (pos? (:max-attempts value))
+                (<= (:attempts value) (:max-attempts value))))))
+
+(defn- session-step-receipt
+  "Projects the trusted stepper's closed result envelope into the compact
+  wire receipt: version, status, committed?, and either the exact commit
+  acknowledgment or the safe stale coordinates, plus `:frame-status`
+  (`:available` or `:unavailable`) with the bounded typed `:frame-error` when
+  the post-command frame could not be obtained. The full frame, projection,
+  world, previews, and events never cross this boundary. A defective envelope
+  fails closed as a server-owned error, never as a partial receipt."
+  [submitted-branch result]
+  (when-not (and (map? result)
+                 (= :step-result
+                    (:jolt.sim.viewer.session/type result)))
+    (invalid-step-result!))
+  (let [status (:status result)
+        committed? (:committed? result)
+        ack (:ack result)
+        stale (:stale result)
+        expected-revision (:revision submitted-branch)
+        base
+        (case status
+          :committed
+          (do
+            (when-not (and (true? committed?)
+                           (map? ack)
+                           (map? (:branch ack))
+                           (= submitted-branch
+                              (select-keys (:branch ack)
+                                           [:revision :action]))
+                           (= (inc expected-revision) (:revision ack)))
+              (invalid-step-result!))
+            {:version 1
+             :status :committed
+             :committed? true
+             ;; Reconstruct the acknowledgment from validated coordinates so
+             ;; nested extras from a defective service can never cross the
+             ;; wire even if this validation is later relaxed.
+             :ack {:branch submitted-branch
+                   :revision (:revision ack)}})
+
+          :stale
+          (do
+            (when-not (and (false? committed?)
+                           (nil? ack)
+                           (map? stale)
+                           (= :jolt.sim.session/stale-branch (:type stale))
+                           (= expected-revision (:expected-revision stale))
+                           (map? (:branch stale))
+                           (= submitted-branch
+                              (select-keys (:branch stale)
+                                           [:revision :action]))
+                           (integer? (:actual-revision stale))
+                           (<= 0 (:actual-revision stale) Long/MAX_VALUE)
+                           (not= (:actual-revision stale)
+                                 expected-revision))
+              (invalid-step-result!))
+            {:version 1
+             :status :stale
+             :committed? false
+             :stale {:expected-revision expected-revision
+                     :actual-revision (:actual-revision stale)
+                     :branch submitted-branch}})
+
+          (invalid-step-result!))
+        frame (:frame result)
+        frame-error (:frame-error result)
+        phase (if (= :committed status) :post-commit :stale-refresh)]
+    (cond
+      (and (map? frame)
+           (= :frame (:jolt.sim.viewer.session/type frame))
+           (nil? frame-error))
+      (assoc base :frame-status :available)
+
+      (and (nil? frame)
+           (valid-frame-error? frame-error phase))
+      (assoc base
+             :frame-status :unavailable
+             :frame-error (select-keys frame-error
+                                       [:type :phase
+                                        :attempts :max-attempts]))
+
+      :else
+      (invalid-step-result!))))
+
+(defn- session-step-error-response [error]
+  (let [data (ex-data error)
+        type (:type data)]
+    (cond
+      (= request-too-large type)
+      (error-response 413 :request-too-large
+                      (select-keys data [:limit :actual]))
+
+      (= invalid-session-step type)
+      (error-response 400 :invalid-session-step
+                      (select-keys data [:reason]))
+
+      (= :jolt.sim.viewer.session/invalid-cursor type)
+      (error-response 400 :invalid-session-cursor
+                      (select-keys data [:reason :cursor :journal-count]))
+
+      ;; The action was well-formed and revision-current but is not enabled at
+      ;; the current machine state (for example a disabled run target, a
+      ;; non-earliest timer, or a terminal machine). Only the kernel's fixed
+      ;; reason keyword may cross; the enabled set and machine state never do.
+      (= :jolt.sim.kernel/invalid-machine-action type)
+      (error-response 409 :session-step-rejected
+                      (when (keyword? (:reason data))
+                        (select-keys data [:reason])))
+
+      :else nil)))
+
+(defn- session-step-response [services request]
+  (try
+    (let [[branch cursor] (session-step-command! request)
+          result ((:step-session-frame! services) branch cursor)
+          receipt (session-step-receipt branch result)]
+      (response (if (:committed? receipt) 200 409)
+                "application/edn; charset=utf-8"
+                (trace/canonical-edn receipt)))
+    (catch :default error
+      (if-let [expected (session-step-error-response error)]
+        expected
+        (error-response 500 :session-step-error nil)))))
+
+(defn- execute-session-step-request
+  "Admits one exact revision-scoped session step at a time. Authorization is
+  checked before service availability, the admission gates, and the body so
+  an untrusted local caller cannot observe step service state. The session
+  gate is shared with `GET /api/session-frame`, so a simultaneous frame read
+  and step rejects with 429 before either the trusted reader or stepper is
+  invoked. The body is consumed only while holding the shared
+  document/body-consumer gate, so a busy response precedes any streaming
+  body read on the pool shared with jolt-http's parser."
+  [config services session-active? document-active? request]
+  (cond
+    (not (authorized? config request))
+    (error-response 403 :forbidden nil)
+
+    (not (fn? (:step-session-frame! services)))
+    (error-response 404 :session-step-unavailable nil)
+
+    (not (json-content-type? request))
+    (error-response 415 :expected-application-json nil)
+
+    (not (compare-and-set! session-active? false true))
+    (error-response 429 :session-step-busy nil)
+
+    :else
+    (try
+      (if-not (compare-and-set! document-active? false true)
+        (error-response 429 :viewer-busy nil)
+        (try
+          (session-step-response services request)
+          (finally
+            (reset! document-active? false))))
+      (finally
+        (reset! session-active? false)))))
+
+(defn- edn-content-type? [request]
+  (let [value (get-in request [:headers "content-type"])]
+    (and (string? value)
+         (= "application/edn"
+            (-> value
+                string/lower-case
+                (string/split #";" 2)
+                first
+                string/trim)))))
 
 (defn- required-document-kind!
   "Returns the declared document kind or throws a typed error. The kind is
@@ -649,8 +1011,10 @@
   `:render-trace` (`trace-doc -> html`), `:render-case-outcome`
   (`case-outcome-doc -> html`), and `:replay-document`
   (`case-outcome-doc runtime-config -> outcome`). The optional
-  `:read-session-frame` key is a trusted `(cursor -> coherent-frame)` closure;
-  no mutating Session operation is accepted. Browser data never selects any
+  `:read-session-frame` key is a trusted `(cursor -> coherent-frame)` closure
+  and the optional `:step-session-frame!` key is a trusted
+  `(branch cursor -> step-result)` closure; no other Session operation is
+  accepted. Browser data never selects any
   function or supplies runtime configuration. Replay
   accepts only Case/Outcome documents: declared `:trace` and
   `:experiment-plan` kinds are rejected explicitly before any restore or
@@ -661,11 +1025,26 @@
   When the trusted services map supplies `:read-session-frame`, it returns one
   coherent canonical Session projection, enabled branch references, isolated
   successor previews, and append-only journal tail. Browser data supplies
-  only an unsigned journal cursor. No step or other mutating Session function
-  is installed in the handler. Computing successor previews does invoke the
-  Session's cooperative step callback, so attached sessions must satisfy its
-  deterministic, effect-free contract. A dedicated single-flight gate admits
-  only one frame computation at a time.
+  only an unsigned journal cursor. Computing successor previews does invoke
+  the Session's cooperative step callback, so attached sessions must satisfy
+  its deterministic, effect-free contract. A dedicated single-flight gate,
+  shared with `POST /api/session-step`, admits only one frame computation or
+  step at a time.
+
+  `POST /api/session-step` is an optional embedding-only command surface,
+  present only when the trusted services map supplies `:step-session-frame!`.
+  It applies exactly one exact revision-scoped branch supplied in the closed
+  JSON contract (`application/json`, at most 4096 bytes, exactly the keys
+  `version`/`cursor`/`branch` with canonical decimal strings) and answers
+  with a compact canonical-EDN receipt: version, status, committed?, the
+  exact ack or the safe stale coordinates, and `:frame-status`. It never
+  returns a full frame, projection, world, previews, or events. There is no
+  run-all, no automatic retry, and no rebasing: the exact branch revision is
+  the only duplicate-execution guard, so the identical request retried after
+  a commit is stale and never advances the revision again. Without the
+  service key the route is absent and answers 404 `:session-step-unavailable`;
+  authorization is checked before that availability, the admission gates, and
+  the body.
 
   `GET /api/replay-progress` reports the one active or most recently
   completed replay's status (`:idle`, `:starting`, `:worker-ready`,
@@ -680,7 +1059,7 @@
    (let [config (validate-config! config)
          unknown-services (into #{} (remove service-keys) (keys services))
          document-active? (atom false)
-         session-frame-active? (atom false)
+         session-active? (atom false)
          active-replay (atom (initial-replay-state))]
      (when (seq unknown-services)
        (throw (config-error :unknown-service-keys unknown-services)))
@@ -688,7 +1067,9 @@
                     (fn? (:render-case-outcome services))
                     (fn? (:replay-document services))
                     (or (not (contains? services :read-session-frame))
-                        (fn? (:read-session-frame services))))
+                        (fn? (:read-session-frame services)))
+                    (or (not (contains? services :step-session-frame!))
+                        (fn? (:step-session-frame! services))))
        (throw (config-error :invalid-services (set (keys services)))))
      (fn [request]
        (let [method (:request-method request)
@@ -708,7 +1089,11 @@
 
            (and (= :get method) (= "/api/session-frame" uri))
            (execute-session-frame-request
-            config services session-frame-active? request)
+            config services session-active? request)
+
+           (and (= :post method) (= "/api/session-step" uri))
+           (execute-session-step-request
+            config services session-active? document-active? request)
 
            (and (= :post method) (= "/api/render" uri))
            (execute-document-request
@@ -806,6 +1191,39 @@
                  :read-session-frame
                  (fn [cursor]
                    (viewer-session/read-frame sim-session cursor)))))
+
+(defn start-steppable-session!
+  "Starts Ripple with one trusted in-process Session attached for inspection
+  and exact revision-scoped stepping.
+
+  The resulting HTTP handler receives only two closures over the trusted
+  Session: `read-session-frame` over `viewer-session/read-frame` and
+  `step-session-frame!` over `viewer-session/step-frame!`. It never receives
+  the Session value, `session/step!`, or any browser-selected function, and
+  browser data selects only the closed JSON step contract's fixed action
+  tags.
+
+  Attach only sessions whose cooperative step callback obeys the Session's
+  deterministic, effect-free contract: reading a frame computes successor
+  previews through that callback, and stepping evaluates it inside the
+  Session's command lock.
+
+  Command durability is exactly the Session journal's process lifetime: a
+  committed command is appended to the in-memory journal before its
+  acknowledgment is returned, but nothing survives process exit. There is no
+  durable ledger, no automatic retry, and no rebasing. Within one process
+  lifetime the exact branch revision prevents duplicate execution: the
+  identical request retried after a commit is stale and is answered with the
+  safe stale coordinates instead of a second transition."
+  [config sim-session]
+  (start! config
+          (assoc (default-services config)
+                 :read-session-frame
+                 (fn [cursor]
+                   (viewer-session/read-frame sim-session cursor))
+                 :step-session-frame!
+                 (fn [branch cursor]
+                   (viewer-session/step-frame! sim-session branch cursor)))))
 
 (defn stop!
   "Stops a viewer returned by `start!`."
