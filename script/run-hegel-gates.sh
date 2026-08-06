@@ -127,6 +127,7 @@ fi
 declare -a gates=()
 declare -a preflight_aliases=()
 for gate in "$@"; do
+  parent_alias="$gate"
   case "$gate" in
     hegel-explore-test)
       worker_alias=explore-worker-test
@@ -140,18 +141,22 @@ for gate in "$@"; do
     outbox-delivery-hegel-test)
       worker_alias=outbox-delivery-explore-worker
       ;;
+    outbox-delivery-cancel-hegel-test)
+      parent_alias=outbox-delivery-hegel-test
+      worker_alias=outbox-delivery-explore-worker
+      ;;
     outbox-http-webhook-hegel-test)
       worker_alias=outbox-http-webhook-explore-worker
       ;;
     *)
       echo "unknown Hegel gate: $gate" >&2
-      echo "allowed: hegel-explore-test http-sqlite-hegel-test tcp-bencode-hegel-test outbox-delivery-hegel-test outbox-http-webhook-hegel-test" >&2
+      echo "allowed: hegel-explore-test http-sqlite-hegel-test tcp-bencode-hegel-test outbox-delivery-hegel-test outbox-delivery-cancel-hegel-test outbox-http-webhook-hegel-test" >&2
       echo "retained gate root: $gate_root" >&2
       exit 2
       ;;
   esac
   gates+=("$gate")
-  preflight_aliases+=("$gate" "$worker_alias")
+  preflight_aliases+=("$parent_alias" "$worker_alias")
 done
 
 echo "Git dependency cache: $JOLT_GITLIBS"
@@ -169,8 +174,13 @@ run_step native-preflight hegel.install \
   "$sim_bin" -A:hegel-explore-test -m hegel.install
 
 for gate in "${gates[@]}"; do
-  run_step hegel-gate "$gate" \
-    "$sim_bin" "-M:$gate"
+  if [[ "$gate" == outbox-delivery-cancel-hegel-test ]]; then
+    run_step hegel-gate "$gate" \
+      "$sim_bin" -M:outbox-delivery-hegel-test --cancel-only
+  else
+    run_step hegel-gate "$gate" \
+      "$sim_bin" "-M:$gate"
+  fi
 done
 
 echo "all requested Hegel gates passed"
