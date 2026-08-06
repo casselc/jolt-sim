@@ -9,6 +9,7 @@
             [jolt.sim.explore-states-test]
             [jolt.sim.explore-test]
             [jolt.sim.explore-worker-test]
+            [jolt.sim.experiment-test]
             [jolt.sim.fault-test]
             [jolt.sim.ffi-world-integration-test]
             [jolt.sim.ffi-memory-test]
@@ -40,6 +41,7 @@
                         'jolt.sim.explore-states-test
                         'jolt.sim.explore-test
                         'jolt.sim.explore-worker-test
+                        'jolt.sim.experiment-test
                         'jolt.sim.fault-test
                         'jolt.sim.ffi-world-integration-test
                         'jolt.sim.ffi-memory-test

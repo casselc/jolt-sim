@@ -43,7 +43,10 @@
      :reason reason
      :detail detail})))
 
-(defn- validate-spec! [spec]
+(defn validate-spec!
+  "Returns spec when it has the exact executable monitor shape accepted by
+  run-monitor. Intended for trusted plan assembly before a run begins."
+  [spec]
   (when-not (map? spec)
     (throw
      (ex-info
