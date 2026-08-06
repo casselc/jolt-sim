@@ -13,6 +13,163 @@
   let documentText = null;
   let busy = false;
 
+  const enhanceExperimentReport = () => {
+    const doc = report.contentDocument;
+    if (!doc) return;
+    const filter = doc.getElementById("topology-filter");
+    const mode = doc.getElementById("topology-mode");
+    const pack = doc.getElementById("topology-pack");
+    const clear = doc.getElementById("topology-clear");
+    const jump = doc.getElementById("topology-jump");
+    const topologyStatus = doc.getElementById("topology-status");
+    if (!filter || !mode || !pack || !clear || !jump || !topologyStatus) return;
+
+    const nodes = Array.from(doc.querySelectorAll(".topology-node"));
+    const edges = Array.from(doc.querySelectorAll(".topology-edge"));
+    const rows = Array.from(doc.querySelectorAll(".plan-row[data-entity-type]"));
+    let selected = null;
+
+    const entityRow = (type, id) => rows.find((row) =>
+      row.dataset.entityType === type && row.dataset.entityId === id);
+
+    const clearSelectionClasses = () => {
+      nodes.concat(edges).forEach((element) => {
+        element.classList.remove("is-selected", "is-related", "is-dimmed");
+      });
+      rows.forEach((row) => row.classList.remove("is-selected"));
+    };
+
+    const selectEntity = (type, id) => {
+      clearSelectionClasses();
+      selected = {type, id};
+      const relatedNodes = new Set();
+      const relatedEdges = new Set();
+      if (type === "node") {
+        relatedNodes.add(id);
+        edges.forEach((edge) => {
+          if (edge.dataset.fromNode === id || edge.dataset.toNode === id) {
+            relatedEdges.add(edge.dataset.connection);
+            relatedNodes.add(edge.dataset.fromNode);
+            relatedNodes.add(edge.dataset.toNode);
+          }
+        });
+      } else {
+        relatedEdges.add(id);
+        const edge = edges.find((candidate) => candidate.dataset.connection === id);
+        if (edge) {
+          relatedNodes.add(edge.dataset.fromNode);
+          relatedNodes.add(edge.dataset.toNode);
+        }
+      }
+      nodes.forEach((node) => {
+        const own = type === "node" && node.dataset.node === id;
+        node.classList.toggle("is-selected", own);
+        node.classList.toggle("is-related", !own && relatedNodes.has(node.dataset.node));
+        node.classList.toggle("is-dimmed", !relatedNodes.has(node.dataset.node));
+      });
+      edges.forEach((edge) => {
+        const own = type === "connection" && edge.dataset.connection === id;
+        edge.classList.toggle("is-selected", own);
+        edge.classList.toggle("is-related", !own && relatedEdges.has(edge.dataset.connection));
+        edge.classList.toggle("is-dimmed", !relatedEdges.has(edge.dataset.connection));
+      });
+      const row = entityRow(type, id);
+      if (row) row.classList.add("is-selected");
+      jump.disabled = !row;
+      topologyStatus.textContent = `Selected ${type} ${id}.`;
+    };
+
+    const matches = (element, query) =>
+      !query || (element.dataset.search || "").toLowerCase().includes(query);
+
+    const applyFilters = () => {
+      const query = filter.value.trim().toLowerCase();
+      const selectedMode = mode.value;
+      const selectedPack = pack.value;
+      const filtering = Boolean(query || selectedMode || selectedPack);
+      const matchingNodeIds = new Set(nodes
+        .filter((node) => query && matches(node, query))
+        .map((node) => node.dataset.node));
+      const connectedNodeIds = new Set(edges.flatMap((edge) =>
+        [edge.dataset.fromNode, edge.dataset.toNode]));
+      const visibleNodeIds = new Set();
+      edges.forEach((edge) => {
+        const visible = (!selectedMode || edge.dataset.mode === selectedMode) &&
+          (!selectedPack || edge.dataset.pack === selectedPack) &&
+          (!query || matches(edge, query) ||
+            matchingNodeIds.has(edge.dataset.fromNode) ||
+            matchingNodeIds.has(edge.dataset.toNode));
+        edge.hidden = !visible;
+        if (visible) {
+          visibleNodeIds.add(edge.dataset.fromNode);
+          visibleNodeIds.add(edge.dataset.toNode);
+        }
+      });
+      nodes.forEach((node) => {
+        if (!filtering || matchingNodeIds.has(node.dataset.node) ||
+            (!query && !connectedNodeIds.has(node.dataset.node))) {
+          visibleNodeIds.add(node.dataset.node);
+        }
+      });
+      nodes.forEach((node) => {
+        node.hidden = filtering && !visibleNodeIds.has(node.dataset.node);
+      });
+      rows.forEach((row) => {
+        row.hidden = row.dataset.entityType === "node"
+          ? nodes.some((node) => node.dataset.node === row.dataset.entityId && node.hidden)
+          : edges.some((edge) => edge.dataset.connection === row.dataset.entityId && edge.hidden);
+      });
+      if (selected) {
+        const element = selected.type === "node"
+          ? nodes.find((node) => node.dataset.node === selected.id)
+          : edges.find((edge) => edge.dataset.connection === selected.id);
+        if (!element || element.hidden) {
+          selected = null;
+          clearSelectionClasses();
+          jump.disabled = true;
+        }
+      }
+      const visibleNodes = nodes.filter((node) => !node.hidden).length;
+      const visibleEdges = edges.filter((edge) => !edge.hidden).length;
+      topologyStatus.textContent = selected
+        ? `Selected ${selected.type} ${selected.id}; ${visibleNodes} rendered nodes, ${visibleEdges} rendered connections visible.`
+        : `${visibleNodes} rendered nodes, ${visibleEdges} rendered connections visible.`;
+    };
+
+    const bindSelectable = (element, type, id) => {
+      element.addEventListener("click", () => selectEntity(type, id));
+      element.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          selectEntity(type, id);
+        }
+      });
+    };
+    nodes.forEach((node) => bindSelectable(node, "node", node.dataset.node));
+    edges.forEach((edge) => bindSelectable(edge, "connection", edge.dataset.connection));
+    filter.addEventListener("input", applyFilters);
+    mode.addEventListener("change", applyFilters);
+    pack.addEventListener("change", applyFilters);
+    clear.addEventListener("click", () => {
+      filter.value = "";
+      mode.value = "";
+      pack.value = "";
+      selected = null;
+      clearSelectionClasses();
+      jump.disabled = true;
+      applyFilters();
+    });
+    jump.addEventListener("click", () => {
+      if (!selected) return;
+      const row = entityRow(selected.type, selected.id);
+      if (row) {
+        row.scrollIntoView({behavior: "smooth", block: "center"});
+        row.focus({preventScroll: true});
+      }
+    });
+    applyFilters();
+  };
+
   const renderProgress = (progress) => {
     const stdoutText = (progress.stdout && progress.stdout.text) || "";
     const stderrText = (progress.stderr && progress.stderr.text) || "";
@@ -143,6 +300,8 @@
       updateButtons();
     }
   });
+
+  report.addEventListener("load", enhanceExperimentReport);
 
   replay.addEventListener("click", async () => {
     if (busy) return;
