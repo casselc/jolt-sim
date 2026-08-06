@@ -138,6 +138,8 @@
 (def ^:private client-closed-keyword :teensyp.client/closed)
 (def ^:private cancellation-receive-message
   "teensyp.client receive: connection is closed")
+(def ^:private cancel-application-body-id
+  :jolt.sim.fixtures.outbox-delivery/cancel-before-ack-v1)
 
 ;; Ordered, discriminating boundaries rather than every integer in a range.
 ;; Hegel owns selection and shrinks sampled indexes toward the smoke-capacity/
@@ -2971,20 +2973,26 @@
       (violation "jolt.sim.outbox-delivery-hegel-test/cancel-evidence-shape"
                  input
                  {:evidence-class (str (class evidence))}))
-    (let [{:keys [application http receiver routes sqlite capacity fault
-                  clean?]} evidence]
+    (let [{:keys [application-body-id application http receiver routes sqlite
+                  capacity fault clean?]} evidence]
       ;; Evidence is the versioned boundary between the fresh worker and this
       ;; parent property. The cancel lane carries no persistence projection
       ;; (the connection stays open in-memory) and no admission/schedule
       ;; projection (the cancellation point is structural in the fixture).
       (when-not (exact-map-keys?
                  evidence
-                 #{:application :http :receiver :routes :sqlite :capacity
-                   :fault :clean?})
+                 #{:application-body-id :application :http :receiver :routes
+                   :sqlite :capacity :fault :clean?})
         (violation "jolt.sim.outbox-delivery-hegel-test/cancel-evidence-keys"
                    input
                    {:keys (when (map? evidence)
                             (vec (sort-by pr-str (keys evidence))))}))
+      (when-not (= cancel-application-body-id application-body-id)
+        (violation
+         "jolt.sim.outbox-delivery-hegel-test/cancel-application-body-id"
+         input
+         {:expected cancel-application-body-id
+          :actual application-body-id}))
       ;; Application: the committed command evidence and the post-COMMIT
       ;; pending state are byte-identical to the non-retry lane. The
       ;; cancel-specific witness is :cancel; :store-state equals
@@ -3530,7 +3538,8 @@
                :poll-eintr-ordinal nil}
         expected (expected-cancel-for [])
         valid-evidence
-        {:application
+        {:application-body-id cancel-application-body-id
+         :application
          {:identities (:identities expected)
           :command (:command-evidence expected)
           :pending-state (:pending-state expected)
@@ -3653,6 +3662,11 @@
    #'hegel-outbox-http-webhook-preserves-acknowledgement-boundary
    #'hegel-http-webhook-control-shrinks-and-replays-one-refusal])
 
+(def ^:private cancel-test-vars
+  [#'outbox-delivery-cancel-boundary-witness
+   #'hegel-outbox-delivery-cancel-holds-across-payload-capacities-and-eintr
+   #'cancellation-claim-with-marking-records-monitor-violation])
+
 (defn- counter-snapshot []
   {:test (:test @test/counters)
    :pass (test/n-pass)
@@ -3673,18 +3687,23 @@
     (counter-delta before (counter-snapshot))))
 
 (defn -main [& args]
-  (let [http-webhook-only? (= ["--http-webhook-only"] (vec args))
-        _ (when-not (or (empty? args) http-webhook-only?)
+  (let [mode (case (vec args)
+               [] :all
+               ["--http-webhook-only"] :http-webhook
+               ["--cancel-only"] :cancel
+               nil)
+        _ (when-not mode
             (throw
              (ex-info
               "unsupported outbox Hegel test arguments"
               {:type
                :jolt.sim.outbox-delivery-hegel-test/unsupported-arguments
                :arguments (vec args)})))
-        selected-test-vars (if http-webhook-only?
-                             http-webhook-test-vars
+        selected-test-vars (case mode
+                             :http-webhook http-webhook-test-vars
+                             :cancel cancel-test-vars
                              serial-test-vars)
-        worker-alias (if http-webhook-only?
+        worker-alias (if (= :http-webhook mode)
                        "outbox-http-webhook-explore-worker"
                        "outbox-delivery-explore-worker")
         bin (required-environment "JOLT_SIM_BIN")
