@@ -5,8 +5,10 @@
             [clojure.test :as test :refer [deftest is testing]]
             [jolt.fs :as fs]
             [jolt.http.body :as http-body]
+            [jolt.sim.activity :as activity]
             [jolt.sim.case-outcome :as case-outcome]
             [jolt.sim.kernel :as kernel]
+            [jolt.sim.presentation :as presentation]
             [jolt.sim.session :as session]
             [jolt.sim.trace :as trace]
             [jolt.sim.viewer :as viewer]
@@ -2317,6 +2319,382 @@
       (is (= 1 (:revision (session/snapshot s))))
       (is (= 2 (count (session/journal s)))
           "the installed closure commits exactly once per exact branch"))))
+
+;; --- Terminal replay activity page (opt-in worker lifecycle journal) ---
+;;
+;; The activity projection extends only the existing GET /api/replay-progress
+;; route: a separate canonical cursor header, the trusted retained outcome via
+;; process-explorer/read-activity-page, one closed JSON-safe page, and
+;; secondary-only failure semantics. Journals are written through the real
+;; jolt.sim.activity observer so recovery paging is exercised end to end.
+
+(defn activity-config []
+  (-> (config)
+      (assoc-in [:runtime-config :activity-journal?] true)
+      (assoc-in [:runtime-config :retain-completed-artifacts?] true)))
+
+(defn- write-activity-journal! [run-dir events]
+  (let [observer (activity/open-observer!
+                  {:path (str (fs/path run-dir "activity.journal"))
+                   :run-id (byte-array 16)})]
+    (activity/call-with-observer
+     observer
+     (fn [] (doseq [event events] (activity/emit! event))))
+    (activity/close-observer! observer)
+    (is (= :healthy (:health (activity/observer-status observer))))
+    (is (= (count events) (:accepted (activity/observer-status observer))))))
+
+(defn- retained-outcome [run-dir]
+  {:status :completed
+   :exit 0
+   :artifact-dir run-dir
+   :activity {:observer-status nil}})
+
+(defmacro with-retained-activity-dir
+  "Runs body with a fresh activity artifact directory and deletes it only
+  after normal completion with no new clojure.test failure/error. Unexpected
+  exceptions and assertion failures retain the complete directory and print
+  its path for restart-safe diagnosis."
+  [[binding expression] & body]
+  `(let [~binding ~expression
+         failures-before# (+ (:fail @test/counters) (:error @test/counters))
+         completed?# (volatile! false)]
+     (try
+       ~@body
+       (vreset! completed?# true)
+       (finally
+         (if (and @completed?#
+                  (= failures-before#
+                     (+ (:fail @test/counters) (:error @test/counters))))
+           (when (fs/exists? ~binding)
+             (fs/delete-tree ~binding))
+           (println "Retained unexpected Ripple activity artifacts at"
+                    ~binding))))))
+
+(defn- replayed-activity-handler [config outcome]
+  (let [handler
+        (viewer/make-handler
+         config
+         {:render-trace (fn [_] "unused")
+          :render-case-outcome (fn [_] "unused")
+          :replay-document (fn [_ _] outcome)})]
+    (is (= 200 (:status (handler (request "/api/replay"
+                                          (case-outcome/canonical-edn
+                                           (document)))))))
+    handler))
+
+(defn- activity-request
+  ([cursor] (activity-request cursor token))
+  ([cursor supplied-token]
+   (cond-> (get-request "/api/replay-progress" supplied-token)
+     (some? cursor)
+     (assoc-in [:headers "x-jolt-sim-activity-cursor"] cursor))))
+
+(deftest activity-journal-runtime-config-is-closed-and-fail-closed
+  (is (some? (viewer/validate-config! (activity-config))))
+  (doseq [[mutation reason]
+          [[#(assoc-in % [:runtime-config :activity-journal?] :yes)
+            :invalid-activity-journal]
+           [#(assoc-in % [:runtime-config :retain-completed-artifacts?] false)
+            :activity-journal-requires-retention]
+           [#(update % :runtime-config dissoc :retain-completed-artifacts?)
+            :activity-journal-requires-retention]]]
+    (let [data (try
+                 (viewer/validate-config! (mutation (activity-config)))
+                 nil
+                 (catch :default error (ex-data error)))]
+      (is (= viewer/invalid-config (:type data)))
+      (is (= reason (:reason data)))))
+  (let [data
+        (try
+          (viewer/validate-config!
+           (assoc (activity-config)
+                  :activity-presentation-registry
+                  {[:task/transition :op :sleep]
+                   {:kind :acme.kind/invalid
+                    :present (fn [_] {:summary "invalid" :fields []})}}))
+          nil
+          (catch :default error (ex-data error)))]
+    (is (= viewer/invalid-config (:type data)))
+    (is (= :invalid-activity-presentation-registry (:reason data)))))
+
+(deftest replay-progress-activity-validates-auth-and-cursor-before-any-read
+  (let [reader-calls (atom 0)
+        read-page-var (resolve 'jolt.sim.process-explorer/read-activity-page)]
+    (with-redefs-fn
+      {read-page-var (fn [& _] (swap! reader-calls inc) nil)}
+      #(let [handler
+             (viewer/make-handler
+              (activity-config)
+              {:render-trace (fn [_] "unused")
+               :render-case-outcome (fn [_] "unused")
+               :replay-document (fn [_ _] {:status :completed :exit 0})})
+             unauthorized (handler (activity-request nil "wrong"))
+             malformed (handler (activity-request "-1"))
+             leading-zero (handler (activity-request "00"))
+             fractional (handler (activity-request "1.5"))
+             overflow (handler (activity-request
+                                "999999999999999999999999999999"))
+             too-big (handler (activity-request "9999999999999999999"))
+             idle (handler (activity-request "0"))]
+         (is (= 403 (:status unauthorized)))
+         (is (= 400 (:status malformed)))
+         (is (= 400 (:status leading-zero)))
+         (is (= 400 (:status fractional)))
+         (is (= 400 (:status overflow)))
+         (is (= 400 (:status too-big)))
+         (is (string/includes? (:body malformed) ":invalid-activity-cursor"))
+         (is (string/includes? (:body malformed) ":not-unsigned-decimal"))
+         (is (string/includes? (:body leading-zero)
+                               ":not-unsigned-decimal"))
+         (is (string/includes? (:body overflow) ":out-of-range"))
+         (is (string/includes? (:body too-big) ":out-of-range"))
+         (is (= 200 (:status idle)))
+         (is (nil? (get (json/read-str (:body idle)) "activity")))
+         (is (= 0 @reader-calls)
+             "auth and cursor validation never invoke the trusted page reader")))))
+
+(deftest replay-progress-activity-stays-absent-while-idle-active-and-disabled
+  (let [handler* (atom nil)
+        mid-flight* (atom nil)
+        handler
+        (viewer/make-handler
+         (activity-config)
+         {:render-trace (fn [_] "unused")
+          :render-case-outcome (fn [_] "unused")
+          :replay-document
+          (fn [_ _]
+            (reset! mid-flight* (@handler* (activity-request "0")))
+            {:status :completed :exit 0})})
+        _ (reset! handler* handler)
+        idle (handler (activity-request "0"))]
+    (is (= 200 (:status idle)))
+    (is (nil? (get (json/read-str (:body idle)) "activity")))
+    (is (nil? (get-in idle [:headers "X-Jolt-Sim-Activity-Next-Cursor"])))
+    (is (= 200 (:status (handler (request "/api/replay"
+                                          (case-outcome/canonical-edn
+                                           (document)))))))
+    (is (= 200 (:status @mid-flight*)))
+    (is (string/includes? (:body @mid-flight*) "\"status\":\"starting\""))
+    (is (nil? (get (json/read-str (:body @mid-flight*)) "activity"))
+        "activity stays absent while the replay is active")
+    ;; Terminal with an outcome the run did not retain: the failure is a
+    ;; closed secondary marker, never an HTTP error or a failed status.
+    (let [terminal (handler (activity-request nil))
+          wire (json/read-str (:body terminal))]
+      (is (= 200 (:status terminal)))
+      (is (= "completed" (get wire "status")))
+      (is (= "unavailable" (get-in wire ["activity" "status"])))
+      (is (= "not-retained" (get-in wire ["activity" "reason"])))
+      (is (= 0 (get-in wire ["activity" "nextCursor"])))
+      (is (= "0" (get-in terminal
+                         [:headers "X-Jolt-Sim-Activity-Next-Cursor"]))))
+    ;; With the trusted toggle disabled the route is byte-identical to the
+    ;; pre-activity behavior even when the browser supplies a cursor.
+    (let [disabled-handler
+          (replayed-activity-handler
+           (assoc-in (config) [:runtime-config :retain-completed-artifacts?]
+                     true)
+           {:status :completed :exit 0})
+          terminal (disabled-handler (activity-request "0"))
+          wire (json/read-str (:body terminal))]
+      (is (= 200 (:status terminal)))
+      (is (= "completed" (get wire "status")))
+      (is (nil? (get wire "activity")))
+      (is (nil? (get-in terminal
+                        [:headers "X-Jolt-Sim-Activity-Next-Cursor"]))))))
+
+(deftest replay-progress-activity-page-flows-from-the-retained-outcome
+  (with-retained-activity-dir
+    [run-dir (str (fs/create-temp-dir
+                   {:prefix "jolt-sim-viewer-activity-page-"}))]
+    (let [events [[:jolt.sim.explore/scenario-started nil nil
+                   {:scenario scenario}]
+                  [:jolt.sim.explore/scenario-completed nil nil
+                   {:scenario scenario}]]
+            _ (write-activity-journal! run-dir events)
+            handler
+            (replayed-activity-handler
+             (assoc
+              (activity-config)
+              :activity-presentation-registry
+              {:jolt.sim.explore/scenario-started
+               {:kind :acme.kind/replay-started
+                :present (fn [event]
+                           {:summary "Application replay started"
+                            :fields [{:label "Scenario"
+                                      :value (get-in event [3 :scenario])}]})}})
+             (retained-outcome run-dir))
+            first-page (handler (activity-request nil))
+            wire (json/read-str (:body first-page))
+            page (get wire "activity")
+            second-page (handler (activity-request "2"))
+            second-wire (get (json/read-str (:body second-page)) "activity")
+            beyond (handler (activity-request "3"))]
+        (is (= 200 (:status first-page)))
+        (is (= "completed" (get wire "status")))
+        (is (= "ok" (get page "status")))
+        (is (= 1 (get page "version")))
+        (is (= 0 (get page "cursor")))
+        (is (= 2 (get page "nextCursor")))
+        (is (= 2 (get page "acceptedCount")))
+        (is (false? (get page "remaining")))
+        (is (= [{"sequence" 0
+                 "tag" "jolt.sim.explore/scenario-started"
+                 "kind" "acme.kind/replay-started"
+                 "summary" "Application replay started"
+                 "fields" [{"label" "Scenario"
+                            "valueEdn" (trace/canonical-edn scenario)}]
+                 "edn" (trace/canonical-edn (first events))}
+                {"sequence" 1
+                 "tag" "jolt.sim.explore/scenario-completed"
+                 "kind" "jolt.sim.kind/scenario-completed"
+                 "summary" "Scenario example.viewer/replay-case completed"
+                 "fields" [{"label" "Scenario"
+                            "valueEdn" (trace/canonical-edn scenario)}]
+                 "edn" (trace/canonical-edn (second events))}]
+               (get page "events")))
+        (is (= "complete" (get-in page ["recovery" "status"])))
+        (is (nil? (get-in page ["recovery" "reason"])))
+        (is (false? (get-in page ["recovery" "imageTruncated"])))
+        (is (nil? (get page "observer")))
+        (is (= "2" (get-in first-page
+                           [:headers "X-Jolt-Sim-Activity-Next-Cursor"])))
+        (is (not (string/includes? (:body first-page) run-dir))
+            "the trusted artifact path never crosses the wire")
+        ;; The end cursor continues into an empty second page.
+        (is (= 200 (:status second-page)))
+        (is (= 2 (get second-wire "cursor")))
+        (is (= 2 (get second-wire "nextCursor")))
+        (is (= [] (get second-wire "events")))
+        (is (false? (get second-wire "remaining")))
+        (is (= "2" (get-in second-page
+                           [:headers "X-Jolt-Sim-Activity-Next-Cursor"])))
+        ;; A cursor past the recovered prefix is a typed 400, not a marker.
+        (is (= 400 (:status beyond)))
+        (is (string/includes? (:body beyond) ":invalid-activity-cursor"))
+        (is (string/includes? (:body beyond) ":beyond-recovery"))
+      (is (not (string/includes? (:body beyond) run-dir))))))
+
+(deftest replay-progress-activity-second-page-continues-from-the-next-cursor
+  (with-retained-activity-dir
+    [run-dir (str (fs/create-temp-dir
+                   {:prefix "jolt-sim-viewer-activity-cont-"}))]
+    (let [events (mapv (fn [index]
+                         [:acme.activity/tick nil nil {:index index}])
+                       (range 40))
+            _ (write-activity-journal! run-dir events)
+            handler (replayed-activity-handler
+                     (assoc (activity-config)
+                            :max-document-bytes (* 1024 1024))
+                     (retained-outcome run-dir))
+            first-page (handler (activity-request nil))
+            page0 (get (json/read-str (:body first-page)) "activity")
+            second-page
+            (handler (activity-request
+                      (get-in first-page
+                              [:headers "X-Jolt-Sim-Activity-Next-Cursor"])))
+            page1 (get (json/read-str (:body second-page)) "activity")
+            all-events (into (get page0 "events") (get page1 "events"))]
+        (is (= 200 (:status first-page)))
+        (is (= 32 (count (get page0 "events"))))
+        (is (= 32 (get page0 "nextCursor")))
+        (is (true? (get page0 "remaining")))
+        (is (= "32" (get-in first-page
+                            [:headers "X-Jolt-Sim-Activity-Next-Cursor"])))
+        (is (= 200 (:status second-page)))
+        (is (= 32 (get page1 "cursor")))
+        (is (= 8 (count (get page1 "events"))))
+        (is (= 40 (get page1 "nextCursor")))
+        (is (false? (get page1 "remaining")))
+        (is (= (range 40) (map #(get % "sequence") all-events))
+            "pages concatenate into the complete accepted prefix")
+        (is (= "jolt.sim.kind/raw-event"
+               (get (first all-events) "kind"))
+            "unknown activity tags keep the raw fallback through the server")
+        (is (= "Raw event acme.activity/tick"
+               (get (first all-events) "summary")))
+      (is (not (string/includes? (:body first-page) run-dir)))
+      (is (not (string/includes? (:body second-page) run-dir))))))
+
+(deftest replay-progress-activity-failures-never-change-the-completed-status
+  ;; Corrupt journal recovery: the page itself reports the bounded recovery
+  ;; failure; the replay status and HTTP outcome are untouched.
+  (with-retained-activity-dir
+    [run-dir (str (fs/create-temp-dir
+                   {:prefix "jolt-sim-viewer-activity-corrupt-"}))]
+    (spit (str (fs/path run-dir "activity.journal"))
+          "definitely not a journal image")
+    (let [handler (replayed-activity-handler
+                     (activity-config) (retained-outcome run-dir))
+            response (handler (activity-request nil))
+            wire (json/read-str (:body response))
+            page (get wire "activity")]
+        (is (= 200 (:status response)))
+        (is (= "completed" (get wire "status")))
+        (is (= "ok" (get page "status")))
+        (is (= [] (get page "events")))
+        (is (= "failed" (get-in page ["recovery" "status"])))
+        (is (some? (get-in page ["recovery" "reason"])))
+      (is (= "0" (get-in response
+                         [:headers "X-Jolt-Sim-Activity-Next-Cursor"])))
+      (is (not (string/includes? (:body response) run-dir)))))
+  ;; A throwing trusted presenter: only the activity projection degrades.
+  (with-retained-activity-dir
+    [run-dir (str (fs/create-temp-dir
+                   {:prefix "jolt-sim-viewer-activity-throw-"}))]
+    (write-activity-journal!
+     run-dir
+     [[:jolt.sim.explore/scenario-started nil nil {:scenario scenario}]])
+    (with-redefs
+        [presentation/default-activity-registry
+         {:jolt.sim.explore/scenario-started
+          {:kind :acme.kind/boom
+           :present (fn [_]
+                      (throw (ex-info "secret-throwing-presenter" {})))}}]
+        (let [handler (replayed-activity-handler
+                       (activity-config) (retained-outcome run-dir))
+              response (handler (activity-request nil))
+              wire (json/read-str (:body response))
+              page (get wire "activity")]
+          (is (= 200 (:status response)))
+          (is (= "completed" (get wire "status")))
+          (is (= "unavailable" (get page "status")))
+          (is (= "presentation-failed" (get page "reason")))
+          (is (= 0 (get page "nextCursor")))
+          (is (not (string/includes? (:body response)
+                                     "secret-throwing-presenter")))
+          (is (not (string/includes? (:body response) run-dir)))))))
+
+(deftest replay-progress-activity-projection-alone-fails-when-oversized
+  (with-retained-activity-dir
+    [run-dir (str (fs/create-temp-dir
+                   {:prefix "jolt-sim-viewer-activity-capped-"}))]
+    (let [big (apply str (repeat 3000 \x))
+            events (mapv (fn [index]
+                           [:acme.activity/blob nil nil
+                            {:payload big :index index}])
+                         (range 4))
+            _ (write-activity-journal! run-dir events)
+            ;; The small default 4096-byte response cap cannot hold the page,
+            ;; but easily holds the base progress body and the closed marker.
+            handler (replayed-activity-handler
+                     (activity-config) (retained-outcome run-dir))
+            response (handler (activity-request nil))
+            wire (json/read-str (:body response))
+            page (get wire "activity")]
+        (is (= 200 (:status response)))
+        (is (= "completed" (get wire "status")))
+        (is (= "too-large" (get page "status")))
+        (is (= 4096 (get page "limit")))
+        (is (< 4096 (get page "actual")))
+        (is (= 0 (get page "cursor")))
+        (is (= 4 (get page "nextCursor"))
+            "the real page cursor still advances past the failed projection")
+        (is (= "4" (get-in response
+                           [:headers "X-Jolt-Sim-Activity-Next-Cursor"])))
+      (is (not (string/includes? (:body response) run-dir)))
+      (is (not (string/includes? (:body response) big))))))
 
 (defn -main [& _]
   (let [result (test/run-tests 'jolt.sim.viewer-test)

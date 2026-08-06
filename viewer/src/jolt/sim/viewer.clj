@@ -33,6 +33,7 @@
             [jolt.http.server :as http]
             [jolt.sim.case-outcome :as case-outcome]
             [jolt.sim.presentation :as presentation]
+            [jolt.sim.process-explorer :as process-explorer]
             [jolt.sim.repl :as sim-repl]
             [jolt.sim.report :as report]
             [jolt.sim.trace :as trace]
@@ -47,19 +48,22 @@
 (def experiment-plan-not-replayable ::experiment-plan-not-replayable)
 (def invalid-session-cursor ::invalid-session-cursor)
 (def invalid-session-step ::invalid-session-step)
+(def invalid-activity-cursor ::invalid-activity-cursor)
 (def ^:private invalid-session-frame ::invalid-session-frame)
 (def ^:private invalid-session-step-result ::invalid-session-step-result)
 
 (def ^:private config-keys
   #{:port :capability-token :max-document-bytes
-    :allowed-scenarios :runtime-config :presentation-registry})
+    :allowed-scenarios :runtime-config :presentation-registry
+    :activity-presentation-registry})
 
 (def ^:private replay-coordinate-keys
   #{:scenario :mode :input :schedule})
 
 (def ^:private runtime-config-keys
   #{:worker-command :timeout-ms :startup-timeout-ms :kill-grace-ms
-    :dir :extra-env :temp-dir :retain-completed-artifacts?})
+    :dir :extra-env :temp-dir :retain-completed-artifacts?
+    :activity-journal?})
 
 (def ^:private service-keys
   #{:render-trace :render-case-outcome :replay-document
@@ -157,6 +161,18 @@
              :reason :invalid-presentation-registry
              :detail (select-keys (ex-data error) [:reason :detail])}
             error)))))
+    (when (contains? config :activity-presentation-registry)
+      (try
+        (presentation/validate-activity-registry!
+         (:activity-presentation-registry config))
+        (catch :default error
+          (throw
+           (ex-info
+            "jolt-sim viewer rejected its activity presentation registry"
+            {:type invalid-config
+             :reason :invalid-activity-presentation-registry
+             :detail (select-keys (ex-data error) [:reason :detail])}
+            error)))))
     (when (seq collisions)
       (throw (config-error :runtime-coordinate-collision collisions)))
     (when (seq unknown-runtime-keys)
@@ -185,6 +201,19 @@
                (not (boolean? (:retain-completed-artifacts? runtime))))
       (throw (config-error :invalid-retain-completed-artifacts
                            (:retain-completed-artifacts? runtime))))
+    ;; The opt-in worker lifecycle activity journal is a trusted runtime
+    ;; toggle only; the browser never supplies it. Enabling it requires
+    ;; retained completed artifacts so fast successful journal evidence
+    ;; cannot disappear before a terminal replay-progress poll.
+    (when (and (contains? runtime :activity-journal?)
+               (not (boolean? (:activity-journal? runtime))))
+      (throw (config-error :invalid-activity-journal
+                           (:activity-journal? runtime))))
+    (when (and (true? (:activity-journal? runtime))
+               (not (true? (:retain-completed-artifacts? runtime))))
+      (throw (config-error :activity-journal-requires-retention
+                           {:retain-completed-artifacts?
+                            (:retain-completed-artifacts? runtime)})))
     (assoc config
            :port port
            :max-document-bytes max-bytes)))
@@ -391,10 +420,215 @@
     (contains? state :stdout) (assoc "stdout" (diagnostic-wire (:stdout state)))
     (contains? state :stderr) (assoc "stderr" (diagnostic-wire (:stderr state)))))
 
-(defn- replay-progress-json [active-replay]
-  (json/write-str
-   (progress-wire
-    (replay-progress-state (swap! active-replay observe-active-replay)))))
+;; ---- terminal activity page (opt-in worker lifecycle journal) ----------------
+
+(defn- activity-journal-enabled? [config]
+  (true? (get-in config [:runtime-config :activity-journal?])))
+
+(defn- activity-cursor!
+  "Reads the optional unsigned decimal `X-Jolt-Sim-Activity-Cursor` header
+  without interning or evaluating browser-controlled data. Missing means the
+  first activity page from cursor zero; malformed or overflowing values fail
+  closed before any trusted page read."
+  [request]
+  (let [raw (get-in request [:headers "x-jolt-sim-activity-cursor"])]
+    (cond
+      (nil? raw) 0
+      (and (string? raw) (> (count raw) maximum-session-cursor-digits))
+      (throw
+       (ex-info "viewer activity cursor is outside the integer range"
+                {:type invalid-activity-cursor
+                 :reason :out-of-range}))
+      (and (string? raw)
+           (re-matches #"(?:0|[1-9][0-9]*)" raw))
+      (let [value (parse-long raw)]
+        (if (and (integer? value) (<= 0 value Long/MAX_VALUE))
+          value
+          (throw
+           (ex-info "viewer activity cursor is outside the integer range"
+                    {:type invalid-activity-cursor
+                     :reason :out-of-range}))))
+      :else
+      (throw
+       (ex-info "viewer activity cursor must be unsigned decimal"
+                {:type invalid-activity-cursor
+                 :reason :not-unsigned-decimal})))))
+
+(defn- activity-keyword-text [value]
+  (if-let [ns (namespace value)]
+    (str ns "/" (name value))
+    (name value)))
+
+(defn- activity-event-wire
+  "The closed JSON-safe projection of one recovered activity event:
+  sequence, tag, kind, summary, EDN-string fields, and the complete canonical
+  event EDN. Raw values never cross; only their EDN strings do."
+  [present entry]
+  (let [row (present (:sequence entry) (:event entry))]
+    {"sequence" (:sequence entry)
+     "tag" (:tag row)
+     "kind" (:kind-name row)
+     "summary" (:summary row)
+     "fields" (mapv (fn [field]
+                      {"label" (:label field)
+                       "valueEdn" (:value-edn field)})
+                    (:fields row))
+     "edn" (:edn row)}))
+
+(defn- activity-recovery-wire
+  "The closed JSON projection of the bounded `jolt.sim.activity` recovery
+  diagnostics: fixed scalar keys only, never bytes, paths, or Throwables."
+  [recovery]
+  {"status" (activity-keyword-text (:status recovery))
+   "reason" (when-let [reason (:reason recovery)]
+              (activity-keyword-text reason))
+   "sequence" (:sequence recovery)
+   "lastGoodOffset" (:last-good-offset recovery)
+   "rawTailBytes" (:raw-tail-bytes recovery)
+   "imageTruncated" (boolean (:image-truncated? recovery))
+   "class" (:class recovery)})
+
+(defn- activity-observer-wire
+  "The closed JSON projection of the bounded worker-side observer status, or
+  nil when the outcome recorded none. Failure context is restricted to the
+  bounded keyword/string/integer/boolean domain, exactly like the worker's
+  own secondary diagnostics."
+  [status]
+  (when (map? status)
+    {"health" (activity-keyword-text (:health status))
+     "failure"
+     (when-let [failure (:failure status)]
+       (into {}
+             (keep (fn [[key value]]
+                     (when (and (keyword? key)
+                                (or (keyword? value)
+                                    (string? value)
+                                    (integer? value)
+                                    (boolean? value)))
+                       [(name key)
+                        (if (keyword? value)
+                          (activity-keyword-text value)
+                          value)])))
+             failure))
+     "sequence" (:sequence status)
+     "accepted" (:accepted status)
+     "capped" (boolean (:capped? status))
+     "durability" (activity-keyword-text (:durability status))
+     "closed" (boolean (:closed? status))}))
+
+(defn- activity-page-wire
+  "Projects one trusted `process-explorer/read-activity-page` page into the
+  closed JSON-safe activity payload."
+  [present page]
+  {"version" 1
+   "status" "ok"
+   "cursor" (:cursor page)
+   "nextCursor" (:next-cursor page)
+   "acceptedCount" (:accepted-count page)
+   "remaining" (boolean (:remaining? page))
+   "events" (mapv #(activity-event-wire present %) (:events page))
+   "recovery" (activity-recovery-wire (:recovery page))
+   "observer" (activity-observer-wire (:observer-status page))})
+
+(defn- activity-unavailable-wire
+  "The closed secondary marker served when the activity projection itself
+  cannot be produced. The replay's terminal status and the HTTP outcome are
+  unchanged; the cursor is echoed without advancing."
+  [cursor reason]
+  {"version" 1
+   "status" "unavailable"
+   "reason" reason
+   "cursor" cursor
+   "nextCursor" cursor})
+
+(defn- activity-oversized-wire
+  "The closed secondary marker served when the projected page would exceed
+  the configured response cap. Only the activity projection fails; the real
+  next cursor is still reported so a client can advance past the page."
+  [cursor next-cursor limit actual]
+  {"version" 1
+   "status" "too-large"
+   "limit" limit
+   "actual" actual
+   "cursor" cursor
+   "nextCursor" next-cursor})
+
+(defn- terminal-activity-projection
+  "Returns `[activity-wire next-cursor]` for a terminal replay with
+  `:activity-journal?` enabled, else nil so idle and active replays carry no
+  activity key at all.
+
+  The page always comes from the trusted retained process outcome through
+  `process-explorer/read-activity-page`; neither the browser nor this server
+  ever supplies or returns an artifact path. A cursor outside the recovered
+  prefix is a typed 400 contract error. Every other presentation or recovery
+  failure degrades to a closed secondary marker: it never changes the
+  replay's terminal status or the HTTP outcome."
+  [config present state cursor]
+  (when (and (= :terminal (:phase state))
+             (activity-journal-enabled? config))
+    (if-let [outcome (:outcome state)]
+      (try
+        (let [page (process-explorer/read-activity-page outcome cursor)]
+          (try
+            [(activity-page-wire present page) (:next-cursor page)]
+            (catch :default _
+              [(activity-unavailable-wire cursor "presentation-failed")
+               cursor])))
+        (catch :default error
+          (let [data (ex-data error)]
+            (cond
+              (= :jolt.sim.activity/invalid-cursor (:type data))
+              (throw
+               (ex-info "viewer activity cursor is beyond the recovered prefix"
+                        {:type invalid-activity-cursor
+                         :reason :beyond-recovery
+                         :cursor (:cursor data)
+                         :accepted (:accepted data)}))
+
+              (= :activity-outcome-not-retained (:reason data))
+              [(activity-unavailable-wire cursor "not-retained") cursor]
+
+              :else
+              [(activity-unavailable-wire cursor "recovery-failed") cursor]))))
+      [(activity-unavailable-wire cursor "not-retained") cursor])))
+
+(defn- replay-progress-response
+  "Answers one authorized `GET /api/replay-progress` request.
+
+  The closed activity page (terminal replays with the trusted
+  `:activity-journal?` runtime toggle only) shares the progress body and the
+  configured response cap: an oversized page fails only the activity
+  projection, never the replay status or the HTTP response."
+  [config present active-replay request]
+  (try
+    (let [cursor (activity-cursor! request)
+          state (swap! active-replay observe-active-replay)
+          base (progress-wire (replay-progress-state state))
+          activity (terminal-activity-projection config present state cursor)
+          [activity-wire next-cursor] activity
+          body (json/write-str
+                (if activity-wire
+                  (assoc base "activity" activity-wire)
+                  base))
+          byte-count (alength (.getBytes ^String body "UTF-8"))
+          limit (:max-document-bytes config)
+          [activity-wire body]
+          (if (and activity-wire (> byte-count limit))
+            (let [marker (activity-oversized-wire
+                          cursor next-cursor limit byte-count)]
+              [marker (json/write-str (assoc base "activity" marker))])
+            [activity-wire body])]
+      (cond-> (response 200 "application/json; charset=utf-8" body)
+        activity-wire
+        (update :headers assoc
+                "X-Jolt-Sim-Activity-Next-Cursor" (str next-cursor))))
+    (catch :default error
+      (let [data (ex-data error)]
+        (if (= invalid-activity-cursor (:type data))
+          (error-response 400 :invalid-activity-cursor
+                          (select-keys data [:reason :cursor :accepted]))
+          (throw error))))))
 
 (defn- outcome->progress-status [outcome]
   (if (= :completed (:status outcome)) :completed :failed))
@@ -1167,15 +1401,35 @@
   reading only fixed basenames (`worker-ready.edn`, `stdout.log`,
   `stderr.log`, and -- existence only, never parsed -- `result.edn`) from the
   trusted active run directory. It never accepts a filesystem path from the
-  browser."
+  browser.
+
+  When the trusted runtime config enables `:activity-journal?` (which
+  requires `:retain-completed-artifacts?` true), a terminal replay's response
+  additionally carries one closed JSON-safe activity page recovered from the
+  trusted retained process outcome through
+  `process-explorer/read-activity-page`. The browser supplies only the
+  optional unsigned decimal `X-Jolt-Sim-Activity-Cursor` header (default 0);
+  the response returns events as sequence/tag/kind/summary/EDN-string fields
+  plus bounded observer/recovery diagnostics and the
+  `X-Jolt-Sim-Activity-Next-Cursor` header. Idle and active replays carry no
+  activity key. A malformed or out-of-range cursor fails closed with 400
+  before any page read; every other presentation or recovery failure remains
+  secondary and never converts a completed replay into an HTTP error or a
+  failed status. An oversized page fails only the activity projection against
+  the configured response cap."
   ([config]
    (make-handler config (default-services config)))
   ([config services]
-   (let [config (validate-config! config)
-         unknown-services (into #{} (remove service-keys) (keys services))
-         document-active? (atom false)
-         session-active? (atom false)
-         active-replay (atom (initial-replay-state))]
+    (let [config (validate-config! config)
+          unknown-services (into #{} (remove service-keys) (keys services))
+          document-active? (atom false)
+          session-active? (atom false)
+          active-replay (atom (initial-replay-state))
+          activity-present
+          (presentation/activity-event-presenter
+           (presentation/activity-registry
+            presentation/default-activity-registry
+            (:activity-presentation-registry config)))]
      (when (seq unknown-services)
        (throw (config-error :unknown-service-keys unknown-services)))
      (when-not (and (fn? (:render-trace services))
@@ -1196,11 +1450,11 @@
            (and (= :get method) (= "/viewer.js" uri))
            (response 200 "application/javascript; charset=utf-8" viewer-js)
 
-           (and (= :get method) (= "/api/replay-progress" uri))
-           (if-not (authorized? config request)
-             (error-response 403 :forbidden nil)
-             (response 200 "application/json; charset=utf-8"
-                       (replay-progress-json active-replay)))
+            (and (= :get method) (= "/api/replay-progress" uri))
+            (if-not (authorized? config request)
+              (error-response 403 :forbidden nil)
+              (replay-progress-response
+               config activity-present active-replay request))
 
            (and (= :get method) (= "/api/session-frame" uri))
            (execute-session-frame-request
@@ -1248,12 +1502,17 @@
                                      :on-run-dir observer)
                       outcome ((:replay-document services) document runtime)]
                   (reset! active-replay
-                          {:phase :terminal
-                           :status (outcome->progress-status outcome)
-                           :stdout (get-in outcome [:diagnostics :stdout]
-                                           empty-progress-diagnostic)
-                           :stderr (get-in outcome [:diagnostics :stderr]
-                                           empty-progress-diagnostic)})
+                          (cond-> {:phase :terminal
+                                   :status (outcome->progress-status outcome)
+                                   :stdout (get-in outcome [:diagnostics :stdout]
+                                                   empty-progress-diagnostic)
+                                   :stderr (get-in outcome [:diagnostics :stderr]
+                                                   empty-progress-diagnostic)}
+                            ;; The trusted outcome is retained only for the
+                            ;; opt-in activity journal; its artifact path never
+                            ;; crosses the wire.
+                            (activity-journal-enabled? config)
+                            (assoc :outcome outcome)))
                   (response 200 "application/edn; charset=utf-8"
                             (trace/canonical-edn outcome)))
                 (catch :default error
