@@ -1206,6 +1206,12 @@
             :receiver {:requests @received
                        :server-errors @receiver-errors}))))
 
+(def cancel-before-ack-body-id
+  "Stable identity carried by every harness that invokes the ordinary
+  cancel-before-ack application body. Keeping it beside the body makes parity
+  fail if either wrapper drifts to another application entry point."
+  :jolt.sim.fixtures.outbox-delivery/cancel-before-ack-v1)
+
 (defn exercise-outbox-delivery-cancel-before-ack
   "Runs the ordinary HTTP -> SQLite outbox -> framed TCP path, but cancels the
    client after the receiver decodes attempt 1 and before it acknowledges. The
@@ -1326,6 +1332,7 @@
      (throw-with-cleanup! (:error body) cleanup-errors)
      ;; stop-server quiesces the receiver before its final error snapshot.
      (assoc (:value body)
+            :application-body-id cancel-before-ack-body-id
             :receiver {:requests @received
                        :ack-outcomes @ack-outcomes
                        :server-errors @receiver-errors}))))
