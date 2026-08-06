@@ -17,6 +17,7 @@
             [jolt.sim.report :as report]
             [jolt.sim.trace :as trace]
             [jolt.sim.viewer :as viewer]
+            [jolt.sim.viewer.experiment :as viewer-experiment]
             [jolt.sim.viewer-test :as viewer-test]))
 
 (def ^:private capability-token
@@ -27,6 +28,18 @@
 
 (def ^:private webhook-replay-scenario
   'jolt.sim.fixtures.outbox-http-webhook-scenarios/exercise)
+
+(def ^:private run-new-scenario
+  'jolt.sim.fixtures.outbox-experiment-scenarios/exercise-cancel-before-ack-compiled)
+
+(def ^:private run-new-preset-id
+  :jolt.sim.preset/outbox-cancel-before-ack-v1)
+
+(def ^:private run-new-input
+  {:payload [0 127 128 255]
+   :stream-capacity 8
+   :pipe-capacity 1
+   :poll-eintr-ordinal nil})
 
 (def ^:private webhook-semantic-identities
   "The exact five semantic identities the unchanged JSON HTTP webhook
@@ -454,6 +467,181 @@
              (assoc :cleanup-error (ex-message cleanup-error))))
           ;; Cleanup failure is primary only when no earlier render, replay,
           ;; or protocol failure is already propagating.
+          (when (nil? @primary*)
+            (when-let [secondary cleanup-error]
+              (throw secondary))))))))
+
+(deftest trusted-run-preset-launches-the-ordinary-compiled-outbox-app
+  (let [artifact-root (required-environment
+                       "JOLT_SIM_VIEWER_ARTIFACT_DIR")
+        journal (str artifact-root "/viewer-run-new-progress.edn")
+        server* (atom nil)
+        primary* (atom nil)]
+    (append-phase-best-effort! journal {:phase :run-new-started})
+    (sim-repl/clear!)
+    (try
+      (let [bin (required-environment "JOLT_SIM_BIN")
+            project-dir (required-environment "JOLT_SIM_PROJECT_DIR")
+            plan (viewer-experiment/read-edn
+                  (slurp "examples/outbox-cancel-before-ack-plan.edn"))
+            server
+            (viewer/start!
+             {:port 0
+              :capability-token capability-token
+              :max-document-bytes (* 1024 1024)
+              :allowed-scenarios #{run-new-scenario}
+              :run-presets
+              [{:id run-new-preset-id
+                :label "Outbox: cancel before acknowledgment"
+                :scenario run-new-scenario
+                :profile-id :hermetic
+                :input run-new-input
+                :schedule nil
+                :plan-document plan}]
+              :runtime-config
+              {:worker-command [bin "-M:outbox-delivery-explore-worker"]
+               :dir project-dir
+               :timeout-ms 60000
+               :startup-timeout-ms 120000
+               :kill-grace-ms 500
+               :temp-dir artifact-root
+               :retain-completed-artifacts? true
+               :activity-journal? true}})
+            _ (reset! server* server)
+            port (:port server)
+            _ (append-phase-best-effort!
+               journal {:phase :run-new-viewer-started :port port})
+            catalog-raw
+            (viewer-test/request-over-loopback!
+             port "GET" "/api/run-presets"
+             {"X-Jolt-Sim-Capability" capability-token}
+             ""
+             5000)
+            catalog-body (response-body catalog-raw)
+            catalog (json/read-str catalog-body)
+            run-command
+            (json/write-str
+             {"version" 1
+              "presetId" "jolt.sim.preset/outbox-cancel-before-ack-v1"})
+            run-raw
+            (viewer-test/request-over-loopback!
+             port "POST" "/api/run"
+             {"Content-Type" "application/json"
+              "X-Jolt-Sim-Capability" capability-token}
+             run-command
+             180000)
+            run-body (response-body run-raw)
+            outcome (edn/read-string run-body)
+            recorded (sim-repl/last-run)
+            trusted-outcome (:outcome recorded)
+            executed-plan (get-in trusted-outcome [:result :plan])
+            displayed-connections
+            (into {}
+                  (map (fn [connection]
+                         [(:id connection)
+                          (update
+                           (select-keys connection
+                                        [:from :to :pack-id :capabilities
+                                         :mode])
+                           :capabilities
+                           (fn [capabilities]
+                             (into {}
+                                   (map (fn [[direction values]]
+                                          [direction (set values)]))
+                                   capabilities)))]))
+                  (:connections plan))
+            progress-raw
+            (viewer-test/request-over-loopback!
+             port "GET" "/api/replay-progress"
+             {"X-Jolt-Sim-Capability" capability-token}
+             ""
+             5000)
+            progress-body (response-body progress-raw)
+            progress (json/read-str progress-body)
+            activity-page (get progress "activity")]
+        (append-phase-best-effort!
+         journal
+         {:phase :run-new-returned
+          :status (:status outcome)
+          :artifact-dir (:artifact-dir trusted-outcome)
+          :progress progress})
+        (is (string/starts-with? catalog-raw "HTTP/1.1 200"))
+        (is (= #{{"id" "jolt.sim.preset/outbox-cancel-before-ack-v1"
+                  "label" "Outbox: cancel before acknowledgment"
+                  "profileId" "hermetic"
+                  "planEdn" (viewer-experiment/canonical-edn plan)}}
+               (set (get catalog "presets"))))
+        (is (not (string/includes? catalog-body (str run-new-scenario))))
+        (is (not (string/includes? catalog-body "stream-capacity")))
+        (is (string/starts-with? run-raw "HTTP/1.1 200"))
+        (is (= :completed (:status outcome)))
+        (is (= 0 (:exit outcome)))
+        (is (not (contains? outcome :artifact-dir)))
+        (is (= :jolt.sim.fixtures.outbox-delivery/cancel-before-ack-v1
+               (get-in outcome [:result :application-body-id])))
+        (is (= 200 (get-in outcome [:result :http :status])))
+        (is (= {:plan-index 18 :plan-count 18
+                :open-dbs 0 :active-stmts 0}
+               (get-in outcome [:result :sqlite])))
+        (is (= {:memory true :sqlite true :posix true}
+               (get-in outcome [:result :clean?])))
+        (is (= {:command 1 :delivery 1 :store 1}
+               (get-in outcome [:result :callbacks :compile])))
+        (is (= {:experiment-id (:experiment-id plan)
+                :profile-id (:profile-id plan)
+                :plan-version (:jolt.sim.viewer.experiment/version plan)
+                :connections displayed-connections
+                :checks-count (count (:checks plan))
+                :ffi-mode (get-in plan [:runtime :ffi-mode])
+                :ffi-handler-count (get-in plan [:runtime :handler-count])}
+               {:experiment-id (:experiment-id executed-plan)
+                :profile-id (:profile-id executed-plan)
+                :plan-version (:plan-version executed-plan)
+                :connections (:connections executed-plan)
+                :checks-count (:checks-count executed-plan)
+                :ffi-mode (get-in executed-plan [:runtime-config :ffi-mode])
+                :ffi-handler-count
+                (get-in executed-plan [:runtime-config :ffi-handler-count])})
+            "the inspected plan is bound to the compiled plan actually run")
+        (is (not (contains? (get-in outcome [:result :application])
+                            :marking)))
+        (is (not (contains? (get-in outcome [:result :application])
+                            :delivery)))
+        (is (= {:scenario run-new-scenario
+                :input run-new-input
+                :schedule nil}
+               (select-keys (:config recorded)
+                            [:scenario :input :schedule])))
+        (is (and (string? (:artifact-dir trusted-outcome))
+                 (fs/exists? (:artifact-dir trusted-outcome))))
+        (is (string/starts-with? progress-raw "HTTP/1.1 200"))
+        (is (= "completed" (get progress "status")))
+        (is (= ["jolt.sim.explore/scenario-started"
+                "jolt.example.outbox/experiment-compiled"
+                "jolt.example.outbox/application-started"
+                "jolt.example.outbox/cancel-before-ack-observed"
+                "jolt.example.outbox/application-completed"
+                "jolt.sim.explore/scenario-completed"]
+               (mapv #(get % "tag") (get activity-page "events"))))
+        (is (= "complete"
+               (get-in activity-page ["recovery" "status"]))))
+      (catch :default error
+        (reset! primary* error)
+        (append-phase-best-effort! journal (bounded-error-phase error))
+        (throw error))
+      (finally
+        (let [cleanup-error
+              (try
+                (when-let [server @server*]
+                  (viewer/stop! server))
+                nil
+                (catch :default error error))]
+          (append-phase-best-effort!
+           journal
+           (cond-> {:phase :run-new-viewer-stopped}
+             cleanup-error
+             (assoc :cleanup-error (ex-message cleanup-error))))
+          (sim-repl/clear!)
           (when (nil? @primary*)
             (when-let [secondary cleanup-error]
               (throw secondary))))))))

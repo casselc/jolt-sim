@@ -1,6 +1,6 @@
 # jolt-sim implementation roadmap
 
-Updated: 2026-08-05
+Updated: 2026-08-06
 
 Status: live execution roadmap for pre-release development
 
@@ -80,6 +80,7 @@ networking, TCP, HTTP, clocks, process isolation, Hegel, replay, and monitoring.
 | Whole HTTP -> SQLite -> TCP outbox application | Real/hermetic base and generated workload/capacity/poll-fault slice are hosted and green | Base draft PR `casselc/jolt-sim#28`; Hegel draft PR `#29`; hosted run `30861666592`; Hegel `2 tests / 5 assertions` over 2 boundaries plus 15 generated cases; aggregate `513 / 4,042`; Phase 3 below |
 | Scoped reset and ordinary retry | The unchanged DB/TCP application now closes the failed connection, reloads the pending row, and retries after one receiver-port-scoped read reset | `2d41266`; draft PR `casselc/jolt-sim#33`; exact retry boundaries plus 15 generated fresh-process cases; Phase 3 below |
 | Whole-case evidence and static reports | Versioned Case/Outcome, parent-owned monitor verdicts, stable failure/success bundles, and deterministic HTML are integrated and retained by bounded CI post-processing | Schema `f44be7a` / PR `#35`; harness `e0aa464` / PR `#36`; reporter `69e9abb` / PR `#37`; aggregate retention `8c7b270` / PR `#38`; exact aggregate outbox gate `9 tests / 48 assertions`; real retained report `41,200 bytes` |
+| Ripple trusted Run-new example | One server-owned preset runs the ordinary compiled cancel-before-ack outbox application under its one truthful `:hermetic` profile; the browser receives only safe catalog metadata and the inert plan projection, while topology, progress, retained activity, and outcome reuse the shared viewer models | Current integration slice; canonical plan `viewer/examples/outbox-cancel-before-ack-plan.edn`; screenshot `viewer/docs/ripple-run-new-outbox.png`; focused viewer `90 / 882`; real-process E2E `3 / 49`; Playwright `7 / 7`; full source suite `743 / 7,676` |
 | Ack-gated durable delivery marking | Integrated on the current stack: ordinary and retry application paths validate the exact ack before one guarded `pending` → `delivered` transaction and final reload | Adapter API `f6f7538` / PR `#39`; guarded model plus hostile-ack, close-error, and concurrent-marker controls in the current slice; unit `557 / 4,677`; SQLite parity `1 / 47`; sim-only `3 / 51`; real/hermetic `3 / 52`; fresh-process Hegel `9 / 48` |
 
 Phase 1 was last run on Linux x86-64 using the prior simulator image
@@ -208,13 +209,27 @@ observer query, so both command encodings consume the same 24-statement
 application transcript. Generated exact-replay/conflict workloads and their
 retained viewer evidence remain the next bounded Phase 4 slice.
 
+Ripple now exposes one trusted **Run new** preset for the compiled
+cancel-before-ack application. The server owns the allowlisted scenario,
+canonical input, schedule, `:hermetic` profile, worker configuration, and
+artifact policy; the browser receives only the preset identity/display fields
+and the validated inert experiment-plan projection. The UI renders the
+four-node topology and then consumes the existing progress, retained semantic
+activity, and terminal outcome models. This is one interactive fresh-process
+witness, not the two-worker real/hermetic parity proof. The next bounded
+viewer execution slices are parameterized-but-validated inputs and a second
+truthful executable profile; browser-selectable regime controls must wait
+until the worker can enforce the advertised distinction.
+
 Ripple's longer-term live-development boundary is recorded in
 [`research/RIPPLE-REPL-DEBUGGER-INTEGRATION.md`](research/RIPPLE-REPL-DEBUGGER-INTEGRATION.md):
 one shared Jolt evaluation engine adapted to the textual REPL, a
 prepl-compatible structured stream, and nREPL; a separate revision-scoped
 Session control protocol; and a canonical out-of-band Ripple-in-Ripple e2e
 scenario. This follows the ordinary HTTP/SQLite/TCP application workflow and
-must not displace it with debugger protocol scaffolding.
+must not displace it with debugger protocol scaffolding. These remain
+sequenced roadmap work: the current Run-new preset does not provide a socket
+REPL/prepl stream, live evaluation, or Ripple-in-Ripple debugging.
 
 The next stacked slice, draft PR `casselc/jolt-sim#29`, keeps that application
 body unchanged and runs every case in a fresh sim-enabled process. Hegel owns

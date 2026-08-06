@@ -101,9 +101,91 @@ replay delegates to one real fresh worker for Case/Outcome documents only.
 Hosted CI drives the checked-in canonical outbox Case/Outcome through the live
 viewer HTTP API, executes its unchanged HTTP/SQLite/TCP/bencode scenario in
 that worker, and retains the complete worker directory plus an append-only
-phase log. The UI does not yet compare two outcomes, evaluate post-hoc
-invariants, or expose a general scenario catalog. Those are later viewer
-slices over the same evidence and replay APIs.
+phase log. Ripple also exposes the one trusted runnable example described
+below. The UI does not yet compare two outcomes, evaluate post-hoc invariants,
+or expose a general application-defined scenario catalog. Those are later
+viewer slices over the same evidence and execution APIs.
+
+### Run a trusted outbox example
+
+Ripple can start one canonical example without first uploading a retained
+Case/Outcome. **Load examples** fetches the server's closed preset catalog,
+and **Run new** starts the selected preset in one fresh worker. The first and
+currently only executable preset is **Outbox: cancel before acknowledgment**:
+the ordinary compiled HTTP -> SQLite -> TCP/bencode outbox application under
+the truthful `:hermetic` profile. The application and its library adapters run
+unchanged; Ripple does not reimplement their HTTP, database, networking, codec,
+or cancellation behavior.
+
+The browser is not an execution-coordinate editor. A trusted startup preset
+owns its allowlisted scenario symbol, canonical input, exact optional
+schedule, and runtime profile. `GET /api/run-presets` publishes only its ID,
+label, profile ID, and validated inert experiment-plan EDN. `POST /api/run`
+accepts only the selected preset ID. Scenario, input, schedule, worker command,
+working directory, deadlines, environment, and artifact policy therefore
+remain server-owned and cannot be replaced by browser data. Run and replay
+share the same single-flight admission, progress model, path redaction,
+retained activity, and outcome handling.
+
+For this preset, start Ripple programmatically from a project REPL or a small
+launcher namespace so the trusted configuration can read the checked-in plan
+without duplicating it in the command-line EDN file:
+
+```clojure
+(require '[jolt.sim.viewer :as viewer]
+         '[jolt.sim.viewer.experiment :as viewer-experiment])
+
+(def ripple
+  (viewer/start!
+   {:port 8788
+    :capability-token (System/getenv "JOLT_SIM_VIEWER_TOKEN")
+    :max-document-bytes 1048576
+    :allowed-scenarios
+    #{'jolt.sim.fixtures.outbox-experiment-scenarios/exercise-cancel-before-ack-compiled}
+    :run-presets
+    [{:id :jolt.sim.preset/outbox-cancel-before-ack-v1
+      :label "Outbox: cancel before acknowledgment"
+      :scenario
+      'jolt.sim.fixtures.outbox-experiment-scenarios/exercise-cancel-before-ack-compiled
+      :profile-id :hermetic
+      :input {:payload [0 127 128 255]
+              :stream-capacity 8
+              :pipe-capacity 1
+              :poll-eintr-ordinal nil}
+      :schedule nil
+      :plan-document
+      (viewer-experiment/read-edn
+       (slurp "examples/outbox-cancel-before-ack-plan.edn"))}]
+    :runtime-config
+    {:worker-command [(System/getenv "JOLT_SIM_BIN")
+                      "-M:outbox-delivery-explore-worker"]
+     :dir "/absolute/path/to/jolt-sim"
+     :timeout-ms 60000
+     :startup-timeout-ms 120000
+     :kill-grace-ms 500
+     :temp-dir "/absolute/path/to/retained-runs"
+     :retain-completed-artifacts? true
+     :activity-journal? true}}))
+```
+
+Run that form with the process working directory set to `viewer`, an absolute
+`JOLT_SIM_BIN`, a writable retained-run parent, and a capability token of at
+least 32 characters. The `-M:viewer` command-line path remains available: put
+the same closed maps in the EDN configuration and inline the contents of
+[`examples/outbox-cancel-before-ack-plan.edn`](examples/outbox-cancel-before-ack-plan.edn)
+as `:plan-document`.
+
+The UI renders the preset's four-node, three-connection topology before
+execution, then uses the existing progress, retained semantic activity, and
+terminal outcome views for the run:
+
+[![Ripple running the compiled outbox example](docs/ripple-run-new-outbox.png)](docs/ripple-run-new-outbox.png)
+
+This one fresh run is an interactive application witness, **not** the existing
+two-worker real/hermetic parity proof. Browser-selectable regimes,
+parameterized inputs, and a second independently truthful execution profile
+remain later slices; the UI will not advertise choices that the worker cannot
+yet enforce.
 
 ### Replay activity panel
 

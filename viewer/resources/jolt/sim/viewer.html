@@ -63,6 +63,25 @@
       </div>
     </div>
     <div id="status" role="status" aria-live="polite"></div>
+    <section aria-labelledby="run-preset-heading">
+      <h2 id="run-preset-heading">Runnable examples</h2>
+      <p class="muted">The server owns each example's scenario, input, schedule,
+        worker command, and artifact policy. Ripple receives only an inert plan
+        for inspection and sends the exact trusted preset identifier.</p>
+      <div class="controls">
+        <label>Example
+          <select id="run-preset" disabled>
+            <option value="" selected>No runnable examples loaded.</option>
+          </select>
+        </label>
+        <div>
+          <button id="load-run-presets" type="button" disabled>Load examples</button>
+          <button id="run-new" data-testid="run-new" type="button" disabled>Run new</button>
+        </div>
+      </div>
+      <span id="run-preset-status" data-testid="run-preset-status"
+            role="status" aria-live="polite">Enter the session capability, then load examples.</span>
+    </section>
     <section aria-labelledby="session-heading">
       <h2 id="session-heading">Attached simulation session</h2>
       <p class="muted">Inspection-only canonical state, enabled choices, successor previews, and journal tail from a trusted REPL/embedded session. Refresh evaluates the session's deterministic, effect-free cooperative step callback to preview successors. Frames may contain application data; keep the loopback capability token private. Reset clears the local cursor, frame, choices, any pending retry, and status text; it does not affect the trusted session.</p>
@@ -97,7 +116,7 @@
       <ol id="activity-events"></ol>
       <p id="activity-recovery" class="muted"></p>
     </section>
-    <h2>Fresh replay outcome</h2>
+    <h2>Fresh run outcome</h2>
     <pre id="outcome">No replay has run.</pre>
   </main>
   <script src="/viewer.js"></script>

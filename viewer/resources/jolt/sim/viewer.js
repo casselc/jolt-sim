@@ -6,6 +6,10 @@
   const capability = document.getElementById("capability");
   const inspect = document.getElementById("inspect");
   const replay = document.getElementById("replay");
+  const runPreset = document.getElementById("run-preset");
+  const loadRunPresets = document.getElementById("load-run-presets");
+  const runNew = document.getElementById("run-new");
+  const runPresetStatus = document.getElementById("run-preset-status");
   const status = document.getElementById("status");
   const report = document.getElementById("report");
   const activity = document.getElementById("activity");
@@ -39,6 +43,8 @@
   let activityPage = null;
   let activityGeneration = 0;
   let activityNavigationBusy = false;
+  let runPresets = [];
+  let selectedRunPreset = null;
 
   const canonicalUnsignedDecimal = (value) =>
     typeof value === "string" && /^(0|[1-9][0-9]*)$/.test(value);
@@ -54,6 +60,17 @@
     return actual.length === wanted.length &&
       actual.every((key, index) => key === wanted[index]);
   };
+
+  const namespacedIdentifier = (value) =>
+    typeof value === "string" &&
+    /^[^\s/:]+(?:\.[^\s/:]+)*\/[^\s/]+$/.test(value);
+
+  const validRunPreset = (preset) =>
+    exactKeys(preset, ["id", "label", "profileId", "planEdn"]) &&
+    namespacedIdentifier(preset.id) &&
+    typeof preset.label === "string" && preset.label.trim().length > 0 &&
+    typeof preset.profileId === "string" && preset.profileId.length > 0 &&
+    typeof preset.planEdn === "string" && preset.planEdn.length > 0;
 
   const validChoice = (choice, revision) =>
     exactKeys(choice, ["revision", "kind", "value", "label"]) &&
@@ -512,6 +529,7 @@
         (authoritative || activeProgressStatus(progress.status))) {
       renderProgress(progress, cursor, nextCursorHeader);
     }
+    return progress;
   };
 
   const loadActivityPage = async (index, cursor) => {
@@ -601,6 +619,10 @@
     capability.disabled = busy;
     inspect.disabled = busy || !ready;
     replay.disabled = busy || !ready || kind.value !== "case-outcome";
+    loadRunPresets.disabled = busy || capability.value.length === 0;
+    runPreset.disabled = busy || runPresets.length === 0;
+    runNew.disabled = busy || capability.value.length === 0 ||
+      selectedRunPreset === null;
     // An unresolved ambiguous step outcome blocks a fresh frame read too, so
     // the only available action stays Retry until it resolves or Reset runs.
     sessionRefresh.disabled = busy || capability.value.length === 0 || pendingRetry !== null;
@@ -639,15 +661,15 @@
     renderChoices();
   };
 
-  const request = async (path) => {
+  const requestDocument = async (path, documentKind, body) => {
     const response = await fetch(path, {
       method: "POST",
       headers: {
         "Content-Type": "application/edn",
         "X-Jolt-Sim-Capability": capability.value,
-        "X-Jolt-Sim-Document-Kind": kind.value
+        "X-Jolt-Sim-Document-Kind": documentKind
       },
-      body: documentText,
+      body,
       cache: "no-store",
       credentials: "omit"
     });
@@ -655,6 +677,8 @@
     if (!response.ok) throw new Error(`${response.status} ${text}`);
     return text;
   };
+
+  const request = (path) => requestDocument(path, kind.value, documentText);
 
   file.addEventListener("change", async () => {
     documentText = null;
@@ -676,6 +700,103 @@
       status.textContent = `Could not read file: ${error.message}`;
     }
     updateButtons();
+  });
+
+  const installRunPreset = async (preset) => {
+    selectedRunPreset = preset;
+    documentText = preset.planEdn;
+    kind.value = "experiment-plan";
+    file.value = "";
+    stopPolling();
+    resetActivityPages();
+    activity.textContent = "Idle.";
+    outcome.textContent = "No fresh run has completed.";
+    report.srcdoc = await requestDocument(
+      "/api/render", "experiment-plan", preset.planEdn);
+    status.textContent =
+      `Validated ${preset.label} topology rendered (${preset.profileId}).`;
+    runPresetStatus.textContent =
+      `${preset.label} is ready. Run new uses server-owned coordinates.`;
+  };
+
+  const clearRunPresets = (message) => {
+    runPresets = [];
+    selectedRunPreset = null;
+    runPreset.textContent = "";
+    const empty = document.createElement("option");
+    empty.value = "";
+    empty.textContent = "No runnable examples loaded.";
+    runPreset.appendChild(empty);
+    runPresetStatus.textContent = message;
+  };
+
+  loadRunPresets.addEventListener("click", async () => {
+    if (busy || capability.value.length === 0) return;
+    busy = true;
+    updateButtons();
+    runPresetStatus.textContent = "Loading trusted runnable examples...";
+    try {
+      const response = await fetch("/api/run-presets", {
+        method: "GET",
+        headers: {
+          "Accept": "application/json",
+          "X-Jolt-Sim-Capability": capability.value
+        },
+        cache: "no-store",
+        credentials: "omit"
+      });
+      const body = await response.json().catch(() => null);
+      if (!response.ok || !exactKeys(body, ["version", "presets"]) ||
+          body.version !== 1 || !Array.isArray(body.presets) ||
+          !body.presets.every(validRunPreset) ||
+          new Set(body.presets.map((preset) => preset.id)).size !==
+            body.presets.length) {
+        throw new Error(`${response.status} malformed runnable-example response`);
+      }
+      if (body.presets.length === 0) {
+        clearRunPresets("No trusted runnable examples are configured.");
+        return;
+      }
+      runPresets = body.presets;
+      runPreset.textContent = "";
+      runPresets.forEach((preset) => {
+        const option = document.createElement("option");
+        option.value = preset.id;
+        option.textContent = `${preset.label} (${preset.profileId})`;
+        runPreset.appendChild(option);
+      });
+      runPreset.value = runPresets[0].id;
+      await installRunPreset(runPresets[0]);
+    } catch (error) {
+      clearRunPresets(`Could not load runnable examples: ${error.message}`);
+    } finally {
+      busy = false;
+      updateButtons();
+    }
+  });
+
+  runPreset.addEventListener("change", async () => {
+    if (busy) return;
+    const preset = runPresets.find((candidate) =>
+      candidate.id === runPreset.value);
+    if (!preset) {
+      selectedRunPreset = null;
+      runPresetStatus.textContent = "Unknown runnable example selected.";
+      updateButtons();
+      return;
+    }
+    busy = true;
+    updateButtons();
+    try {
+      await installRunPreset(preset);
+    } catch (error) {
+      selectedRunPreset = null;
+      runPresetStatus.textContent =
+        `Could not render runnable example: ${error.message}`;
+    } finally {
+      busy = false;
+      updateButtons();
+    }
   });
 
   capability.addEventListener("input", updateButtons);
@@ -874,33 +995,91 @@
 
   report.addEventListener("load", enhanceReport);
 
-  replay.addEventListener("click", async () => {
+  const performFreshRun = async ({startMessage, completedMessage,
+                                  failedPrefix, requestRun}) => {
     if (busy) return;
     busy = true;
     updateButtons();
-    status.textContent = "Running one fresh-process replay...";
+    status.textContent = startMessage;
     activity.textContent = "status: starting";
     resetActivityPages();
-    // Initiate the authoritative replay POST before polling. Non-final polls
+    // Initiate the authoritative run POST before polling. Non-final polls
     // additionally ignore idle/terminal snapshots, since separate HTTP
     // connections do not guarantee server arrival order.
-    const replayRequest = request("/api/replay");
+    const runRequest = requestRun();
     startPolling();
+    let requestReturned = false;
+    let finalProgress = null;
     try {
-      outcome.textContent = await replayRequest;
-      status.textContent = "Fresh replay completed; raw outcome preserved below.";
+      outcome.textContent = await runRequest;
+      requestReturned = true;
     } catch (error) {
-      outcome.textContent = "No replay outcome returned.";
-      status.textContent = `Replay failed: ${error.message}`;
+      outcome.textContent = "No fresh run outcome returned.";
+      status.textContent = `${failedPrefix}: ${error.message}`;
     } finally {
       stopPolling();
       try {
-        await pollProgressOnce(pollGeneration, true);
+        finalProgress = await pollProgressOnce(pollGeneration, true);
       } catch (error) {
         // Best-effort final snapshot fetch.
+      }
+      if (requestReturned) {
+        if (finalProgress && finalProgress.status === "completed") {
+          status.textContent = completedMessage;
+        } else {
+          const terminal = finalProgress && typeof finalProgress.status === "string"
+            ? finalProgress.status
+            : "unavailable";
+          status.textContent =
+            `${failedPrefix}: terminal process status ${terminal}; raw outcome preserved below.`;
+        }
       }
       busy = false;
       updateButtons();
     }
+    return requestReturned && finalProgress !== null &&
+      finalProgress.status === "completed";
+  };
+
+  replay.addEventListener("click", () => performFreshRun({
+    startMessage: "Running one fresh-process replay...",
+    completedMessage: "Fresh replay completed; raw outcome preserved below.",
+    failedPrefix: "Replay failed",
+    requestRun: () => request("/api/replay")
+  }));
+
+  runNew.addEventListener("click", () => {
+    if (busy || selectedRunPreset === null) return;
+    const preset = selectedRunPreset;
+    runPresetStatus.textContent =
+      `Running ${preset.label} with server-owned coordinates...`;
+    return performFreshRun({
+      startMessage: `Running ${preset.label} in one fresh process...`,
+      completedMessage:
+        `${preset.label} completed; raw outcome and retained activity are available.`,
+      failedPrefix: `${preset.label} failed`,
+      requestRun: async () => {
+        const response = await fetch("/api/run", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Accept": "application/edn",
+            "X-Jolt-Sim-Capability": capability.value
+          },
+          body: JSON.stringify({version: 1, presetId: preset.id}),
+          cache: "no-store",
+          credentials: "omit"
+        });
+        const text = await response.text();
+        if (!response.ok) throw new Error(`${response.status} ${text}`);
+        return text;
+      }
+    }).then((completed) => {
+      runPresetStatus.textContent = selectedRunPreset === preset
+        ? (completed
+          ? `${preset.label} is ready. Run new starts another fresh process.`
+          : `${preset.label} did not complete; retained evidence remains available.`)
+        : runPresetStatus.textContent;
+    });
   });
 })();
