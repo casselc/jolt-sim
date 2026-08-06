@@ -475,6 +475,17 @@
   {:extra-paths ["test"]
    :main-opts ["-m" "jolt.sim.outbox-crash-recovery-test"]}
 
+  ;; Fresh-worker parity witness: the fixed cancel-before-ack experiment
+  ;; manifest compiled through the trusted outbox experiment packs and
+  ;; executed via experiment-executor/execute! in one fresh
+  ;; :outbox-delivery-explore-worker child, compared against the existing
+  ;; direct simulated assembly in a second strictly sequential child. The
+  ;; parent intentionally resolves no application/native dependency; only
+  ;; the worker alias resolves the scenario namespaces.
+  :outbox-experiment-parity-test
+  {:extra-paths ["test"]
+   :main-opts ["-m" "jolt.sim.outbox-experiment-parity-test"]}
+
   ;; System-SQLite-library-free child/CI form of the same whole-application
   ;; gate. Only db's source root is loaded so real SQLite cannot initialize
   ;; before the hermetic controller is installed.
