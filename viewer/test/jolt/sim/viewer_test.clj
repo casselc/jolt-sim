@@ -315,9 +315,9 @@
          :presentation-registry
          {:secret/event {:kind :example.kind/secret :present hidden}}
          :native-fallback #{}}}}}
-     :checks [{:fields {:monitor-specs [{:id :example.check/one :check hidden}]
+     :checks [{:fields {:monitor-specs [{:id :example.check/one :check hidden}]}
                        :presentation-registry
-                       {:check/event {:kind :example.kind/check :present hidden}}}}]
+                       {:check/event {:kind :example.kind/check :present hidden}}}]
      :runtime-config
      {:ffi-mode :hermetic
       :ffi-handlers {[:native-operation :send] hidden
@@ -1231,6 +1231,8 @@
              :read-session-frame}
            (set (keys (:services @captured)))))
     (is (nil? (get-in @captured [:services :step-session-frame])))
+    (is (nil? (get-in @captured [:services :step-session-frame!]))
+        "the read-only attachment never installs a mutating capability")
     (is (= (viewer-session/read-frame s 0)
            ((get-in @captured [:services :read-session-frame]) 0)))))
 
@@ -1443,6 +1445,717 @@
       (is (false? (:committed? result)))
       (is (= 4 (get-in result [:stale :actual-revision])))
       (is (= :completed (get-in result [:frame :status]))))))
+
+;; --- Session step endpoint (POST /api/session-step) ---
+;;
+;; One bounded exact revision-scoped step over the closed JSON contract. The
+;; handler tests use both a real in-process Session (commit, stale retry,
+;; disabled actions) and scripted service doubles (gates, frame failure,
+;; scrubbing), mirroring the viewer-session adapter tests above.
+
+(defn- step-body
+  "Builds the closed JSON step contract text from its decimal strings."
+  [cursor revision kind value]
+  (str "{\"version\":1,\"cursor\":\"" cursor
+       "\",\"branch\":{\"revision\":\"" revision
+       "\",\"kind\":\"" kind
+       "\",\"value\":\"" value "\"}}"))
+
+(defn- step-request
+  "Builds a POST /api/session-step request carrying the JSON step contract."
+  ([text] (step-request text token))
+  ([text supplied-token]
+   {:request-method :post
+    :uri "/api/session-step"
+    :headers {"content-type" "application/json"
+              "content-length" (str (count (.getBytes ^String text "UTF-8")))
+              "x-jolt-sim-capability" supplied-token}
+    :body (body [(.getBytes ^String text "UTF-8")])}))
+
+(defn- recording-body
+  "A request body that records any read, for proving a rejection precedes
+  body consumption."
+  [read?]
+  (reify http-body/RequestBody
+    (body-recv [_]
+      (reset! read? true)
+      nil)
+    (body-bytes [_]
+      (reset! read? true)
+      (byte-array 0))
+    (body-string [_ _]
+      (reset! read? true)
+      "")))
+
+(defn- steppable-services
+  "Trusted services over a real Session, recording every stepper call."
+  [s step-calls]
+  (assoc (services (atom []) (atom []) {:status :completed})
+         :read-session-frame
+         (fn [cursor]
+           (viewer-session/read-frame s cursor))
+         :step-session-frame!
+         (fn [branch cursor]
+           (swap! step-calls conj branch)
+           (viewer-session/step-frame! s branch cursor))))
+
+(deftest session-step-commits-once-and-identical-retry-is-stale
+  (let [s (session/start (session-sim-config))
+        step-calls (atom [])
+        handler (viewer/make-handler (config) (steppable-services s step-calls))
+        text (step-body "0" "0" "run" "2")
+        committed (handler (step-request text))
+        retry (handler (step-request text))]
+    (is (= 200 (:status committed)))
+    (is (= "application/edn; charset=utf-8"
+           (get-in committed [:headers "Content-Type"])))
+    (is (= {:version 1
+            :status :committed
+            :committed? true
+            :ack {:branch {:revision 0 :action [:run 2]}
+                  :revision 1}
+            :frame-status :available}
+           (edn/read-string (:body committed))))
+    (is (= 409 (:status retry)))
+    (is (= {:version 1
+            :status :stale
+            :committed? false
+            :stale {:expected-revision 0
+                    :actual-revision 1
+                    :branch {:revision 0 :action [:run 2]}}
+            :frame-status :available}
+           (edn/read-string (:body retry))))
+    (is (= [{:revision 0 :action [:run 2]}
+            {:revision 0 :action [:run 2]}]
+           @step-calls)
+        "both requests reach stale validation at the trusted Session seam")
+    (is (= 1 (:revision (session/snapshot s))))
+    (is (= 2 (count (session/journal s)))
+        "the identical request retried after commit is stale and never advances the revision again")))
+
+(deftest session-step-orders-authority-before-availability-gates-and-body
+  (let [step-calls (atom [])
+        read? (atom false)
+        tracked-request
+        (assoc (step-request (step-body "0" "0" "run" "2"))
+               :body (recording-body read?))
+        steppable (viewer/make-handler
+                   (config)
+                   (steppable-services (session/start (session-sim-config))
+                                       step-calls))
+        read-only (viewer/make-handler
+                   (config)
+                   (assoc (services (atom []) (atom []) {:status :completed})
+                          :read-session-frame
+                          (fn [_] (throw (ex-info "unused" {})))))
+        forbidden (steppable (assoc-in tracked-request
+                                       [:headers "x-jolt-sim-capability"]
+                                       "wrong"))
+        forbidden-read-only (read-only
+                             (assoc-in tracked-request
+                                       [:headers "x-jolt-sim-capability"]
+                                       "wrong"))
+        missing (read-only tracked-request)
+        missing-wrong-media (read-only
+                             (assoc-in tracked-request
+                                       [:headers "content-type"]
+                                       "text/plain"))
+        wrong-media (steppable
+                     (assoc-in tracked-request
+                               [:headers "content-type"] "text/plain"))]
+    (is (= 403 (:status forbidden)))
+    (is (= 403 (:status forbidden-read-only))
+        "authorization precedes service availability: no 404 oracle")
+    (is (= 404 (:status missing)))
+    (is (string/includes? (:body missing) ":session-step-unavailable"))
+    (is (= 404 (:status missing-wrong-media))
+        "service availability precedes the media-type check")
+    (is (= 415 (:status wrong-media)))
+    (is (string/includes? (:body wrong-media) ":expected-application-json"))
+    (is (false? @read?))
+    (is (= [] @step-calls)
+        "rejected requests never invoke the trusted stepper")))
+
+(deftest session-step-rejects-malformed-noncanonical-and-wrong-type-bodies
+  (let [s (session/start (session-sim-config))
+        step-calls (atom [])
+        handler (viewer/make-handler (config) (steppable-services s step-calls))
+        before (session/snapshot s)
+        cases [["{not json" :malformed-json]
+               [(str (step-body "0" "0" "run" "2") " {\"extra\":true}")
+                :malformed-json]
+               [(str (step-body "0" "0" "run" "2") " trailing")
+                :malformed-json]
+               ["" :malformed-json]
+               ["   " :malformed-json]
+               ["[1,2,3]" :unexpected-keys]
+               ["{\"version\":1,\"cursor\":\"0\"}" :unexpected-keys]
+               [(str "{\"version\":1,\"cursor\":\"0\",\"surprise\":true,"
+                     "\"branch\":{\"revision\":\"0\",\"kind\":\"run\","
+                     "\"value\":\"2\"}}")
+                :unexpected-keys]
+               ["{\"version\":2,\"cursor\":\"0\",\"branch\":{\"revision\":\"0\",\"kind\":\"run\",\"value\":\"2\"}}"
+                :unsupported-version]
+               ["{\"version\":\"1\",\"cursor\":\"0\",\"branch\":{\"revision\":\"0\",\"kind\":\"run\",\"value\":\"2\"}}"
+                :unsupported-version]
+               ["{\"version\":1.0,\"cursor\":\"0\",\"branch\":{\"revision\":\"0\",\"kind\":\"run\",\"value\":\"2\"}}"
+                :unsupported-version]
+               [(step-body "01" "0" "run" "2") :invalid-cursor]
+               [(step-body "-1" "0" "run" "2") :invalid-cursor]
+               [(step-body "+1" "0" "run" "2") :invalid-cursor]
+               [(step-body "1 " "0" "run" "2") :invalid-cursor]
+               [(step-body "99999999999999999999" "0" "run" "2")
+                :decimal-out-of-range]
+               [(step-body "9999999999999999999" "0" "run" "2")
+                :decimal-out-of-range]
+               ["{\"version\":1,\"cursor\":0,\"branch\":{\"revision\":\"0\",\"kind\":\"run\",\"value\":\"2\"}}"
+                :invalid-cursor]
+               ["{\"version\":1,\"cursor\":\"0\",\"branch\":[\"run\",2]}"
+                :invalid-branch]
+               ["{\"version\":1,\"cursor\":\"0\",\"branch\":{\"revision\":\"0\",\"kind\":\"run\",\"value\":\"2\",\"surprise\":true}}"
+                :invalid-branch]
+               [(step-body "0" "01" "run" "2") :invalid-branch]
+               [(step-body "0" "-1" "run" "2") :invalid-branch]
+               [(step-body "0" "0" "RUN" "2") :unknown-kind]
+               [(step-body "0" "0" "run-all" "2") :unknown-kind]
+               [(step-body "0" "0" "run" "02") :invalid-value]
+               [(step-body "0" "0" "run" "-2") :invalid-value]
+               [(step-body "0" "0" "advance" "-0") :invalid-value]
+               [(step-body "0" "0" "advance" "05") :invalid-value]
+               [(step-body "0" "0" "advance" "-99999999999999999999")
+                :decimal-out-of-range]
+               ["{\"version\":1,\"cursor\":\"0\",\"branch\":{\"revision\":\"0\",\"kind\":\"run\",\"value\":2}}"
+                :invalid-value]
+               ["{\"version\":1,\"version\":1,\"cursor\":\"0\",\"branch\":{\"revision\":\"0\",\"kind\":\"run\",\"value\":\"2\"}}"
+                :duplicate-key]
+               ["{\"version\":1,\"cursor\":\"0\",\"branch\":{\"revision\":\"0\",\"kind\":\"run\",\"kind\":\"run\",\"value\":\"2\"}}"
+                :duplicate-key]
+               [(step-body "9223372036854775808" "0" "run" "2")
+                :decimal-out-of-range]
+               [(step-body "0" "9223372036854775808" "run" "2")
+                :decimal-out-of-range]
+               [(step-body "0" "9223372036854775807" "run" "2")
+                :decimal-out-of-range]
+               [(step-body "0" "0" "run" "9223372036854775808")
+                :decimal-out-of-range]
+               [(step-body "0" "0" "advance" "9223372036854775808")
+                :decimal-out-of-range]
+               [(step-body "0" "0" "advance" "-9223372036854775809")
+                :decimal-out-of-range]]]
+    (doseq [[text reason] cases]
+      (let [response (handler (step-request text))]
+        (is (= 400 (:status response)) (pr-str text))
+        (is (string/includes? (:body response) ":invalid-session-step")
+            (pr-str text))
+        (is (string/includes? (:body response) (str reason))
+            (pr-str text))))
+    (is (= [] @step-calls)
+        "contract violations never invoke the trusted stepper")
+    (is (= before (session/snapshot s)))
+    (is (= 1 (count (session/journal s))))))
+
+(deftest session-step-accepts-signed-advance-at-the-decimal-bound
+  (let [s (session/start (session-sim-config))
+        step-calls (atom [])
+        handler (viewer/make-handler (config) (steppable-services s step-calls))
+        ;; Long/MIN_VALUE is the 20-character signed bound. It parses, then
+        ;; the kernel rejects it because only :run actions are enabled at
+        ;; this machine state -- proving the bound did not reject early.
+        response (handler
+                  (step-request
+                   (step-body "0" "0" "advance" "-9223372036854775808")))]
+    (is (= 409 (:status response)))
+    (is (string/includes? (:body response) ":session-step-rejected"))
+    (is (= [{:revision 0 :action [:advance -9223372036854775808]}]
+           @step-calls))
+    (is (= 1 (count (session/journal s))))))
+
+(deftest session-step-accepts-the-positive-payload-and-cursor-bound
+  (let [s (session/start (session-sim-config))
+        step-calls (atom [])
+        handler (viewer/make-handler (config) (steppable-services s step-calls))
+        maximum "9223372036854775807"]
+    (doseq [text [(step-body "0" "0" "run" maximum)
+                  (step-body "0" "0" "advance" maximum)]]
+      (let [response (handler (step-request text))]
+        (is (= 409 (:status response)))
+        (is (string/includes? (:body response) ":session-step-rejected"))))
+    (let [cursor (handler
+                  (step-request (step-body maximum "0" "run" "2")))]
+      (is (= 400 (:status cursor)))
+      (is (string/includes? (:body cursor) ":invalid-session-cursor")))
+    (is (= [{:revision 0 :action [:run 9223372036854775807]}
+            {:revision 0 :action [:advance 9223372036854775807]}
+            {:revision 0 :action [:run 2]}]
+           @step-calls))
+    (is (= 0 (:revision (session/snapshot s))))
+    (is (= 1 (count (session/journal s))))))
+
+(deftest session-step-rejects-oversized-bodies-before-stepping
+  (let [s (session/start (session-sim-config))
+        step-calls (atom [])
+        handler (viewer/make-handler (config) (steppable-services s step-calls))
+        oversized (apply str (repeat 4097 \space))
+        declared (handler (step-request oversized))
+        streamed (handler
+                  {:request-method :post
+                   :uri "/api/session-step"
+                   :headers {"content-type" "application/json"
+                             "x-jolt-sim-capability" token}
+                   :body (body [(.getBytes (apply str (repeat 2048 \{))
+                                           "UTF-8")
+                                (.getBytes (apply str (repeat 2049 \}))
+                                           "UTF-8")])})]
+    (is (= 413 (:status declared)))
+    (is (string/includes? (:body declared) ":request-too-large"))
+    (is (= 413 (:status streamed)))
+    (is (= [] @step-calls))
+    (is (= 1 (count (session/journal s))))))
+
+(deftest session-step-body-limit-is-independent-of-document-limit
+  (let [s (session/start (session-sim-config))
+        step-calls (atom [])
+        text (step-body "0" "0" "run" "2")
+        handler (viewer/make-handler
+                 (assoc (config) :max-document-bytes 1)
+                 (steppable-services s step-calls))
+        response (handler (step-request text))]
+    (is (> (alength (.getBytes ^String text "UTF-8")) 1))
+    (is (= 200 (:status response)))
+    (is (= [{:revision 0 :action [:run 2]}] @step-calls))
+    (is (= 1 (:revision (session/snapshot s))))))
+
+(deftest session-step-reports-stale-and-disabled-actions-without-mutation
+  (let [s (session/start (session-sim-config))
+        step-calls (atom [])
+        handler (viewer/make-handler (config) (steppable-services s step-calls))]
+    ;; A concurrent REPL step commits first, so the POSTed revision is stale.
+    (session/step! s {:revision 0 :action [:run 2]})
+    (let [stale (handler (step-request (step-body "1" "0" "run" "0")))]
+      (is (= 409 (:status stale)))
+      (is (= {:version 1
+              :status :stale
+              :committed? false
+              :stale {:expected-revision 0
+                      :actual-revision 1
+                      :branch {:revision 0 :action [:run 0]}}
+              :frame-status :available}
+             (edn/read-string (:body stale))))
+      (is (= 2 (count (session/journal s)))))
+    ;; A well-formed revision-current action that is not enabled is rejected,
+    ;; never applied: a non-runnable run target and an advance while only
+    ;; runs are enabled.
+    (doseq [text [(step-body "1" "1" "run" "1")
+                  (step-body "1" "1" "advance" "6")]]
+      (let [response (handler (step-request text))]
+        (is (= 409 (:status response)) (pr-str text))
+        (is (string/includes? (:body response) ":session-step-rejected"))
+        (is (not (string/includes? (:body response) ":enabled"))
+            "the machine's enabled set never crosses the wire")))
+    (is (= 1 (:revision (session/snapshot s))))
+    (is (= 2 (count (session/journal s))))))
+
+(deftest session-step-reports-a-future-revision-as-stale
+  (let [s (session/start (session-sim-config))
+        step-calls (atom [])
+        handler (viewer/make-handler (config) (steppable-services s step-calls))
+        response (handler (step-request (step-body "0" "5" "run" "2")))]
+    (is (= 409 (:status response)))
+    (is (= {:version 1
+            :status :stale
+            :committed? false
+            :stale {:expected-revision 5
+                    :actual-revision 0
+                    :branch {:revision 5 :action [:run 2]}}
+            :frame-status :available}
+           (edn/read-string (:body response))))
+    (is (= [{:revision 5 :action [:run 2]}] @step-calls))
+    (is (= 0 (:revision (session/snapshot s))))
+    (is (= 1 (count (session/journal s))))))
+
+(deftest session-step-commits-the-advertised-advance-branch
+  (let [s (session/start (session-sim-config))
+        step-calls (atom [])
+        handler (viewer/make-handler (config) (steppable-services s step-calls))]
+    (is (= 200 (:status (handler (step-request
+                                  (step-body "0" "0" "run" "2"))))))
+    (is (= 200 (:status (handler (step-request
+                                  (step-body "0" "1" "run" "0"))))))
+    (let [response (handler (step-request
+                             (step-body "0" "2" "advance" "5")))]
+      (is (= 200 (:status response)))
+      (is (= {:version 1
+              :status :committed
+              :committed? true
+              :ack {:branch {:revision 2 :action [:advance 5]}
+                    :revision 3}
+              :frame-status :available}
+             (edn/read-string (:body response)))))
+    (is (= [{:revision 0 :action [:run 2]}
+            {:revision 1 :action [:run 0]}
+            {:revision 2 :action [:advance 5]}]
+           @step-calls))
+    (is (= 3 (:revision (session/snapshot s))))
+    (is (= 4 (count (session/journal s))))))
+
+(deftest session-step-on-a-terminal-session-is-rejected-not-applied
+  (let [s (session/start (session-sim-config))
+        step-calls (atom [])]
+    (run-to-terminal s)
+    (let [handler (viewer/make-handler
+                   (config) (steppable-services s step-calls))
+          response (handler (step-request (step-body "0" "4" "run" "0")))]
+      (is (= 409 (:status response)))
+      (is (string/includes? (:body response) ":session-step-rejected"))
+      (is (= 4 (:revision (session/snapshot s))))
+      (is (= 5 (count (session/journal s)))))))
+
+(deftest session-step-receipt-is-compact-and-secret-free
+  (let [secret "DO-NOT-EMIT-STEP-SECRET"
+        config-map (assoc (session-sim-config)
+                          :world {:secret secret :seen []})
+        s (session/start config-map)
+        step-calls (atom [])
+        handler (viewer/make-handler (config) (steppable-services s step-calls))
+        committed (handler (step-request (step-body "0" "0" "run" "2")))
+        stale (handler (step-request (step-body "0" "0" "run" "2")))]
+    (is (= 200 (:status committed)))
+    (is (= (trace/canonical-edn
+            {:version 1
+             :status :committed
+             :committed? true
+             :ack {:branch {:revision 0 :action [:run 2]}
+                   :revision 1}
+             :frame-status :available})
+           (:body committed))
+        "the receipt is exactly the compact closed projection")
+    (doseq [forbidden [secret token ":projection" ":previews" ":journal"
+                       ":events" ":world" ":branches" "demo.worker"
+                       "demo.fast"]]
+      (is (not (string/includes? (:body committed) forbidden))
+          (str "committed receipt leaks " forbidden))
+      (is (not (string/includes? (:body stale) forbidden))
+          (str "stale receipt leaks " forbidden)))))
+
+(deftest session-step-and-frame-share-one-admission-gate
+  (let [entered (promise)
+        release (promise)
+        reads (atom 0)
+        steps (atom 0)
+        valid-frame (fn [cursor]
+                      {:jolt.sim.viewer.session/type :frame
+                       :revision 0 :status nil :projection {}
+                       :branches [] :previews []
+                       :journal {:cursor cursor :next-cursor cursor
+                                 :count cursor :entries []}})
+        committed-envelope {:jolt.sim.viewer.session/type :step-result
+                            :status :committed
+                            :committed? true
+                            :ack {:branch {:revision 0 :action [:run 2]}
+                                  :revision 1}
+                            :frame {:jolt.sim.viewer.session/type :frame
+                                    :revision 1}
+                            :frame-error nil}
+        handler
+        (viewer/make-handler
+         (config)
+         (assoc (services (atom []) (atom []) {:status :completed})
+                :read-session-frame
+                (fn [cursor]
+                  (swap! reads inc)
+                  (deliver entered true)
+                  @release
+                  (valid-frame cursor))
+                :step-session-frame!
+                (fn [_branch _cursor]
+                  (swap! steps inc)
+                  committed-envelope)))
+        first-read (future (handler (get-request "/api/session-frame")))]
+    (try
+      (is (= true (deref entered 5000 ::timeout)))
+      (let [read? (atom false)
+            busy (handler
+                  (assoc (step-request (step-body "0" "0" "run" "2"))
+                         :body (recording-body read?)))
+            unauthorized (handler
+                          (step-request (step-body "0" "0" "run" "2")
+                                        "wrong"))]
+        (is (= 429 (:status busy)))
+        (is (string/includes? (:body busy) ":session-step-busy"))
+        (is (= 403 (:status unauthorized))
+            "authorization is checked before the shared busy gate")
+        (is (false? @read?)
+            "the busy response precedes any streaming body read")
+        (is (= 0 @steps))
+        (is (= 1 @reads)))
+      (finally
+        (deliver release true)))
+    (is (= 200 (:status (deref first-read 5000 {:status ::timeout}))))
+    ;; The reverse direction: a step in flight blocks a frame read.
+    (let [step-entered (promise)
+          step-release (promise)
+          gated (viewer/make-handler
+                 (config)
+                 (assoc (services (atom []) (atom []) {:status :completed})
+                        :read-session-frame
+                        (fn [cursor]
+                          (swap! reads inc)
+                          (valid-frame cursor))
+                        :step-session-frame!
+                        (fn [_branch _cursor]
+                          (swap! steps inc)
+                          (deliver step-entered true)
+                          @step-release
+                          committed-envelope)))
+          first-step (future
+                      (gated (step-request (step-body "0" "0" "run" "2"))))]
+      (try
+        (is (= true (deref step-entered 5000 ::timeout)))
+        (let [busy (gated (get-request "/api/session-frame"))]
+          (is (= 429 (:status busy)))
+          (is (string/includes? (:body busy) ":session-frame-busy")))
+        (finally
+          (deliver step-release true)))
+      (is (= 200 (:status (deref first-step 5000 {:status ::timeout}))))
+      (is (= 200 (:status (gated (get-request "/api/session-frame")))))
+      (is (= 200 (:status (gated (step-request (step-body "0" "0" "run" "2")))))
+          "the shared gate is released after each command"))))
+
+(deftest session-step-shares-the-document-body-consumer-gate
+  (let [handler* (atom nil)
+        busy-response* (atom nil)
+        busy-body-read? (atom false)
+        outcome {:status :completed :exit 0}
+        handler
+        (viewer/make-handler
+         (config)
+         (assoc (services (atom []) (atom []) {:status :completed})
+                :replay-document
+                (fn [_ _]
+                  ;; Re-enter with a step while the outer replay owns the
+                  ;; body-consumer lease: the busy response must precede the
+                  ;; streaming body, exactly like render/replay contention.
+                  (reset!
+                   busy-response*
+                   (@handler*
+                    {:request-method :post
+                     :uri "/api/session-step"
+                     :headers {"content-type" "application/json"
+                               "x-jolt-sim-capability" token}
+                     :body
+                     (reify http-body/RequestBody
+                       (body-recv [_]
+                         (reset! busy-body-read? true)
+                         (throw (ex-info "busy body was read" {})))
+                       (body-bytes [_]
+                         (reset! busy-body-read? true)
+                         (throw (ex-info "busy body was read" {})))
+                       (body-string [_ _]
+                         (reset! busy-body-read? true)
+                         (throw (ex-info "busy body was read" {}))))}))
+                  outcome)
+                :step-session-frame!
+                (fn [_ _] (throw (ex-info "must not be invoked" {})))))]
+    (reset! handler* handler)
+    (let [response (handler
+                    (request "/api/replay"
+                             (case-outcome/canonical-edn (document))))]
+      (is (= 200 (:status response)))
+      (is (= 429 (:status @busy-response*)))
+      (is (string/includes? (:body @busy-response*) ":viewer-busy"))
+      (is (false? @busy-body-read?)))))
+
+(deftest session-step-acknowledges-commit-when-the-frame-is-unavailable
+  (let [handler
+        (viewer/make-handler
+         (config)
+         (assoc (services (atom []) (atom []) {:status :completed})
+                :step-session-frame!
+                (fn [_ _]
+                  {:jolt.sim.viewer.session/type :step-result
+                   :status :committed
+                   :committed? true
+                   :ack {:branch {:revision 0 :action [:run 2]}
+                         :revision 1}
+                   :frame nil
+                   :frame-error
+                   {:type :jolt.sim.viewer.session/coherence-failed
+                    :phase :post-commit
+                    :attempts 8
+                    :max-attempts 8
+                    :secret "must-not-cross"}})))
+        response (handler (step-request (step-body "0" "0" "run" "2")))]
+    (is (= 200 (:status response)))
+    (is (= {:version 1
+            :status :committed
+            :committed? true
+            :ack {:branch {:revision 0 :action [:run 2]}
+                  :revision 1}
+            :frame-status :unavailable
+            :frame-error {:type :jolt.sim.viewer.session/coherence-failed
+                          :phase :post-commit
+                          :attempts 8
+                          :max-attempts 8}}
+           (edn/read-string (:body response)))
+        "a committed command is acknowledged even when its frame is lost")
+    (is (not (string/includes? (:body response) "must-not-cross")))))
+
+(deftest session-step-reports-stale-when-the-refreshed-frame-is-unavailable
+  (let [handler
+        (viewer/make-handler
+         (config)
+         (assoc (services (atom []) (atom []) {:status :completed})
+                :step-session-frame!
+                (fn [branch _]
+                  {:jolt.sim.viewer.session/type :step-result
+                   :status :stale
+                   :committed? false
+                   :ack nil
+                   :stale {:type :jolt.sim.session/stale-branch
+                           :expected-revision 0
+                           :actual-revision 1
+                           :branch branch
+                           :secret "must-not-cross"}
+                   :frame nil
+                   :frame-error
+                   {:type :jolt.sim.viewer.session/coherence-failed
+                    :phase :stale-refresh
+                    :attempts 8
+                    :max-attempts 8
+                    :secret "must-not-cross"}})))
+        response (handler (step-request (step-body "0" "0" "run" "2")))]
+    (is (= 409 (:status response)))
+    (is (= {:version 1
+            :status :stale
+            :committed? false
+            :stale {:expected-revision 0
+                    :actual-revision 1
+                    :branch {:revision 0 :action [:run 2]}}
+            :frame-status :unavailable
+            :frame-error {:type :jolt.sim.viewer.session/coherence-failed
+                          :phase :stale-refresh
+                          :attempts 8
+                          :max-attempts 8}}
+           (edn/read-string (:body response))))
+    (is (not (string/includes? (:body response) "must-not-cross")))))
+
+(deftest session-step-projects-service-extras-out-of-a-valid-receipt
+  (let [secret "DO-NOT-EMIT-SERVICE-EXTRAS"
+        handler
+        (viewer/make-handler
+         (config)
+         (assoc (services (atom []) (atom []) {:status :completed})
+                :step-session-frame!
+                (fn [_ _]
+                  {:jolt.sim.viewer.session/type :step-result
+                   :status :committed
+                   :committed? true
+                   :ack {:branch {:revision 0 :action [:run 2]
+                                  :secret secret}
+                         :revision 1
+                         :secret secret}
+                   :frame {:jolt.sim.viewer.session/type :frame
+                           :world {:secret secret}}
+                   :frame-error nil
+                   :secret secret})))
+        response (handler (step-request (step-body "0" "0" "run" "2")))]
+    (is (= 200 (:status response)))
+    (is (= {:version 1
+            :status :committed
+            :committed? true
+            :ack {:branch {:revision 0 :action [:run 2]}
+                  :revision 1}
+            :frame-status :available}
+           (edn/read-string (:body response))))
+    (is (not (string/includes? (:body response) secret)))))
+
+(deftest session-step-scrubs-unexpected-stepper-failures
+  (doseq [stepper [(fn [_ _]
+                     (throw (ex-info "stepper secret"
+                                     {:secret "must-not-cross"})))
+                   (fn [_ _] {:jolt.sim.viewer.session/type :step-result
+                              :status :mystery})
+                   (fn [_ _] {:jolt.sim.viewer.session/type :step-result
+                              :status :committed :committed? true
+                              :frame {:revision 1}})
+                   (fn [_ _] {:jolt.sim.viewer.session/type :step-result
+                              :status :committed :committed? true
+                              :ack {:branch {:revision 0 :action [:run 2]}
+                                    :revision 1}
+                              :frame nil :frame-error nil})]]
+    (let [handler
+          (viewer/make-handler
+           (config)
+           (assoc (services (atom []) (atom []) {:status :completed})
+                  :step-session-frame! stepper))
+          response (handler (step-request (step-body "0" "0" "run" "2")))]
+      (is (= 500 (:status response)))
+      (is (string/includes? (:body response) ":session-step-error"))
+      (is (not (string/includes? (:body response) "stepper secret")))
+      (is (not (string/includes? (:body response) "must-not-cross"))))))
+
+(deftest session-step-service-keys-are-closed-and-authoritative
+  (let [unknown (try
+                  (viewer/make-handler
+                   (config)
+                   (assoc (services (atom []) (atom []) {:status :completed})
+                          :step-session-frame (fn [_ _] nil)))
+                  nil
+                  (catch :default error (ex-data error)))
+        not-a-fn (try
+                   (viewer/make-handler
+                    (config)
+                    (assoc (services (atom []) (atom []) {:status :completed})
+                           :step-session-frame! :not-a-function))
+                   nil
+                   (catch :default error (ex-data error)))]
+    (is (= viewer/invalid-config (:type unknown)))
+    (is (= :unknown-service-keys (:reason unknown)))
+    (is (= viewer/invalid-config (:type not-a-fn)))
+    (is (= :invalid-services (:reason not-a-fn)))
+    (is (fn? (viewer/make-handler
+              (config)
+              (assoc (services (atom []) (atom []) {:status :completed})
+                     :step-session-frame! (fn [_ _] nil)))))
+    ;; The command shape is fixed by the server: browser data can name only
+    ;; the two closed action tags, never a function or capability.
+    (let [handler (viewer/make-handler
+                   (config)
+                   (assoc (services (atom []) (atom []) {:status :completed})
+                          :step-session-frame! (fn [_ _] nil)))
+          response (handler (step-request (step-body "0" "0"
+                                                     "step-session-frame!"
+                                                     "2")))]
+      (is (= 400 (:status response)))
+      (is (string/includes? (:body response) ":unknown-kind")))))
+
+(deftest start-steppable-session-installs-only-read-and-step-closures
+  (let [s (session/start (session-sim-config))
+        captured (atom nil)
+        start-var (resolve 'jolt.sim.viewer/start!)]
+    (with-redefs-fn
+      {start-var
+       (fn [supplied-config supplied-services]
+         (reset! captured {:config supplied-config
+                           :services supplied-services})
+         :fake-server)}
+      #(is (= :fake-server (viewer/start-steppable-session! (config) s))))
+    (is (= (config) (:config @captured)))
+    (is (= #{:render-trace :render-case-outcome :replay-document
+             :read-session-frame :step-session-frame!}
+           (set (keys (:services @captured)))))
+    (is (= (viewer-session/read-frame s 0)
+           ((get-in @captured [:services :read-session-frame]) 0)))
+    (let [step! (get-in @captured [:services :step-session-frame!])
+          committed (step! {:revision 0 :action [:run 2]} 0)
+          retry (step! {:revision 0 :action [:run 2]} 0)]
+      (is (= :committed (:status committed)))
+      (is (true? (:committed? committed)))
+      (is (= :stale (:status retry)))
+      (is (false? (:committed? retry)))
+      (is (= 1 (:revision (session/snapshot s))))
+      (is (= 2 (count (session/journal s)))
+          "the installed closure commits exactly once per exact branch"))))
 
 (defn -main [& _]
   (let [result (test/run-tests 'jolt.sim.viewer-test)
