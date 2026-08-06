@@ -10,8 +10,8 @@
 
 (deftest native-operation-key-builds-canonical-keys
   (is (= [:native-operation :alloc] (hp/native-operation-key :alloc)))
-  (is (= [:native-operation :borrow-byte-array]
-         (hp/native-operation-key :borrow-byte-array))))
+  (is (= [:native-operation :null?]
+         (hp/native-operation-key :null?))))
 
 (deftest native-operation-key-rejects-unknown-operations
   (let [data (ex-data-of #(hp/native-operation-key :not-an-operation))]

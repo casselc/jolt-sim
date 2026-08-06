@@ -474,6 +474,15 @@
   [step time task op site wake wake-at projection]
   [:task/transition step time task op site wake wake-at projection])
 
+(defn transition-event? [event]
+  (and (vector? event)
+       (= 9 (count event))
+       (= :task/transition (nth event 0))))
+
+(defn transition-site [event]
+  (when (transition-event? event)
+    (nth event 5)))
+
 (defn time-event [step from to awakened projection]
   [:time/advance step from to awakened projection])
 

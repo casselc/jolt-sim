@@ -23,23 +23,31 @@
     :future-controller-arity 3
     :ffi-controller-arity 2
     :clock-controller-arity 2}
-   :ffi-interception {:descriptor-version 6
+   :ffi-interception {:descriptor-version 8
                       :kinds [:foreign-function :native-operation]
                       :arguments :live
                       :task-identity :future-lifecycle
                       :native-operations [:load-library :loaded? :alloc :free
-                                          :read :write :sizeof :read-bytes
-                                          :write-bytes :read-array :read-array!
-                                          :write-array :borrow-byte-array
-                                          :release-byte-array
-                                          :ptr->string :string->ptr]
+                                           :read :write :sizeof :null?
+                                           :read-bytes
+                                           :write-bytes :read-array :read-array!
+                                           :write-array :ptr->string
+                                           :string->ptr]
                       :proceed-routing {:controller-arity 2
                                         :proceed-arity 0
                                         :single-use true
                                         :dynamic-extent true
                                         :owner-thread true
                                         :lifo true
-                                        :scoped-byte-array-release :runtime-owned}}
+                                        :scoped-byte-array-release :runtime-owned}
+                      :scoped-byte-array-view
+                      {:operations [:read-active-byte-array-view
+                                    :write-active-byte-array-view!]
+                       :read-arity 2
+                       :write-arity 2
+                       :owner-thread true
+                       :dynamic-extent true
+                       :runtime-owned true}}
    :clock-interception
    {:descriptor-version 1
     :operations [:mono-nanos]
@@ -736,7 +744,7 @@
     (is (= :jolt.sim.runtime/abi-incompatible (:type data))))
   (let [short
         (assoc-in supported-descriptor [:ffi-interception :native-operations]
-                  (vec (remove #{:release-byte-array}
+                  (vec (remove #{:null?}
                                (get-in supported-descriptor
                                        [:ffi-interception :native-operations]))))
         data (ex-data-of #(validate-descriptor-var short))]
@@ -744,10 +752,9 @@
   (let [reordered
         (assoc-in supported-descriptor [:ffi-interception :native-operations]
                   [:load-library :loaded? :alloc :free
-                   :read :write :sizeof :read-bytes
-                   :write-bytes :read-array :write-array
-                   :release-byte-array :borrow-byte-array
-                   :ptr->string :string->ptr])
+                    :read :write :sizeof :read-bytes
+                    :write-bytes :read-array :read-array! :write-array
+                    :null? :ptr->string :string->ptr])
         data (ex-data-of #(validate-descriptor-var reordered))]
     (is (= :jolt.sim.runtime/abi-incompatible (:type data))))
   (let [bad (dissoc supported-descriptor :controller-errors)
@@ -799,13 +806,12 @@
    :read [nil nil]
    :write [nil nil nil nil]
    :sizeof [nil]
+   :null? [nil]
    :read-bytes [nil nil]
    :write-bytes [nil nil]
    :read-array [nil nil]
    :read-array! [nil nil nil nil]
    :write-array [nil nil]
-   :borrow-byte-array [nil nil nil]
-   :release-byte-array [nil]
    :ptr->string [nil]
    :string->ptr [nil]})
 
@@ -892,16 +898,22 @@
 
 (deftest ffi-handler-keys-recognize-current-native-operations
   ;; Handler config validation is pure config checking that runs before ABI
-  ;; resolution, so it recognizes the two current pointer-loan
-  ;; operations as supported handler keys; a still-unknown operation fails
-  ;; closed.
-  (let [handler (fn [_] :loan)]
-    (is (= {[:native-operation :borrow-byte-array] handler}
+  ;; resolution, so it recognizes the current null? operation as a supported
+  ;; handler key; a still-unknown operation fails closed.
+  (let [handler (fn [_] true)]
+    (is (= {[:native-operation :null?] handler}
            (validate-ffi-handlers-var
-            {[:native-operation :borrow-byte-array] handler})))
-    (is (= {[:native-operation :release-byte-array] handler}
-           (validate-ffi-handlers-var
-            {[:native-operation :release-byte-array] handler}))))
+            {[:native-operation :null?] handler}))))
+  ;; The descriptor-8 contract keeps the scoped byte-array loan lifecycle
+  ;; runtime-owned and therefore omits its acquire/release operations
+  ;; from the controller boundary; their former keys now fail closed as
+  ;; unknown operations.
+  (doseq [removed [:borrow-byte-array :release-byte-array]]
+    (let [data (ex-data-of
+                #(validate-ffi-handlers-var
+                  {[:native-operation removed] (fn [_])}))]
+      (is (= :jolt.sim.runtime/invalid-config (:type data))
+          (pr-str removed))))
   (let [unknown [:native-operation :still-not-an-operation]
         data (ex-data-of
               #(validate-ffi-handlers-var {unknown (fn [_])}))]
@@ -914,7 +926,7 @@
               #(validate-ffi-handlers-var {bad-capture (fn [_])}))]
     (is (= :jolt.sim.runtime/invalid-config (:type data)))
     (is (= bad-capture (:handler-key data))))
-  ;; An eight-element key exceeds the canonical form even with descriptor 6.
+  ;; An eight-element key exceeds the canonical form even with descriptor 8.
   (let [too-long [:foreign-function "s" [:int] :int false true nil :extra]
         data (ex-data-of
               #(validate-ffi-handlers-var {too-long (fn [_])}))]
@@ -1026,7 +1038,7 @@
     (is (= :variadic (controller variadic-descriptor ignored-proceed)))
     (is (empty? (:ffi-errors @state)))))
 
-;; ---- Scalar-only foreign argument types (descriptor-version 6) ----------
+;; ---- Scalar-only foreign argument types (descriptor-version 8) ----------
 ;;
 ;; A public foreign argument type is a primitive keyword only; recursive
 ;; by-value aggregate argument types are rejected. Variadic calls are
@@ -1089,16 +1101,13 @@
     (is (= [42 nil] (controller captured-descriptor ignored-proceed)))
     (is (empty? (:ffi-errors @state)))))
 
-(deftest current-controller-dispatches-pointer-loan-and-captured-foreign
-  ;; The current FFI controller accepts the two pointer-loan
-  ;; native operations and routes them to their handlers, still accepts every
-  ;; base operation, and enforces the current capture-result contract on
-  ;; captured foreign functions.
-  (let [loan-descriptor {:kind :native-operation :task 0
-                         :arguments [(byte-array [7]) 0 1]
-                         :operation :borrow-byte-array}
-        release-descriptor {:kind :native-operation :task 0 :arguments [7]
-                            :operation :release-byte-array}
+(deftest current-controller-dispatches-null-predicate-and-captured-foreign
+  ;; The current FFI controller accepts the null? native operation and routes
+  ;; it to its handler, still accepts every base operation, and enforces the
+  ;; current capture-result contract on captured foreign functions.
+  (let [null-descriptor {:kind :native-operation :task 0
+                         :arguments [0]
+                         :operation :null?}
         base-descriptor {:kind :native-operation :task 0 :arguments [4]
                          :operation :alloc}
         captured-descriptor (assoc base-foreign-function-descriptor
@@ -1106,20 +1115,17 @@
     (let [state (atom {:ffi-errors []})
           effects (atom [])
           controller (make-ffi-controller-var
-                      {[:native-operation :borrow-byte-array] (fn [_] :borrowed)
-                       [:native-operation :release-byte-array] (fn [_] :released)
+                      {[:native-operation :null?] (fn [_] true)
                        [:native-operation :alloc] (fn [_] 1042)
                        (descriptor-handler-key-var captured-descriptor)
                        (fn [_] [99 nil])}
                       state effects)]
-      (is (= :borrowed (controller loan-descriptor ignored-proceed)))
-      (is (= :released (controller release-descriptor ignored-proceed)))
+      (is (= true (controller null-descriptor ignored-proceed)))
       (is (= 1042 (controller base-descriptor ignored-proceed)))
       (is (= [99 nil] (controller captured-descriptor ignored-proceed)))
-      (is (= [loan-descriptor release-descriptor base-descriptor
-              captured-descriptor]
+      (is (= [null-descriptor base-descriptor captured-descriptor]
              (mapv :descriptor @effects)))
-      (is (= [:handler :handler :handler :handler]
+      (is (= [:handler :handler :handler]
              (mapv :route @effects)))
       (is (empty? (:ffi-errors @state))))))
 
@@ -1175,7 +1181,7 @@
 (deftest current-nested-ffi-descriptor-version-is-exact
   (if (rt/available?)
     (do
-      (is (= 6 (get-in (rt/capabilities)
+      (is (= 8 (get-in (rt/capabilities)
                        [:ffi-interception :descriptor-version])))
       (is (= 1 (get-in (rt/capabilities)
                        [:clock-interception :descriptor-version])))
@@ -1822,7 +1828,9 @@
              :install-controller! stub
              :restore-controller! stub
              :controller-errors stub
-             :clear-controller-errors! stub}
+             :clear-controller-errors! stub
+             :read-active-byte-array-view stub
+             :write-active-byte-array-view! stub}
       (not omit-supervisor?) (assoc :supervisor-mono-nanos stub))))
 
 (defn- mock-controller-ops
@@ -1857,6 +1865,57 @@
 (defn- restore-tokens [ops]
   (:tokens @(::restore-state ops)))
 
+(deftest active-byte-array-view-api-delegates-to-the-exact-host-vars
+  (let [calls (atom [])
+        ops (assoc (mock-controller-ops supported-descriptor nil)
+                   :read-active-byte-array-view
+                   (fn [ptr len]
+                     (swap! calls conj [:read ptr len])
+                     (byte-array [1 -1]))
+                   :write-active-byte-array-view!
+                   (fn [ptr src]
+                     (swap! calls conj [:write ptr (vec src)])
+                     (alength src)))
+        resolve-var (resolve 'jolt.sim.runtime/resolve-controller-ops!)]
+    (with-redefs-fn
+      {resolve-var (fn [] ops)}
+      #(do
+         (is (= [1 -1] (vec (rt/read-active-byte-array-view 100 2))))
+         (is (= 2 (rt/write-active-byte-array-view!
+                   101 (byte-array [9 8]))))))
+    (is (= [[:read 100 2] [:write 101 [9 8]]] @calls))))
+
+(deftest controlled-active-byte-array-views-reuse-the-validated-run-ops
+  ;; The host view is called while Chez owns a locked temporary. The enclosing
+  ;; run has already resolved and validated the complete ABI, so view traffic
+  ;; must not reconstruct that descriptor in the sensitive loan extent.
+  (let [resolve-calls (atom 0)
+        view-calls (atom [])
+        ops (assoc (mock-controller-ops supported-descriptor nil)
+                   :read-active-byte-array-view
+                   (fn [ptr len]
+                     (swap! view-calls conj [:read ptr len])
+                     (byte-array [7]))
+                   :write-active-byte-array-view!
+                   (fn [ptr src]
+                     (swap! view-calls conj [:write ptr (vec src)])
+                     (alength src)))
+        resolve-var (resolve 'jolt.sim.runtime/resolve-controller-ops!)]
+    (with-redefs-fn
+      {resolve-var (fn []
+                     (swap! resolve-calls inc)
+                     ops)}
+      #(let [result
+             (rt/run-controlled
+              {}
+              (fn []
+                [(vec (rt/read-active-byte-array-view 200 1))
+                 (rt/write-active-byte-array-view!
+                  201 (byte-array [8]))]))]
+         (is (= [[7] 1] (:result result)))))
+    (is (= 1 @resolve-calls))
+    (is (= [[:read 200 1] [:write 201 [8]]] @view-calls))))
+
 (defn- native-descriptor [operation arguments]
   {:kind :native-operation
     :task 0
@@ -1885,6 +1944,21 @@
             #(rt/capabilities))]
       (is (= supported-descriptor caps)))))
 
+(deftest current-contract-requires-both-active-byte-array-view-vars
+  (let [resolved-var (resolve 'jolt.sim.runtime/resolved-abi-vars)]
+    (doseq [missing-key [:read-active-byte-array-view
+                         :write-active-byte-array-view!]]
+      (let [data
+            (with-redefs-fn
+              {resolved-var
+               (fn []
+                 (assoc (mock-resolved-abi-vars supported-descriptor false)
+                        missing-key nil))}
+              #(ex-data-of rt/capabilities))]
+        (is (= :jolt.sim.runtime/abi-incompatible (:type data))
+            (pr-str missing-key))
+        (is (= [missing-key] (:missing data)) (pr-str missing-key))))))
+
 (deftest runtime-resolution-distinguishes-absence-from-incompatible-versions
   (let [resolved-var (resolve 'jolt.sim.runtime/resolved-abi-vars)
         absent {:capabilities nil
@@ -1892,7 +1966,9 @@
                 :restore-controller! nil
                 :controller-errors nil
                 :clear-controller-errors! nil
-                :supervisor-mono-nanos nil}]
+                :supervisor-mono-nanos nil
+                :read-active-byte-array-view nil
+                :write-active-byte-array-view! nil}]
     (with-redefs-fn
       {resolved-var (fn [] absent)}
       #(do
@@ -2203,8 +2279,6 @@
          :blocking? false :capture-native-error? false :varargs-after nil}
         foreign-void-pointer (assoc foreign-pointer :return-type :void*)
         alloc (native-descriptor :alloc [8])
-        borrow (native-descriptor :borrow-byte-array
-                                  [(byte-array [1]) 0 1])
         string-pointer (native-descriptor :string->ptr ["x"])
         pointer-descriptors
         [alloc
@@ -2212,7 +2286,7 @@
          (native-descriptor :read [5000 :void* 0])
          foreign-pointer
          foreign-void-pointer]
-        fixed-native-descriptors [alloc borrow string-pointer]]
+        fixed-native-descriptors [alloc string-pointer]]
     (letfn
      [(assert-rejected [descriptor fake]
         (let [state (atom {:ffi-errors []})
@@ -2229,9 +2303,7 @@
                #(controller descriptor
                             (fn [] (reset! proceeded? true) :native)))]
           (is (= :jolt.sim.runtime/invalid-handler-result (:type data)))
-          (is (= (if (= :borrow-byte-array (:operation descriptor))
-                   :borrow-requires-positive-modeled-resource
-                   :resource-requires-modeled-resource)
+          (is (= :resource-requires-modeled-resource
                  (:reason data)))
           (is (false? @proceeded?))
           (is (= [:handler] (mapv :route @effect-trace)))
@@ -2269,69 +2341,6 @@
          state (atom []) (atom []))]
     (is (= -1 (controller descriptor (fn [] :wrong))))
     (is (empty? (:ffi-errors @state)))))
-
-(def ^:private invalid-borrow-handler-cases
-  [[:nil-handler nil]
-   [:substitute-zero (fn [_] (rt/substitute 0))]
-   [:modeled-zero (fn [_] (rt/modeled-resource 0))]])
-
-(deftest hybrid-borrow-requires-a-positive-modeled-resource-directly
-  (let [descriptor (native-descriptor :borrow-byte-array
-                                      [(byte-array [1]) 0 1])]
-    (doseq [[label handler] invalid-borrow-handler-cases]
-      (let [state (atom {:ffi-errors []})
-            effect-trace (atom [])
-            proceeded? (atom false)
-            controller
-            (make-ffi-routing-controller-var
-             :hybrid
-             {[:native-operation :borrow-byte-array] handler}
-             state effect-trace (atom []))
-            data
-            (ex-data-of
-             #(controller descriptor
-                          (fn [] (reset! proceeded? true) :native)))]
-        (is (= :jolt.sim.runtime/invalid-handler-result (:type data))
-            (str label))
-        (is (= :borrow-requires-positive-modeled-resource (:reason data))
-            (str label))
-        (is (false? @proceeded?) (str label))
-        (is (= [:handler] (mapv :route @effect-trace)) (str label))
-        (is (= :invalid-handler-result
-               (:ffi-error (first (:ffi-errors @state))))
-            (str label))))))
-
-(deftest hybrid-caught-invalid-borrow-remains-a-controller-error
-  (let [resolve-var (resolve 'jolt.sim.runtime/resolve-controller-ops!)
-        descriptor (native-descriptor :borrow-byte-array
-                                      [(byte-array [1]) 0 1])]
-    (doseq [[label handler] invalid-borrow-handler-cases]
-      (let [routing (atom nil)
-            caught (atom nil)
-            ops (mock-controller-ops supported-descriptor nil routing nil)
-            data
-            (with-redefs-fn
-              {resolve-var (fn [] ops)}
-              #(ex-data-of
-                (fn []
-                  (rt/run-controlled
-                   {:ffi-mode :hybrid
-                    :ffi-handlers
-                    {[:native-operation :borrow-byte-array] handler}}
-                   (fn []
-                     (reset! caught
-                             (try
-                               ((deref routing) descriptor (fn [] :native))
-                               :not-thrown
-                               (catch :default error
-                                 (:type (ex-data error)))))
-                     :apparently-ok)))))]
-        (is (= :jolt.sim.runtime/invalid-handler-result @caught) (str label))
-        (is (= :jolt.sim.runtime/controller-error (:type data)) (str label))
-        (is (= [:handler] (mapv :route (:effect-trace data))) (str label))
-        (is (some #(= :invalid-handler-result (:ffi-error %))
-                  (:errors data))
-            (str label))))))
 
 (deftest hybrid-blocks-inexact-aliases-of-modeled-resources-directly
   ;; Chez truncates every numeric native argument through jnum->exact. Match
@@ -2517,6 +2526,48 @@
                              (fn [] (reset! proceeded? true) :wrong)))]
       (is (= :jolt.sim.runtime/modeled-resource-native-fallback (:type data)))
       (is (false? @proceeded?)))))
+
+(deftest hybrid-null-predicate-never-crosses-a-modeled-resource-boundary
+  ;; null? only truncates and compares its numeric argument with zero. It does
+  ;; not dereference the value or reach the OS, so both an unhandled hybrid
+  ;; miss and an explicitly selected native proceed are safe even when the
+  ;; numeric value names a pointer-domain or opaque modeled resource.
+  (let [base 9000
+        pointer-descriptor (native-descriptor :alloc [8])
+        pointer-key [:native-operation :alloc]
+        opaque-descriptor
+        {:kind :foreign-function :task 0 :arguments []
+         :symbol "opaque_handle_for_null_test" :argument-types []
+         :return-type :int :blocking? false
+         :capture-native-error? false :varargs-after nil}
+        opaque-key (descriptor-handler-key-var opaque-descriptor)
+        null-descriptor (native-descriptor :null? [base])
+        null-key [:native-operation :null?]]
+    (doseq [[expected-domain producer-descriptor producer-key]
+            [[:pointer pointer-descriptor pointer-key]
+             [:opaque opaque-descriptor opaque-key]]
+            selected? [false true]]
+      (let [state (atom {:ffi-errors []})
+            effect-trace (atom [])
+            ledger (atom [])
+            proceeded? (atom false)
+            handlers
+            (cond->
+             {producer-key (fn [_] (rt/modeled-resource base 8))}
+              selected? (assoc null-key (fn [_] (rt/proceed))))
+            controller
+            (make-ffi-routing-controller-var
+             :hybrid handlers state effect-trace ledger)]
+        (is (= base (controller producer-descriptor (fn [] :wrong))))
+        (is (= expected-domain (:domain (first @ledger))))
+        (is (false?
+             (controller null-descriptor
+                         (fn [] (reset! proceeded? true) false))))
+        (is (true? @proceeded?))
+        (is (= :native (:route (peek @effect-trace))))
+        (is (= (when selected? null-key)
+               (:handler-key (peek @effect-trace))))
+        (is (empty? (:ffi-errors @state)))))))
 
 (deftest hybrid-caught-inexact-resource-alias-remains-a-controller-error
   (let [routing (atom nil)

@@ -1,16 +1,34 @@
-# jolt-sim retained-case viewer
+# Ripple
 
-This optional dependency root serves a small loopback-only web UI over the
-existing Case/Outcome reporter and fresh-process replay helper. It does not
-implement another scheduler, controller, monitor, evidence schema, or worker
-protocol.
+Ripple is the offline jolt-sim document viewer. This optional dependency root
+serves a small loopback-only web UI over the existing trace and Case/Outcome
+reporters and the fresh-process replay helper. It does not implement another
+scheduler, controller, monitor, evidence schema, or worker protocol.
 
 The browser keeps the selected EDN file locally until **Inspect** or **Replay
-once** is pressed. Every request requires a startup capability token. Replay
+once** is pressed. Every request requires a startup capability token. The
+upload UI requires an explicit document kind -- **Trace** or **Case/Outcome**
+-- and the server never infers or guesses a schema from the uploaded bytes.
+Trace documents render through `jolt.sim.report/trace->html` and are never
+replayable; Case/Outcome documents render through
+`jolt.sim.report/case-outcome->html` and keep the existing replay path. Replay
 uses only the scenario, input, and schedule restored from the validated
-document; worker command, working directory, deadlines, environment, and
-artifact policy come from the trusted server configuration. Scenarios must be
-explicitly allowlisted.
+Case/Outcome document; worker command, working directory, deadlines,
+environment, and artifact policy come from the trusted server configuration.
+Scenarios must be explicitly allowlisted.
+
+Programmatic and REPL-driven startup may also include a trusted
+`:presentation-registry` map. Ripple composes it after jolt-sim's built-in
+event presenters, so application entries override library/default displays
+without changing the trace or the simulator. This value contains functions
+and therefore belongs in ordinary Clojure startup code, not the EDN config
+file. Uploaded documents can only select already-registered event-tag,
+transition-operation, or canonical transition-site entries; they cannot load
+or name presenter code. Presenter implementations must nevertheless treat the
+validated event passed to them as untrusted input: they must not evaluate it,
+use it to select filesystem paths or native calls, or perform other
+input-directed side effects. See the report README for the small presenter
+shape.
 
 The server admits one body-consuming inspection or replay request at a time,
 even when several tabs share the capability. A competing request receives 429
@@ -29,6 +47,18 @@ JOLT_SIM_VIEWER_TOKEN='replace-with-at-least-32-random-characters' \
 
 Port `0` selects an ephemeral loopback port and the startup message prints the
 actual URL. A fixed port such as `8788` is more convenient for repeated use.
+Press Ctrl+C in the foreground viewer process to stop the listener and handler
+pool cleanly; the command-line entry point owns SIGINT and runs server shutdown
+before exiting.
+
+The Linux CI gate exercises that real signal path in a fresh process and
+retains the config, stdout, and stderr for every run:
+
+```sh
+JOLT_SIM_BIN=/absolute/path/to/sim/jolt \
+JOLT_SIM_PROJECT_DIR=/absolute/path/to/jolt-sim \
+  test/cli-sigint-smoke.sh
+```
 
 The configuration is deliberately closed. Ambient replay keys are limited to
 the public process-explorer settings; browser data cannot replace them. The
@@ -37,13 +67,15 @@ viewer is an investigation tool. `:temp-dir` is the existing parent under
 which the process explorer creates one isolated run directory; it is not an
 output directory chosen by the uploaded document.
 
-Current boundary: inspection is a real report render, and replay delegates to
-one real fresh worker. Hosted CI drives the checked-in canonical outbox
-Case/Outcome through the live viewer HTTP API, executes its unchanged
-HTTP/SQLite/TCP/bencode scenario in that worker, and retains the complete
-worker directory plus an append-only phase log. The UI does not yet compare
-two outcomes, evaluate post-hoc invariants, or expose a general scenario
-catalog. Those are later viewer slices over the same evidence and replay APIs.
+Current boundary: inspection is a real report render (trace documents through
+the trace report, Case/Outcome documents through the Case/Outcome report), and
+replay delegates to one real fresh worker for Case/Outcome documents only.
+Hosted CI drives the checked-in canonical outbox Case/Outcome through the live
+viewer HTTP API, executes its unchanged HTTP/SQLite/TCP/bencode scenario in
+that worker, and retains the complete worker directory plus an append-only
+phase log. The UI does not yet compare two outcomes, evaluate post-hoc
+invariants, or expose a general scenario catalog. Those are later viewer
+slices over the same evidence and replay APIs.
 
 ### Replay activity panel
 
@@ -92,3 +124,30 @@ endpoint, requires `result-observed?` to be false, writes a retained release
 record, and requires the same worker's normal Case/Outcome completion. The
 default fixture and scenario path supply no observer and remain unchanged; the
 viewer does not reimplement HTTP, SQLite, TCP, bencode, or application logic.
+
+### In-process session stepping adapter
+
+`jolt.sim.viewer.session` is a UI-neutral, in-process adapter over one
+`jolt.sim.session` Session (the cooperative REPL control capability). It is
+not HTTP, a UI, a remote protocol, another scheduler, durable storage, or a
+generic effect layer: every branch preview and transition delegates to the
+Session, and the adapter owns only the bounded optimistic retry budget that
+keeps one read coherent.
+
+`read-frame` returns one coherent, closed frame: the snapshot, the isolated
+branch previews, and the append-only journal tail from a validated integer
+cursor, all at the same session revision. A concurrent REPL step cannot mix
+revisions -- the read retries (bounded) until two consecutive snapshot reads
+agree and fails closed with a typed `::coherence-failed` error otherwise. A
+malformed or out-of-range cursor fails closed with `::invalid-cursor`.
+The returned `:journal/:next-cursor` can be passed to the next read to receive
+only entries appended afterward.
+
+`step-frame!` synchronously applies one exact revision-scoped branch and
+returns an explicit command-result envelope. A committed result always carries
+its plain branch/revision acknowledgment, even if the post-commit frame cannot
+be obtained; this prevents an ambiguous retry from executing a command twice.
+A stale branch is never silently rebased just because the same action identity
+remains enabled: shared state may have changed since the displayed preview.
+Instead, the result is `:stale`, carries a refreshed frame, and requires the
+human or agent to choose again explicitly.

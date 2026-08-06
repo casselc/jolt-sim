@@ -527,6 +527,15 @@
       :steps (:steps normalized)
       :max-steps (:max-steps normalized)})))
 
+(defn machine-trace
+  "Returns the immutable canonical event trace accumulated by `machine`.
+
+  This accessor lets drivers inspect newly appended events without depending
+  on the machine map's internal representation. It does not expose the opaque
+  step callback."
+  [machine]
+  (vec (:trace machine)))
+
 (defn machine-status
   "Returns the terminal status of `machine`, or nil when non-terminal.
 

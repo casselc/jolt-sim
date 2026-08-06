@@ -13,6 +13,56 @@ whether a surrounding Hegel campaign was proved, bounded-complete, sampled,
 or assumption-backed; those claims must already be represented by the owning
 artifact and test lane.
 
+Trace events are projected through `jolt.sim.presentation/default-registry`
+before rendering. The built-ins give scheduler choices, task transitions,
+virtual-time advances, and each terminal event a specialized, data-only kind,
+summary, and ordered fields; the complete event EDN remains available behind
+each row. The same projection is suitable for REPL/tap consumers and future
+Ripple frontends—it contains no Selmer or HTML values.
+
+Trace reports also include stable event anchors, first/previous/next/last
+links, terminal/failure/monitor shortcuts, and indexes by tag, task, canonical
+site, and virtual time. These controls use ordinary fragment links, so they
+continue to work in static files and inside Ripple's script-disabled report
+frame. Site grouping retains the collision-free canonical trace value while
+showing its restored readable form.
+
+Libraries and applications can add trusted presenters without changing trace
+documents or mutating global dispatch. Compose immutable registries in
+default, library, application order and pass the resulting overrides to the
+report API:
+
+```clojure
+(require '[jolt.sim.presentation :as presentation]
+         '[jolt.sim.report :as report])
+
+(def application-presenters
+  {(presentation/site-key :orders.worker/retry)
+   {:kind :orders.kind/retry
+    :present (fn [event]
+               {:summary "Order delivery will retry"
+                :fields [{:label "Task" :value (nth event 3)}]})}})
+
+(report/trace->html
+ trace-document
+ {:presentation-registry application-presenters})
+```
+
+For task transitions, a site presenter wins over an operation presenter,
+which wins over the ordinary `:task/transition` presenter. `site-key`
+canonicalizes both keyword and structured sites, so libraries do not depend
+on host map ordering or mutable identity. Across
+registries, later entries win, so `(presentation/registry defaults library
+application)` has explicit application-over-library-over-default precedence.
+Other events dispatch by their exact event tag. Presenters receive a validated
+event and return only `{:summary string :fields [{:label string :value data}]}`;
+the shared projection validates the stable data domain and derives canonical
+EDN text itself. For byte-identical forensic output, custom presenters must
+also be deterministic and must not consult clocks, randomness, or mutable
+state; function purity cannot be inferred at runtime. An absent entry uses a raw-event fallback. Uploaded documents
+can only select functions already present in trusted process configuration;
+they cannot name vars, load namespaces, evaluate forms, or supply HTML.
+
 Case reports render the exact validated Case coordinate, every top-level
 completed-result section, and, for the canonical outbox scenario family, an
 ordered evidence journey through the fields that were actually recorded.

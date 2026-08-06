@@ -1,12 +1,19 @@
 (ns jolt.sim.viewer
-  "Loopback-only retained-case inspection and fresh-process replay UI.
+  "Loopback-only offline document inspection and fresh-process replay UI.
 
   This optional dependency root is a thin HTTP adapter over the existing
-  Case/Outcome validator, report view, and `jolt.sim.repl/replay-document!`.
-  It is not a scheduler, controller, monitor, evidence store, or second replay
-  implementation.
+  trace and Case/Outcome validators, report views, and
+  `jolt.sim.repl/replay-document!`. It is not a scheduler, controller,
+  monitor, evidence store, or second replay implementation.
 
-  Browser requests carry only one retained Case/Outcome document. Trusted
+  Every browser request must declare its document kind explicitly
+  (`:trace` or `:case-outcome`) through the `X-Jolt-Sim-Document-Kind`
+  header; the server never infers or guesses a schema from the uploaded
+  bytes. Trace documents render through `jolt.sim.report/trace->html` and
+  are never replayable; Case/Outcome documents render through
+  `jolt.sim.report/case-outcome->html` and keep the existing replay path.
+
+  Browser requests carry only one retained document. Trusted
   runtime configuration (worker command, project directory, timeout, artifact
   roots, and environment) is fixed when the server starts and can never be
   supplied by a browser request. Replays are additionally restricted to an
@@ -23,16 +30,20 @@
             [jolt.http.body :as http-body]
             [jolt.http.server :as http]
             [jolt.sim.case-outcome :as case-outcome]
+            [jolt.sim.presentation :as presentation]
             [jolt.sim.repl :as sim-repl]
             [jolt.sim.report :as report]
             [jolt.sim.trace :as trace]))
 
 (def invalid-config ::invalid-config)
 (def request-too-large ::request-too-large)
+(def document-kind-required ::document-kind-required)
+(def unknown-document-kind ::unknown-document-kind)
+(def trace-not-replayable ::trace-not-replayable)
 
 (def ^:private config-keys
   #{:port :capability-token :max-document-bytes
-    :allowed-scenarios :runtime-config})
+    :allowed-scenarios :runtime-config :presentation-registry})
 
 (def ^:private replay-coordinate-keys
   #{:scenario :mode :input :schedule})
@@ -42,7 +53,7 @@
     :dir :extra-env :temp-dir :retain-completed-artifacts?})
 
 (def ^:private service-keys
-  #{:render-document :replay-document})
+  #{:render-trace :render-case-outcome :replay-document})
 
 (def ^:private default-max-document-bytes (* 1024 1024))
 (def ^:private maximum-max-document-bytes (* 16 1024 1024))
@@ -118,6 +129,17 @@
     (when-not (map? runtime)
       (throw (config-error :runtime-config-not-a-map
                            (str (class runtime)))))
+    (when (contains? config :presentation-registry)
+      (try
+        (presentation/validate-registry! (:presentation-registry config))
+        (catch :default error
+          (throw
+           (ex-info
+            "jolt-sim viewer rejected its presentation registry"
+            {:type invalid-config
+             :reason :invalid-presentation-registry
+             :detail (select-keys (ex-data error) [:reason :detail])}
+            error)))))
     (when (seq collisions)
       (throw (config-error :runtime-coordinate-collision collisions)))
     (when (seq unknown-runtime-keys)
@@ -374,9 +396,36 @@
         (recur (conj chunks chunk) total))
       (concat-chunks chunks total))))
 
-(defn- request-document [config request]
+(defn- required-document-kind!
+  "Returns the declared document kind or throws a typed error. The kind is
+  never inferred from the document shape: a missing or unknown kind is
+  rejected before the request body is read. Closed string matching avoids
+  interning attacker-controlled header values as keywords."
+  [request]
+  (let [raw (get-in request [:headers "x-jolt-sim-document-kind"])
+        normalized (when (string? raw)
+                     (string/lower-case (string/trim raw)))]
+    (when (string/blank? normalized)
+      (throw (ex-info "viewer request is missing its document kind"
+                      {:type document-kind-required})))
+    (case normalized
+      "trace" :trace
+      "case-outcome" :case-outcome
+      (throw (ex-info "viewer request has an unknown document kind"
+                      {:type unknown-document-kind :kind normalized})))))
+
+(defn- read-document-by-kind
+  "Reads and fail-closed validates one document through the codec selected by
+  the explicitly declared kind. Each codec rejects the other document's
+  shape, so a misdeclared kind can never be silently reinterpreted."
+  [kind text]
+  (case kind
+    :trace (trace/read-edn text)
+    :case-outcome (case-outcome/read-edn text)))
+
+(defn- request-document [config request kind]
   (let [bytes (bounded-body-bytes request (:max-document-bytes config))]
-    (case-outcome/read-edn (String. bytes "UTF-8"))))
+    (read-document-by-kind kind (String. bytes "UTF-8"))))
 
 (defn- allowed-replay! [config document]
   (let [scenario (:scenario (case-outcome/restore-case document))]
@@ -393,9 +442,21 @@
       (error-response 413 :request-too-large
                       (select-keys data [:limit :actual]))
 
-      (= case-outcome/invalid-document type)
+      (or (= case-outcome/invalid-document type)
+          (= trace/invalid-document type))
       (error-response 400 :invalid-document
                       (select-keys data [:reason]))
+
+      (= document-kind-required type)
+      (error-response 400 :document-kind-required nil)
+
+      (= unknown-document-kind type)
+      (error-response 400 :unknown-document-kind
+                      (select-keys data [:kind]))
+
+      (= trace-not-replayable type)
+      (error-response 400 :trace-not-replayable
+                      (select-keys data [:kind]))
 
       (= ::scenario-not-allowed type)
       (error-response 403 :scenario-not-allowed
@@ -420,7 +481,8 @@
 
     :else
     (try
-      (operation (request-document config request))
+      (let [kind (required-document-kind! request)]
+        (operation kind (request-document config request kind)))
       (catch :default error
         (if-let [expected (expected-request-error-response error)]
           expected
@@ -428,13 +490,41 @@
       (finally
         (reset! document-active? false)))))
 
+(defn- render-service
+  "Selects the render service for the explicitly declared document kind.
+  Trace documents render through the trace report path and Case/Outcome
+  documents through the Case/Outcome report path; the two schemas are never
+  guessed at."
+  [services kind]
+  (case kind
+    :trace (:render-trace services)
+    :case-outcome (:render-case-outcome services)))
+
+(defn- default-services [config]
+  {:render-trace
+   (fn [document]
+     (report/trace->html
+      document
+      {:presentation-registry (:presentation-registry config)}))
+   :render-case-outcome report/case-outcome->html
+   :replay-document sim-repl/replay-document!})
+
 (defn make-handler
   "Creates a synchronous jolt-http handler.
 
+  Every `POST /api/render` and `POST /api/replay` request must declare its
+  document kind explicitly through the `X-Jolt-Sim-Document-Kind` header
+  (`trace` or `case-outcome`); a missing or unknown kind is rejected before
+  the request body is read, and the server never infers a schema from the
+  uploaded bytes.
+
   The optional `services` map is a narrow embedding/test seam. Its keys are
-  `:render-document` (`doc -> html`) and `:replay-document`
-  (`doc runtime-config -> outcome`), both required. Browser data never selects
-  either function or supplies runtime configuration.
+  `:render-trace` (`trace-doc -> html`), `:render-case-outcome`
+  (`case-outcome-doc -> html`), and `:replay-document`
+  (`case-outcome-doc runtime-config -> outcome`), all required. Browser data
+  never selects any function or supplies runtime configuration. Replay
+  accepts only Case/Outcome documents: a declared `:trace` kind is rejected
+  explicitly before any restore or worker execution.
 
   `GET /api/replay-progress` reports the one active or most recently
   completed replay's status (`:idle`, `:starting`, `:worker-ready`,
@@ -444,9 +534,7 @@
   trusted active run directory. It never accepts a filesystem path from the
   browser."
   ([config]
-   (make-handler config
-                 {:render-document report/case-outcome->html
-                  :replay-document sim-repl/replay-document!}))
+   (make-handler config (default-services config)))
   ([config services]
    (let [config (validate-config! config)
          unknown-services (into #{} (remove service-keys) (keys services))
@@ -454,7 +542,8 @@
          active-replay (atom (initial-replay-state))]
      (when (seq unknown-services)
        (throw (config-error :unknown-service-keys unknown-services)))
-     (when-not (and (fn? (:render-document services))
+     (when-not (and (fn? (:render-trace services))
+                    (fn? (:render-case-outcome services))
                     (fn? (:replay-document services)))
        (throw (config-error :invalid-services (set (keys services)))))
      (fn [request]
@@ -476,14 +565,19 @@
            (and (= :post method) (= "/api/render" uri))
            (execute-document-request
             config document-active? request
-            (fn [document]
+            (fn [kind document]
               (response 200 "text/html; charset=utf-8"
-                        ((:render-document services) document))))
+                        ((render-service services kind) document))))
 
            (and (= :post method) (= "/api/replay" uri))
            (execute-document-request
             config document-active? request
-            (fn [document]
+            (fn [kind document]
+              ;; Reject trace documents before any restore or worker
+              ;; execution: replay is a Case/Outcome-only path.
+              (when-not (= :case-outcome kind)
+                (throw (ex-info "viewer replay accepts only Case/Outcome documents"
+                                {:type trace-not-replayable :kind kind})))
               (allowed-replay! config document)
               (reset! active-replay
                       {:phase :active
@@ -521,12 +615,10 @@
   "Starts the loopback viewer and returns the jolt-http server handle.
 
   The optional services arity is the same narrow embedding/test seam accepted
-  by `make-handler`; ordinary callers always use the real report and replay
-  services."
+  by `make-handler`; ordinary callers always use the real trace/Case/Outcome
+  report and replay services."
   ([config]
-   (start! config
-           {:render-document report/case-outcome->html
-            :replay-document sim-repl/replay-document!}))
+   (start! config (default-services config)))
   ([config services]
    (let [config (validate-config! config)]
      (http/run-server (make-handler config services)
@@ -575,12 +667,35 @@
   Usage: JOLT_SIM_VIEWER_TOKEN=<32+ chars> jolt -M:viewer CONFIG.edn
 
   The token is deliberately supplied through the environment rather than the
-  config file. Port 0 selects an ephemeral loopback port. The process remains
-  alive until stopped externally."
+  config file. Port 0 selects an ephemeral loopback port. The primordial
+  thread owns SIGINT. On POSIX, server workers inherit its blocked signal mask;
+  on Windows, the host uses console-interrupt delivery. In both cases,
+  `park-until-interrupt` handles Ctrl+C, runs the registered server shutdown,
+  and exits cleanly. Programmatic callers continue to use `start!`/`stop!`."
   [& args]
   (when-not (= 1 (count args))
     (throw (config-error :wrong-argument-count {:args (vec args)})))
-  (let [config (validate-config! (read-main-config (first args)))
-        server (start! config)]
-    (println (str "jolt-sim viewer: http://127.0.0.1:" (:port server)))
-    (flush)))
+  (let [config (validate-config! (read-main-config (first args)))]
+    ;; On POSIX, block before the listener, accept loop, and handler executor
+    ;; start so every worker inherits the blocked SIGINT mask. On Windows this
+    ;; host operation is intentionally a no-op and the primordial thread owns
+    ;; console-interrupt delivery instead. This prevents Ctrl+C from landing in
+    ;; a worker's foreign wait or interrupting a mutex-backed promise deref.
+    (jolt.host/block-sigint)
+    (let [server (start! config)
+          stopped? (atom false)
+          stop-once! (fn []
+                       (when (compare-and-set! stopped? false true)
+                         (stop! server)))]
+      (try
+        (jolt.host/add-shutdown-hook stop-once!)
+        (println (str "Ripple: http://127.0.0.1:" (:port server)))
+        (flush)
+        ;; On POSIX this interruptible main-thread pump installs the SIGINT
+        ;; handler and unblocks SIGINT only here. On every host it invokes the
+        ;; registered hooks and exits 0 for Ctrl+C.
+        (jolt.host/park-until-interrupt)
+        (finally
+          ;; Also cover output, hook-registration, or host-pump failures. The
+          ;; hook and fallback share one ownership transition.
+          (stop-once!))))))

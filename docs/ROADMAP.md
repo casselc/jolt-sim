@@ -1,11 +1,11 @@
 # jolt-sim implementation roadmap
 
-Updated: 2026-08-04
+Updated: 2026-08-05
 
 Status: live execution roadmap for pre-release development
 
-Current platform baseline: Jolt 0.5.20, simulation controller ABI 6, FFI
-descriptor version 6, clock descriptor version 1, and Chez Scheme 10.4.1.
+Current platform baseline: Jolt 0.6.1, simulation controller ABI 6, FFI
+descriptor version 8, clock descriptor version 1, and Chez Scheme 10.4.1.
 
 This is the current implementation order and acceptance boundary for
 `jolt-sim`. It does not replace the research packet or its adversarial reviews.
@@ -69,7 +69,9 @@ networking, TCP, HTTP, clocks, process isolation, Hegel, replay, and monitoring.
 
 | Capability | State | Accepted evidence |
 | --- | --- | --- |
-| Jolt 0.5.20 / ABI 6 simulation core | Pushed; full Linux Jolt CI and the downstream jolt-sim hosted matrix are green | `9fc64f93`; hosted run `30857980580`; draft PR `casselc/jolt#26` |
+| Jolt 0.6.4 / ABI 6 / FFI descriptor 8 simulation image | Aggregate branch pins the thread-safe runtime cache fix; focused compiler, exact retained-crash replay, JSON outbox, and generated outbox gates are green; hosted CI revalidation pending | Integration `3bbf0673` / draft PR `casselc/jolt#38`; root-cause fix uses owner-tagged per-thread weak hasheq caches; core hasheq concurrency gate passed with 8 workers x 25,000 operations and 367 automatic collections, values `70/70`, isolated unit `1236/1236`; jolt-sim JSON outbox `74/74`; exact PR #67 crash request completed without a core; outbox Hegel `17 tests / 79 assertions`; prior integration evidence: variadic FFI `76542302`, reminted seed `cf240c7b`, exact target facts `9c4c75ef`, Windows absolute-root fix `c2a8285b`; unchanged consumers: POSIX `95/95`, HTTP `33/33`, TCP/bencode `101/101`, SQLite `34/34`, webhook simulation `149/149` |
+| Jolt 0.6.1 / ABI 6 dedicated simulation image | Historical hosted-green baseline retained | Selected child `5c885d14` / draft PR `casselc/jolt#34`; image `c2b520b1` / draft PR `casselc/jolt#35`; hosted runs `31007539524`, `31007560952` |
+| Jolt 0.5.20 / ABI 6 simulation core | Historical green baseline retained | `9fc64f93`; hosted run `30857980580`; draft PR `casselc/jolt#26` |
 | Jolt 0.5.17 hosted platform and Windows native-path evidence | Historical baseline retained | `9b5cd6b`; draft PR `casselc/jolt-sim#21` |
 | Pure durable-outbox application transition | Landed | `5d2c61e`; draft PR `casselc/jolt-sim#22` |
 | Real SQLite adapter using ordinary `jdbc.core` | Landed | `2deb01d`, aggregate registration `5663ca4`; draft PR `casselc/jolt-sim#23` |
@@ -455,7 +457,7 @@ by unchanged application code.
 ## Existing branches awaiting disposition
 
 These commits are useful inputs, not accepted dependencies of the active
-stack. Revalidate them against Jolt 0.5.20, controller ABI 6, and the current
+stack. Revalidate them against Jolt 0.6.1, controller ABI 6, and the current
 application before cherry-picking or reminting them.
 
 The former parity candidate `deepseek/outbox-sqlite-parity` at `a09d3de` has

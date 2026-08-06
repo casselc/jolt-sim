@@ -1,11 +1,16 @@
 (ns jolt.sim.sqlite-integration-test
   (:require [clojure.test :as test :refer [deftest is]]
+            [jolt.ffi :as ffi]
             [jolt.sim.ffi-memory :as memory]
             [jolt.sim.fixtures.sqlite-roundtrip :as fixture]
             [jolt.sim.runtime :as runtime]
             [jolt.sim.sqlite :as sqlite]))
 
 (def ^:dynamic *sim-only?* false)
+
+;; Binding is safe on every image because native symbol resolution is lazy.
+;; Invoking it inside a controlled scope is intercepted before resolution.
+(ffi/defcfn getpid "getpid" [] :int)
 
 (def ^:private expected
   {:ddl 0
@@ -167,6 +172,53 @@
         (is (seq snapshot))
         (is (every? :freed? snapshot)))
       (is (true? (sqlite/clean? world))))))
+
+(deftest hybrid-acceptance-routes-real-getpid-natively-and-modeled-sqlite-through-handlers
+  ;; Minimal hybrid acceptance: one real zero-argument getpid reaches its
+  ;; exact native branch through an ordinary unhandled-descriptor miss while
+  ;; every SQLite foreign call and every required native-memory operation --
+  ;; including the descriptor-8 null? predicate -- is answered by its
+  ;; registered handler. The modeled BLOB round trip stays byte-exact and
+  ;; both worlds retire every handle and allocation.
+  (let [memory-world (memory/world)
+        world (sqlite/world memory-world (statement-plans))
+        controlled
+        (runtime/run-controlled
+         {:ffi-mode :hybrid
+          :ffi-handlers (sqlite/hybrid-handlers world)}
+         (fn [] [(getpid) (fixture/exercise-sqlite)]))
+        [pid result] (:result controlled)
+        trace (:effect-trace controlled)
+        getpid-routes
+        (filter #(= "getpid" (:symbol (:descriptor %))) trace)
+        sqlite-routes
+        (filter #(contains? expected-foreign-symbols
+                            (:symbol (:descriptor %)))
+                trace)
+        native-operation-routes
+        (filter #(= :native-operation (:kind (:descriptor %))) trace)
+        null-routes
+        (filter #(= :null? (:operation (:descriptor %))) trace)]
+    (is (pos? pid))
+    (is (= 1 (count getpid-routes)))
+    (is (= :native (:route (first getpid-routes))))
+    (is (= expected result))
+    (is (= [0 127 -128 -1] (get-in result [:row :payload])))
+    (is (seq sqlite-routes))
+    (is (every? #(= :handler (:route %)) sqlite-routes))
+    (is (seq native-operation-routes))
+    (is (every? #(= :handler (:route %)) native-operation-routes))
+    (is (seq null-routes)
+        "the descriptor-8 null? predicate must be intercepted and handled")
+    (is (every? #(= :handler (:route %)) null-routes))
+    (is (= {:plan-index 6
+            :plan-count 6
+            :open-dbs 0
+            :active-stmts 0}
+           (sqlite/summary world)))
+    (is (true? (sqlite/clean? world)))
+    (is (true? (memory/clean? memory-world)))
+    (is (empty? (memory/leaks memory-world)))))
 
 (defn -main [& args]
   (let [sim-only? (= ["--sim-only"] (vec args))

@@ -66,7 +66,29 @@
   .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
   code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.85em; }
   .edn { word-break: break-all; }
+  .kind {
+    display: inline-block;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    padding: 0.08rem 0.42rem;
+    background: var(--code-bg);
+    white-space: nowrap;
+  }
+  .event-summary { font-weight: 600; }
+  .event-fields { margin: 0.25rem 0 0; padding: 0; list-style: none; }
+  .event-fields li { margin-top: 0.15rem; }
+  .field-label { color: var(--muted); margin-right: 0.3rem; }
   .detail { word-break: break-word; }
+  .quick-nav { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 0.7rem 1rem; }
+  .quick-nav p { margin: 0.3rem 0; }
+  .quick-label { color: var(--muted); font-weight: 600; margin-right: 0.35rem; }
+  .quick-nav a, .event-nav a, .index-links a { margin-right: 0.35rem; white-space: nowrap; }
+  .event-nav { margin: 0 0 0.35rem; font-size: 0.82rem; line-height: 1.3; }
+  .event-nav .nav-pos { color: var(--muted); margin: 0 0.4rem; }
+  .nav-dim { color: var(--muted); margin-right: 0.35rem; }
+  .index-groups h3 { font-size: 0.95rem; margin: 0.9rem 0 0.3rem; }
+  .index-groups table { font-size: 0.85rem; }
+  .index-links { word-break: break-word; }
   .status { font-weight: 600; }
   .status-pass { color: var(--pass); }
   .status-violation { color: var(--violation); }
@@ -118,6 +140,32 @@
   </section>
 
 
+  <section id="nav" class="quick-nav">
+    <h2>Quick navigation</h2>
+    <p>
+      <span class="quick-label">Events:</span>
+      <a href="#evt-0">first</a>
+      <a href="#evt-7">last</a>
+    </p>
+
+    <p>
+      <span class="quick-label">Terminal:</span>
+      <a href="#evt-7">run/completed #7</a>
+    </p>
+
+
+
+    <p>
+      <span class="quick-label">Index:</span>
+      <a href="#idx-tag">by tag</a>
+      <a href="#idx-task">by task</a>
+      <a href="#idx-site">by site</a>
+      <a href="#idx-time">by virtual time</a>
+    </p>
+  </section>
+
+
+
 
   <section>
     <h2>Event tags</h2>
@@ -155,89 +203,392 @@
     <h2>Events</h2>
     <p class="filter-row">
       <label for="event-filter">Filter events</label>
-      <input id="event-filter" type="search" placeholder="tag, step, time, task, or EDN text" oninput="filterEvents()">
+      <input id="event-filter" type="search" placeholder="kind, tag, summary, field, or EDN text" oninput="filterEvents()">
     </p>
     <table id="event-table">
       <thead>
-        <tr><th>#</th><th>Tag</th><th>Step</th><th>Time</th><th>Task</th><th>Event (EDN)</th></tr>
+        <tr><th>#</th><th>Kind</th><th>Step</th><th>Time</th><th>Task</th><th>Event</th></tr>
       </thead>
       <tbody>
 
-        <tr>
+        <tr id="evt-0">
           <td class="num">0</td>
-          <td><code>run/initial</code></td>
+          <td>
+            <span class="kind">jolt.sim.kind/run-initial</span><br>
+            <code>run/initial</code>
+          </td>
           <td class="num"></td>
           <td class="num"></td>
           <td class="num"></td>
-          <td class="edn"><code>[:run/initial [:jolt.sim.value/map [[[:jolt.sim.value/keyword nil &quot;now&quot;] [:jolt.sim.value/integer &quot;0&quot;]] [[:jolt.sim.value/keyword nil &quot;steps&quot;] [:jolt.sim.value/integer &quot;0&quot;]] [[:jolt.sim.value/keyword nil &quot;tasks&quot;] [:jolt.sim.value/map [[[:jolt.sim.value/integer &quot;0&quot;] [:jolt.sim.value/map [[[:jolt.sim.value/keyword nil &quot;state&quot;] [:jolt.sim.value/integer &quot;3&quot;]] [[:jolt.sim.value/keyword nil &quot;status&quot;] [:jolt.sim.value/keyword nil &quot;runnable&quot;]]]]]]]] [[:jolt.sim.value/keyword nil &quot;world&quot;] [:jolt.sim.value/map [[[:jolt.sim.value/keyword nil &quot;order&quot;] [:jolt.sim.value/vector []]]]]]]]]</code></td>
+          <td>
+            <nav class="event-nav">
+              <a href="#evt-0">first</a>
+              <span class="nav-dim">prev</span>
+              <a href="#evt-1">next</a>
+              <a href="#evt-7">last</a>
+              <span class="nav-pos">1 / 8</span>
+              <a href="#nav">index</a>
+            </nav>
+            <div class="event-summary">Initial simulation state</div>
+
+            <details>
+              <summary>Complete event EDN</summary>
+              <code class="edn">[:run/initial [:jolt.sim.value/map [[[:jolt.sim.value/keyword nil &quot;now&quot;] [:jolt.sim.value/integer &quot;0&quot;]] [[:jolt.sim.value/keyword nil &quot;steps&quot;] [:jolt.sim.value/integer &quot;0&quot;]] [[:jolt.sim.value/keyword nil &quot;tasks&quot;] [:jolt.sim.value/map [[[:jolt.sim.value/integer &quot;0&quot;] [:jolt.sim.value/map [[[:jolt.sim.value/keyword nil &quot;state&quot;] [:jolt.sim.value/integer &quot;3&quot;]] [[:jolt.sim.value/keyword nil &quot;status&quot;] [:jolt.sim.value/keyword nil &quot;runnable&quot;]]]]]]]] [[:jolt.sim.value/keyword nil &quot;world&quot;] [:jolt.sim.value/map [[[:jolt.sim.value/keyword nil &quot;order&quot;] [:jolt.sim.value/vector []]]]]]]]]</code>
+            </details>
+          </td>
         </tr>
 
-        <tr>
+        <tr id="evt-1">
           <td class="num">1</td>
-          <td><code>schedule/choose</code></td>
+          <td>
+            <span class="kind">jolt.sim.kind/schedule-choice</span><br>
+            <code>schedule/choose</code>
+          </td>
           <td class="num">0</td>
           <td class="num">0</td>
           <td class="num">0</td>
-          <td class="edn"><code>[:schedule/choose 0 0 [0] 0]</code></td>
+          <td>
+            <nav class="event-nav">
+              <a href="#evt-0">first</a>
+              <a href="#evt-0">prev</a>
+              <a href="#evt-2">next</a>
+              <a href="#evt-7">last</a>
+              <span class="nav-pos">2 / 8</span>
+              <a href="#nav">index</a>
+            </nav>
+            <div class="event-summary">Task 0 chosen from 1 runnable task</div>
+
+            <ul class="event-fields">
+
+              <li><span class="field-label">Enabled tasks:</span><code>[0]</code></li>
+
+              <li><span class="field-label">Chosen task:</span><code>0</code></li>
+
+            </ul>
+
+            <details>
+              <summary>Complete event EDN</summary>
+              <code class="edn">[:schedule/choose 0 0 [0] 0]</code>
+            </details>
+          </td>
         </tr>
 
-        <tr>
+        <tr id="evt-2">
           <td class="num">2</td>
-          <td><code>task/transition</code></td>
+          <td>
+            <span class="kind">jolt.sim.kind/task-transition</span><br>
+            <code>task/transition</code>
+          </td>
           <td class="num">0</td>
           <td class="num">0</td>
           <td class="num">0</td>
-          <td class="edn"><code>[:task/transition 0 0 0 :yield [:jolt.sim.value/keyword nil &quot;countdown&quot;] [] nil [:jolt.sim.value/map [[[:jolt.sim.value/keyword nil &quot;now&quot;] [:jolt.sim.value/integer &quot;0&quot;]] [[:jolt.sim.value/keyword nil &quot;steps&quot;] [:jolt.sim.value/integer &quot;1&quot;]] [[:jolt.sim.value/keyword nil &quot;tasks&quot;] [:jolt.sim.value/map [[[:jolt.sim.value/integer &quot;0&quot;] [:jolt.sim.value/map [[[:jolt.sim.value/keyword nil &quot;state&quot;] [:jolt.sim.value/integer &quot;2&quot;]] [[:jolt.sim.value/keyword nil &quot;status&quot;] [:jolt.sim.value/keyword nil &quot;runnable&quot;]]]]]]]] [[:jolt.sim.value/keyword nil &quot;world&quot;] [:jolt.sim.value/map [[[:jolt.sim.value/keyword nil &quot;order&quot;] [:jolt.sim.value/vector [[:jolt.sim.value/integer &quot;0&quot;]]]]]]]]]]</code></td>
+          <td>
+            <nav class="event-nav">
+              <a href="#evt-0">first</a>
+              <a href="#evt-1">prev</a>
+              <a href="#evt-3">next</a>
+              <a href="#evt-7">last</a>
+              <span class="nav-pos">3 / 8</span>
+              <a href="#nav">index</a>
+            </nav>
+            <div class="event-summary">Task 0 yield at :countdown</div>
+
+            <ul class="event-fields">
+
+              <li><span class="field-label">Operation:</span><code>:yield</code></li>
+
+              <li><span class="field-label">Site:</span><code>:countdown</code></li>
+
+            </ul>
+
+            <details>
+              <summary>Complete event EDN</summary>
+              <code class="edn">[:task/transition 0 0 0 :yield [:jolt.sim.value/keyword nil &quot;countdown&quot;] [] nil [:jolt.sim.value/map [[[:jolt.sim.value/keyword nil &quot;now&quot;] [:jolt.sim.value/integer &quot;0&quot;]] [[:jolt.sim.value/keyword nil &quot;steps&quot;] [:jolt.sim.value/integer &quot;1&quot;]] [[:jolt.sim.value/keyword nil &quot;tasks&quot;] [:jolt.sim.value/map [[[:jolt.sim.value/integer &quot;0&quot;] [:jolt.sim.value/map [[[:jolt.sim.value/keyword nil &quot;state&quot;] [:jolt.sim.value/integer &quot;2&quot;]] [[:jolt.sim.value/keyword nil &quot;status&quot;] [:jolt.sim.value/keyword nil &quot;runnable&quot;]]]]]]]] [[:jolt.sim.value/keyword nil &quot;world&quot;] [:jolt.sim.value/map [[[:jolt.sim.value/keyword nil &quot;order&quot;] [:jolt.sim.value/vector [[:jolt.sim.value/integer &quot;0&quot;]]]]]]]]]]</code>
+            </details>
+          </td>
         </tr>
 
-        <tr>
+        <tr id="evt-3">
           <td class="num">3</td>
-          <td><code>schedule/choose</code></td>
+          <td>
+            <span class="kind">jolt.sim.kind/schedule-choice</span><br>
+            <code>schedule/choose</code>
+          </td>
           <td class="num">1</td>
           <td class="num">0</td>
           <td class="num">0</td>
-          <td class="edn"><code>[:schedule/choose 1 0 [0] 0]</code></td>
+          <td>
+            <nav class="event-nav">
+              <a href="#evt-0">first</a>
+              <a href="#evt-2">prev</a>
+              <a href="#evt-4">next</a>
+              <a href="#evt-7">last</a>
+              <span class="nav-pos">4 / 8</span>
+              <a href="#nav">index</a>
+            </nav>
+            <div class="event-summary">Task 0 chosen from 1 runnable task</div>
+
+            <ul class="event-fields">
+
+              <li><span class="field-label">Enabled tasks:</span><code>[0]</code></li>
+
+              <li><span class="field-label">Chosen task:</span><code>0</code></li>
+
+            </ul>
+
+            <details>
+              <summary>Complete event EDN</summary>
+              <code class="edn">[:schedule/choose 1 0 [0] 0]</code>
+            </details>
+          </td>
         </tr>
 
-        <tr>
+        <tr id="evt-4">
           <td class="num">4</td>
-          <td><code>task/transition</code></td>
+          <td>
+            <span class="kind">jolt.sim.kind/task-transition</span><br>
+            <code>task/transition</code>
+          </td>
           <td class="num">1</td>
           <td class="num">0</td>
           <td class="num">0</td>
-          <td class="edn"><code>[:task/transition 1 0 0 :yield [:jolt.sim.value/keyword nil &quot;countdown&quot;] [] nil [:jolt.sim.value/map [[[:jolt.sim.value/keyword nil &quot;now&quot;] [:jolt.sim.value/integer &quot;0&quot;]] [[:jolt.sim.value/keyword nil &quot;steps&quot;] [:jolt.sim.value/integer &quot;2&quot;]] [[:jolt.sim.value/keyword nil &quot;tasks&quot;] [:jolt.sim.value/map [[[:jolt.sim.value/integer &quot;0&quot;] [:jolt.sim.value/map [[[:jolt.sim.value/keyword nil &quot;state&quot;] [:jolt.sim.value/integer &quot;1&quot;]] [[:jolt.sim.value/keyword nil &quot;status&quot;] [:jolt.sim.value/keyword nil &quot;runnable&quot;]]]]]]]] [[:jolt.sim.value/keyword nil &quot;world&quot;] [:jolt.sim.value/map [[[:jolt.sim.value/keyword nil &quot;order&quot;] [:jolt.sim.value/vector [[:jolt.sim.value/integer &quot;0&quot;] [:jolt.sim.value/integer &quot;0&quot;]]]]]]]]]]</code></td>
+          <td>
+            <nav class="event-nav">
+              <a href="#evt-0">first</a>
+              <a href="#evt-3">prev</a>
+              <a href="#evt-5">next</a>
+              <a href="#evt-7">last</a>
+              <span class="nav-pos">5 / 8</span>
+              <a href="#nav">index</a>
+            </nav>
+            <div class="event-summary">Task 0 yield at :countdown</div>
+
+            <ul class="event-fields">
+
+              <li><span class="field-label">Operation:</span><code>:yield</code></li>
+
+              <li><span class="field-label">Site:</span><code>:countdown</code></li>
+
+            </ul>
+
+            <details>
+              <summary>Complete event EDN</summary>
+              <code class="edn">[:task/transition 1 0 0 :yield [:jolt.sim.value/keyword nil &quot;countdown&quot;] [] nil [:jolt.sim.value/map [[[:jolt.sim.value/keyword nil &quot;now&quot;] [:jolt.sim.value/integer &quot;0&quot;]] [[:jolt.sim.value/keyword nil &quot;steps&quot;] [:jolt.sim.value/integer &quot;2&quot;]] [[:jolt.sim.value/keyword nil &quot;tasks&quot;] [:jolt.sim.value/map [[[:jolt.sim.value/integer &quot;0&quot;] [:jolt.sim.value/map [[[:jolt.sim.value/keyword nil &quot;state&quot;] [:jolt.sim.value/integer &quot;1&quot;]] [[:jolt.sim.value/keyword nil &quot;status&quot;] [:jolt.sim.value/keyword nil &quot;runnable&quot;]]]]]]]] [[:jolt.sim.value/keyword nil &quot;world&quot;] [:jolt.sim.value/map [[[:jolt.sim.value/keyword nil &quot;order&quot;] [:jolt.sim.value/vector [[:jolt.sim.value/integer &quot;0&quot;] [:jolt.sim.value/integer &quot;0&quot;]]]]]]]]]]</code>
+            </details>
+          </td>
         </tr>
 
-        <tr>
+        <tr id="evt-5">
           <td class="num">5</td>
-          <td><code>schedule/choose</code></td>
+          <td>
+            <span class="kind">jolt.sim.kind/schedule-choice</span><br>
+            <code>schedule/choose</code>
+          </td>
           <td class="num">2</td>
           <td class="num">0</td>
           <td class="num">0</td>
-          <td class="edn"><code>[:schedule/choose 2 0 [0] 0]</code></td>
+          <td>
+            <nav class="event-nav">
+              <a href="#evt-0">first</a>
+              <a href="#evt-4">prev</a>
+              <a href="#evt-6">next</a>
+              <a href="#evt-7">last</a>
+              <span class="nav-pos">6 / 8</span>
+              <a href="#nav">index</a>
+            </nav>
+            <div class="event-summary">Task 0 chosen from 1 runnable task</div>
+
+            <ul class="event-fields">
+
+              <li><span class="field-label">Enabled tasks:</span><code>[0]</code></li>
+
+              <li><span class="field-label">Chosen task:</span><code>0</code></li>
+
+            </ul>
+
+            <details>
+              <summary>Complete event EDN</summary>
+              <code class="edn">[:schedule/choose 2 0 [0] 0]</code>
+            </details>
+          </td>
         </tr>
 
-        <tr>
+        <tr id="evt-6">
           <td class="num">6</td>
-          <td><code>task/transition</code></td>
+          <td>
+            <span class="kind">jolt.sim.kind/task-transition</span><br>
+            <code>task/transition</code>
+          </td>
           <td class="num">2</td>
           <td class="num">0</td>
           <td class="num">0</td>
-          <td class="edn"><code>[:task/transition 2 0 0 :complete [:jolt.sim.value/keyword nil &quot;finish&quot;] [] nil [:jolt.sim.value/map [[[:jolt.sim.value/keyword nil &quot;now&quot;] [:jolt.sim.value/integer &quot;0&quot;]] [[:jolt.sim.value/keyword nil &quot;steps&quot;] [:jolt.sim.value/integer &quot;3&quot;]] [[:jolt.sim.value/keyword nil &quot;tasks&quot;] [:jolt.sim.value/map [[[:jolt.sim.value/integer &quot;0&quot;] [:jolt.sim.value/map [[[:jolt.sim.value/keyword nil &quot;result&quot;] [:jolt.sim.value/keyword nil &quot;done&quot;]] [[:jolt.sim.value/keyword nil &quot;status&quot;] [:jolt.sim.value/keyword nil &quot;completed&quot;]]]]]]]] [[:jolt.sim.value/keyword nil &quot;world&quot;] [:jolt.sim.value/map [[[:jolt.sim.value/keyword nil &quot;order&quot;] [:jolt.sim.value/vector [[:jolt.sim.value/integer &quot;0&quot;] [:jolt.sim.value/integer &quot;0&quot;] [:jolt.sim.value/integer &quot;0&quot;]]]]]]]]]]</code></td>
+          <td>
+            <nav class="event-nav">
+              <a href="#evt-0">first</a>
+              <a href="#evt-5">prev</a>
+              <a href="#evt-7">next</a>
+              <a href="#evt-7">last</a>
+              <span class="nav-pos">7 / 8</span>
+              <a href="#nav">index</a>
+            </nav>
+            <div class="event-summary">Task 0 complete at :finish</div>
+
+            <ul class="event-fields">
+
+              <li><span class="field-label">Operation:</span><code>:complete</code></li>
+
+              <li><span class="field-label">Site:</span><code>:finish</code></li>
+
+            </ul>
+
+            <details>
+              <summary>Complete event EDN</summary>
+              <code class="edn">[:task/transition 2 0 0 :complete [:jolt.sim.value/keyword nil &quot;finish&quot;] [] nil [:jolt.sim.value/map [[[:jolt.sim.value/keyword nil &quot;now&quot;] [:jolt.sim.value/integer &quot;0&quot;]] [[:jolt.sim.value/keyword nil &quot;steps&quot;] [:jolt.sim.value/integer &quot;3&quot;]] [[:jolt.sim.value/keyword nil &quot;tasks&quot;] [:jolt.sim.value/map [[[:jolt.sim.value/integer &quot;0&quot;] [:jolt.sim.value/map [[[:jolt.sim.value/keyword nil &quot;result&quot;] [:jolt.sim.value/keyword nil &quot;done&quot;]] [[:jolt.sim.value/keyword nil &quot;status&quot;] [:jolt.sim.value/keyword nil &quot;completed&quot;]]]]]]]] [[:jolt.sim.value/keyword nil &quot;world&quot;] [:jolt.sim.value/map [[[:jolt.sim.value/keyword nil &quot;order&quot;] [:jolt.sim.value/vector [[:jolt.sim.value/integer &quot;0&quot;] [:jolt.sim.value/integer &quot;0&quot;] [:jolt.sim.value/integer &quot;0&quot;]]]]]]]]]]</code>
+            </details>
+          </td>
         </tr>
 
-        <tr>
+        <tr id="evt-7">
           <td class="num">7</td>
-          <td><code>run/completed</code></td>
+          <td>
+            <span class="kind">jolt.sim.kind/run-completed</span><br>
+            <code>run/completed</code>
+          </td>
           <td class="num">3</td>
           <td class="num">0</td>
           <td class="num"></td>
-          <td class="edn"><code>[:run/completed 3 0 [:jolt.sim.value/map [[[:jolt.sim.value/keyword nil &quot;now&quot;] [:jolt.sim.value/integer &quot;0&quot;]] [[:jolt.sim.value/keyword nil &quot;status&quot;] [:jolt.sim.value/keyword nil &quot;completed&quot;]] [[:jolt.sim.value/keyword nil &quot;steps&quot;] [:jolt.sim.value/integer &quot;3&quot;]] [[:jolt.sim.value/keyword nil &quot;tasks&quot;] [:jolt.sim.value/map [[[:jolt.sim.value/integer &quot;0&quot;] [:jolt.sim.value/map [[[:jolt.sim.value/keyword nil &quot;result&quot;] [:jolt.sim.value/keyword nil &quot;done&quot;]] [[:jolt.sim.value/keyword nil &quot;status&quot;] [:jolt.sim.value/keyword nil &quot;completed&quot;]]]]]]]] [[:jolt.sim.value/keyword nil &quot;world&quot;] [:jolt.sim.value/map [[[:jolt.sim.value/keyword nil &quot;order&quot;] [:jolt.sim.value/vector [[:jolt.sim.value/integer &quot;0&quot;] [:jolt.sim.value/integer &quot;0&quot;] [:jolt.sim.value/integer &quot;0&quot;]]]]]]]]]]</code></td>
+          <td>
+            <nav class="event-nav">
+              <a href="#evt-0">first</a>
+              <a href="#evt-6">prev</a>
+              <span class="nav-dim">next</span>
+              <a href="#evt-7">last</a>
+              <span class="nav-pos">8 / 8</span>
+              <a href="#nav">index</a>
+            </nav>
+            <div class="event-summary">Run completed</div>
+
+            <details>
+              <summary>Complete event EDN</summary>
+              <code class="edn">[:run/completed 3 0 [:jolt.sim.value/map [[[:jolt.sim.value/keyword nil &quot;now&quot;] [:jolt.sim.value/integer &quot;0&quot;]] [[:jolt.sim.value/keyword nil &quot;status&quot;] [:jolt.sim.value/keyword nil &quot;completed&quot;]] [[:jolt.sim.value/keyword nil &quot;steps&quot;] [:jolt.sim.value/integer &quot;3&quot;]] [[:jolt.sim.value/keyword nil &quot;tasks&quot;] [:jolt.sim.value/map [[[:jolt.sim.value/integer &quot;0&quot;] [:jolt.sim.value/map [[[:jolt.sim.value/keyword nil &quot;result&quot;] [:jolt.sim.value/keyword nil &quot;done&quot;]] [[:jolt.sim.value/keyword nil &quot;status&quot;] [:jolt.sim.value/keyword nil &quot;completed&quot;]]]]]]]] [[:jolt.sim.value/keyword nil &quot;world&quot;] [:jolt.sim.value/map [[[:jolt.sim.value/keyword nil &quot;order&quot;] [:jolt.sim.value/vector [[:jolt.sim.value/integer &quot;0&quot;] [:jolt.sim.value/integer &quot;0&quot;] [:jolt.sim.value/integer &quot;0&quot;]]]]]]]]]]</code>
+            </details>
+          </td>
         </tr>
 
       </tbody>
     </table>
   </section>
+
+
+  <section class="index-groups">
+    <h2>Trace index</h2>
+    <p class="filter-row">Script-free links jump to the matching event row.</p>
+
+    <h3 id="idx-tag">By tag</h3>
+    <table>
+      <thead>
+        <tr><th>Tag</th><th>Count</th><th>Events</th></tr>
+      </thead>
+      <tbody>
+
+        <tr>
+          <td><code>:run/completed</code></td>
+          <td class="num">1</td>
+          <td class="index-links"><a href="#evt-7">#7</a> </td>
+        </tr>
+
+        <tr>
+          <td><code>:run/initial</code></td>
+          <td class="num">1</td>
+          <td class="index-links"><a href="#evt-0">#0</a> </td>
+        </tr>
+
+        <tr>
+          <td><code>:schedule/choose</code></td>
+          <td class="num">3</td>
+          <td class="index-links"><a href="#evt-1">#1</a> <a href="#evt-3">#3</a> <a href="#evt-5">#5</a> </td>
+        </tr>
+
+        <tr>
+          <td><code>:task/transition</code></td>
+          <td class="num">3</td>
+          <td class="index-links"><a href="#evt-2">#2</a> <a href="#evt-4">#4</a> <a href="#evt-6">#6</a> </td>
+        </tr>
+
+      </tbody>
+    </table>
+
+
+    <h3 id="idx-task">By task</h3>
+    <table>
+      <thead>
+        <tr><th>Task</th><th>Count</th><th>Events</th></tr>
+      </thead>
+      <tbody>
+
+        <tr>
+          <td class="num">0</td>
+          <td class="num">6</td>
+          <td class="index-links"><a href="#evt-1">#1 schedule/choose</a> <a href="#evt-2">#2 task/transition</a> <a href="#evt-3">#3 schedule/choose</a> <a href="#evt-4">#4 task/transition</a> <a href="#evt-5">#5 schedule/choose</a> <a href="#evt-6">#6 task/transition</a> </td>
+        </tr>
+
+      </tbody>
+    </table>
+
+
+    <h3 id="idx-site">By site</h3>
+    <table>
+      <thead>
+        <tr><th>Site</th><th>Count</th><th>Events</th></tr>
+      </thead>
+      <tbody>
+
+        <tr>
+          <td>
+            <code>:countdown</code>
+            <details>
+              <summary>Canonical site identity</summary>
+              <code>[:jolt.sim.value/keyword nil &quot;countdown&quot;]</code>
+            </details>
+          </td>
+          <td class="num">2</td>
+          <td class="index-links"><a href="#evt-2">#2 task/transition</a> <a href="#evt-4">#4 task/transition</a> </td>
+        </tr>
+
+        <tr>
+          <td>
+            <code>:finish</code>
+            <details>
+              <summary>Canonical site identity</summary>
+              <code>[:jolt.sim.value/keyword nil &quot;finish&quot;]</code>
+            </details>
+          </td>
+          <td class="num">1</td>
+          <td class="index-links"><a href="#evt-6">#6 task/transition</a> </td>
+        </tr>
+
+      </tbody>
+    </table>
+
+
+    <h3 id="idx-time">By virtual time</h3>
+    <table>
+      <thead>
+        <tr><th>Virtual time</th><th>Count</th><th>Events</th></tr>
+      </thead>
+      <tbody>
+
+        <tr>
+          <td class="num">0</td>
+          <td class="num">7</td>
+          <td class="index-links"><a href="#evt-1">#1 schedule/choose</a> <a href="#evt-2">#2 task/transition</a> <a href="#evt-3">#3 schedule/choose</a> <a href="#evt-4">#4 task/transition</a> <a href="#evt-5">#5 schedule/choose</a> <a href="#evt-6">#6 task/transition</a> <a href="#evt-7">#7 run/completed</a> </td>
+        </tr>
+
+      </tbody>
+    </table>
+
+  </section>
+
 
   <section>
     <h2>Canonical trace (EDN)</h2>
@@ -249,7 +600,7 @@
 </main>
 
 <footer>
-  <p>Generated by jolt.sim.report &middot; view-model version 1</p>
+  <p>Generated by jolt.sim.report &middot; view-model version 2</p>
 </footer>
 
 

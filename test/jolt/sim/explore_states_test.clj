@@ -84,6 +84,16 @@
     (is (= 1000 (:max-steps restored)))
     (is (= {:k 1} (:world restored)))))
 
+(deftest machine-trace-exposes-events-without-the-step-callback
+  (let [m (kernel/machine {:tasks {0 (kernel/runnable :x)}
+                           :step (fn [_ _]
+                                   (kernel/step-complete :done))})]
+    (is (= [:run/initial] (mapv first (kernel/machine-trace m))))
+    (is (= [:run/initial :schedule/choose :task/transition]
+           (mapv first
+                 (kernel/machine-trace
+                  (kernel/machine-apply m [:run 0])))))))
+
 (deftest machine-terminal-state-has-no-actions-and-exposes-status
   (let [m (kernel/machine {:tasks {0 (kernel/completed :done)}
                            :step (fn [_ _] (kernel/step-complete :done))})]

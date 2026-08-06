@@ -7,8 +7,10 @@
             [jolt.sim.case-outcome :as case-outcome]
             [jolt.sim.kernel :as kernel]
             [jolt.sim.monitor :as monitor]
+            [jolt.sim.presentation :as presentation]
             [jolt.sim.report :as report]
             [jolt.sim.trace :as trace]
+            [jolt.sim.trace-index :as trace-index]
             [selmer.util :as selmer-util]))
 
 (defn- caught-data [f]
@@ -45,7 +47,7 @@
 (deftest view-model-shape
   (let [doc (sample-doc)
         vm (report/trace->view-model doc)]
-    (is (= 1 (:view-model-version vm)))
+    (is (= 2 (:view-model-version vm)))
     (is (= trace/trace-version (:trace-version vm)))
     (is (= (count (:jolt.sim.trace/events doc)) (:event-count vm)))
     (is (= :run/completed (:terminal-tag vm)))
@@ -136,6 +138,208 @@
       (is (= 1 (:step (nth rows 4))))
       (is (= 5 (:time (nth rows 4))))
       (is (nil? (:task (nth rows 4)))))))
+
+(deftest event-rows-have-specialized-presentation-kinds
+  (let [projection [:jolt.sim.value/map []]
+        doc (trace/document
+             [(trace/initial-event projection)
+              (trace/choose-event 0 0 [0] 0)
+              (trace/transition-event
+               0 0 0 :sleep (trace/canonical-value :clock/wait) [] 5 projection)
+              (trace/time-event 1 0 5 [0] projection)
+              (trace/completed-event 1 5 projection)])
+        rows (:events (report/trace->view-model doc))]
+    (is (= [:jolt.sim.kind/run-initial
+            :jolt.sim.kind/schedule-choice
+            :jolt.sim.kind/task-transition
+            :jolt.sim.kind/time-advance
+            :jolt.sim.kind/run-completed]
+           (mapv :kind rows)))
+    (is (= "Task 0 chosen from 1 runnable task" (:summary (nth rows 1))))
+    (is (= "Task 0 sleep at :clock/wait" (:summary (nth rows 2))))
+    (is (= ["Operation" "Site" "Wake time"]
+           (mapv :label (:fields (nth rows 2)))))
+    (is (= "Virtual time advanced from 0 to 5"
+           (:summary (nth rows 3))))))
+
+(deftest default-registry-covers-every-v1-event-tag
+  (let [projection [:jolt.sim.value/map []]
+        events [(trace/initial-event projection)
+                (trace/choose-event 0 0 [0] 0)
+                (trace/transition-event
+                 0 0 0 :yield (trace/canonical-value nil) [] nil projection)
+                (trace/time-event 1 0 5 [0] projection)
+                (trace/completed-event 1 5 projection)
+                (trace/failed-event
+                 1 5 0 (trace/canonical-value {:message "boom"}) projection)
+                (trace/deadlock-event 1 5 [0] projection)
+                (trace/step-limit-event 1 5 projection)]
+        expected [:jolt.sim.kind/run-initial
+                  :jolt.sim.kind/schedule-choice
+                  :jolt.sim.kind/task-transition
+                  :jolt.sim.kind/time-advance
+                  :jolt.sim.kind/run-completed
+                  :jolt.sim.kind/run-failed
+                  :jolt.sim.kind/run-deadlock
+                  :jolt.sim.kind/run-step-limit]]
+    (is (= expected
+           (mapv :kind
+                 (presentation/events->rows presentation/default-registry
+                                            events))))))
+
+(deftest presentation-registry-precedence-is-site-then-op-then-tag
+  (let [projection [:jolt.sim.value/map []]
+        event (trace/transition-event
+               0 0 7 :sleep (trace/canonical-value :acme.clock/wait)
+               [] 5 projection)
+        presenter (fn [label]
+                    {:kind (keyword "acme.kind" label)
+                     :present (fn [_] {:summary label :fields []})})
+        library {:task/transition (presenter "library-tag")
+                 [:task/transition :op :sleep] (presenter "library-op")}
+        application {(presentation/site-key :acme.clock/wait)
+                     (presenter "application-site")}
+        combined (presentation/registry presentation/default-registry
+                                        library application)
+        site-row (presentation/present-event combined 0 event)
+        op-row (presentation/present-event
+                combined 1
+                (assoc event 5 (trace/canonical-value :other/site)))
+        tag-row (presentation/present-event
+                 combined 2
+                 (assoc event 4 :yield
+                        5 (trace/canonical-value :other/site)))]
+    (is (= "application-site" (:summary site-row)))
+    (is (= (presentation/site-key :acme.clock/wait)
+           (:dispatch-key site-row)))
+    (is (= "acme.kind/application-site" (:kind-name site-row)))
+    (is (= [] (:fields site-row)))
+    (is (= "library-op" (:summary op-row)))
+    (is (= [:task/transition :op :sleep] (:dispatch-key op-row)))
+    (is (= "library-tag" (:summary tag-row)))
+    (is (= :task/transition (:dispatch-key tag-row)))))
+
+(deftest site-keys-support-existing-and-structured-sites
+  (let [projection [:jolt.sim.value/map []]
+        sites [:countdown {:ns 'demo.worker :phase :wait}]
+        registry
+        (presentation/registry
+         presentation/default-registry
+         (into {}
+               (map (fn [site]
+                      [(presentation/site-key site)
+                       {:kind :demo.kind/site
+                        :present (fn [_]
+                                   {:summary (trace/canonical-edn site)
+                                    :fields []})}]))
+               sites))
+        rows
+        (mapv (fn [index site]
+                (presentation/present-event
+                 registry index
+                 (trace/transition-event
+                  index 0 index :yield (trace/canonical-value site)
+                  [] nil projection)))
+              (range) sites)]
+    (is (= [":countdown" "{:ns demo.worker, :phase :wait}"]
+           (mapv :summary rows)))
+    (is (= (mapv presentation/site-key sites)
+           (mapv :dispatch-key rows)))))
+
+(deftest incremental-event-presenter-validates-once
+  (let [calls (atom 0)
+        event (trace/completed-event 0 0 [:jolt.sim.value/map []])
+        original presentation/validate-registry!]
+    (with-redefs [presentation/validate-registry!
+                  (fn [registry]
+                    (swap! calls inc)
+                    (original registry))]
+      (let [present (presentation/event-presenter
+                     presentation/default-registry)]
+        (present 0 event)
+        (present 1 event)
+        (is (= 1 @calls))))))
+
+(deftest later-presentation-registry-overrides-win
+  (let [entry (fn [label]
+                {:kind (keyword "acme.kind" label)
+                 :present (fn [_] {:summary label :fields []})})
+        combined (presentation/registry
+                  {:run/completed (entry "default")}
+                  {:run/completed (entry "library")}
+                  {:run/completed (entry "application")})
+        event (trace/completed-event 0 0 [:jolt.sim.value/map []])]
+    (is (= "application"
+           (:summary (presentation/present-event combined 0 event))))))
+
+(deftest absent-presentation-entry-falls-back-to-raw-data
+  (let [event (trace/step-limit-event 3 8 [:jolt.sim.value/map []])
+        row (presentation/present-event {} 4 event)]
+    (is (= :jolt.sim.kind/raw-event (:kind row)))
+    (is (= "Raw event run/step-limit" (:summary row)))
+    (is (= event (edn/read-string (:edn row))))))
+
+(deftest malformed-presentation-registry-and-output-fail-closed
+  (let [event (trace/completed-event 0 0 [:jolt.sim.value/map []])
+        bad-key (caught-data
+                 #(presentation/registry
+                   {[:task/transition :site :unnamespaced]
+                    {:kind :acme.kind/x
+                     :present (fn [_] {:summary "x" :fields []})}}))
+        bad-kind (caught-data
+                  #(presentation/registry
+                    {:run/completed
+                     {:kind :unnamespaced
+                      :present (fn [_] {:summary "x" :fields []})}}))
+        bad-output (caught-data
+                    #(presentation/present-event
+                      {:run/completed
+                       {:kind :acme.kind/x
+                        :present (fn [_]
+                                   {:summary "x" :fields :not-a-vector})}}
+                      0 event))]
+    (is (= presentation/invalid-registry (:type bad-key)))
+    (is (= presentation/invalid-registry (:type bad-kind)))
+    (is (= presentation/invalid-presentation (:type bad-output)))))
+
+(deftest report-option-composes-trusted-presentation-overrides
+  (let [doc (trace/document
+             [(trace/initial-event [:jolt.sim.value/map []])
+              (trace/completed-event 0 0 [:jolt.sim.value/map []])])
+        options {:presentation-registry
+                 {:run/completed
+                  {:kind :acme.kind/success
+                   :present (fn [_]
+                              {:summary "Application finished cleanly"
+                               :fields [{:label "Meaning"
+                                         :value :ok}]})}}}
+        vm (report/trace->view-model doc options)
+        row (peek (:events vm))
+        html (report/trace->html doc options)]
+    (is (= :acme.kind/success (:kind row)))
+    (is (= "Application finished cleanly" (:summary row)))
+    (is (string/includes? html "acme.kind/success"))
+    (is (string/includes? html "Application finished cleanly"))
+    (is (string/includes? html "Meaning"))))
+
+(deftest custom-presentation-text-and-values-remain-inert
+  (let [hostile "<script>custom-presenter</script> & [:safe]"
+        doc (trace/document
+             [(trace/initial-event [:jolt.sim.value/map []])
+              (trace/completed-event 0 0 [:jolt.sim.value/map []])])
+        options {:presentation-registry
+                 {:run/completed
+                  {:kind :acme.kind/hostile
+                   :present (fn [_]
+                              {:summary hostile
+                               :fields [{:label hostile
+                                         :value [:safe hostile]}]})}}}
+        html (report/trace->html doc options)]
+    (is (string/includes? html
+                          "&lt;script&gt;custom-presenter&lt;/script&gt;"))
+    (is (string/includes? html "&amp;"))
+    (is (false? (string/includes? html hostile)))
+    (is (false? (string/includes? html "<script>custom-presenter</script>")))))
 
 (deftest event-edn-round-trips
   (let [doc (sample-doc)
@@ -324,6 +528,231 @@
     (is (false? (string/includes? html "<link")))
     (is (false? (string/includes? html "http://")))
     (is (false? (string/includes? html "https://")))))
+
+;; Retained-trace navigation: stable anchors, first/prev/next/last, tag/task/
+;; site/virtual-time groups, and quick terminal/failure/monitor links. Every
+;; target is a same-document fragment so the report stays navigable under a
+;; no-script content security policy (Ripple's bare-sandbox iframe).
+
+(defn- event-anchor-ids [html]
+  (set (map parse-long (map second (re-seq #"id=\"evt-(\d+)\"" html)))))
+
+(defn- event-anchor-hrefs [html]
+  (set (map parse-long (map second (re-seq #"href=\"#evt-(\d+)\"" html)))))
+
+(defn- all-fragment-targets [html]
+  (set (map second (re-seq #"href=\"#([^\"]+)\"" html))))
+
+(defn- all-rendered-ids [html]
+  (set (map second (re-seq #"id=\"([^\"]+)\"" html))))
+
+(deftest trace-index-positions-are-stable-at-boundaries
+  (let [p (trace-index/positions 3)]
+    (is (= 3 (count p)))
+    (is (= ["evt-0" "evt-1" "evt-2"] (mapv :anchor p)))
+    (is (= ["#evt-0" "#evt-1" "#evt-2"] (mapv :href p)))
+    (is (nil? (:prev-href (nth p 0))))
+    (is (= "#evt-1" (:next-href (nth p 0))))
+    (is (nil? (:next-href (nth p 2))))
+    (is (= "#evt-0" (:first-href (nth p 1))))
+    (is (= "#evt-2" (:last-href (nth p 1))))
+    (is (= 0 (:prev-index (nth p 1))))
+    (is (= 2 (:position (nth p 1))))
+    (is (= 3 (:total (nth p 1))))))
+
+(deftest trace-index-monitor-targets-are-sorted-and-distinct
+  (is (= [{:index 0 :href "#evt-0"}]
+         (trace-index/monitor-targets [0 0 nil])))
+  (is (= [{:index 2 :href "#evt-2"} {:index 5 :href "#evt-5"}]
+         (trace-index/monitor-targets [5 nil 2 2]))))
+
+(deftest view-model-event-rows-carry-stable-navigation
+  (let [doc (sample-doc)
+        rows (:events (report/trace->view-model doc))]
+    (is (= 8 (count rows)))
+    (doseq [i (range 8)]
+      (is (= (str "evt-" i) (:anchor (nth rows i))))
+      (is (= (str "#evt-" i) (:href (nth rows i)))))
+    (let [first-row (nth rows 0)
+          last-row (nth rows 7)
+          mid-row (nth rows 3)]
+      (is (nil? (:prev-href (:nav first-row))))
+      (is (= "#evt-1" (:next-href (:nav first-row))))
+      (is (nil? (:next-href (:nav last-row))))
+      (is (= "#evt-6" (:prev-href (:nav last-row))))
+      (is (= "#evt-0" (:first-href (:nav mid-row))))
+      (is (= "#evt-7" (:last-href (:nav mid-row))))
+      (is (= "#evt-2" (:prev-href (:nav mid-row))))
+      (is (= "#evt-4" (:next-href (:nav mid-row))))
+      (is (= 4 (:position (:nav mid-row))))
+      (is (= 8 (:total (:nav mid-row)))))))
+
+(deftest view-model-index-groups-are-deterministic-and-ordered
+  (let [doc (sample-doc)
+        vm1 (report/trace->view-model doc)
+        vm2 (report/trace->view-model doc)]
+    (is (= (:tag-groups vm1) (:tag-groups vm2)))
+    (is (= (:task-groups vm1) (:task-groups vm2)))
+    (is (= (:site-groups vm1) (:site-groups vm2)))
+    (is (= (:time-groups vm1) (:time-groups vm2)))
+    (is (= [":run/completed" ":run/initial" ":schedule/choose" ":task/transition"]
+           (mapv :key-edn (:tag-groups vm1))))
+    (is (= [1 1 3 3] (mapv :count (:tag-groups vm1))))
+    (is (= ["0"] (mapv :key-edn (:task-groups vm1))))
+    (is (= [6] (mapv :count (:task-groups vm1))))
+    (is (= [":countdown" ":finish"] (mapv :key-edn (:site-groups vm1))))
+    (is (= [2 1] (mapv :count (:site-groups vm1))))
+    (is (= ["0"] (mapv :key-edn (:time-groups vm1))))
+    (is (= [7] (mapv :count (:time-groups vm1))))
+    (let [transition-group
+          (some #(when (= ":task/transition" (:key-edn %)) %)
+                (:tag-groups vm1))]
+      (is (= [2 4 6] (mapv :index (:events transition-group))))
+      (is (= ["#evt-2" "#evt-4" "#evt-6"]
+             (mapv :href (:events transition-group)))))))
+
+(deftest time-groups-index-each-virtual-time
+  (let [doc (trace/document
+             [(trace/initial-event [:jolt.sim.value/map []])
+              (trace/choose-event 0 0 [0] 0)
+              (trace/time-event 1 0 5 [0] [:jolt.sim.value/map []])
+              (trace/completed-event 1 5 [:jolt.sim.value/map []])])
+        time-groups (:time-groups (report/trace->view-model doc))]
+    ;; schedule/choose (idx 1) and time/advance (idx 2, indexed at from-time 0)
+    ;; share time 0; run/completed (idx 3) is at time 5.
+    (is (= ["0" "5"] (mapv :key-edn time-groups)))
+    (is (= [2 1] (mapv :count time-groups)))
+    (is (= [1 2] (mapv :index (:events (nth time-groups 0)))))))
+
+(deftest site-groups-keep-colliding-readable-values-distinct
+  (let [bytes-site (trace/canonical-value (byte-array [1]))
+        vector-site (trace/canonical-value [:jolt.sim.value/bytes [1]])
+        events [(trace/transition-event
+                 0 0 0 :yield bytes-site [] nil [:jolt.sim.value/map []])
+                (trace/transition-event
+                 1 0 0 :yield vector-site [] nil [:jolt.sim.value/map []])]
+        groups (trace-index/site-groups events)]
+    (is (= 2 (count groups)))
+    (is (= [1 1] (mapv :count groups)))
+    (is (= 2 (count (set (map :canonical-key-edn groups)))))))
+
+(deftest view-model-quick-targets-pin-terminal-and-failure-events
+  (let [doc (trace/document
+             [(trace/initial-event [:jolt.sim.value/map []])
+              (trace/failed-event 0 0 0
+                                  [:jolt.sim.value/string "boom"]
+                                  [:jolt.sim.value/map []])])
+        vm (report/trace->view-model doc)
+        html (report/trace->html doc)]
+    (is (= [{:index 1 :tag "run/failed" :href "#evt-1"}]
+           (:failure (:quick vm))))
+    ;; :run/failed is itself terminal, so it appears under Terminal too.
+    (is (= [{:index 1 :tag "run/failed" :href "#evt-1"}]
+           (:terminal (:quick vm))))
+    (is (true? (:has-failure (:quick vm))))
+    (is (true? (:has-terminal (:quick vm))))
+    (is (string/includes? html "Failures:"))
+    (is (string/includes? html "run/failed #1"))))
+
+(deftest view-model-quick-targets-omit-empty-sections
+  (let [doc (sample-doc)
+        vm (report/trace->view-model doc)
+        html (report/trace->html doc)]
+    (is (= [{:index 7 :tag "run/completed" :href "#evt-7"}]
+           (:terminal (:quick vm))))
+    (is (= [] (:failure (:quick vm))))
+    (is (false? (:has-failure (:quick vm))))
+    (is (true? (:has-terminal (:quick vm))))
+    (is (false? (:has-monitor-targets (:quick vm))))
+    (is (string/includes? html "Quick navigation"))
+    (is (false? (string/includes? html "Failures:")))
+    (is (false? (string/includes? html "Monitor-flagged")))))
+
+(deftest view-model-monitor-targets-dedupe-and-drop-nil-indices
+  (let [doc (sample-doc)
+        decisions [{:id :a :status :pass :detail nil :index nil}
+                   {:id :b :status :violation :detail {:at 2} :index 2}
+                   {:id :c :status :violation :detail {:at 2} :index 2}
+                   {:id :d :status :violation :detail {:at 5} :index 5}]
+        vm (report/trace->view-model doc {:monitors decisions})]
+    (is (= [{:index 2 :href "#evt-2"} {:index 5 :href "#evt-5"}]
+           (:monitor-targets (:quick vm))))
+    (is (true? (:has-monitor-targets (:quick vm))))))
+
+(deftest view-model-handles-a-minimal-single-event-trace
+  (let [doc (trace/document [(trace/initial-event [:jolt.sim.value/map []])])
+        vm (report/trace->view-model doc)
+        html (report/trace->html doc)
+        row (first (:events vm))]
+    (is (= 1 (:event-count vm)))
+    (is (true? (:has-nav vm)))
+    (is (true? (:has-tag-groups vm)))
+    (is (false? (:has-task-groups vm)))
+    (is (false? (:has-site-groups vm)))
+    (is (false? (:has-time-groups vm)))
+    (is (false? (:has-terminal (:quick vm))))
+    (is (false? (:has-failure (:quick vm))))
+    (is (false? (get-in vm [:nav :has-multiple])))
+    ;; first == last == self; no prev/next target is invented.
+    (is (= "#evt-0" (get-in vm [:nav :first :href])))
+    (is (= "#evt-0" (get-in vm [:nav :last :href])))
+    (is (nil? (:prev-href (:nav row))))
+    (is (nil? (:next-href (:nav row))))
+    ;; the trace index renders by-tag only; empty indexes are simply absent.
+    (is (string/includes? html "Trace index"))
+    (is (string/includes? html "By tag"))
+    (is (false? (string/includes? html "By task")))
+    (is (false? (string/includes? html "By site")))))
+
+(deftest navigation-renders-byte-identically
+  (let [doc (sample-doc)
+        options {:monitors [{:id :g :status :pass :detail nil :index 2}]}
+        html1 (report/trace->html doc options)
+        html2 (report/trace->html doc options)]
+    (is (= html1 html2))
+    (is (string/includes? html1 "Quick navigation"))
+    (is (string/includes? html1 "Monitor-flagged"))))
+
+(deftest index-escapes-hostile-site-strings
+  (let [hostile "<script>site</script>"
+        doc (trace/document
+             [(trace/initial-event [:jolt.sim.value/map []])
+              (trace/transition-event 0 0 0 :yield
+                                       (trace/canonical-value hostile)
+                                       [] nil [:jolt.sim.value/map []])
+              (trace/completed-event 0 0 [:jolt.sim.value/map []])])
+        html (report/trace->html doc)]
+    (is (string/includes? html "By site"))
+    (is (string/includes? html "&lt;script&gt;site&lt;/script&gt;"))
+    (is (false? (string/includes? html hostile)))
+    ;; hostile text cannot spoof an anchor id or href attribute.
+    (is (string/includes? html "id=\"evt-1\""))
+    (is (string/includes? html "href=\"#evt-1\""))))
+
+(deftest every-event-anchor-forms-a-complete-in-range-set
+  (let [doc (sample-doc)
+        n (count (:jolt.sim.trace/events doc))
+        html (report/trace->html doc)
+        ids (event-anchor-ids html)
+        hrefs (event-anchor-hrefs html)]
+    (is (= (set (range n)) ids))
+    (is (every? #(< % n) hrefs))
+    (is (every? #(contains? ids %) hrefs))))
+
+(deftest every-navigation-href-resolves-to-a-rendered-anchor
+  (let [html (report/trace->html (sample-doc))
+        ids (all-rendered-ids html)
+        targets (all-fragment-targets html)]
+    (is (contains? ids "nav"))
+    (is (contains? ids "idx-tag"))
+    (is (contains? ids "idx-task"))
+    (is (contains? ids "idx-site"))
+    (is (contains? ids "idx-time"))
+    (is (contains? ids "evt-0"))
+    (is (contains? ids "evt-7"))
+    (is (every? #(contains? ids %) targets))
+    ;; the report carries no script-driven navigation and no off-document href.
+    (is (false? (string/includes? html "href=\"http")))))
 
 ;; -main entry point
 

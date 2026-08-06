@@ -15,7 +15,7 @@ and simulated worlds belong here.
 ## Development baseline and CI
 
 Current development targets `casselc/jolt` commit
-`9fc64f93eba8b56a319f91bb1a322e2efced9c70`, based on upstream Jolt 0.5.20,
+`3bbf067324507dd41b684ba1831ce4451afb86fb`, based on upstream Jolt 0.6.4,
 with Chez Scheme 10.4.1. The full suite requires the special Jolt simulation
 image from that commit; an ordinary Jolt image can run only the controller-free
 portion of the suite.
@@ -227,10 +227,13 @@ new `:spawn`/`:start` events fail closed. Body exceptions are rethrown unchanged
 only after drainage and restoration succeed.
 
 Every controlled run installs one composite controller covering FFI and clock
-interception. Exact nested descriptor version 6 requires Boolean
+interception. Exact nested descriptor version 8 requires Boolean
 `:capture-native-error?` and an exact `:varargs-after` boundary on foreign
-calls and admits all 16 current native operations, including scoped
-`:borrow-byte-array`/`:release-byte-array` and the mutating `:read-array!`.
+calls and admits all 15 current native operations, including the `:null?`
+predicate and the mutating `:read-array!`. Scoped byte-array loans are a
+runtime-owned lifecycle: no borrow or release operation crosses the
+controller boundary, and only the read, write, and foreign-call operations
+enclosed in a loan scope are intercepted.
 A foreign argument type is a primitive keyword only: recursive by-value
 aggregate argument types are not accepted, because current Jolt scalar
 metadata is exact. Variadic calls are instead identified by `:varargs-after`:
@@ -294,26 +297,23 @@ Hybrid handler functions must classify results explicitly with
 explicit nil substitution. `substitute` is
 an assertion that the result is a non-resource scalar/value; known non-null
 pointer results (`alloc`, `string->ptr`, pointer-typed `read`, and foreign
-`:pointer`/`:void*` results) reject that classification. A handled
-`borrow-byte-array` is stricter: it must return a positive `modeled-resource`,
-because core requires a usable borrowed pointer and cannot accept a null
-substitution.
+`:pointer`/`:void*` results) reject that classification.
 Integer handles returned under
 generic scalar types such as `:int`/`:uptr` cannot be identified from ABI types
 alone, so their handler packs must use `modeled-resource`. The latter marks
 a non-negative numeric pointer, descriptor, or handle as model-owned. Its
-optional positive span covers a half-open interval; `alloc` and
-`borrow-byte-array` infer their span from the intercepted arguments when it is
-omitted. Before a hybrid miss can proceed, the adapter truncates numeric
+optional positive span covers a half-open interval; `alloc` infers its span
+from the intercepted arguments when it is omitted.
+Before a hybrid miss can proceed, the adapter truncates numeric
 arguments with the same toward-zero rule as core and rejects any result inside
 a model-owned interval. A resource's domain determines which argument
 positions are checked: a `:pointer`-domain resource -- one whose descriptor
 identifies it as returning a live pointer
-(`alloc`, `borrow-byte-array`, `string->ptr`, a pointer-typed `read`, or a
+(`alloc`, `string->ptr`, a pointer-typed `read`, or a
 foreign call with a `:pointer`/`:void*` return type) -- is checked only at its
 exact pointer-bearing argument positions for that call (derived from
 `:argument-types` for a foreign call, or a fixed per-operation table for the
-16 native operations, including `write`'s value slot when its type is
+15 native operations, including `write`'s value slot when its type is
 `:pointer`/`:void*`/`:iptr`/`:uptr`), so an ordinary scalar argument -- a
 length, size, or status code -- that numerically coincides with a live fake
 pointer does not block an unrelated call. An `:opaque`-domain resource -- a
@@ -380,11 +380,14 @@ regression is isolated from the reusable test session:
 /path/to/current-sim/target/sim/jolt -M:runtime-poison-test
 ```
 
-Descriptor-version 6 retains the scoped byte-array pointer loan and adds the
-mutating `:read-array!`. Its dedicated
-custom-image gate runs one ordinary `jolt.ffi` fixture first against real native
-memory and then unchanged against the deterministic memory handlers, including
-nested native access and exception cleanup:
+Descriptor-version 7 removes the loan operations from the controller
+boundary: `with-byte-array-pointer`'s scoped byte-array loan lifecycle is
+runtime-owned, and only the read/write operations enclosed in the loan scope
+are intercepted. Its dedicated custom-image gate runs one ordinary `jolt.ffi`
+fixture against real native memory, under observe routing, and through
+explicit hybrid native selection, and proves the deterministic memory
+handlers fail closed on the runtime-owned loan pointer rather than recreating
+a loan:
 
 ```sh
 /path/to/current-sim/target/sim/jolt -M:ffi-pointer-loan-test
@@ -712,16 +715,17 @@ path is independent of history length.
 
 ### Deterministic native memory
 
-`jolt.sim.ffi-memory` supplies handlers for all 16 operations in the current
-descriptor-version 6 FFI contract. Owned allocations use aligned fake addresses
+`jolt.sim.ffi-memory` supplies handlers for all 15 operations in the current
+descriptor-version 8 FFI contract. Owned allocations use aligned fake addresses
 backed by immutable byte vectors, so an intercepted pointer can never reach
 Chez or the operating system. `:read-array!` copies modeled bytes directly into
 the caller's live destination byte array, mirroring the same fail-closed
-lifetime/bounds checks as `:read-array`/`:write-array`. A staged
-`:borrow-byte-array`/`:release-byte-array` pair
-instead aliases a validated live Jolt byte-array window for exactly one
-`with-byte-array-pointer` callback; modeled native and ordinary array
-mutations remain mutually visible, and access after release fails closed. The
+lifetime/bounds checks as `:read-array`/`:write-array`. `:null?` answers the
+exact core predicate: a numeric argument truncates toward zero to an exact
+integer, and only that exact zero is null. Scoped byte-array loans remain a
+runtime-owned lifecycle outside this world: it never sees a borrow or release
+operation, and a real runtime-owned loan pointer fails closed as an unknown
+pointer rather than being aliased into the model. The
 default world is deterministic LP64 little-endian; `:pointer-size`,
 `:long-size`, `:byte-order`, `:base-address`, `:alignment`, and the set of
 available library names are explicit configuration.
@@ -746,8 +750,8 @@ The application body remains ordinary Jolt code:
 `jolt.sim.fixtures.ffi-roundtrip` is executed unchanged against both real
 native memory and this world.
 
-`jolt.sim.ffi-memory/hybrid-handlers` returns the same 16 keys pre-classified
-for `run-controlled`'s `:hybrid` `:ffi-mode`: `alloc`, `borrow-byte-array`,
+`jolt.sim.ffi-memory/hybrid-handlers` returns the same 15 keys pre-classified
+for `run-controlled`'s `:hybrid` `:ffi-mode`: `alloc`,
 `string->ptr`, and a positive pointer-typed `read` each become a
 `modeled-resource` spanning their exact live allocation; every other result is
 a `substitute`.

@@ -2,6 +2,7 @@
   "use strict";
 
   const file = document.getElementById("case-file");
+  const kind = document.getElementById("kind");
   const capability = document.getElementById("capability");
   const inspect = document.getElementById("inspect");
   const replay = document.getElementById("replay");
@@ -73,11 +74,17 @@
   };
 
   const updateButtons = () => {
-    const ready = typeof documentText === "string" && capability.value.length > 0;
+    // The document kind is always chosen explicitly; the server never guesses
+    // a schema from the uploaded bytes. Replay is a Case/Outcome-only path,
+    // so a declared trace kind keeps the replay button disabled.
+    const ready = typeof documentText === "string" &&
+                  kind.value.length > 0 &&
+                  capability.value.length > 0;
     file.disabled = busy;
+    kind.disabled = busy;
     capability.disabled = busy;
     inspect.disabled = busy || !ready;
-    replay.disabled = busy || !ready;
+    replay.disabled = busy || !ready || kind.value !== "case-outcome";
   };
 
   const request = async (path) => {
@@ -85,7 +92,8 @@
       method: "POST",
       headers: {
         "Content-Type": "application/edn",
-        "X-Jolt-Sim-Capability": capability.value
+        "X-Jolt-Sim-Capability": capability.value,
+        "X-Jolt-Sim-Document-Kind": kind.value
       },
       body: documentText,
       cache: "no-store",
@@ -118,6 +126,7 @@
   });
 
   capability.addEventListener("input", updateButtons);
+  kind.addEventListener("change", updateButtons);
 
   inspect.addEventListener("click", async () => {
     if (busy) return;
