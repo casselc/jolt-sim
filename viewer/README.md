@@ -153,6 +153,43 @@ record, and requires the same worker's normal Case/Outcome completion. The
 default fixture and scenario path supply no observer and remain unchanged; the
 viewer does not reimplement HTTP, SQLite, TCP, bencode, or application logic.
 
+When trusted startup configuration also enables `:activity-journal?` and
+completed-artifact retention, the terminal progress response pages the same
+append-only semantic activity retained by the process supervisor. Ripple
+renders at most 32 events per explicit page with their sequence, registered
+kind, summary, EDN-valued fields, and complete canonical event EDN. **Next** and
+**Previous** use the server-issued cursor; the browser validates the requested
+cursor, response body, and continuation header together and discards a delayed
+page after a new document or replay resets the generation. A presentation that
+exceeds the response bound can be skipped using its advancing continuation
+without changing the authoritative replay outcome.
+
+The semantic page comes from the public immutable `jolt.sim.activity-view`
+model. The HTTP handler and browser are consumers: a REPL, `datafy`/`nav`,
+`tap>`, static report, Glimmer client, or other UI can use the same page and
+application-owned kind registry without extracting logic from Ripple. The
+server retains `:artifact-dir` only as its private read coordinate; neither the
+replay response nor activity JSON discloses the host path.
+
+[![Ripple retained semantic activity page](docs/ripple-retained-activity.png)](docs/ripple-retained-activity.png)
+
+The Playwright acceptance gate uploads a checked-in Case/Outcome through the
+real handler, writes a real 40-record journal, proves pages `0..31` and
+`32..39` in both directions without gaps or duplicates, rejects a mismatched
+coordinate, follows an oversized-page continuation, suppresses a delayed stale
+response, and checks every API exchange and the DOM for private path leakage:
+
+```sh
+cd viewer
+JOLT_SIM_BIN=/absolute/path/to/sim/jolt npm ci
+npx playwright install chromium
+npm run test:browser
+```
+
+Successful screenshots and failure-only trace/video/screenshots are written
+under `target/ripple-playwright`; hosted CI uploads that directory even when a
+later application or Hegel gate fails.
+
 ### In-process session stepping adapter
 
 `jolt.sim.session-view` is a UI-neutral, in-process adapter over one

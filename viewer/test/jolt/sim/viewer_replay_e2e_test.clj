@@ -110,6 +110,7 @@
         journal (str artifact-root "/viewer-replay-progress.edn")
         server* (atom nil)
         primary* (atom nil)
+        trusted-outcome* (atom nil)
         replay-outcome* (atom nil)
         replay-service-finished (promise)
         gate-id (str (System/nanoTime))
@@ -154,6 +155,7 @@
                   (append-phase-best-effort! journal
                                              {:phase :replay-delegated})
                   (let [outcome (sim-repl/replay-document! document runtime)]
+                    (reset! trusted-outcome* outcome)
                     (append-phase-best-effort!
                      journal
                      {:phase :replay-service-returned
@@ -234,6 +236,7 @@
             raw (:raw replay-result)
             body (response-body raw)
             outcome (edn/read-string body)
+            trusted-outcome @trusted-outcome*
             terminal-progress-raw
             (viewer-test/request-over-loopback!
              port "GET" "/api/replay-progress"
@@ -246,15 +249,18 @@
          {:phase :replay-returned
           :status (:status outcome)
           :exit (:exit outcome)
-          :artifact-dir (:artifact-dir outcome)})
+          :artifact-dir (:artifact-dir trusted-outcome)})
         (append-phase-best-effort!
          journal
          {:phase :terminal-progress-observed :body terminal-progress-body})
         (is (string/starts-with? raw "HTTP/1.1 200"))
         (is (= :completed (:status outcome)))
         (is (= 0 (:exit outcome)))
-        (is (and (string? (:artifact-dir outcome))
-                 (not (string/blank? (:artifact-dir outcome)))))
+        (is (not (contains? outcome :artifact-dir))
+            "the browser response must not disclose its host artifact path")
+        (is (and (string? (:artifact-dir trusted-outcome))
+                 (not (string/blank? (:artifact-dir trusted-outcome))))
+            "the trusted replay service retains the forensic coordinate")
         (is (= true (get-in outcome
                             [:result :application :marking :changed?])))
         (is (= 27 (get-in outcome [:result :sqlite :plan-index])))
@@ -262,7 +268,7 @@
                (get-in outcome [:result :clean?])))
         (is (string/starts-with? terminal-progress-raw "HTTP/1.1 200"))
         (is (string/includes? terminal-progress-body "\"status\":\"completed\""))
-        (is (fs/exists? (:artifact-dir outcome))))
+        (is (fs/exists? (:artifact-dir trusted-outcome))))
       (catch :default error
         (reset! primary* error)
         ;; Error data can carry host objects outside the canonical trace
@@ -344,7 +350,8 @@
                        "JOLT_SIM_VIEWER_ARTIFACT_DIR")
         journal (str artifact-root "/viewer-replay-progress.edn")
         server* (atom nil)
-        primary* (atom nil)]
+        primary* (atom nil)
+        trusted-outcome* (atom nil)]
     (append-phase-best-effort! journal {:phase :webhook-started})
     (try
       (let [bin (required-environment "JOLT_SIM_BIN")
@@ -367,7 +374,11 @@
                :retain-completed-artifacts? true}}
              {:render-trace report/trace->html
               :render-case-outcome report/case-outcome->html
-              :replay-document sim-repl/replay-document!})
+              :replay-document
+              (fn [document runtime]
+                (let [outcome (sim-repl/replay-document! document runtime)]
+                  (reset! trusted-outcome* outcome)
+                  outcome))})
             _ (reset! server* server)
             port (:port server)
             _ (append-phase-best-effort! journal
@@ -391,13 +402,14 @@
              encoded
              120000)
             replay-body (response-body replay-raw)
-            outcome (edn/read-string replay-body)]
+            outcome (edn/read-string replay-body)
+            trusted-outcome @trusted-outcome*]
         (append-phase-best-effort!
          journal
          {:phase :webhook-replay-returned
           :status (:status outcome)
           :exit (:exit outcome)
-          :artifact-dir (:artifact-dir outcome)})
+          :artifact-dir (:artifact-dir trusted-outcome)})
         (is (string/starts-with? render-raw "HTTP/1.1 200"))
         (is (string/includes? render-body
                               "jolt.sim.fixtures.outbox-http-webhook-scenarios/exercise")
@@ -417,9 +429,12 @@
         (is (= {:memory true :sqlite true :posix true}
                (get-in outcome [:result :clean?]))
             "the webhook world must release memory, sqlite, and posix cleanly")
-        (is (and (string? (:artifact-dir outcome))
-                 (not (string/blank? (:artifact-dir outcome)))))
-        (is (fs/exists? (:artifact-dir outcome))
+        (is (not (contains? outcome :artifact-dir))
+            "the browser response must not disclose its host artifact path")
+        (is (and (string? (:artifact-dir trusted-outcome))
+                 (not (string/blank? (:artifact-dir trusted-outcome))))
+            "the trusted replay service retains the forensic coordinate")
+        (is (fs/exists? (:artifact-dir trusted-outcome))
             "completed webhook artifacts must be retained under the artifact root"))
       (catch :default error
         (reset! primary* error)

@@ -23,6 +23,16 @@
     #session-choices { list-style: none; margin: .5rem 0 0; padding: 0; display: grid; gap: .4rem; }
     #session-choices button { width: 100%; text-align: left; }
     #session-step-retry-row { margin: .5rem 0 0; }
+    #activity-panel { border: 1px solid #8886; border-radius: .3rem; padding: .7rem .9rem; }
+    #activity-page-controls { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; }
+    #activity-events { list-style: none; margin: .8rem 0 0; padding: 0; display: grid; gap: .65rem; }
+    .activity-event { border-left: .3rem solid #678; background: #8881; padding: .55rem .7rem; }
+    .activity-event header { border: 0; padding: 0; display: flex; gap: .5rem; align-items: baseline; flex-wrap: wrap; }
+    .activity-event-kind { font-family: ui-monospace, monospace; font-size: .85rem; opacity: .8; }
+    .activity-event-fields { margin: .4rem 0; display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: .2rem .7rem; }
+    .activity-event-fields dt { font-weight: 600; }
+    .activity-event-fields dd { margin: 0; font-family: ui-monospace, monospace; overflow-wrap: anywhere; }
+    .activity-event details code { display: block; margin-top: .35rem; white-space: pre-wrap; overflow-wrap: anywhere; }
     @media (max-width: 700px) { .controls { grid-template-columns: 1fr; } }
   </style>
 </head>
@@ -77,6 +87,16 @@
     <iframe id="report" sandbox="allow-same-origin" title="Validated jolt-sim document report"></iframe>
     <h2>Replay activity</h2>
     <pre id="activity" role="status" aria-live="polite">Idle.</pre>
+    <section id="activity-panel" aria-labelledby="activity-events-heading" hidden>
+      <h3 id="activity-events-heading">Retained semantic events</h3>
+      <div id="activity-page-controls">
+        <button id="activity-previous" data-testid="activity-previous" type="button" disabled>Previous</button>
+        <button id="activity-next" data-testid="activity-next" type="button" disabled>Next</button>
+        <span id="activity-page-status" data-testid="activity-page-status" role="status" aria-live="polite">No retained activity page.</span>
+      </div>
+      <ol id="activity-events"></ol>
+      <p id="activity-recovery" class="muted"></p>
+    </section>
     <h2>Fresh replay outcome</h2>
     <pre id="outcome">No replay has run.</pre>
   </main>

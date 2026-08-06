@@ -523,6 +523,12 @@ The first useful workbench includes:
 - trusted per-event, per-connection, and per-domain presentation registries;
 - static HTML generated from the same view models.
 
+The durable REPL, prepl-compatible evaluation stream, remote Session adapter,
+and canonical Ripple-in-Ripple acceptance scenario are specified separately in
+[`RIPPLE-REPL-DEBUGGER-INTEGRATION.md`](RIPPLE-REPL-DEBUGGER-INTEGRATION.md).
+They reuse these view models and command receipts; they do not create another
+scheduler or make arbitrary nREPL evaluation the simulation command protocol.
+
 Any command that changes execution is authenticated, append-only,
 revision-scoped, acknowledged exactly once, and applied at a declared boundary.
 Rewind creates a fresh session from initial configuration plus a retained path

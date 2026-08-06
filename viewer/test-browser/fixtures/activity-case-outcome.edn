@@ -1,0 +1,1 @@
+{:jolt.sim.case-outcome/case {:scenario jolt.sim.browser-test/activity-scenario, :mode :hermetic, :input [:jolt.sim.value/map []], :schedule nil}, :jolt.sim.case-outcome/monitors [], :jolt.sim.case-outcome/outcome {:status :completed, :value [:jolt.sim.value/map []], :exit 0}, :jolt.sim.case-outcome/version 1}

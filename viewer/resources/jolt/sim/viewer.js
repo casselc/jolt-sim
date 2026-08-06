@@ -9,6 +9,12 @@
   const status = document.getElementById("status");
   const report = document.getElementById("report");
   const activity = document.getElementById("activity");
+  const activityPanel = document.getElementById("activity-panel");
+  const activityEvents = document.getElementById("activity-events");
+  const activityPrevious = document.getElementById("activity-previous");
+  const activityNext = document.getElementById("activity-next");
+  const activityPageStatus = document.getElementById("activity-page-status");
+  const activityRecovery = document.getElementById("activity-recovery");
   const outcome = document.getElementById("outcome");
   const sessionRefresh = document.getElementById("session-refresh");
   const sessionReset = document.getElementById("session-reset");
@@ -28,6 +34,11 @@
   // unrecognized response): the exact serialized request bytes, so Retry
   // can resend byte-identical and never synthesize a new coordinate.
   let pendingRetry = null;
+  let activityCursors = ["0"];
+  let activityPageIndex = 0;
+  let activityPage = null;
+  let activityGeneration = 0;
+  let activityNavigationBusy = false;
 
   const canonicalUnsignedDecimal = (value) =>
     typeof value === "string" && /^(0|[1-9][0-9]*)$/.test(value);
@@ -278,7 +289,173 @@
     enhanceExperimentReport();
   };
 
-  const renderProgress = (progress) => {
+  const validActivityEvent = (event) =>
+    exactKeys(event, ["sequence", "tag", "kind", "summary", "fields", "edn"]) &&
+    Number.isSafeInteger(event.sequence) && event.sequence >= 0 &&
+    typeof event.tag === "string" && typeof event.kind === "string" &&
+    typeof event.summary === "string" && typeof event.edn === "string" &&
+    Array.isArray(event.fields) && event.fields.every((field) =>
+      exactKeys(field, ["label", "valueEdn"]) &&
+      typeof field.label === "string" && typeof field.valueEdn === "string");
+
+  const validNonnegativeInteger = (value) =>
+    Number.isSafeInteger(value) && value >= 0;
+
+  const validActivityRecovery = (recovery) =>
+    exactKeys(recovery, ["status", "reason", "sequence", "lastGoodOffset",
+      "rawTailBytes", "imageTruncated", "class"]) &&
+    ["complete", "partial", "failed"].includes(recovery.status) &&
+    (recovery.reason === null || typeof recovery.reason === "string") &&
+    validNonnegativeInteger(recovery.sequence) && recovery.sequence <= 256 &&
+    validNonnegativeInteger(recovery.lastGoodOffset) &&
+    validNonnegativeInteger(recovery.rawTailBytes) &&
+    typeof recovery.imageTruncated === "boolean" &&
+    (recovery.class === null || typeof recovery.class === "string");
+
+  const validActivityObserver = (observer) => {
+    if (observer === null) return true;
+    if (!exactKeys(observer, ["health", "failure", "sequence", "accepted",
+      "capped", "durability", "closed"]) ||
+        !["healthy", "failed"].includes(observer.health) ||
+        !validNonnegativeInteger(observer.sequence) || observer.sequence > 256 ||
+        !validNonnegativeInteger(observer.accepted) ||
+        observer.accepted > observer.sequence ||
+        typeof observer.capped !== "boolean" ||
+        observer.durability !== "process-crash" ||
+        typeof observer.closed !== "boolean") return false;
+    if (observer.health === "healthy") return observer.failure === null;
+    const failure = observer.failure;
+    const allowedFailureKeys = new Set(["phase", "reason", "class",
+      "payload-length", "max-payload", "count", "remaining",
+      "consecutive-eintrs", "max-eintr-retries"]);
+    return failure && typeof failure === "object" && !Array.isArray(failure) &&
+      Object.keys(failure).length > 0 &&
+      Object.keys(failure).every((key) => allowedFailureKeys.has(key)) &&
+      typeof failure.phase === "string" && typeof failure.reason === "string" &&
+      Object.entries(failure).every(([key, value]) =>
+        key === "phase" || key === "reason" || key === "class"
+          ? typeof value === "string"
+          : validNonnegativeInteger(value));
+  };
+
+  const validActivityPage = (page, requestedCursor, nextCursorHeader) => {
+    if (!page || page.version !== 1 || typeof page.status !== "string") return false;
+    if (!canonicalUnsignedDecimal(requestedCursor) ||
+        !canonicalUnsignedDecimal(nextCursorHeader) ||
+        Number(requestedCursor) !== page.cursor ||
+        Number(nextCursorHeader) !== page.nextCursor) return false;
+    if (page.status === "unavailable") {
+      return exactKeys(page, ["version", "status", "reason", "cursor", "nextCursor"]) &&
+        typeof page.reason === "string" && validNonnegativeInteger(page.cursor) &&
+        page.nextCursor === page.cursor;
+    }
+    if (page.status === "too-large") {
+      return exactKeys(page, ["version", "status", "limit", "actual", "cursor", "nextCursor"]) &&
+        validNonnegativeInteger(page.limit) && validNonnegativeInteger(page.actual) &&
+        validNonnegativeInteger(page.cursor) && validNonnegativeInteger(page.nextCursor) &&
+        page.actual > page.limit && page.nextCursor > page.cursor;
+    }
+    return page.status === "ok" &&
+      exactKeys(page, ["version", "status", "cursor", "nextCursor", "acceptedCount",
+        "remaining", "events", "recovery", "observer"]) &&
+      [page.cursor, page.nextCursor, page.acceptedCount].every(validNonnegativeInteger) &&
+      page.cursor <= page.nextCursor && page.nextCursor <= page.acceptedCount &&
+      typeof page.remaining === "boolean" && Array.isArray(page.events) &&
+      page.events.every((event, index) =>
+        validActivityEvent(event) && event.sequence === page.cursor + index) &&
+      page.nextCursor === page.cursor + page.events.length &&
+      page.remaining === (page.nextCursor < page.acceptedCount) &&
+      validActivityRecovery(page.recovery) &&
+      page.recovery.sequence === page.acceptedCount &&
+      validActivityObserver(page.observer);
+  };
+
+  const activityCanAdvance = () => activityPage &&
+    ((activityPage.status === "ok" && activityPage.remaining &&
+      activityPage.nextCursor > activityPage.cursor) ||
+     (activityPage.status === "too-large" &&
+      activityPage.nextCursor > activityPage.cursor));
+
+  const syncActivityPageButtons = () => {
+    activityPrevious.disabled = activityNavigationBusy || activityPageIndex === 0;
+    activityNext.disabled = activityNavigationBusy || !activityCanAdvance();
+  };
+
+  const resetActivityPages = () => {
+    activityGeneration += 1;
+    activityNavigationBusy = false;
+    activityCursors = ["0"];
+    activityPageIndex = 0;
+    activityPage = null;
+    activityPanel.hidden = true;
+    activityEvents.textContent = "";
+    activityRecovery.textContent = "";
+    activityPageStatus.textContent = "No retained activity page.";
+    syncActivityPageButtons();
+  };
+
+  const renderActivityPage = (page) => {
+    activityPage = page;
+    activityPanel.hidden = false;
+    activityEvents.textContent = "";
+    if (page.status !== "ok") {
+      activityPageStatus.textContent = `Activity page ${page.cursor} is ${page.status}: ${page.reason || "response too large"}.`;
+      activityRecovery.textContent = "The replay outcome remains authoritative; retained activity is unavailable for this page.";
+      syncActivityPageButtons();
+      return;
+    }
+    page.events.forEach((event) => {
+      const item = document.createElement("li");
+      item.className = "activity-event";
+      item.dataset.testid = "activity-row";
+      item.dataset.sequence = String(event.sequence);
+      item.dataset.kind = event.kind;
+      const header = document.createElement("header");
+      const sequence = document.createElement("strong");
+      sequence.textContent = `#${event.sequence}`;
+      const summary = document.createElement("span");
+      summary.textContent = event.summary;
+      const kindName = document.createElement("span");
+      kindName.className = "activity-event-kind";
+      kindName.textContent = event.kind;
+      header.append(sequence, summary, kindName);
+      item.appendChild(header);
+      if (event.fields.length > 0) {
+        const fields = document.createElement("dl");
+        fields.className = "activity-event-fields";
+        event.fields.forEach((field) => {
+          const label = document.createElement("dt");
+          label.textContent = field.label;
+          const value = document.createElement("dd");
+          value.textContent = field.valueEdn;
+          fields.append(label, value);
+        });
+        item.appendChild(fields);
+      }
+      const details = document.createElement("details");
+      const detailsLabel = document.createElement("summary");
+      detailsLabel.textContent = "Raw canonical EDN";
+      const raw = document.createElement("code");
+      raw.textContent = event.edn;
+      details.append(detailsLabel, raw);
+      item.appendChild(details);
+      activityEvents.appendChild(item);
+    });
+    const first = page.events.length > 0 ? page.events[0].sequence : page.cursor;
+    const last = page.events.length > 0
+      ? page.events[page.events.length - 1].sequence
+      : page.cursor;
+    activityPageStatus.textContent = page.events.length > 0
+      ? `Showing events ${first}–${last} of ${page.acceptedCount}.`
+      : `No events at cursor ${page.cursor}; ${page.acceptedCount} accepted.`;
+    const recovery = page.recovery;
+    activityRecovery.textContent =
+      `Recovery ${recovery.status}; observer ${page.observer ? page.observer.health : "not reported"}.`;
+    syncActivityPageButtons();
+  };
+
+  const renderProgress = (progress, requestedCursor = null,
+                          nextCursorHeader = null) => {
     const stdoutText = (progress.stdout && progress.stdout.text) || "";
     const stderrText = (progress.stderr && progress.stderr.text) || "";
     const lines = [`status: ${progress.status}`];
@@ -286,6 +463,18 @@
       lines.push("", "--- stdout ---", stdoutText, "", "--- stderr ---", stderrText);
     }
     activity.textContent = lines.join("\n");
+    if (Object.prototype.hasOwnProperty.call(progress, "activity")) {
+      if (!validActivityPage(progress.activity, requestedCursor,
+                             nextCursorHeader)) {
+        activityPanel.hidden = false;
+        activityEvents.textContent = "";
+        activityPageStatus.textContent = "Rejected malformed retained activity response.";
+        activityPage = null;
+        syncActivityPageButtons();
+      } else {
+        renderActivityPage(progress.activity);
+      }
+    }
   };
 
   const activeProgressStatus = (value) =>
@@ -304,20 +493,82 @@
     }
   };
 
-  const pollProgressOnce = async (generation, authoritative = false) => {
+  const pollProgressOnce = async (generation, authoritative = false,
+                                  cursor = activityCursors[activityPageIndex]) => {
     const response = await fetch("/api/replay-progress", {
       method: "GET",
-      headers: { "X-Jolt-Sim-Capability": capability.value },
+      headers: {
+        "X-Jolt-Sim-Capability": capability.value,
+        "X-Jolt-Sim-Activity-Cursor": cursor
+      },
       cache: "no-store",
       credentials: "omit"
     });
     if (!response.ok) return;
     const progress = await response.json();
+    const nextCursorHeader = response.headers.get(
+      "X-Jolt-Sim-Activity-Next-Cursor");
     if (generation === pollGeneration &&
         (authoritative || activeProgressStatus(progress.status))) {
-      renderProgress(progress);
+      renderProgress(progress, cursor, nextCursorHeader);
     }
   };
+
+  const loadActivityPage = async (index, cursor) => {
+    if (busy || activityNavigationBusy) return;
+    const generation = activityGeneration;
+    activityNavigationBusy = true;
+    syncActivityPageButtons();
+    try {
+      const response = await fetch("/api/replay-progress", {
+        method: "GET",
+        headers: {
+          "X-Jolt-Sim-Capability": capability.value,
+          "X-Jolt-Sim-Activity-Cursor": cursor
+        },
+        cache: "no-store",
+        credentials: "omit"
+      });
+      if (!response.ok) throw new Error(`${response.status} activity page rejected`);
+      const progress = await response.json();
+      const nextCursorHeader = response.headers.get(
+        "X-Jolt-Sim-Activity-Next-Cursor");
+      if (!progress.activity ||
+          !validActivityPage(progress.activity, cursor, nextCursorHeader)) {
+        throw new Error("malformed retained activity response");
+      }
+      if (generation !== activityGeneration) return;
+      activityPageIndex = index;
+      renderProgress(progress, cursor, nextCursorHeader);
+    } finally {
+      if (generation === activityGeneration) {
+        activityNavigationBusy = false;
+        syncActivityPageButtons();
+      }
+    }
+  };
+
+  activityPrevious.addEventListener("click", async () => {
+    if (activityPageIndex === 0) return;
+    try {
+      await loadActivityPage(activityPageIndex - 1, activityCursors[activityPageIndex - 1]);
+    } catch (error) {
+      activityPageStatus.textContent = `Could not load previous activity page: ${error.message}`;
+    }
+  });
+
+  activityNext.addEventListener("click", async () => {
+    if (!activityCanAdvance()) return;
+    const nextCursor = String(activityPage.nextCursor);
+    const nextIndex = activityPageIndex + 1;
+    activityCursors[nextIndex] = nextCursor;
+    activityCursors.length = nextIndex + 1;
+    try {
+      await loadActivityPage(nextIndex, nextCursor);
+    } catch (error) {
+      activityPageStatus.textContent = `Could not load next activity page: ${error.message}`;
+    }
+  });
 
   const startPolling = () => {
     if (polling) return;
@@ -411,6 +662,7 @@
     outcome.textContent = "No replay has run.";
     stopPolling();
     activity.textContent = "Idle.";
+    resetActivityPages();
     const selected = file.files && file.files[0];
     if (!selected) {
       status.textContent = "";
@@ -628,6 +880,7 @@
     updateButtons();
     status.textContent = "Running one fresh-process replay...";
     activity.textContent = "status: starting";
+    resetActivityPages();
     // Initiate the authoritative replay POST before polling. Non-final polls
     // additionally ignore idle/terminal snapshots, since separate HTTP
     // connections do not guarantee server arrival order.

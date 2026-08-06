@@ -636,6 +636,14 @@
 (defn- outcome->progress-status [outcome]
   (if (= :completed (:status outcome)) :completed :failed))
 
+(defn- public-replay-outcome
+  "Removes the server-private retained-artifact coordinate from the replay
+  response. The complete outcome remains in `active-replay` for trusted
+  terminal activity paging; browser clients receive all other forensic
+  evidence without learning a host filesystem path."
+  [outcome]
+  (dissoc outcome :artifact-dir))
+
 (defn- secure-string= [expected supplied]
   (and (string? supplied)
        (= (count expected) (count supplied))
@@ -1515,7 +1523,8 @@
                             (activity-journal-enabled? config)
                             (assoc :outcome outcome)))
                   (response 200 "application/edn; charset=utf-8"
-                            (trace/canonical-edn outcome)))
+                            (trace/canonical-edn
+                             (public-replay-outcome outcome))))
                 (catch :default error
                   (reset! active-replay
                           {:phase :terminal

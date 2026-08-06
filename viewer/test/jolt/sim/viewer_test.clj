@@ -2385,10 +2385,16 @@
          config
          {:render-trace (fn [_] "unused")
           :render-case-outcome (fn [_] "unused")
-          :replay-document (fn [_ _] outcome)})]
-    (is (= 200 (:status (handler (request "/api/replay"
-                                          (case-outcome/canonical-edn
-                                           (document)))))))
+          :replay-document (fn [_ _] outcome)})
+        replay-response
+        (handler (request "/api/replay"
+                          (case-outcome/canonical-edn (document))))]
+    (is (= 200 (:status replay-response)))
+    (is (not (string/includes? (:body replay-response) ":artifact-dir"))
+        "the public replay response omits the private retention coordinate")
+    (when-let [artifact-dir (:artifact-dir outcome)]
+      (is (not (string/includes? (:body replay-response) artifact-dir))
+          "the private artifact path never crosses the replay response"))
     handler))
 
 (defn- activity-request
