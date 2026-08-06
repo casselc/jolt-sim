@@ -226,6 +226,48 @@
                 (some? detail) (assoc :detail detail))))
    :headers assoc "Connection" "close"))
 
+(defn- acceptable-json-media-range? [value]
+  (let [[media & parameters] (map string/trim (string/split value #";"))
+        quality-text
+        (some (fn [parameter]
+                (second (re-matches #"(?i)q\s*=\s*(.*)" parameter)))
+              parameters)
+        valid-quality? (or (nil? quality-text)
+                           (boolean
+                            (re-matches #"(?:0(?:\.[0-9]{0,3})?|1(?:\.0{0,3})?)"
+                                        quality-text)))
+        zero-quality? (and quality-text
+                           (boolean
+                            (re-matches #"0(?:\.0{0,3})?" quality-text)))]
+    (and (= "application/json" (string/lower-case media))
+         valid-quality?
+         (not zero-quality?))))
+
+(defn- json-accept? [request]
+  (let [raw (get-in request [:headers "accept"])]
+    (and (string? raw)
+         (boolean (some acceptable-json-media-range?
+                        (string/split raw #","))))))
+
+(defn- json-response [status value]
+  (response status "application/json; charset=utf-8" (json/write-str value)))
+
+(defn- negotiated-session-error-response
+  "Returns a closed, definitely-not-committed JSON error only for callers that
+  explicitly request it. Unknown server failures intentionally keep the EDN
+  error shape, so a browser cannot mistake a possibly post-commit failure for
+  a negative acknowledgment."
+  [request status reason detail]
+  (if (json-accept? request)
+    (update
+     (json-response status
+                    {"version" 1
+                     "outcome" "error"
+                     "committed" false
+                     "error" (name reason)})
+     :headers assoc "Connection" "close")
+    (error-response status reason detail)))
+
 (defn- bounded-progress-text
   "Reads at most `progress-log-byte-limit` bytes of a live, possibly
   partially-written log file, through a bounded FileInputStream prefix read.
@@ -442,19 +484,71 @@
                     :page-size (clojure.core/count page)
                     :remaining? (< next-cursor count))))))
 
+(defn- wire-long? [value]
+  (and (integer? value)
+       (<= Long/MIN_VALUE value Long/MAX_VALUE)))
+
+(defn- session-choice-wire [frame-revision branch]
+  (let [action (:action branch)
+        kind (first action)
+        value (second action)]
+    (when-not (and (map? branch)
+                   (= #{:revision :action} (set (keys branch)))
+                   (= frame-revision (:revision branch))
+                   (wire-long? (:revision branch))
+                   (<= 0 (:revision branch))
+                   (< (:revision branch) Long/MAX_VALUE)
+                   (vector? action)
+                   (= 2 (count action))
+                   (contains? #{:run :advance} kind)
+                   (wire-long? value)
+                   (or (= :advance kind) (<= 0 value)))
+      (throw (ex-info "trusted session reader returned an invalid branch"
+                      {:type invalid-session-frame})))
+    {"revision" (str (:revision branch))
+     "kind" (name kind)
+     "value" (str value)
+     "label" (str (name kind) " " value)}))
+
+(defn- session-frame-wire [services frame body]
+  (let [revision (:revision frame)
+        next-cursor (get-in frame [:journal :next-cursor])
+        branches (:branches frame)]
+    (when-not (and (wire-long? revision)
+                   (<= 0 revision)
+                   (wire-long? next-cursor)
+                   (<= 0 next-cursor)
+                   (vector? branches))
+      (throw (ex-info "trusted session reader returned invalid coordinates"
+                      {:type invalid-session-frame})))
+    {"version" 1
+     "revision" (str revision)
+     "nextCursor" (str next-cursor)
+     "stepEnabled" (fn? (:step-session-frame! services))
+     "frameEdn" body
+     "choices" (mapv #(session-choice-wire revision %) branches)}))
+
 (defn- session-frame-response [config services request]
   (if-let [read-frame (:read-session-frame services)]
     (try
       (let [cursor (session-cursor! request)
             frame (bounded-session-frame (read-frame cursor) cursor)
-            body (trace/canonical-edn frame)
+            frame-edn (trace/canonical-edn frame)
+            json? (json-accept? request)
+            body (if json?
+                   (json/write-str (session-frame-wire services frame frame-edn))
+                   frame-edn)
             byte-count (alength (.getBytes ^String body "UTF-8"))]
         (if (> byte-count (:max-document-bytes config))
           (error-response 413 :session-frame-too-large
                           {:limit (:max-document-bytes config)
                            :actual byte-count})
           (update
-           (response 200 "application/edn; charset=utf-8" body)
+           (response 200
+                     (if json?
+                       "application/json; charset=utf-8"
+                       "application/edn; charset=utf-8")
+                     body)
            :headers assoc
            "X-Jolt-Sim-Journal-Next-Cursor"
            (str (get-in frame [:journal :next-cursor])))))
@@ -820,17 +914,38 @@
 
       :else nil)))
 
+(defn- branch-wire-coordinate [branch]
+  (let [[kind value] (:action branch)]
+    {"revision" (str (:revision branch))
+     "kind" (name kind)
+     "value" (str value)}))
+
+(defn- session-step-wire [branch receipt]
+  (merge
+   {"version" 1
+    "outcome" (name (:status receipt))
+    "committed" (boolean (:committed? receipt))
+    "receiptEdn" (trace/canonical-edn receipt)}
+   (branch-wire-coordinate branch)))
+
 (defn- session-step-response [services request]
   (try
     (let [[branch cursor] (session-step-command! request)
           result ((:step-session-frame! services) branch cursor)
           receipt (session-step-receipt branch result)]
-      (response (if (:committed? receipt) 200 409)
-                "application/edn; charset=utf-8"
-                (trace/canonical-edn receipt)))
+      (if (json-accept? request)
+        (json-response (if (:committed? receipt) 200 409)
+                       (session-step-wire branch receipt))
+        (response (if (:committed? receipt) 200 409)
+                  "application/edn; charset=utf-8"
+                  (trace/canonical-edn receipt))))
     (catch :default error
       (if-let [expected (session-step-error-response error)]
-        expected
+        (if (json-accept? request)
+          (let [body (edn/read-string (:body expected))]
+            (negotiated-session-error-response
+             request (:status expected) (:error body) (:detail body)))
+          expected)
         (error-response 500 :session-step-error nil)))))
 
 (defn- execute-session-step-request
@@ -845,21 +960,21 @@
   [config services session-active? document-active? request]
   (cond
     (not (authorized? config request))
-    (error-response 403 :forbidden nil)
+    (negotiated-session-error-response request 403 :forbidden nil)
 
     (not (fn? (:step-session-frame! services)))
-    (error-response 404 :session-step-unavailable nil)
+    (negotiated-session-error-response request 404 :session-step-unavailable nil)
 
     (not (json-content-type? request))
-    (error-response 415 :expected-application-json nil)
+    (negotiated-session-error-response request 415 :expected-application-json nil)
 
     (not (compare-and-set! session-active? false true))
-    (error-response 429 :session-step-busy nil)
+    (negotiated-session-error-response request 429 :session-step-busy nil)
 
     :else
     (try
       (if-not (compare-and-set! document-active? false true)
-        (error-response 429 :viewer-busy nil)
+        (negotiated-session-error-response request 429 :viewer-busy nil)
         (try
           (session-step-response services request)
           (finally
