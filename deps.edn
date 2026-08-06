@@ -1,5 +1,8 @@
 {:paths ["src"]
 
+ :deps
+ {metosin/malli {:mvn/version "0.20.1"}}
+
  ;; Hegel aliases below may launch a second alias in a fresh child. Run them
  ;; through script/run-hegel-gates.sh so both dependency graphs are prepared
  ;; before generation and infrastructure failures retain one bounded bundle.
