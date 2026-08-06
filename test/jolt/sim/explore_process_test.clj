@@ -46,6 +46,7 @@
    (process-config)
    {:scenario scenario
     :schedule schedule
+    :startup-timeout-ms completion-timeout-ms
     :timeout-ms timeout-ms
     :kill-grace-ms kill-grace-ms}))
 
@@ -56,6 +57,7 @@
    (merge
     (process-config)
     {:scenario scenario
+     :startup-timeout-ms completion-timeout-ms
      :timeout-ms timeout-ms
      :kill-grace-ms kill-grace-ms}
     extra)))
@@ -65,6 +67,7 @@
    (process-config)
    {:scenario scenario
     :schedules schedules
+    :startup-timeout-ms completion-timeout-ms
     :timeout-ms timeout-ms
     :kill-grace-ms kill-grace-ms}))
 
@@ -287,18 +290,21 @@
   (testing "a TERM-resistant worker is forcibly killed and reaped"
     (let [outcome
           (process-explorer/run-schedule
-           (assoc
-            (run-config
-             'jolt.sim.fixtures.explore-scenarios/independent
-             [0]
-             100)
-            ;; Ignored signal dispositions survive exec on POSIX. The shell
-            ;; becomes sleep, so SIGKILL targets the worker itself rather than
-            ;; leaving a descendant behind.
-            :worker-command
-            ["sh" "-c" "trap '' TERM; exec sleep 10"
-             "jolt-sim-term-resistant-worker"]
-            :kill-grace-ms 100))
+           (dissoc
+            (assoc
+             (run-config
+              'jolt.sim.fixtures.explore-scenarios/independent
+              [0]
+              100)
+             ;; Ignored signal dispositions survive exec on POSIX. The shell
+             ;; becomes sleep, so SIGKILL targets the worker itself rather than
+             ;; leaving a descendant behind. This synthetic worker cannot
+             ;; participate in the Jolt ready-marker handshake.
+             :worker-command
+             ["sh" "-c" "trap '' TERM; exec sleep 10"
+              "jolt-sim-term-resistant-worker"]
+             :kill-grace-ms 100)
+            :startup-timeout-ms))
           artifacts-ok?
           (retained-artifacts-match?
            outcome
