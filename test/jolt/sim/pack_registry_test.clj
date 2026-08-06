@@ -6,12 +6,16 @@
 (defn- ex-data-of [f]
   (try (f) nil (catch :default e (ex-data e))))
 
+(def ^:private test-capabilities
+  {:from #{:test/from-v1} :to #{:test/to-v1}})
+
 ;; ---- fixtures -------------------------------------------------------------
 
 (def ^:private http-connection
   (packs/connection-pack
    {:id :http/form-session-v1
     :doc "HTTP form session connection"
+    :capabilities test-capabilities
     :config-schema [:map {:closed true} [:csrf-required :boolean]]
     :template {:csrf-required true}
     :modes {:simulate {:params-schema [:map {:closed true}
@@ -49,6 +53,7 @@
   (packs/connection-pack
    {:id :http/form-session-v1
     :doc "d"
+    :capabilities test-capabilities
     :config-schema [:map {:closed true}]
     :template {}
     :modes {:simulate {:params-schema [:map {:closed true}]}}
@@ -61,6 +66,7 @@
   (is (= {:kind :connection
           :id :http/form-session-v1
           :doc "HTTP form session connection"
+          :capabilities test-capabilities
           :config-schema [:map {:closed true} [:csrf-required :boolean]]
           :template {:csrf-required true}
           :modes {:simulate {:params-schema [:map {:closed true}
@@ -105,6 +111,7 @@
 (deftest descriptor-keys-must-be-exact
   (let [base {:id :http/form-session-v1
               :doc "d"
+              :capabilities test-capabilities
               :config-schema [:map {:closed true}]
               :template {}
               :modes {:simulate {:params-schema [:map {:closed true}]}}
@@ -135,6 +142,7 @@
            (:type (ex-data-of #(packs/connection-pack
                                 {:id bad
                                  :doc "d"
+                                 :capabilities test-capabilities
                                  :config-schema [:map {:closed true}]
                                  :template {}
                                  :modes {:simulate {:params-schema [:map {:closed true}]}}
@@ -144,6 +152,7 @@
   (is (some? (packs/connection-pack
               {:id :a/b-v22
                :doc "d"
+               :capabilities test-capabilities
                :config-schema [:map {:closed true}]
                :template {}
                :modes {:record {:params-schema [:map {:closed true}]}}
@@ -153,6 +162,7 @@
 (deftest discoverable-data-rejects-functions-recursively
   (let [base {:id :http/form-session-v1
               :doc "d"
+              :capabilities test-capabilities
               :config-schema [:map {:closed true}]
               :template {}
               :modes {:simulate {:params-schema [:map {:closed true}]}}
@@ -189,6 +199,7 @@
         with-callback-metadata (with-meta {} {:callback (fn [_] :hidden)})
         base {:id :http/form-session-v1
               :doc "d"
+              :capabilities test-capabilities
               :config-schema [:map {:closed true}]
               :template {}
               :modes {:simulate {:params-schema [:map {:closed true}]}}
@@ -209,6 +220,7 @@
 (deftest descriptors-and-mode-maps-reject-container-metadata
   (let [base {:id :http/form-session-v1
               :doc "d"
+              :capabilities test-capabilities
               :config-schema [:map {:closed true}]
               :template {}
               :modes {:simulate {:params-schema [:map {:closed true}]}}
@@ -243,6 +255,7 @@
         pack (packs/connection-pack
               {:id :example/entry-v1
                :doc "symbol identifiers are data, never resolved here"
+               :capabilities test-capabilities
                :config-schema schema
                :template {:entry 'example.outbox/run}
                :modes {:record {:params-schema [:map {:closed true}]}}
@@ -276,6 +289,7 @@
              #(packs/connection-pack
                {:id :http/form-session-v1
                 :doc "d"
+                :capabilities test-capabilities
                 :config-schema [:map {:closed true}]
                 :template {}
                 :modes {:shadow {:params-schema [:map {:closed true}]}}
@@ -285,12 +299,36 @@
     (is (= :modes (:field bad)))
     (is (= :shadow (:mode bad)))))
 
+(deftest connection-capabilities-are-declarative-and-closed
+  (doseq [bad [nil
+               {}
+               {:from #{} :to #{:test/to-v1}}
+               {:from #{:not-namespaced} :to #{:test/to-v1}}
+               {:from #{:test/from-v1} :to #{:test/to-v1} :extra #{}}]]
+    (let [data
+          (ex-data-of
+           #(packs/connection-pack
+             {:id :example/capabilities-v1
+              :doc "d"
+              :capabilities bad
+              :config-schema [:map {:closed true}]
+              :template {}
+              :modes {:simulate {:params-schema [:map {:closed true}]}}
+              :faults {}
+              :compile (fn [_] :unused)}))]
+      (is (= :jolt.sim.pack-registry/invalid-descriptor (:type data)))
+      (is (= :capabilities (:field data)))))
+  (is (= test-capabilities
+         (:capabilities (packs/describe test-registry
+                                        :http/form-session-v1)))))
+
 ;; ---- registry composition ---------------------------------------------------
 
 (deftest registry-rejects-duplicate-identities
   (let [other (packs/connection-pack
                {:id :http/form-session-v1
                 :doc "different"
+                :capabilities test-capabilities
                 :config-schema [:map {:closed true}]
                 :template {}
                 :modes {:record {:params-schema [:map {:closed true}]}}
@@ -319,6 +357,7 @@
         (packs/connection-pack
          {:id :example/invalid-schema-v1
           :doc "d"
+          :capabilities test-capabilities
           :config-schema [:map [:open :int]]
           :template {:open 1}
           :modes {:simulate {:params-schema [:map {:closed true}]}}
@@ -328,6 +367,7 @@
         (packs/connection-pack
          {:id :example/invalid-template-v1
           :doc "d"
+          :capabilities test-capabilities
           :config-schema [:map {:closed true} [:required :int]]
           :template {}
           :modes {:simulate {:params-schema [:map {:closed true}]}}
@@ -426,6 +466,7 @@
   (let [dual-connection (packs/connection-pack
                          {:id :shared/dual-v1
                           :doc "dual connection"
+                          :capabilities test-capabilities
                           :config-schema [:map {:closed true}]
                           :template {}
                           :modes {:record {:params-schema [:map {:closed true}]}}
@@ -511,6 +552,7 @@
         (packs/connection-pack
          {:id :example/strict-v1
           :doc "d"
+          :capabilities test-capabilities
           :config-schema [:map {:closed true} [:enabled :boolean]]
           :template {:enabled true}
           :modes {:simulate
@@ -631,6 +673,7 @@
   (let [manifest (edn/read-string
                   (str "{:id :http/form-session-v1"
                        " :doc \"edn descriptor\""
+                       " :capabilities {:from #{:test/from-v1} :to #{:test/to-v1}}"
                        " :config-schema [:map {:closed true}]"
                        " :template {}"
                        " :modes {:simulate {:params-schema [:map {:closed true}]}}"

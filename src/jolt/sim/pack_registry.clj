@@ -30,7 +30,7 @@
   #{:pass-through :record :simulate :hybrid :observational})
 
 (def ^:private connection-descriptor-keys
-  #{:id :doc :config-schema :template :modes :faults :compile})
+  #{:id :doc :capabilities :config-schema :template :modes :faults :compile})
 
 (def ^:private check-descriptor-keys
   #{:id :doc :config-schema :template :observations :check})
@@ -82,6 +82,19 @@
                       (recur (next entries)))))
               :else path))]
     (walk [] value)))
+
+(defn ensure-data-only!
+  "Returns value when it is finite, metadata-free inert data.
+
+  Rejects functions, vars, atoms, host objects, metadata, and lazy or other
+  executable sequences without realizing them. Intended for closed uploaded
+  documents before any trusted extension callback is selected."
+  [value]
+  (when-let [path (non-data-path value)]
+    (fail! :jolt.sim.pack-registry/non-data-value
+           "value must be recursively data-only"
+           {:path path}))
+  value)
 
 ;; ---- descriptor validation ------------------------------------------------
 
@@ -152,16 +165,33 @@
              {:kind kind :pack-id id :field :modes :mode mode}))
     (validate-data-field! kind id :modes entry)))
 
+(defn- validate-capabilities! [kind id capabilities]
+  (when-not (and (map? capabilities)
+                 (= #{:from :to} (set (keys capabilities)))
+                 (every? #(and (set? %) (seq %)
+                               (every? (fn [capability]
+                                         (and (keyword? capability)
+                                              (namespace capability)))
+                                       %))
+                         (vals capabilities)))
+    (fail! :jolt.sim.pack-registry/invalid-descriptor
+           "connection capabilities are exactly nonempty :from/:to sets of namespaced keywords"
+           {:kind kind :pack-id id :field :capabilities}))
+  (validate-data-field! kind id :capabilities capabilities))
+
 (defn connection-pack
   "Validates a trusted connection pack descriptor and returns the pack value.
 
-  The descriptor keys are exactly :id, :doc, :config-schema, :template,
-  :modes, :faults, and :compile. :compile must be an in-process function;
+  The descriptor keys are exactly :id, :doc, :capabilities, :config-schema,
+  :template, :modes, :faults, and :compile. :capabilities declaratively names
+  required :from/:to endpoint capabilities before compilation. :compile must
+  be an in-process function;
   every other field must be recursively data-only. A data-only map, however
   it was produced, can therefore never install an executable callback."
   [descriptor]
   (validate-descriptor-shape! :connection descriptor connection-descriptor-keys)
   (let [id (:id descriptor)]
+    (validate-capabilities! :connection id (:capabilities descriptor))
     (validate-modes! :connection id (:modes descriptor))
     (validate-data-field! :connection id :faults (:faults descriptor))
     (when-not (fn? (:compile descriptor))
