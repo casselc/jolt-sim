@@ -48,7 +48,8 @@
    data). Everything here stays at physical handler-substrate ownership
    scope, exactly as the pack descriptors declare; no causal or semantic
    attribution is claimed."
-  (:require [jolt.sim.experiment :as experiment]
+  (:require [jolt.sim.activity :as activity]
+            [jolt.sim.experiment :as experiment]
             [jolt.sim.experiment-executor :as executor]
             [jolt.sim.ffi-memory :as memory]
             [jolt.sim.fixtures.outbox-delivery :as fixture]
@@ -228,36 +229,64 @@
               registry
               packs/cancel-before-ack-manifest
               :hermetic)
-        controlled
-        (executor/execute!
-         plan {:drain-timeout-ms 10000}
-         (fn []
-           (fixture/exercise-outbox-delivery-cancel-before-ack command)))
-        result (:result controlled)
-        effect-trace (:effect-trace controlled)
-        data (experiment/plan-data plan)]
-    {:application-body-id (:application-body-id result)
-     :application (:application result)
-     :http (:http result)
-     :receiver (:receiver result)
-     :routes {:count (count effect-trace)
-              :all-handled?
-              (every? #(= :handler (:route %)) effect-trace)
-              :foreign-symbols (foreign-symbols effect-trace)}
-     :sqlite (sqlite/summary (:sqlite bundle))
-     :capacity {:stream (posix/capacity-summary (:posix bundle))
-                :pipe (posix/pipe-capacity-summary (:posix bundle))}
-     :fault-policy (no-fault-policy registry)
-     :clean? {:memory (memory/clean? (:memory bundle))
-              :sqlite (sqlite/clean? (:sqlite bundle))
-              :posix (posix/clean? (:posix bundle))}
-     :callbacks (callback-counts bundle)
-     :mechanism (mechanism-reports data)
-     :history (history-summaries data effect-trace)
-     :plan (plan-projection data)}))
+        _ (activity/emit!
+           [:jolt.example.outbox/experiment-compiled nil nil
+            {:experiment-id :outbox.experiment/cancel-before-ack-v1
+             :profile-id :hermetic
+             :connections [:command :delivery :store]}])
+        _ (activity/emit!
+           [:jolt.example.outbox/application-started nil nil
+            {:application-body-id fixture/cancel-before-ack-body-id}])]
+    (try
+      (let [controlled
+            (executor/execute!
+             plan {:drain-timeout-ms 10000}
+             (fn []
+               (fixture/exercise-outbox-delivery-cancel-before-ack command)))
+            result (:result controlled)
+            effect-trace (:effect-trace controlled)
+            data (experiment/plan-data plan)
+            evidence
+            {:application-body-id (:application-body-id result)
+             :application (:application result)
+             :http (:http result)
+             :receiver (:receiver result)
+             :routes {:count (count effect-trace)
+                      :all-handled?
+                      (every? #(= :handler (:route %)) effect-trace)
+                      :foreign-symbols (foreign-symbols effect-trace)}
+             :sqlite (sqlite/summary (:sqlite bundle))
+             :capacity {:stream (posix/capacity-summary (:posix bundle))
+                        :pipe (posix/pipe-capacity-summary (:posix bundle))}
+             :fault-policy (no-fault-policy registry)
+             :clean? {:memory (memory/clean? (:memory bundle))
+                      :sqlite (sqlite/clean? (:sqlite bundle))
+                      :posix (posix/clean? (:posix bundle))}
+             :callbacks (callback-counts bundle)
+             :mechanism (mechanism-reports data)
+             :history (history-summaries data effect-trace)
+             :plan (plan-projection data)}]
+        (activity/emit!
+         [:jolt.example.outbox/cancel-before-ack-observed nil nil
+          {:application-body-id (:application-body-id result)
+           :cancel (get-in result [:application :cancel])
+           :http-status (get-in result [:http :status])
+           :request-count (count (get-in result [:receiver :requests]))
+           :store-state (get-in result [:application :store-state])}])
+        (activity/emit!
+         [:jolt.example.outbox/application-completed nil nil
+          {:application-body-id (:application-body-id result)}])
+        evidence)
+      (catch :default error
+        (activity/emit!
+         [:jolt.example.outbox/application-failed nil nil
+          {:application-body-id fixture/cancel-before-ack-body-id}])
+        (throw error)))))
 
 (defn ^{:jolt.sim/scenario true
-        :jolt.sim/accepts-input true} exercise-cancel-before-ack-compiled
+        :jolt.sim/accepts-input true
+        :jolt.sim/activity-lifecycle-owned true}
+  exercise-cancel-before-ack-compiled
   "Runs the unchanged
    jolt.sim.fixtures.outbox-delivery/exercise-outbox-delivery-cancel-before-ack
    application body through jolt.sim.experiment-executor/execute! under the

@@ -12,6 +12,7 @@
             [jolt.sim.explore :as explore]
             [jolt.sim.explore-worker :as worker]
             [jolt.sim.journal :as journal]
+            [jolt.sim.journal-file :as journal-file]
             [jolt.sim.process-explorer :as process-explorer]
             [jolt.sim.trace :as trace]))
 
@@ -697,13 +698,22 @@
                 (:events recovery)))
         run-id-ok?
         (and (some? recovery)
-             (= (seq expected-run-id) (seq (:run-id recovery))))]
+             (= (seq expected-run-id) (seq (:run-id recovery))))
+        attached-events (mapv :event (get-in outcome [:activity :events]))
+        later-page (process-explorer/read-activity-page outcome 2)
+        activity-ok?
+        (and (= :complete (get-in outcome [:activity :recovery :status]))
+             (nil? (get-in outcome [:activity :observer-status]))
+             (= (:events recovery) attached-events)
+             (= {:cursor 2 :next-cursor 2 :remaining? false :events []}
+                (select-keys later-page
+                             [:cursor :next-cursor :remaining? :events])))]
     (is (= :completed (:status outcome)))
     (is (= 0 (:exit outcome)))
     (is (some? (:artifact-dir outcome))
         "retention is mandatory so the journal survives for polling")
-    (is (nil? (:activity outcome))
-        "a healthy observer adds no secondary diagnostics key")
+    (is (true? activity-ok?)
+        "the parent attaches the complete prefix and supports the end cursor")
     (is (= {:echoed nil} (body-result outcome))
         "ordinary result behavior is preserved")
     (is (true? events-ok?)
@@ -713,7 +723,7 @@
         "the header run-id is the deterministic path-derived 16-byte id")
     (cleanup-expected-artifacts!
      outcome
-     (and artifacts-ok? events-ok? run-id-ok?
+     (and artifacts-ok? events-ok? run-id-ok? activity-ok?
           (= :completed (:status outcome))))))
 
 (deftest enabled-activity-journal-records-a-failed-lifecycle-with-primary-error
@@ -739,20 +749,97 @@
                   {:scenario scenario}]
                  [:jolt.sim.explore/scenario-failed nil nil
                   {:scenario scenario}]]
-                (:events recovery)))]
+                (:events recovery)))
+        activity-ok?
+        (and (= :complete (get-in outcome [:activity :recovery :status]))
+             (nil? (get-in outcome [:activity :observer-status]))
+             (= (:events recovery)
+                (mapv :event (get-in outcome [:activity :events]))))]
     (is (= :failed (:status outcome)))
     (is (= 0 (:exit outcome)))
     (is (= :jolt.sim.fixtures.explore-scenarios/deliberate-failure
            (get-in outcome [:error :data :type]))
         "the original application failure remains the primary outcome error")
-    (is (nil? (:activity outcome))
-        "a healthy observer adds no secondary diagnostics key")
+    (is (true? activity-ok?)
+        "the application failure stays primary beside a complete journal")
     (is (true? events-ok?)
         (str "journal must hold exactly the started/failed lifecycle: "
              (pr-str (:events recovery))))
     (cleanup-expected-artifacts!
      outcome
-     (and artifacts-ok? events-ok? (= :failed (:status outcome))))))
+     (and artifacts-ok? events-ok? activity-ok?
+          (= :failed (:status outcome))))))
+
+(deftest parent-activity-recovery-failure-cannot-mask-a-completed-worker
+  (let [outcome
+        (with-redefs
+         [journal-file/read-bounded-path
+          (fn [_ _]
+            {:status :ok
+             :image (byte-array [1 2 3])
+             :bytes-read 3
+             :truncated? false})]
+          (process-explorer/run-case
+           (case-config
+            'jolt.sim.fixtures.explore-scenarios/echoes-input
+            completion-timeout-ms
+            {:activity-journal? true
+             :retain-completed-artifacts? true})))
+        recovery (get-in outcome [:activity :recovery])
+        artifacts-ok?
+        (retained-artifacts-match?
+         outcome
+         {:present ["request.edn" "result.edn" "stdout.log" "stderr.log"
+                    "activity.journal"]})
+        activity-ok?
+        (and (= :failed (:status recovery))
+             (keyword? (:reason recovery))
+             (= 0 (:accepted-count (:activity outcome)))
+             (= [] (get-in outcome [:activity :events]))
+             (nil? (get-in outcome [:activity :observer-status]))
+             (not (.contains (pr-str recovery)
+                             (str (:artifact-dir outcome)))))]
+    (is (= :completed (:status outcome)))
+    (is (= 0 (:exit outcome)))
+    (is (= {:echoed nil} (body-result outcome))
+        "the already decoded application result remains primary")
+    (is (true? activity-ok?)
+        "only the secondary parent recovery page reports failure")
+    (cleanup-expected-artifacts!
+     outcome
+     (and artifacts-ok? activity-ok? (= :completed (:status outcome))))))
+
+(deftest enabled-activity-journal-survives-a-reaped-timeout
+  (let [scenario 'jolt.sim.fixtures.explore-scenarios/dependent
+        outcome
+        (process-explorer/run-schedule
+         (assoc (run-config scenario [1 0] expected-block-timeout-ms)
+                :startup-timeout-ms completion-timeout-ms
+                :activity-journal? true
+                :retain-completed-artifacts? true))
+        events (mapv :event (get-in outcome [:activity :events]))
+        artifacts-ok?
+        (retained-artifacts-match?
+         outcome
+         {:present ["request.edn" "stdout.log" "stderr.log"
+                    "activity.journal"]
+          :absent ["result.edn"]})
+        activity-ok?
+        (and (= [[:jolt.sim.explore/scenario-started nil nil
+                  {:scenario scenario}]]
+                events)
+             (= :complete (get-in outcome [:activity :recovery :status]))
+             (nil? (get-in outcome [:activity :observer-status])))]
+    (is (= :timeout (:status outcome)))
+    (is (= :deadline (:reason outcome))
+        "activity recovery must not relabel a neutral deadline")
+    (is (integer? (:exit outcome))
+        "a returned timeout carries the observed reaped child exit")
+    (is (true? activity-ok?)
+        "the flushed valid prefix survives forced child termination")
+    (cleanup-expected-artifacts!
+     outcome
+     (and artifacts-ok? activity-ok? (= :timeout (:status outcome))))))
 
 (deftest activity-substrate-failure-invalidates-the-run-without-leakage
   (let [scenario 'jolt.sim.fixtures.explore-scenarios/echoes-input
@@ -786,7 +873,14 @@
         refused-untouched?
         (and (some? @occupied)
              (fs/exists? @occupied)
-             (= "occupied" (slurp @occupied)))]
+             (= "occupied" (slurp @occupied)))
+        activity-ok?
+        (and (= :failed (get-in outcome [:activity :recovery :status]))
+             (= :failed
+                (get-in outcome [:activity :observer-status :health]))
+             (= :target-exists
+                (get-in outcome
+                        [:activity :observer-status :failure :reason])))]
     (is (= :worker-error (:status outcome))
         "an activity open failure invalidates the activity-enabled run")
     (is (= 0 (:exit outcome)))
@@ -794,8 +888,8 @@
     (is (= :jolt.sim/activity-failure (get-in outcome [:error :kind])))
     (is (= :open (get-in outcome [:error :activity :failure :phase])))
     (is (= :target-exists (get-in outcome [:error :activity :failure :reason])))
-    (is (nil? (:activity outcome))
-        "the substrate failure is the primary bounded error, not secondary")
+    (is (true? activity-ok?)
+        "recovery and primary observer failure coexist in one envelope")
     (is (true? leakage-ok?)
         (str "bounded diagnostics carry no path, Throwable, or raw content: "
              error-text))
@@ -803,7 +897,7 @@
         "the refused existing target is never overwritten")
     (cleanup-expected-artifacts!
      outcome
-     (and artifacts-ok? leakage-ok? refused-untouched?
+     (and artifacts-ok? leakage-ok? refused-untouched? activity-ok?
           (= :worker-error (:status outcome))))))
 
 (deftest activity-failure-after-application-failure-keeps-the-primary-error
