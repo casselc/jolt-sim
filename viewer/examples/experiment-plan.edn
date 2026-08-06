@@ -1,0 +1,34 @@
+{:checks [{:index 0 :pack-id :example.check/outbox-v1}]
+ :connections [{:capabilities {:from [:example.http/client-v1]
+                               :to [:example.http/server-v1]}
+                :from [:client :http]
+                :handler-owners [{:handler-count 2
+                                  :pack-id :example.handler/http-v1}]
+                :id :command
+                :mode :simulate
+                :pack-id :example.connection/http-v1
+                :to [:app :http]}]
+ :controls {:perturb {:enabled? false :reason :inspection-only}
+            :replay {:enabled? false :reason :inspection-only}
+            :step {:enabled? false :reason :inspection-only}}
+ :counts {:checks 1
+          :connections 1
+          :handler-packs 1
+          :handlers 2
+          :monitors 2
+          :nodes 2
+          :ports 2
+          :presentations 3}
+ :experiment-id :example.experiment/outbox-v1
+ :jolt.sim.viewer.experiment/version 1
+ :kind :jolt.sim.kind/experiment-plan
+ :nodes [{:id :app
+          :ports [{:capabilities [:example.http/server-v1]
+                   :direction :in
+                   :id :http}]}
+         {:id :client
+          :ports [{:capabilities [:example.http/client-v1]
+                   :direction :out
+                   :id :http}]}]
+ :profile-id :hermetic
+ :runtime {:ffi-mode :hermetic :handler-count 2}}

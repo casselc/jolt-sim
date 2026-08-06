@@ -2,20 +2,47 @@
 
 Ripple is the offline jolt-sim document viewer. This optional dependency root
 serves a small loopback-only web UI over the existing trace and Case/Outcome
-reporters and the fresh-process replay helper. It does not implement another
+reporters, a safe experiment-plan inspector, and the fresh-process replay
+helper. It does not implement another
 scheduler, controller, monitor, evidence schema, or worker protocol.
 
 The browser keeps the selected EDN file locally until **Inspect** or **Replay
 once** is pressed. Every request requires a startup capability token. The
-upload UI requires an explicit document kind -- **Trace** or **Case/Outcome**
--- and the server never infers or guesses a schema from the uploaded bytes.
+upload UI requires an explicit document kind -- **Trace**, **Case/Outcome**,
+or **Experiment plan** -- and the server never infers or guesses a schema from
+the uploaded bytes.
 Trace documents render through `jolt.sim.report/trace->html` and are never
-replayable; Case/Outcome documents render through
+replayable; experiment-plan documents render only their safe projection and
+are also never replayable. Case/Outcome documents render through
 `jolt.sim.report/case-outcome->html` and keep the existing replay path. Replay
 uses only the scenario, input, and schedule restored from the validated
 Case/Outcome document; worker command, working directory, deadlines,
 environment, and artifact policy come from the trusted server configuration.
 Scenarios must be explicitly allowlisted.
+
+Experiment plans are inspection-only. The process-local map returned by
+`jolt.sim.experiment/plan-data` still contains executable handler functions,
+probes, projectors, monitors, presenters, and possibly sensitive pack
+configuration. It must never be persisted or uploaded. First convert it to
+the closed inert viewer document:
+
+```clojure
+(require '[jolt.sim.experiment :as experiment]
+         '[jolt.sim.viewer.experiment :as viewer-experiment])
+
+(spit "experiment-plan.edn"
+      (viewer-experiment/canonical-edn
+       (viewer-experiment/plan-data->document
+        (experiment/plan-data compiled-plan))))
+```
+
+That projection retains only experiment/profile identity, node and port
+capabilities, connection endpoints/pack/mode, handler pack ownership and
+counts, check identities, runtime FFI mode, and monitor/presentation counts.
+It cannot replay, step, perturb, resolve code, or reconstruct an executable
+plan. [`examples/experiment-plan.edn`](examples/experiment-plan.edn) is an
+inert representative fixture that can be opened in Ripple without compiling a
+live plan.
 
 Programmatic and REPL-driven startup may also include a trusted
 `:presentation-registry` map. Ripple composes it after jolt-sim's built-in
@@ -68,7 +95,8 @@ which the process explorer creates one isolated run directory; it is not an
 output directory chosen by the uploaded document.
 
 Current boundary: inspection is a real report render (trace documents through
-the trace report, Case/Outcome documents through the Case/Outcome report), and
+the trace report, Case/Outcome documents through the Case/Outcome report, and
+safe experiment-plan projections through specialized presentation kinds), and
 replay delegates to one real fresh worker for Case/Outcome documents only.
 Hosted CI drives the checked-in canonical outbox Case/Outcome through the live
 viewer HTTP API, executes its unchanged HTTP/SQLite/TCP/bencode scenario in
