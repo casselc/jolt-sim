@@ -17,6 +17,7 @@
             [jolt.sim.ffi-schedule-test]
             [jolt.sim.future-schedule-test]
             [jolt.sim.handler-pack-test]
+            [jolt.sim.journal-file-test]
             [jolt.sim.journal-test]
             [jolt.sim.journal-writer-test]
             [jolt.sim.kernel-test]
@@ -53,6 +54,7 @@
                         'jolt.sim.ffi-schedule-test
                         'jolt.sim.future-schedule-test
                         'jolt.sim.handler-pack-test
+                        'jolt.sim.journal-file-test
                         'jolt.sim.journal-test
                         'jolt.sim.journal-writer-test
                         'jolt.sim.kernel-test
