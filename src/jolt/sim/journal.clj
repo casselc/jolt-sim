@@ -24,7 +24,7 @@
   incomplete frame, and never repairs, resynchronizes, mutates, or aliases
   its input.
 
-  Jolt v0.5.17 notes: byte-array aget returns signed bytes, so every read is
+  Current Jolt semantics: byte-array aget returns signed bytes, so every read is
   normalized with (bit-and b 0xff). CRC32C state stays in 0..0xffffffff
   using the reflected Castagnoli polynomial 0x82f63b78. u64 fields are
   encoded and decoded with exact quotient/modulo arithmetic only -- no
