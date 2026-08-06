@@ -18,6 +18,56 @@
   let busy = false;
   let sessionCursor = "0";
 
+  const enhanceTraceReport = () => {
+    const doc = report.contentDocument;
+    if (!doc) return;
+    const filter = doc.getElementById("event-filter");
+    const rows = Array.from(doc.querySelectorAll("#event-table tbody tr"));
+    if (!filter || rows.length === 0) return;
+    if (filter.dataset.rippleTraceFilterBound === "true") return;
+
+    // Report-authored scripts stay disabled by the iframe sandbox. The
+    // trusted outer Ripple shell owns this small read-only interaction.
+    filter.removeAttribute("oninput");
+    filter.setAttribute("aria-controls", "event-table");
+    filter.setAttribute("aria-describedby", "event-filter-status");
+    const status = doc.getElementById("event-filter-status") ||
+      doc.createElement("span");
+    if (!status.id) {
+      status.id = "event-filter-status";
+      status.setAttribute("role", "status");
+      status.setAttribute("aria-live", "polite");
+      filter.insertAdjacentElement("afterend", status);
+    }
+
+    const searchableRows = rows.map((row) => {
+      const cells = row.querySelectorAll("td");
+      const semantic = [cells[0], cells[1], cells[2], cells[3], cells[4],
+        row.querySelector(".event-summary"),
+        row.querySelector(".event-fields"),
+        row.querySelector("details code.edn")];
+      return {
+        row,
+        haystack: semantic.filter(Boolean)
+          .map((element) => element.textContent)
+          .join(" ")
+          .toLowerCase()
+      };
+    });
+
+    const applyFilter = () => {
+      const query = filter.value.trim().toLowerCase();
+      searchableRows.forEach(({row, haystack}) => {
+        row.hidden = Boolean(query) && !haystack.includes(query);
+      });
+      const visible = rows.filter((row) => !row.hidden).length;
+      status.textContent = `${visible} of ${rows.length} events visible.`;
+    };
+    filter.addEventListener("input", applyFilter);
+    filter.dataset.rippleTraceFilterBound = "true";
+    applyFilter();
+  };
+
   const enhanceExperimentReport = () => {
     const doc = report.contentDocument;
     if (!doc) return;
@@ -173,6 +223,11 @@
       }
     });
     applyFilters();
+  };
+
+  const enhanceReport = () => {
+    enhanceTraceReport();
+    enhanceExperimentReport();
   };
 
   const renderProgress = (progress) => {
@@ -348,7 +403,7 @@
     }
   });
 
-  report.addEventListener("load", enhanceExperimentReport);
+  report.addEventListener("load", enhanceReport);
 
   replay.addEventListener("click", async () => {
     if (busy) return;
