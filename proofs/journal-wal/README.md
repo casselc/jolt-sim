@@ -1,7 +1,8 @@
 # Crash-safe worker journal: contract and bounded proof
 
-Status: design/proof checkpoint. No journal implementation is authorized by
-this slice.
+Status: bounded proof plus in-memory codec and seam-driven synchronous writer.
+The worker-owned file/run-directory adapter and real process-crash evidence
+remain separate, not yet landed work.
 
 Jolt-sim needs a self-validating append-only forensic event log, not a
 transactional database recovery engine. We borrow ARIES's monotonically
@@ -166,10 +167,10 @@ Run the bounded gate with:
 proofs/journal-wal/verify.sh
 ```
 
-## Implementation gate
+## Executable implementation gate
 
-Before implementation lands, convert each SAT control and boundary witness
-into a test against the real encoder/recovery scanner:
+The landed codec and writer convert each SAT control and boundary witness into
+tests against the real encoder/recovery scanner and injected I/O seams:
 
 - cut immediately before the trailing CRC;
 - corrupt a complete segment header, including its CRC;

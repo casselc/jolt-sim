@@ -28,7 +28,7 @@
   object, frame/payload array, or seam function. The first failure is
   preserved; once failed, later appends are no-I/O no-ops.
 
-  Jolt v0.5.17 notes: integer arithmetic is exact (bignum promotion), and
+  Current Jolt semantics: integer arithmetic is exact (bignum promotion), and
   the consecutive-EINTR counter is bounded by the documented safe range
   max-safe-eintr-retries so machine-counter overflow cannot occur."
   (:require [jolt.sim.journal :as jrn]))
