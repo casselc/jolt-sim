@@ -20,7 +20,11 @@
 
 (defn- bytes=
   "Content equality for byte arrays. Ordinary = on byte arrays is reference
-  equality and is never used for contents."
+  equality and is never used for contents. Every byte is compared with
+  (bit-and b 0xff): raw aget sign depends on how the array was filled
+  (aset-built arrays read back signed, FileInputStream-filled arrays read
+  back unsigned), so normalization is required for cross-provenance
+  equality, matching the journal codec's own per-byte normalization."
   [a b]
   (and (bytes? a)
        (bytes? b)
@@ -28,7 +32,8 @@
        (loop [i 0]
          (cond
            (= i (alength a)) true
-           (not= (aget a i) (aget b i)) false
+           (not= (bit-and (aget a i) 0xff)
+                 (bit-and (aget b i) 0xff)) false
            :else (recur (inc i))))))
 
 (defn- slice [src off end]
@@ -410,6 +415,75 @@
           (is (not (contains? failure :message)))
           (is (not (contains-token? failure token)))
           (is (pure-data? failure)))))))
+
+;; ---- 6e. trusted path-level bounded reader -------------------------------------------
+
+(deftest read-bounded-path-matches-the-adapter-reader
+  (let [path (fresh-path)
+        w (jf/open-process-crash-writer! (open-opts path))
+        _ (jf/append! w {:kind 1 :payload (ba 1 2 3)})
+        _ (jf/append! w {:kind 7 :flags 3 :payload (ba 0xff 0x80)})
+        _ (jf/close! w)
+        via-adapter (jf/read-bounded-image w)
+        via-path (jf/read-bounded-path path 4096)]
+    (is (= :ok (:status via-adapter)))
+    (is (= :ok (:status via-path)))
+    (is (= (dissoc via-adapter :image) (dissoc via-path :image)))
+    (is (bytes= (:image via-adapter) (:image via-path)))
+    (testing "both arities delegate with the same cap semantics"
+      (let [capped-adapter (jf/read-bounded-image w 40)
+            capped-path (jf/read-bounded-path path 40)]
+        (is (= (dissoc capped-adapter :image) (dissoc capped-path :image)))
+        (is (= 40 (:bytes-read capped-path)))
+        (is (true? (:truncated? capped-path)))
+        (is (bytes= (:image capped-adapter) (:image capped-path)))))
+    (testing "the path read matches the on-disk bytes exactly"
+      (is (bytes= (jrn/encode-segment
+                   {:run-id run-id
+                    :max-payload 8
+                    :records [{:kind 1 :flags 0 :payload (ba 1 2 3)}
+                              {:kind 7 :flags 3 :payload (ba 0xff 0x80)}]})
+                  (:image via-path))))))
+
+(deftest read-bounded-path-diagnostics-are-bounded-and-path-free
+  (testing "a missing target is refused as data"
+    (is (= {:status :error :reason :file-missing}
+           (jf/read-bounded-path
+            (str "/tmp/jolt-no-such-dir-" (System/nanoTime) "/child.bin")
+            4096))))
+  (testing "a directory target is refused as data"
+    (is (= {:status :error :reason :target-is-directory}
+           (jf/read-bounded-path (System/getProperty "java.io.tmpdir") 4096))))
+  (testing "a cap below the file size reports truncation"
+    (let [path (fresh-path)
+          w (jf/open-process-crash-writer! (open-opts path))
+          _ (jf/append! w {:kind 1 :payload (ba 1 2 3)})
+          _ (jf/close! w)
+          full (jf/read-bounded-path path 4096)
+          capped (jf/read-bounded-path path 40)]
+      (is (= :ok (:status full)))
+      (is (false? (:truncated? full)))
+      (is (= :ok (:status capped)))
+      (is (= 40 (:bytes-read capped)))
+      (is (= 40 (alength (:image capped))))
+      (is (true? (:truncated? capped)))
+      (is (bytes= (slice (:image full) 0 40) (:image capped)))))
+  (testing "invalid caps and non-string paths are refused as data, never throw"
+    (doseq [bad [0 -1 "4096" (inc jf/max-safe-image-bytes)
+                 18446744073709551615]]
+      (is (= {:status :error :reason :invalid-max-bytes}
+             (jf/read-bounded-path (fresh-path) bad))))
+    (is (= {:status :error :reason :invalid-path}
+           (jf/read-bounded-path 42 4096)))
+    (is (= {:status :error :reason :invalid-path}
+           (jf/read-bounded-path nil 4096))))
+  (testing "errors carry no path token, message, or live object"
+    (let [token (str "jolt-jf-token-" (System/nanoTime))
+          path (str (System/getProperty "java.io.tmpdir") "/" token ".bin")
+          read (jf/read-bounded-path path 4096)]
+      (is (= {:status :error :reason :file-missing} read))
+      (is (not (contains-token? read token)))
+      (is (pure-data? read)))))
 
 ;; ---- 7. first-failure retention ------------------------------------------------------
 

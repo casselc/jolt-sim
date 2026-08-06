@@ -18,8 +18,19 @@
   call-with-observer therefore inherits the observer automatically. The caller
   owns lifecycle and must join inherited work before close-observer!; callers
   may also capture current-observer and bind it explicitly in other threads.
-  Ordinary execution has no observer, making emit! an immediate no-op."
-  (:require [jolt.sim.journal :as journal]
+  Ordinary execution has no observer, making emit! an immediate no-op.
+
+  recover-page is the strictly read-only recovery side: it consumes one
+  bounded read-result (jolt.sim.journal-file/read-bounded-path or
+  read-bounded-image) plus a record-ordinal cursor and returns one bounded
+  page of accepted events with a closed key set. It accepts only physical
+  kind 1 flags 0 records whose payload is exactly one canonical EDN v1
+  event, preserves the valid prefix at the first physical or semantic
+  corruption, never resynchronizes, and never returns bytes, paths, or
+  Throwables. A cap-truncated read never reports :complete."
+  (:require [clojure.edn :as edn]
+            [clojure.string :as str]
+            [jolt.sim.journal :as journal]
             [jolt.sim.journal-file :as jf]
             [jolt.sim.trace :as trace]))
 
@@ -188,3 +199,323 @@
   [observer f]
   (binding [*observer* observer]
     (f)))
+
+;; ---- recovery paging -----------------------------------------------------------
+
+(def page-version
+  "Closed recover-page output version."
+  1)
+
+(def max-page-events
+  "Maximum number of events in one recovery page."
+  32)
+
+(def max-page-payload-bytes
+  "Maximum total canonical payload bytes in one recovery page. Every
+  accepted payload is at most max-payload-bytes, which is strictly below
+  this budget, so the byte budget can bind before the event count but can
+  never reject the first event of a page."
+  131072)
+
+(defn- invalid-cursor!
+  "Throws typed ex-info for an out-of-contract cursor. ex-data carries only
+  bounded scalar data; a non-integer cursor value is never retained."
+  [reason data]
+  (throw (ex-info "recover-page cursor is invalid"
+                  (assoc data
+                         :type :jolt.sim.activity/invalid-cursor
+                         :reason reason))))
+
+(defn- invalid-read-result!
+  "Throws typed ex-info for a malformed read-result. The read-result itself
+  is never retained in ex-data because it may hold byte arrays."
+  [reason]
+  (throw (ex-info "recover-page read-result is invalid"
+                  {:type :jolt.sim.activity/invalid-read-result
+                   :reason reason})))
+
+(defn- checked-cursor
+  "Validates the record-ordinal cursor shape; throws typed ex-info on a
+  non-integer or negative cursor."
+  [cursor]
+  (cond
+    (not (integer? cursor))
+    (invalid-cursor! :non-integer-cursor {})
+
+    (neg? cursor)
+    (invalid-cursor! :negative-cursor {:cursor cursor})
+
+    :else cursor))
+
+(defn- checked-read-result
+  "Validates the bounded read-result contract; throws typed ex-info on any
+  deviation. Only the shape is inspected, never the byte content."
+  [read-result]
+  (when-not (map? read-result)
+    (invalid-read-result! :read-result-must-be-map))
+  (let [status (:status read-result)]
+    (cond
+      (= :error status)
+      (when-not (and (keyword? (:reason read-result))
+                     (or (not (contains? read-result :class))
+                         (nil? (:class read-result))
+                         (string? (:class read-result))))
+        (invalid-read-result! :invalid-error-reason))
+
+      (= :ok status)
+      (when-not (and (bytes? (:image read-result))
+                     (integer? (:bytes-read read-result))
+                     (= (:bytes-read read-result)
+                        (alength (:image read-result)))
+                     (<= 0 (:bytes-read read-result) max-image-bytes)
+                     (boolean? (:truncated? read-result)))
+        (invalid-read-result! :invalid-ok-read-result))
+
+      :else
+      (invalid-read-result! :invalid-status)))
+  read-result)
+
+(defn- payload-bytes=
+  "Content equality for byte arrays with per-byte unsigned normalization.
+  Ordinary = on byte arrays is reference equality, and raw aget sign
+  depends on array provenance, so every byte is compared with
+  (bit-and b 0xff)."
+  [a b]
+  (and (= (alength a) (alength b))
+       (loop [i 0]
+         (cond
+           (= i (alength a)) true
+           (not= (bit-and (aget a i) 0xff)
+                 (bit-and (aget b i) 0xff)) false
+           :else (recur (inc i))))))
+
+(defn- accept-payload
+  "Returns {:event event} when payload is exactly the canonical EDN
+  encoding of one closed v1 event, else {:reason keyword}. Decoding
+  UTF-8 lossily, parsing fewer or more than one form, an out-of-shape
+  value, and any byte-level deviation from trace/canonical-edn are all
+  rejected; the canonical byte round-trip is exact, so trailing forms,
+  comments, noncanonical whitespace or key order, and lossy decodings
+  cannot pass."
+  [payload]
+  (let [decoded (try
+                  {:text (String. payload "UTF-8")}
+                  (catch :default _
+                    {:reason :invalid-event-encoding}))]
+    (if-let [reason (:reason decoded)]
+      {:reason reason}
+      (let [text (:text decoded)]
+        (if (not (payload-bytes= payload (.getBytes text "UTF-8")))
+          {:reason :invalid-event-encoding}
+          (if (str/blank? text)
+          {:reason :invalid-event-encoding}
+          (let [parsed (try
+                         {:event (edn/read-string text)}
+                         (catch :default _
+                           {:reason :invalid-event-encoding}))]
+            (if-let [reason (:reason parsed)]
+              {:reason reason}
+              (let [event (:event parsed)]
+                (if-not (valid-shape? event)
+                  {:reason :invalid-event-shape}
+                  (let [canonical (try
+                                    {:text (trace/canonical-edn event)}
+                                    (catch :default _
+                                      {:reason :non-canonical-event}))]
+                    (if-let [reason (:reason canonical)]
+                      {:reason reason}
+                      (if (payload-bytes= payload
+                                          (.getBytes (:text canonical) "UTF-8"))
+                        {:event event}
+                        {:reason :non-canonical-event})))))))))))))
+
+(defn- accept-record
+  "Physical acceptance gate: only kind 1 flags 0 records carry activity
+  events. Returns {:event event} or {:reason keyword}."
+  [record]
+  (cond
+    (not= record-kind (:kind record)) {:reason :unexpected-kind}
+    (not= record-flags (:flags record)) {:reason :unexpected-flags}
+    :else (accept-payload (:payload record))))
+
+(defn- scan-events
+  "Walks the physically valid record prefix, accepting activity events
+  until the first semantic corruption and never resynchronizing. Returns
+  {:accepted [{:sequence :event :payload-bytes} ...] :halt nil} when every
+  physically valid record is an accepted event, or {:accepted prefix :halt
+  {:reason :sequence :offset}} describing the first unaccepted record."
+  [records]
+  (loop [rs (seq records)
+         accepted []]
+    (if-let [record (first rs)]
+      (if (>= (count accepted) max-records)
+        {:accepted accepted
+         :halt {:reason :record-quota-exceeded
+                :sequence (:sequence record)
+                :offset (:offset record)}}
+        (let [verdict (accept-record record)]
+          (if-let [reason (:reason verdict)]
+            {:accepted accepted
+             :halt {:reason reason
+                    :sequence (:sequence record)
+                    :offset (:offset record)}}
+            (recur (next rs)
+                   (conj accepted
+                         {:sequence (:sequence record)
+                          :event (:event verdict)
+                          :payload-bytes (alength (:payload record))})))))
+      {:accepted accepted :halt nil})))
+
+(defn- failed-read-page
+  "The absorbing page for a read-level failure: no journal bytes were
+  available, so recovery failed with the bounded read reason. The bounded
+  :class string from the read diagnostic is propagated; it is never a
+  Throwable or a message."
+  [cursor read-result]
+  {:version page-version
+   :cursor cursor
+   :next-cursor cursor
+   :accepted-count 0
+   :remaining? false
+   :events []
+   :recovery {:status :failed
+              :reason (:reason read-result)
+              :sequence 0
+              :last-good-offset 0
+              :raw-tail-bytes 0
+              :image-truncated? false
+              :class (:class read-result)}})
+
+(defn recover-page
+  "Recovers one bounded page of activity events from a single bounded
+  read-result (jolt.sim.journal-file/read-bounded-path or
+  read-bounded-image) plus a record-ordinal cursor. Strictly read-only:
+  no I/O, no locking, no allocation beyond the recovered page, and no
+  bytes, paths, or Throwables in the output.
+
+  cursor is a zero-based ordinal into the accepted-event prefix; because
+  the journal enforces contiguous sequences from zero, ordinals and
+  sequences coincide. A non-integer, negative, or beyond-the-prefix cursor
+  fails closed with typed ex-info :jolt.sim.activity/invalid-cursor; a
+  malformed read-result fails closed with typed ex-info
+  :jolt.sim.activity/invalid-read-result.
+
+  Acceptance is strict: the journal codec first recovers the physically
+  valid record prefix (header plus CRC-chained records, stopping at the
+  first invalid or incomplete frame), then each record must carry physical
+  kind 1 flags 0 and a payload whose UTF-8 decodes and parses as exactly
+  one canonical EDN [namespaced-keyword nil nil map] event -- the payload
+  must equal the trace/canonical-edn encoding of the parsed event
+  byte-for-byte, so multiple forms, trailing content, noncanonical
+  formatting, out-of-domain values, and lossy UTF-8 are all corruption.
+  The valid event prefix is preserved at the first physical or semantic
+  corruption and recovery never resynchronizes.
+
+  Page limits: at most max-page-events (32) events and at most
+  max-page-payload-bytes (131072) total canonical payload bytes per page.
+
+  Returns a map with exactly the keys:
+    :version        page format version (1)
+    :cursor         the validated input cursor
+    :next-cursor    ordinal one past the last event in this page
+    :accepted-count number of events in the complete semantic valid prefix
+    :remaining?     true when accepted events exist beyond next-cursor
+    :events         vector of {:sequence n :event v}, in sequence order
+    :recovery       {:status :complete|:partial|:failed
+                     :reason keyword|nil
+                     :sequence count of accepted records
+                     :last-good-offset byte offset where recovery stopped
+                     :raw-tail-bytes count of unaccepted image bytes
+                     :image-truncated? true when the read hit its byte cap
+                     :class bounded class string|nil}
+
+  :complete means the scan reached the image end with every record
+  accepted and no read truncation. :partial preserves a valid header (and
+  possibly empty event prefix) but stopped at the first physical or
+  semantic corruption, or the read was cap-truncated: a truncated read
+  never looks complete even when the image ends exactly on a record
+  boundary (:reason :input-truncated). :failed means no valid journal
+  prefix exists at all: a read-level error, or a header the codec
+  rejected. :raw-tail-bytes is a count, never the bytes themselves.
+  :class is always present and bounded: the class string propagated from
+  a read-level diagnostic, else nil -- never a Throwable, a message, or
+  a path."
+  [read-result cursor]
+  (checked-read-result read-result)
+  (checked-cursor cursor)
+  (if (= :error (:status read-result))
+    (do
+      (when (pos? cursor)
+        (invalid-cursor! :cursor-beyond-recovery {:cursor cursor :accepted 0}))
+      (failed-read-page cursor read-result))
+    (let [image (:image read-result)
+          image-length (alength image)
+          truncated? (true? (:truncated? read-result))
+          recovered (journal/recover image {:max-payload max-payload-bytes})
+          scan (scan-events (:records recovered))
+          accepted (:accepted scan)
+          total (count accepted)
+          _ (when (> cursor total)
+              (invalid-cursor! :cursor-beyond-recovery
+                               {:cursor cursor :accepted total}))
+          recovery
+          (cond
+            (:halt scan)
+            {:status :partial
+             :reason (get-in scan [:halt :reason])
+             :sequence total
+             :last-good-offset (get-in scan [:halt :offset])
+             :raw-tail-bytes (- image-length (get-in scan [:halt :offset]))
+             :image-truncated? truncated?
+             :class nil}
+
+            (some? (:failure-reason recovered))
+            {:status (if (pos? (:last-good-offset recovered))
+                       :partial
+                       :failed)
+             :reason (:failure-reason recovered)
+             :sequence total
+             :last-good-offset (:last-good-offset recovered)
+             :raw-tail-bytes (alength (:raw-tail recovered))
+             :image-truncated? truncated?
+             :class nil}
+
+            truncated?
+            {:status :partial
+             :reason :input-truncated
+             :sequence total
+             :last-good-offset image-length
+             :raw-tail-bytes 0
+             :image-truncated? true
+             :class nil}
+
+            :else
+            {:status :complete
+             :reason nil
+             :sequence total
+             :last-good-offset image-length
+             :raw-tail-bytes 0
+             :image-truncated? false
+             :class nil})
+          page (loop [index cursor
+                      events []
+                      bytes 0]
+                 (if (and (< index total)
+                          (< (count events) max-page-events))
+                   (let [entry (nth accepted index)
+                         next-bytes (+ bytes (:payload-bytes entry))]
+                     (if (<= next-bytes max-page-payload-bytes)
+                       (recur (inc index)
+                              (conj events {:sequence (:sequence entry)
+                                            :event (:event entry)})
+                              next-bytes)
+                       {:events events :next-cursor index}))
+                   {:events events :next-cursor index}))
+          next-cursor (:next-cursor page)]
+      {:version page-version
+       :cursor cursor
+       :next-cursor next-cursor
+       :accepted-count total
+       :remaining? (< next-cursor total)
+       :events (:events page)
+       :recovery recovery})))
