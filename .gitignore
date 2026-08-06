@@ -2,6 +2,7 @@
 /.jolt/
 /.jolt-cache/
 /target/
+/viewer/node_modules/
 /.nrepl-port
 *.log
 .DS_Store

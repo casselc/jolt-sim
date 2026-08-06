@@ -4,6 +4,7 @@
             [jolt.maelstrom.echo-sim-test]
             [jolt.maelstrom.echo-test]
             [jolt.sim.activity-test]
+            [jolt.sim.activity-view-test]
             [jolt.sim.case-outcome-test]
             [jolt.sim.clock-test]
             [jolt.sim.completion-test]
@@ -34,6 +35,7 @@
             [jolt.sim.runtime-test]
             [jolt.sim.schema-test]
             [jolt.sim.session-test]
+            [jolt.sim.session-view-test]
             [jolt.sim.sqlite-test]))
 
 (defn -main [& _]
@@ -42,6 +44,7 @@
                         'jolt.maelstrom.echo-sim-test
                         'jolt.maelstrom.echo-test
                         'jolt.sim.activity-test
+                        'jolt.sim.activity-view-test
                         'jolt.sim.case-outcome-test
                         'jolt.sim.clock-test
                         'jolt.sim.completion-test
@@ -72,6 +75,7 @@
                         'jolt.sim.runtime-test
                         'jolt.sim.schema-test
                         'jolt.sim.session-test
+                        'jolt.sim.session-view-test
                         'jolt.sim.sqlite-test)
         failures (+ (:fail result) (:error result))]
     (println (str (:test result) " tests, "

@@ -37,6 +37,13 @@
   {:extra-paths ["test"]
    :main-opts ["-m" "jolt.sim.viewer-test"]}
 
+  ;; Deterministic real-handler fixture for Playwright. The injected replay
+  ;; service writes one real retained activity journal and never launches the
+  ;; expensive whole-application worker exercised by :e2e-test below.
+  :browser-test-server
+  {:extra-paths ["test"]
+   :main-opts ["-m" "jolt.sim.viewer-browser-server"]}
+
   :e2e-test
   {:extra-paths ["test"]
    :main-opts ["-m" "jolt.sim.viewer-replay-e2e-test"]}

@@ -1,7 +1,7 @@
-(ns jolt.sim.viewer.session
+(ns jolt.sim.session-view
   "UI-neutral, in-process read/step adapter over one jolt.sim.session Session.
 
-  This namespace is a thin viewer-side slice over the cooperative Session
+  This namespace is a thin shared inspection slice over the cooperative Session
   capability. It does not implement HTTP, a UI, a remote protocol, another
   scheduler, durable storage, or generic effects: every branch preview and
   transition delegates to the Session, and the only state it owns is the
@@ -22,6 +22,9 @@
   (:require [jolt.sim.session :as session]))
 
 (def ^:private max-coherence-attempts 8)
+(def max-journal-page-size
+  "Maximum number of immutable session journal entries returned per frame."
+  256)
 
 ;; The core logic operates on a small map of closures over the public Session
 ;; API. Public functions build this map from a real Session; tests build it
@@ -50,9 +53,15 @@
                :cursor cursor
                :journal-count journal-count}))))
 
-(defn- journal-tail [journal cursor journal-count]
+(defn- journal-page [journal cursor journal-count]
   (validate-cursor-bound! cursor journal-count)
-  (subvec (vec journal) cursor))
+  (let [next-cursor (min journal-count (+ cursor max-journal-page-size))]
+    {:cursor cursor
+     :next-cursor next-cursor
+     :count journal-count
+     :page-size (- next-cursor cursor)
+     :remaining? (< next-cursor journal-count)
+     :entries (subvec (vec journal) cursor next-cursor)}))
 
 (defn- coherent?
   "True when every read in one frame attempt describes the same session
@@ -69,16 +78,14 @@
 
 (defn- build-frame [snap previews journal cursor]
   (let [journal-count (get-in snap [:journal :count])]
-    {:jolt.sim.viewer.session/type :frame
+    {:jolt.sim.session-view/type :frame
+     :kind :jolt.sim.kind/session-frame
      :revision (:revision snap)
      :status (:status snap)
      :projection (:projection snap)
      :branches (:branches snap)
      :previews previews
-     :journal {:cursor cursor
-               :next-cursor journal-count
-               :count journal-count
-               :entries (journal-tail journal cursor journal-count)}}))
+     :journal (journal-page journal cursor journal-count)}))
 
 (defn- read-frame* [ops cursor]
   (validate-cursor! cursor)
@@ -123,7 +130,8 @@
 (defn- stale-result [ops cursor error]
   (let [data (ex-data error)]
     (merge
-     {:jolt.sim.viewer.session/type :step-result
+     {:jolt.sim.session-view/type :step-result
+      :kind :jolt.sim.kind/session-step-result
       :status :stale
       :committed? false
       :ack nil
@@ -140,7 +148,8 @@
             ack {:branch (plain-branch branch)
                  :revision (:revision snapshot-after)}]
         (merge
-         {:jolt.sim.viewer.session/type :step-result
+         {:jolt.sim.session-view/type :step-result
+          :kind :jolt.sim.kind/session-step-result
           :status :committed
           :committed? true
           :ack ack}
@@ -154,7 +163,7 @@
           (throw error))))))
 
 (defn read-frame
-  "Returns one coherent, closed viewer frame over an in-process Session.
+  "Returns one coherent, closed inspection frame over an in-process Session.
 
   The frame is a point-in-time view: the snapshot (`:revision`, `:status`,
   `:projection`, `:branches`), the isolated branch previews (`:previews`), and

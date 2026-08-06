@@ -208,6 +208,14 @@ observer query, so both command encodings consume the same 24-statement
 application transcript. Generated exact-replay/conflict workloads and their
 retained viewer evidence remain the next bounded Phase 4 slice.
 
+Ripple's longer-term live-development boundary is recorded in
+[`research/RIPPLE-REPL-DEBUGGER-INTEGRATION.md`](research/RIPPLE-REPL-DEBUGGER-INTEGRATION.md):
+one shared Jolt evaluation engine adapted to the textual REPL, a
+prepl-compatible structured stream, and nREPL; a separate revision-scoped
+Session control protocol; and a canonical out-of-band Ripple-in-Ripple e2e
+scenario. This follows the ordinary HTTP/SQLite/TCP application workflow and
+must not displace it with debugger protocol scaffolding.
+
 The next stacked slice, draft PR `casselc/jolt-sim#29`, keeps that application
 body unchanged and runs every case in a fresh sim-enabled process. Hegel owns
 and shrinks the command payload octets, stream capacity, pipe capacity, and one

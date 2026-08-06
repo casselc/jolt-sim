@@ -9,7 +9,13 @@
 
   Every presenter returns a small data-only projection. Static reports,
   Ripple, REPL/tap consumers, and future native frontends can therefore share
-  event semantics without sharing a rendering toolkit."
+  event semantics without sharing a rendering toolkit.
+
+  A separate activity path projects the closed `jolt.sim.activity` v1 events
+  (`[namespaced-keyword nil nil map]`) recovered from the opt-in worker
+  lifecycle journal. Activity presentation dispatches only by exact event tag
+  through its own registry: it never applies the trace presenter's positional,
+  site, or operation dispatch, even to an event tagged `:task/transition`."
   (:require [jolt.sim.trace :as trace]))
 
 (def invalid-registry ::invalid-registry)
@@ -306,3 +312,135 @@
   (let [present (event-presenter registry)]
     (mapv (fn [index event] (present index event))
         (range) events)))
+
+;; ---- activity event presentation ---------------------------------------------
+
+(defn- activity-event-shape?
+  "The exact closed `jolt.sim.activity` v1 event shape: a four-element vector
+  with a namespaced keyword tag, both reserved positions nil, and a plain map
+  payload. Anything else is rejected before dispatch."
+  [event]
+  (and (vector? event)
+       (= 4 (count event))
+       (namespaced-keyword? (nth event 0))
+       (nil? (nth event 1))
+       (nil? (nth event 2))
+       (map? (nth event 3))))
+
+(defn- validate-activity-entry! [key entry]
+  (when-not (namespaced-keyword? key)
+    (registry-error! :invalid-activity-key key))
+  (when-not (and (map? entry) (= entry-keys (set (keys entry))))
+    (registry-error! :invalid-entry-shape key))
+  (when-not (namespaced-keyword? (:kind entry))
+    (registry-error! :invalid-kind {:key key :kind (:kind entry)}))
+  (when-not (fn? (:present entry))
+    (registry-error! :invalid-presenter key))
+  entry)
+
+(defn validate-activity-registry!
+  "Returns `value` when it is an exact activity presentation registry, else
+  throws.
+
+  Activity events dispatch only by their exact event tag, so registry keys
+  are namespaced keywords and nothing else. The trace registry's structured
+  `[:task/transition :site ...]` and `[:task/transition :op ...]` keys are
+  rejected here rather than silently never matching."
+  [value]
+  (when-not (map? value)
+    (registry-error! :not-a-map (str (class value))))
+  (doseq [[key entry] value]
+    (validate-activity-entry! key entry))
+  value)
+
+(defn activity-registry
+  "Composes zero or more activity presentation registries; later entries win.
+
+  A typical call is `(activity-registry default-activity-registry
+  library-registry application-registry)`. Nil values are ignored so optional
+  integrations do not need a special empty-map branch."
+  [& registries]
+  (reduce
+   (fn [result value]
+     (if (nil? value)
+       result
+       (merge result (validate-activity-registry! value))))
+   {}
+   registries))
+
+(defn- scenario-lifecycle-presentation [verb]
+  (fn [event]
+    (let [scenario (:scenario (nth event 3))]
+      {:summary (str "Scenario " scenario " " verb)
+       :fields [(field "Scenario" scenario)]})))
+
+(def default-activity-registry
+  "Built-in presentations for the scenario lifecycle events emitted under the
+  opt-in `jolt.sim.activity` worker journal. Activity tags outside this small
+  set fall back to the same raw data presentation as unknown trace tags."
+  {:jolt.sim.explore/scenario-started
+   {:kind :jolt.sim.kind/scenario-started
+    :present (scenario-lifecycle-presentation "started")}
+   :jolt.sim.explore/scenario-completed
+   {:kind :jolt.sim.kind/scenario-completed
+    :present (scenario-lifecycle-presentation "completed")}
+   :jolt.sim.explore/scenario-failed
+   {:kind :jolt.sim.kind/scenario-failed
+    :present (scenario-lifecycle-presentation "failed")}})
+
+(defn- present-activity-event* [registry index event]
+  (when-not (activity-event-shape? event)
+    (throw
+     (ex-info "Cannot present a malformed activity event"
+              {:type invalid-presentation
+               :reason :invalid-activity-event
+               :index index})))
+  (let [tag (nth event 0)
+        entry (get registry tag)
+        kind (if entry (:kind entry) :jolt.sim.kind/raw-event)
+        projection
+        (try
+          ((if entry (:present entry) raw-projection) event)
+          (catch :default error
+            (throw
+             (ex-info "Presentation function failed"
+                      {:type invalid-presentation
+                       :reason :presenter-threw
+                       :dispatch-key tag}
+                      error))))
+        projection (validate-projection! tag projection)
+        projection
+        (update projection :fields
+                (fn [fields]
+                  (mapv #(assoc % :value-edn
+                                (trace/canonical-edn (:value %)))
+                        fields)))]
+    (merge
+     {:index index
+      :tag (keyword-text tag)
+      :kind kind
+      :kind-name (keyword-text kind)
+      :dispatch-key tag
+      :dispatch-key-edn (trace/canonical-edn tag)
+      :step nil
+      :time nil
+      :task nil
+      :edn (trace/canonical-edn event)
+      :has-fields (pos? (count (:fields projection)))}
+     projection)))
+
+(defn activity-event-presenter
+  "Validates `registry` once and returns an incremental activity-event
+  projector accepting `[index event]`.
+
+  Activity events are the closed `jolt.sim.activity` v1 shape: exactly
+  `[namespaced-keyword nil nil map]`. Dispatch is by exact event tag only;
+  this projector never applies the trace presenter's positional, site, or
+  operation dispatch, even to an event tagged `:task/transition`. A missing
+  entry produces the raw data presentation, while malformed events,
+  registries, or presenter results fail closed. Rows carry the same closed
+  key set as trace rows with `:step`, `:time`, and `:task` always nil and the
+  complete canonical event EDN retained."
+  [registry]
+  (validate-activity-registry! registry)
+  (fn [index event] (present-activity-event* registry index event)))

@@ -275,6 +275,16 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+      - name: Install Node for Ripple browser acceptance
+        id: viewer_node
+        if: always() && matrix.name == 'Linux x86_64'
+        continue-on-error: true
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: jolt-sim/viewer/package-lock.json
+
       - name: Run optional retained-case viewer gates
         id: viewer_gate
         if: matrix.name == 'Linux x86_64'
@@ -308,12 +318,37 @@ jobs:
           JOLT_SIM_VIEWER_DOCUMENT="$repo/report/examples/outbox-retry-case-outcome.edn" \
             "$sim" -M:e2e-test
 
+      - name: Run Ripple browser acceptance
+        id: viewer_browser_gate
+        if: always() && matrix.name == 'Linux x86_64' && steps.viewer_node.outcome == 'success'
+        # Browser acceptance is failure-independent from the raw HTTP E2E and
+        # Hegel campaigns. Its own Playwright output retains screenshots plus
+        # trace/video/screenshot diagnostics for a failed or retried attempt.
+        continue-on-error: true
+        timeout-minutes: 15
+        shell: bash
+        env:
+          JOLT_AOT_CACHE: "0"
+        run: |
+          set -euo pipefail
+          export HOME="$RUNNER_TEMP/jolt-home"
+          export JOLT_CACHE_DIR="$RUNNER_TEMP/jolt-cache"
+          export TMPDIR="$RUNNER_TEMP/jolt-tmp"
+          mkdir -p "$HOME" "$JOLT_CACHE_DIR" "$TMPDIR"
+          sim="$GITHUB_WORKSPACE/jolt-core/target/sim/jolt"
+          cd "$GITHUB_WORKSPACE/jolt-sim/viewer"
+          npm ci
+          ./node_modules/.bin/playwright install --with-deps chromium
+          JOLT_SIM_BIN="$sim" npm run test:browser
+
       - name: Preserve retained-case viewer replay artifacts
         if: always() && matrix.name == 'Linux x86_64'
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: viewer-replay-${{ matrix.toolchain }}
-          path: jolt-sim/target/viewer-replay-artifacts/
+          path: |
+            jolt-sim/target/viewer-replay-artifacts/
+            jolt-sim/target/ripple-playwright/
           if-no-files-found: ignore
           retention-days: 14
 
@@ -427,8 +462,18 @@ jobs:
             failed=1
           fi
           if [[ "${{ matrix.name }}" = "Linux x86_64" && \
+                "${{ steps.viewer_node.outcome }}" != "success" ]]; then
+            echo "Ripple Node setup outcome: ${{ steps.viewer_node.outcome }}" >&2
+            failed=1
+          fi
+          if [[ "${{ matrix.name }}" = "Linux x86_64" && \
                 "${{ steps.viewer_gate.outcome }}" != "success" ]]; then
             echo "retained-case viewer gate outcome: ${{ steps.viewer_gate.outcome }}" >&2
+            failed=1
+          fi
+          if [[ "${{ matrix.name }}" = "Linux x86_64" && \
+                "${{ steps.viewer_browser_gate.outcome }}" != "success" ]]; then
+            echo "Ripple browser gate outcome: ${{ steps.viewer_browser_gate.outcome }}" >&2
             failed=1
           fi
           exit "$failed"

@@ -223,40 +223,6 @@
     :count :remaining
     :consecutive-eintrs :max-eintr-retries})
 
-(def ^:private activity-status-keys
-  #{:health :failure :sequence :accepted :capped? :durability :closed?})
-
-(defn- natural-integer? [value]
-  (and (integer? value) (not (neg? value))))
-
-(defn- valid-bounded-activity-failure? [failure]
-  (and (map? failure)
-       (seq failure)
-       (every? activity-failure-keys (keys failure))
-       (keyword? (:phase failure))
-       (keyword? (:reason failure))
-       (or (not (contains? failure :class))
-           (string? (:class failure)))
-       (every? (fn [key]
-                 (or (not (contains? failure key))
-                     (natural-integer? (get failure key))))
-               [:payload-length :max-payload :count :remaining
-                :consecutive-eintrs :max-eintr-retries])))
-
-(defn- valid-bounded-activity-status? [status]
-  (and (map? status)
-       (= activity-status-keys (set (keys status)))
-       (contains? #{:healthy :failed} (:health status))
-       (if (= :failed (:health status))
-         (valid-bounded-activity-failure? (:failure status))
-         (nil? (:failure status)))
-       (natural-integer? (:sequence status))
-       (natural-integer? (:accepted status))
-       (<= (:accepted status) activity/max-records)
-       (boolean? (:capped? status))
-       (= :process-crash (:durability status))
-       (boolean? (:closed? status))))
-
 (defn- bounded-activity-failure
   "Projects an observer failure map to narrow identifier/scalar context:
   keyword phase/reason, a class-name string, and numeric context. Raw
@@ -481,7 +447,7 @@
       (when-not (trace/canonical-form? (get document activity-key))
         (throw (protocol-error :result-payload
                                {:status status :field :activity})))
-      (when-not (valid-bounded-activity-status?
+      (when-not (activity/valid-observer-status?
                  (trace/restore-value (get document activity-key)))
         (throw (protocol-error :result-payload
                                {:status status :field :activity}))))

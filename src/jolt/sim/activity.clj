@@ -132,6 +132,48 @@
     (locking state
       (status-under-lock observer))))
 
+(def ^:private bounded-failure-keys
+  #{:phase :reason :class
+    :payload-length :max-payload
+    :count :remaining
+    :consecutive-eintrs :max-eintr-retries})
+
+(defn- natural-integer? [value]
+  (and (integer? value) (not (neg? value))))
+
+(defn- valid-bounded-failure? [failure]
+  (and (map? failure)
+       (seq failure)
+       (every? bounded-failure-keys (keys failure))
+       (keyword? (:phase failure))
+       (keyword? (:reason failure))
+       (or (not (contains? failure :class))
+           (string? (:class failure)))
+       (every? (fn [key]
+                 (or (not (contains? failure key))
+                     (natural-integer? (get failure key))))
+               [:payload-length :max-payload :count :remaining
+                :consecutive-eintrs :max-eintr-retries])))
+
+(defn valid-observer-status?
+  "True only for the exact bounded immutable observer-status contract shared
+  by the worker result, retained activity view, REPL, and UI adapters."
+  [status]
+  (and (map? status)
+       (= #{:health :failure :sequence :accepted :capped? :durability :closed?}
+          (set (keys status)))
+       (contains? #{:healthy :failed} (:health status))
+       (if (= :failed (:health status))
+         (valid-bounded-failure? (:failure status))
+         (nil? (:failure status)))
+       (natural-integer? (:sequence status))
+       (<= (:sequence status) max-records)
+       (natural-integer? (:accepted status))
+       (<= (:accepted status) (:sequence status))
+       (boolean? (:capped? status))
+       (= :process-crash (:durability status))
+       (boolean? (:closed? status))))
+
 (defn close-observer!
   "Closes the journal idempotently and returns the resulting observer status."
   [observer]
