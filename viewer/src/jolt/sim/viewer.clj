@@ -39,7 +39,7 @@
             [jolt.sim.report :as report]
             [jolt.sim.trace :as trace]
             [jolt.sim.viewer.experiment :as experiment-viewer]
-            [jolt.sim.viewer.session :as viewer-session]))
+            [jolt.sim.session-view :as viewer-session]))
 
 (def invalid-config ::invalid-config)
 (def request-too-large ::request-too-large)
@@ -75,7 +75,6 @@
 (def ^:private minimum-token-length 32)
 
 (def ^:private progress-log-byte-limit 65536)
-(def ^:private session-journal-page-size 256)
 (def ^:private maximum-session-cursor-digits 19)
 (def ^:private session-step-body-limit 4096)
 ;; A signed decimal carries one leading minus sign plus the unsigned digit
@@ -681,11 +680,11 @@
 (defn- session-frame-error-response [error]
   (let [data (ex-data error)]
     (case (:type data)
-      :jolt.sim.viewer.session/invalid-cursor
+      :jolt.sim.session-view/invalid-cursor
       (error-response 400 :invalid-session-cursor
                       (select-keys data [:reason :cursor :journal-count]))
 
-      :jolt.sim.viewer.session/coherence-failed
+      :jolt.sim.session-view/coherence-failed
       (error-response 409 :session-frame-incoherent
                       (select-keys data [:attempts :max-attempts]))
 
@@ -696,31 +695,30 @@
       nil)))
 
 (defn- bounded-session-frame
-  "Validates the trusted reader's closed journal coordinates and returns one
-  bounded page. The Session adapter may have read a longer tail internally,
-  but neither the HTTP response nor browser retains more than this page."
+  "Validates the core session-view's already bounded journal page."
   [frame cursor]
   (let [journal (:journal frame)
         count (:count journal)
-        entries (:entries journal)]
+        entries (:entries journal)
+        next-cursor (:next-cursor journal)
+        page-size (:page-size journal)]
     (when-not (and (map? frame)
-                   (= :frame (:jolt.sim.viewer.session/type frame))
+                   (= :frame (:jolt.sim.session-view/type frame))
                    (map? journal)
                    (= cursor (:cursor journal))
                    (integer? count)
                    (<= cursor count)
+                   (integer? next-cursor)
+                   (<= cursor next-cursor count)
+                   (integer? page-size)
+                   (= page-size (- next-cursor cursor))
+                   (<= page-size viewer-session/max-journal-page-size)
+                   (= (:remaining? journal) (< next-cursor count))
                    (vector? entries)
-                   (= (- count cursor) (clojure.core/count entries)))
+                   (= page-size (clojure.core/count entries)))
       (throw (ex-info "trusted session reader returned an invalid frame"
                       {:type invalid-session-frame})))
-    (let [page (vec (take session-journal-page-size entries))
-          next-cursor (+ cursor (clojure.core/count page))]
-      (assoc frame :journal
-             (assoc journal
-                    :entries page
-                    :next-cursor next-cursor
-                    :page-size (clojure.core/count page)
-                    :remaining? (< next-cursor count))))))
+    frame))
 
 (defn- wire-long? [value]
   (and (integer? value)
@@ -1053,7 +1051,7 @@
   [submitted-branch result]
   (when-not (and (map? result)
                  (= :step-result
-                    (:jolt.sim.viewer.session/type result)))
+                    (:jolt.sim.session-view/type result)))
     (invalid-step-result!))
   (let [status (:status result)
         committed? (:committed? result)
@@ -1110,7 +1108,7 @@
         phase (if (= :committed status) :post-commit :stale-refresh)]
     (cond
       (and (map? frame)
-           (= :frame (:jolt.sim.viewer.session/type frame))
+           (= :frame (:jolt.sim.session-view/type frame))
            (nil? frame-error))
       (assoc base :frame-status :available)
 
@@ -1137,7 +1135,7 @@
       (error-response 400 :invalid-session-step
                       (select-keys data [:reason]))
 
-      (= :jolt.sim.viewer.session/invalid-cursor type)
+      (= :jolt.sim.session-view/invalid-cursor type)
       (error-response 400 :invalid-session-cursor
                       (select-keys data [:reason :cursor :journal-count]))
 

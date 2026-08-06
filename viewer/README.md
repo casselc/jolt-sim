@@ -155,7 +155,7 @@ viewer does not reimplement HTTP, SQLite, TCP, bencode, or application logic.
 
 ### In-process session stepping adapter
 
-`jolt.sim.viewer.session` is a UI-neutral, in-process adapter over one
+`jolt.sim.session-view` is a UI-neutral, in-process adapter over one
 `jolt.sim.session` Session (the cooperative REPL control capability). It is
 not HTTP, a UI, a remote protocol, another scheduler, durable storage, or a
 generic effect layer: every branch preview and transition delegates to the

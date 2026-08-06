@@ -13,7 +13,7 @@
             [jolt.sim.trace :as trace]
             [jolt.sim.viewer :as viewer]
             [jolt.sim.viewer.experiment :as viewer-experiment]
-            [jolt.sim.viewer.session :as viewer-session]
+            [jolt.sim.session-view :as viewer-session]
             [teensyp.client :as client]))
 
 (def token "0123456789abcdef0123456789abcdef")
@@ -984,7 +984,7 @@
     (is (= [] @render-calls))
     (is (= [] @replay-calls))))
 
-;; --- Viewer-side session adapter (jolt.sim.viewer.session) ---
+;; --- Viewer-side session adapter (jolt.sim.session-view) ---
 ;;
 ;; UI-neutral read/step slice over one cooperative Session. The core logic is
 ;; exercised through the public API with a real Session, and through the
@@ -992,10 +992,10 @@
 ;; deterministically: bounded coherence and post-commit frame failure.
 
 (def ^:private read-frame-ops-var
-  (resolve 'jolt.sim.viewer.session/read-frame*))
+  (resolve 'jolt.sim.session-view/read-frame*))
 
 (def ^:private step-frame-ops-var
-  (resolve 'jolt.sim.viewer.session/step-frame*))
+  (resolve 'jolt.sim.session-view/step-frame*))
 
 (defn- session-sim-config []
   {:tasks {2 (kernel/runnable :finish)
@@ -1197,11 +1197,12 @@
                 :read-session-frame
                 (fn [cursor]
                   (swap! cursors conj cursor)
-                  {:jolt.sim.viewer.session/type :frame
+                  {:jolt.sim.session-view/type :frame
                    :revision 3 :status nil :projection {}
                    :branches [] :previews []
                    :journal {:cursor cursor :next-cursor 7
-                             :count 7 :entries [{:seq 6}]}})))
+                             :count 7 :page-size 1 :remaining? false
+                             :entries [{:seq 6}]}})))
         cursor-request (assoc-in (get-request "/api/session-frame")
                                  [:headers "x-jolt-sim-journal-cursor"] "6")
         malformed-request (assoc-in (get-request "/api/session-frame")
@@ -1225,9 +1226,9 @@
 
 (deftest session-frame-endpoint-translates-adapter-failures-without-details
   (doseq [[type expected-status expected-error]
-          [[:jolt.sim.viewer.session/invalid-cursor
+          [[:jolt.sim.session-view/invalid-cursor
             400 :invalid-session-cursor]
-           [:jolt.sim.viewer.session/coherence-failed
+           [:jolt.sim.session-view/coherence-failed
             409 :session-frame-incoherent]]]
     (let [handler
           (viewer/make-handler
@@ -1253,11 +1254,15 @@
         (assoc (services (atom []) (atom []) {:status :completed})
                :read-session-frame
                (fn [cursor]
-                 {:jolt.sim.viewer.session/type :frame
-                  :revision 0 :status nil :projection {}
-                  :branches [] :previews []
-                  :journal {:cursor cursor :next-cursor 300 :count 300
-                            :entries (subvec entries cursor)}}))
+                 (let [next-cursor (min 300 (+ cursor 256))]
+                   {:jolt.sim.session-view/type :frame
+                    :revision 0 :status nil :projection {}
+                    :branches [] :previews []
+                    :journal {:cursor cursor :next-cursor next-cursor
+                              :count 300
+                              :page-size (- next-cursor cursor)
+                              :remaining? (< next-cursor 300)
+                              :entries (subvec entries cursor next-cursor)}})))
         response ((viewer/make-handler
                    (assoc (config) :max-document-bytes (* 1024 1024))
                    services-map)
@@ -1302,11 +1307,12 @@
                   (swap! reads inc)
                   (deliver entered true)
                   @release
-                  {:jolt.sim.viewer.session/type :frame
+                  {:jolt.sim.session-view/type :frame
                    :revision 0 :status nil :projection {}
                    :branches [] :previews []
                    :journal {:cursor cursor :next-cursor cursor
-                             :count cursor :entries []}})))
+                             :count cursor :page-size 0
+                             :remaining? false :entries []}})))
         first-response (future (handler (get-request "/api/session-frame")))]
     (try
       (is (= true (deref entered 5000 ::timeout)))
@@ -1344,10 +1350,11 @@
 (deftest session-frame-initial-read-is-coherent-and-closed
   (let [s (session/start (session-sim-config))
         frame (viewer-session/read-frame s 0)]
-    (is (= #{:jolt.sim.viewer.session/type :revision :status :projection
+    (is (= #{:jolt.sim.session-view/type :kind :revision :status :projection
              :branches :previews :journal}
            (set (keys frame))))
-    (is (= :frame (get frame :jolt.sim.viewer.session/type)))
+    (is (= :frame (get frame :jolt.sim.session-view/type)))
+    (is (= :jolt.sim.kind/session-frame (:kind frame)))
     (is (= 0 (:revision frame)))
     (is (nil? (:status frame))
         "Session status is nil while the machine still has enabled actions")
@@ -1394,17 +1401,17 @@
   (let [s (session/start (session-sim-config))]
     (doseq [cursor [-1 "0" :zero 1.5]]
       (let [data (caught-data #(viewer-session/read-frame s cursor))]
-        (is (= :jolt.sim.viewer.session/invalid-cursor (:type data)))
+        (is (= :jolt.sim.session-view/invalid-cursor (:type data)))
         (is (= :not-a-non-negative-integer (:reason data)))))
     (let [data (caught-data #(viewer-session/read-frame s 5))]
-      (is (= :jolt.sim.viewer.session/invalid-cursor (:type data)))
+      (is (= :jolt.sim.session-view/invalid-cursor (:type data)))
       (is (= :ahead-of-journal (:reason data)))
       (is (= 5 (:cursor data)))
       (is (= 1 (:journal-count data))))
     (let [before (session/snapshot s)
           data (caught-data
                 #(viewer-session/step-frame! s {:revision 0 :action [:run 2]} -1))]
-      (is (= :jolt.sim.viewer.session/invalid-cursor (:type data)))
+      (is (= :jolt.sim.session-view/invalid-cursor (:type data)))
       (is (= before (session/snapshot s))
           "a rejected cursor never reaches the step command"))))
 
@@ -1429,7 +1436,7 @@
                       {:revision revision :journal-count (inc revision)}))
         ops (scripted-ops states)
         data (caught-data #(@read-frame-ops-var ops 0))]
-    (is (= :jolt.sim.viewer.session/coherence-failed (:type data)))
+    (is (= :jolt.sim.session-view/coherence-failed (:type data)))
     (is (= 8 (:attempts data)))))
 
 (deftest session-step-frame-acknowledges-the-applied-branch
@@ -1522,7 +1529,7 @@
             :revision 1}
            (:ack result)))
     (is (nil? (:frame result)))
-    (is (= {:type :jolt.sim.viewer.session/coherence-failed
+    (is (= {:type :jolt.sim.session-view/coherence-failed
             :phase :post-commit
             :attempts 8
             :max-attempts 8}
@@ -1682,7 +1689,7 @@
           (assoc (services (atom []) (atom []) {:status :completed})
                  :step-session-frame!
                  (fn [& _]
-                   {:jolt.sim.viewer.session/type :wrong
+                   {:jolt.sim.session-view/type :wrong
                     :secret "must-not-cross"})))
          (assoc-in (step-request (step-body "0" "0" "run" "2"))
                    [:headers "accept"] "application/json"))]
@@ -2006,17 +2013,18 @@
         reads (atom 0)
         steps (atom 0)
         valid-frame (fn [cursor]
-                      {:jolt.sim.viewer.session/type :frame
+                      {:jolt.sim.session-view/type :frame
                        :revision 0 :status nil :projection {}
                        :branches [] :previews []
                        :journal {:cursor cursor :next-cursor cursor
-                                 :count cursor :entries []}})
-        committed-envelope {:jolt.sim.viewer.session/type :step-result
+                                 :count cursor :page-size 0
+                                 :remaining? false :entries []}})
+        committed-envelope {:jolt.sim.session-view/type :step-result
                             :status :committed
                             :committed? true
                             :ack {:branch {:revision 0 :action [:run 2]}
                                   :revision 1}
-                            :frame {:jolt.sim.viewer.session/type :frame
+                            :frame {:jolt.sim.session-view/type :frame
                                     :revision 1}
                             :frame-error nil}
         handler
@@ -2135,14 +2143,14 @@
          (assoc (services (atom []) (atom []) {:status :completed})
                 :step-session-frame!
                 (fn [_ _]
-                  {:jolt.sim.viewer.session/type :step-result
+                  {:jolt.sim.session-view/type :step-result
                    :status :committed
                    :committed? true
                    :ack {:branch {:revision 0 :action [:run 2]}
                          :revision 1}
                    :frame nil
                    :frame-error
-                   {:type :jolt.sim.viewer.session/coherence-failed
+                   {:type :jolt.sim.session-view/coherence-failed
                     :phase :post-commit
                     :attempts 8
                     :max-attempts 8
@@ -2155,7 +2163,7 @@
             :ack {:branch {:revision 0 :action [:run 2]}
                   :revision 1}
             :frame-status :unavailable
-            :frame-error {:type :jolt.sim.viewer.session/coherence-failed
+            :frame-error {:type :jolt.sim.session-view/coherence-failed
                           :phase :post-commit
                           :attempts 8
                           :max-attempts 8}}
@@ -2170,7 +2178,7 @@
          (assoc (services (atom []) (atom []) {:status :completed})
                 :step-session-frame!
                 (fn [branch _]
-                  {:jolt.sim.viewer.session/type :step-result
+                  {:jolt.sim.session-view/type :step-result
                    :status :stale
                    :committed? false
                    :ack nil
@@ -2181,7 +2189,7 @@
                            :secret "must-not-cross"}
                    :frame nil
                    :frame-error
-                   {:type :jolt.sim.viewer.session/coherence-failed
+                   {:type :jolt.sim.session-view/coherence-failed
                     :phase :stale-refresh
                     :attempts 8
                     :max-attempts 8
@@ -2195,7 +2203,7 @@
                     :actual-revision 1
                     :branch {:revision 0 :action [:run 2]}}
             :frame-status :unavailable
-            :frame-error {:type :jolt.sim.viewer.session/coherence-failed
+            :frame-error {:type :jolt.sim.session-view/coherence-failed
                           :phase :stale-refresh
                           :attempts 8
                           :max-attempts 8}}
@@ -2210,14 +2218,14 @@
          (assoc (services (atom []) (atom []) {:status :completed})
                 :step-session-frame!
                 (fn [_ _]
-                  {:jolt.sim.viewer.session/type :step-result
+                  {:jolt.sim.session-view/type :step-result
                    :status :committed
                    :committed? true
                    :ack {:branch {:revision 0 :action [:run 2]
                                   :secret secret}
                          :revision 1
                          :secret secret}
-                   :frame {:jolt.sim.viewer.session/type :frame
+                   :frame {:jolt.sim.session-view/type :frame
                            :world {:secret secret}}
                    :frame-error nil
                    :secret secret})))
@@ -2236,12 +2244,12 @@
   (doseq [stepper [(fn [_ _]
                      (throw (ex-info "stepper secret"
                                      {:secret "must-not-cross"})))
-                   (fn [_ _] {:jolt.sim.viewer.session/type :step-result
+                   (fn [_ _] {:jolt.sim.session-view/type :step-result
                               :status :mystery})
-                   (fn [_ _] {:jolt.sim.viewer.session/type :step-result
+                   (fn [_ _] {:jolt.sim.session-view/type :step-result
                               :status :committed :committed? true
                               :frame {:revision 1}})
-                   (fn [_ _] {:jolt.sim.viewer.session/type :step-result
+                   (fn [_ _] {:jolt.sim.session-view/type :step-result
                               :status :committed :committed? true
                               :ack {:branch {:revision 0 :action [:run 2]}
                                     :revision 1}
