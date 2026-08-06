@@ -353,9 +353,25 @@
       (string/replace "\"" "&quot;")
       (string/replace "'" "&#39;")))
 
-(defn- row-html [row]
-  (str "<article class=\"plan-row\" data-kind=\""
-       (html-escape (:kind-name row)) "\"><h2>"
+(defn- row-entity [event]
+  (case (first event)
+    :jolt.sim.viewer.experiment/node
+    {:type "node" :id (:id (nth event 2))}
+
+    :jolt.sim.viewer.experiment/connection
+    {:type "connection" :id (:id (nth event 2))}
+
+    nil))
+
+(defn- row-html [row event]
+  (let [entity (row-entity event)]
+    (str "<article class=\"plan-row\" tabindex=\"-1\" data-kind=\""
+       (html-escape (:kind-name row)) "\" data-search=\""
+       (html-escape (:edn row)) "\""
+       (when entity
+         (str " data-entity-type=\"" (:type entity)
+              "\" data-entity-id=\"" (html-escape (:id entity)) "\""))
+       "><h2>"
        (html-escape (:summary row)) "</h2>"
        (apply str
               (map (fn [field]
@@ -365,7 +381,7 @@
                           (html-escape (:value-edn field))
                           "</code></div>"))
                    (:fields row)))
-       "</article>"))
+       "</article>")))
 
 (def ^:private topology-max-nodes 12)
 (def ^:private topology-max-edges 24)
@@ -505,7 +521,14 @@
         label (str (bounded-text (:id connection)) " · "
                    (bounded-text (:mode connection)) " · "
                    (bounded-text (:pack-id connection)))]
-    (str "<g class=\"topology-edge\">"
+    (str "<g class=\"topology-edge\" tabindex=\"0\" role=\"button\""
+         " data-connection=\"" (html-escape (:id connection)) "\""
+         " data-from-node=\"" (html-escape (first (:from connection))) "\""
+         " data-to-node=\"" (html-escape (first (:to connection))) "\""
+         " data-mode=\"" (html-escape (:mode connection)) "\""
+         " data-pack=\"" (html-escape (:pack-id connection)) "\""
+         " data-search=\"" (html-escape (trace/canonical-edn connection)) "\""
+         " aria-label=\"Connection " (html-escape (:id connection)) "\">"
          (if self-loop?
            (str "<path d=\"M " x1 " " y1 " C " (+ x1 28) " " (- y1 28)
                 ", " (+ x1 28) " " (+ y1 28) ", " x1 " " (+ y1 18)
@@ -521,8 +544,9 @@
 (defn- topology-node-html [{:keys [x y node]}]
   (let [ports (:ports node)
         shown (take 3 ports)]
-    (str "<g class=\"topology-node\" data-node=\""
-         (html-escape (:id node)) "\" aria-label=\"Node "
+    (str "<g class=\"topology-node\" tabindex=\"0\" role=\"button\" data-node=\""
+         (html-escape (:id node)) "\" data-search=\""
+         (html-escape (trace/canonical-edn node)) "\" aria-label=\"Node "
          (html-escape (:id node)) "\"><rect x=\"" x "\" y=\"" y
          "\" width=\"" topology-node-width "\" height=\""
          topology-node-height "\" rx=\"8\"></rect>"
@@ -548,6 +572,24 @@
          "<h2 id=\"topology-heading\">Topology</h2>"
          "<p>Showing " (count nodes) " of " node-count " nodes and "
          (count connections) " of " connection-count " connections.</p>"
+         "<div class=\"topology-controls\">"
+         "<label>Filter <input id=\"topology-filter\" type=\"search\" placeholder=\"node, port, capability, connection…\"></label>"
+         "<label>Mode <select id=\"topology-mode\"><option value=\"\">All modes</option>"
+         (apply str
+                (map #(str "<option value=\"" (html-escape %) "\">"
+                           (html-escape %) "</option>")
+                     (sort-by pr-str (set (map :mode connections)))))
+         "</select></label>"
+         "<label>Pack <select id=\"topology-pack\"><option value=\"\">All packs</option>"
+         (apply str
+                (map #(str "<option value=\"" (html-escape %) "\">"
+                           (html-escape %) "</option>")
+                     (sort-by pr-str (set (map :pack-id connections)))))
+         "</select></label>"
+         "<button id=\"topology-clear\" type=\"button\">Clear</button>"
+         "<button id=\"topology-jump\" type=\"button\" disabled>Jump to details</button>"
+         "<output id=\"topology-status\" aria-live=\"polite\">No selection.</output>"
+         "</div>"
          "<svg role=\"img\" aria-labelledby=\"topology-title topology-desc\""
          " viewBox=\"0 0 " width " " height "\""
          " width=\"100%\" height=\"" height "\">"
@@ -570,7 +612,10 @@
           ".notice,.plan-row{border:1px solid #8886;border-radius:.5rem;padding:1rem;margin:1rem 0}"
           ".notice{border-color:#b86;background:#b861}.field{margin:.45rem 0}"
           ".topology{border:1px solid #8886;border-radius:.5rem;padding:1rem;margin:1rem 0;overflow:auto}"
+          ".topology-controls{display:flex;flex-wrap:wrap;gap:.65rem;align-items:end}.topology-controls label{display:grid;gap:.2rem}.topology-controls input,.topology-controls select,.topology-controls button{font:inherit;padding:.35rem .5rem}.topology-controls output{min-width:12rem}"
           ".topology svg{min-width:36rem;background:#fafafa}.topology-edge line,.topology-edge path{fill:none;stroke:#667;stroke-width:1.5}.topology-edge text{font-size:10px;fill:#334}#topology-arrow path{fill:#667;stroke:none}.topology-node rect{fill:#fff;stroke:#456;stroke-width:1.5}.topology-node text{fill:#123}.node-title{font-size:13px;font-weight:700}.node-port{font-size:10px}"
+          ".topology-node,.topology-edge{cursor:pointer;transition:opacity .12s}.topology-node.is-selected rect{fill:#d8ecff;stroke:#075ca8;stroke-width:3}.topology-node.is-related rect{fill:#eef7ff;stroke:#4585b8}.topology-edge.is-selected line,.topology-edge.is-selected path{stroke:#b33;stroke-width:3}.topology-edge.is-related line,.topology-edge.is-related path{stroke:#1670b8;stroke-width:2.5}.topology-node.is-dimmed,.topology-edge.is-dimmed{opacity:.18}.topology [hidden],.plan-row[hidden]{display:none}.plan-row.is-selected{border-color:#1670b8;background:#eef7ff}"
+          ".topology-node:focus-visible rect,.topology-edge:focus-visible line,.topology-edge:focus-visible path{stroke:#7b2cbf;stroke-width:3;outline:none}"
           "code{white-space:pre-wrap;overflow-wrap:anywhere}button{margin-right:.5rem}"
           "</style></head><body><h1>Experiment plan</h1>"
           "<p><code>" (html-escape (:experiment-id view)) "</code> / <code>"
@@ -580,5 +625,5 @@
           "<button disabled aria-disabled=\"true\">Step</button>"
           "<button disabled aria-disabled=\"true\">Perturb</button></div></section>"
           (topology-html document)
-          (apply str (map row-html (:rows view)))
+          (apply str (map row-html (:rows view) (document-events document)))
           "</body></html>"))))
