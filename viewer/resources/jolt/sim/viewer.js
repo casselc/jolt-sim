@@ -76,7 +76,7 @@
   const updateButtons = () => {
     // The document kind is always chosen explicitly; the server never guesses
     // a schema from the uploaded bytes. Replay is a Case/Outcome-only path,
-    // so a declared trace kind keeps the replay button disabled.
+    // so declared trace and experiment-plan kinds keep replay disabled.
     const ready = typeof documentText === "string" &&
                   kind.value.length > 0 &&
                   capability.value.length > 0;

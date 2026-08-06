@@ -2,15 +2,17 @@
   "Loopback-only offline document inspection and fresh-process replay UI.
 
   This optional dependency root is a thin HTTP adapter over the existing
-  trace and Case/Outcome validators, report views, and
+  trace, Case/Outcome, and inert experiment-plan validators, report views, and
   `jolt.sim.repl/replay-document!`. It is not a scheduler, controller,
   monitor, evidence store, or second replay implementation.
 
   Every browser request must declare its document kind explicitly
-  (`:trace` or `:case-outcome`) through the `X-Jolt-Sim-Document-Kind`
+  (`:trace`, `:case-outcome`, or `:experiment-plan`) through the
+  `X-Jolt-Sim-Document-Kind`
   header; the server never infers or guesses a schema from the uploaded
-  bytes. Trace documents render through `jolt.sim.report/trace->html` and
-  are never replayable; Case/Outcome documents render through
+  bytes. Trace documents render through `jolt.sim.report/trace->html`;
+  experiment-plan documents render only their safe inert projection. Neither
+  kind is replayable. Case/Outcome documents render through
   `jolt.sim.report/case-outcome->html` and keep the existing replay path.
 
   Browser requests carry only one retained document. Trusted
@@ -33,13 +35,15 @@
             [jolt.sim.presentation :as presentation]
             [jolt.sim.repl :as sim-repl]
             [jolt.sim.report :as report]
-            [jolt.sim.trace :as trace]))
+            [jolt.sim.trace :as trace]
+            [jolt.sim.viewer.experiment :as experiment-viewer]))
 
 (def invalid-config ::invalid-config)
 (def request-too-large ::request-too-large)
 (def document-kind-required ::document-kind-required)
 (def unknown-document-kind ::unknown-document-kind)
 (def trace-not-replayable ::trace-not-replayable)
+(def experiment-plan-not-replayable ::experiment-plan-not-replayable)
 
 (def ^:private config-keys
   #{:port :capability-token :max-document-bytes
@@ -411,6 +415,7 @@
     (case normalized
       "trace" :trace
       "case-outcome" :case-outcome
+      "experiment-plan" :experiment-plan
       (throw (ex-info "viewer request has an unknown document kind"
                       {:type unknown-document-kind :kind normalized})))))
 
@@ -421,7 +426,8 @@
   [kind text]
   (case kind
     :trace (trace/read-edn text)
-    :case-outcome (case-outcome/read-edn text)))
+    :case-outcome (case-outcome/read-edn text)
+    :experiment-plan (experiment-viewer/read-edn text)))
 
 (defn- request-document [config request kind]
   (let [bytes (bounded-body-bytes request (:max-document-bytes config))]
@@ -443,7 +449,8 @@
                       (select-keys data [:limit :actual]))
 
       (or (= case-outcome/invalid-document type)
-          (= trace/invalid-document type))
+          (= trace/invalid-document type)
+          (= experiment-viewer/invalid-document type))
       (error-response 400 :invalid-document
                       (select-keys data [:reason]))
 
@@ -456,6 +463,10 @@
 
       (= trace-not-replayable type)
       (error-response 400 :trace-not-replayable
+                      (select-keys data [:kind]))
+
+      (= experiment-plan-not-replayable type)
+      (error-response 400 :experiment-plan-not-replayable
                       (select-keys data [:kind]))
 
       (= ::scenario-not-allowed type)
@@ -514,17 +525,19 @@
 
   Every `POST /api/render` and `POST /api/replay` request must declare its
   document kind explicitly through the `X-Jolt-Sim-Document-Kind` header
-  (`trace` or `case-outcome`); a missing or unknown kind is rejected before
-  the request body is read, and the server never infers a schema from the
-  uploaded bytes.
+  (`trace`, `case-outcome`, or `experiment-plan`); a missing or unknown kind
+  is rejected before the request body is read, and the server never infers a
+  schema from the uploaded bytes.
 
   The optional `services` map is a narrow embedding/test seam. Its keys are
   `:render-trace` (`trace-doc -> html`), `:render-case-outcome`
   (`case-outcome-doc -> html`), and `:replay-document`
   (`case-outcome-doc runtime-config -> outcome`), all required. Browser data
   never selects any function or supplies runtime configuration. Replay
-  accepts only Case/Outcome documents: a declared `:trace` kind is rejected
-  explicitly before any restore or worker execution.
+  accepts only Case/Outcome documents: declared `:trace` and
+  `:experiment-plan` kinds are rejected explicitly before any restore or
+  worker execution. Experiment-plan rendering bypasses the service seam and
+  accepts only the closed inert inspector document.
 
   `GET /api/replay-progress` reports the one active or most recently
   completed replay's status (`:idle`, `:starting`, `:worker-ready`,
@@ -567,7 +580,10 @@
             config document-active? request
             (fn [kind document]
               (response 200 "text/html; charset=utf-8"
-                        ((render-service services kind) document))))
+                        (if (= :experiment-plan kind)
+                          (experiment-viewer/document->html
+                           document (:presentation-registry config))
+                          ((render-service services kind) document)))))
 
            (and (= :post method) (= "/api/replay" uri))
            (execute-document-request
@@ -576,8 +592,13 @@
               ;; Reject trace documents before any restore or worker
               ;; execution: replay is a Case/Outcome-only path.
               (when-not (= :case-outcome kind)
-                (throw (ex-info "viewer replay accepts only Case/Outcome documents"
-                                {:type trace-not-replayable :kind kind})))
+                (throw
+                 (ex-info
+                  "viewer replay accepts only Case/Outcome documents"
+                  {:type (if (= :experiment-plan kind)
+                           experiment-plan-not-replayable
+                           trace-not-replayable)
+                   :kind kind})))
               (allowed-replay! config document)
               (reset! active-replay
                       {:phase :active
@@ -616,7 +637,7 @@
 
   The optional services arity is the same narrow embedding/test seam accepted
   by `make-handler`; ordinary callers always use the real trace/Case/Outcome
-  report and replay services."
+  report and replay services plus the inert experiment-plan inspector."
   ([config]
    (start! config (default-services config)))
   ([config services]
