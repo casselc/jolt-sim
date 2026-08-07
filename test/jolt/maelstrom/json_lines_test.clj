@@ -46,7 +46,22 @@
     (let [data (ex-data-of #(json-lines/decode-line bad-line))]
       (is (= :jolt.maelstrom.transport.json-lines/decode-failed (:type data))
           bad-line)
-      (is (= bad-line (:line data)) bad-line))))
+      (is (= (count bad-line) (:input-chars data)) bad-line)
+      (is (not (contains? data :line)) bad-line))))
+
+(deftest decode-line-rejects-non-strings-without-retaining-the-value
+  (doseq [value [nil :json {} []]]
+    (let [data (ex-data-of #(json-lines/decode-line value))]
+      (is (= :jolt.maelstrom.transport.json-lines/decode-failed (:type data)))
+      (is (= :not-a-string (:reason data)))
+      (is (= #{:type :reason :value-class} (set (keys data)))))))
+
+(deftest decode-line-bounds-external-input-diagnostics
+  (let [line (str "{" (apply str (repeat 1000 "x")))
+        data (ex-data-of #(json-lines/decode-line line))]
+    (is (= (count line) (:input-chars data)))
+    (is (= 128 (count (:input-prefix data))))
+    (is (not-any? #(= line %) (vals data)))))
 
 (deftest decode-line-allows-json-whitespace-after-the-object
   (is (= {:src "c1" :dest "n1" :body {:type "echo"}}
@@ -103,8 +118,10 @@
     (is (= envelope (json/read-str (first @writes) :key-fn keyword)))))
 
 (deftest line-sender-rejects-a-non-function-writer
-  (let [data (ex-data-of #(json-lines/line-sender nil))]
-    (is (= :jolt.maelstrom.transport.json-lines/invalid-config (:type data)))))
+  (doseq [value [nil :writer {} []]]
+    (let [data (ex-data-of #(json-lines/line-sender value))]
+      (is (= :jolt.maelstrom.transport.json-lines/invalid-config (:type data)))
+      (is (= :writer-not-a-function (:reason data))))))
 
 (deftest line-sender-serializes-concurrent-complete-line-writes
   (let [worker-count 8
@@ -153,6 +170,22 @@
                       (catch :default e e))))))
 
 ;; ---- pump! -----------------------------------------------------------------
+
+(deftest pump-validates-both-callbacks-before-consuming-input
+  (doseq [[reader handler reason]
+          [[nil (fn [_]) :reader-not-a-function]
+           [(fn [] nil) nil :handler-not-a-function]
+           [:reader (fn [_]) :reader-not-a-function]
+           [(fn [] nil) {} :handler-not-a-function]]]
+    (let [data (ex-data-of #(json-lines/pump! reader handler))]
+      (is (= :jolt.maelstrom.transport.json-lines/invalid-config (:type data)))
+      (is (= reason (:reason data)))))
+  (let [reads (atom 0)]
+    (is (= :handler-not-a-function
+           (:reason (ex-data-of #(json-lines/pump!
+                                  (fn [] (swap! reads inc) nil)
+                                  nil)))))
+    (is (zero? @reads))))
 
 (deftest pump-processes-lines-sequentially-and-stops-at-nil-eof
   (let [line1 (json/write-str {"src" "c1" "dest" "n1"

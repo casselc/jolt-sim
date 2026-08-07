@@ -159,6 +159,41 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+      - name: Run Maelstrom Echo JSON-lines process gate
+        id: maelstrom_json_lines_gate
+        if: always()
+        # Preserve this boundary's complete request/stdout/stderr/status bundle
+        # without letting a failure skip the longer application and Hegel gates.
+        continue-on-error: true
+        timeout-minutes: 5
+        shell: bash
+        env:
+          JOLT_AOT_CACHE: "0"
+        run: |
+          set -euo pipefail
+          export HOME="$RUNNER_TEMP/jolt-home"
+          export JOLT_CACHE_DIR="$RUNNER_TEMP/jolt-cache"
+          export TMPDIR="$RUNNER_TEMP/jolt-tmp"
+          mkdir -p "$HOME" "$JOLT_CACHE_DIR" "$TMPDIR"
+          sim="$GITHUB_WORKSPACE/jolt-core/target/sim/jolt"
+          repo="$GITHUB_WORKSPACE/jolt-sim"
+          export JOLT_SIM_GATE_PARENT="$repo/target/maelstrom-json-lines-gates"
+          mkdir -p "$JOLT_SIM_GATE_PARENT"
+          cd "$repo"
+          JOLT_SIM_BIN="$sim" JOLT_SIM_PROJECT_DIR="$repo" \
+            script/run-maelstrom-echo-e2e.sh
+
+      - name: Preserve Maelstrom Echo JSON-lines evidence
+        id: maelstrom_json_lines_upload
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: maelstrom-json-lines-${{ matrix.toolchain }}
+          path: jolt-sim/target/maelstrom-json-lines-gates/
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Run outbox application gates with crash forensics
         id: outbox_gate
         # Preserve a native crash without allowing it to skip the independent
@@ -453,6 +488,14 @@ jobs:
         shell: bash
         run: |
           failed=0
+          if [[ "${{ steps.maelstrom_json_lines_gate.outcome }}" != "success" ]]; then
+            echo "Maelstrom JSON-lines process gate outcome: ${{ steps.maelstrom_json_lines_gate.outcome }}" >&2
+            failed=1
+          fi
+          if [[ "${{ steps.maelstrom_json_lines_upload.outcome }}" != "success" ]]; then
+            echo "Maelstrom JSON-lines artifact upload outcome: ${{ steps.maelstrom_json_lines_upload.outcome }}" >&2
+            failed=1
+          fi
           if [[ "${{ steps.outbox_gate.outcome }}" != "success" ]]; then
             echo "outbox application gate outcome: ${{ steps.outbox_gate.outcome }}" >&2
             failed=1

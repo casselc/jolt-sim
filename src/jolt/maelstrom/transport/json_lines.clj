@@ -23,6 +23,13 @@
   [type message cause data]
   (throw (ex-info message (assoc data :type type) cause)))
 
+(defn- text-summary
+  "Bounded diagnostics for externally supplied text. The complete input
+  belongs in the caller-owned forensic artifact, not exception data."
+  [text]
+  {:input-chars (count text)
+   :input-prefix (subs text 0 (min 128 (count text)))})
+
 (defn- keywordize-keys-shallow
   [m]
   (reduce-kv (fn [acc k v] (assoc acc (keyword k) v)) {} m))
@@ -35,7 +42,7 @@
       (throw
        (ex-info
         "JSON-lines input contains data after its first JSON value"
-        {:remaining remaining})))))
+        (assoc (text-summary remaining) :reason :trailing-data))))))
 
 (defn decode-line
   "Parses one line of JSON text into a Maelstrom envelope map.
@@ -48,12 +55,24 @@
   cause -- when the line is not valid JSON, or when it does not decode to a
   JSON object."
   [line]
+  (when-not (string? line)
+    (fail! ::decode-failed
+           "JSON-lines input must be a string"
+           nil
+           {:reason :not-a-string
+            :value-class (str (class line))}))
   (let [parsed (try
                  (json/read-str line :extra-data-fn reject-non-whitespace-extra)
                  (catch :default e
-                   (fail! ::decode-failed "failed to parse JSON-lines input" e {:line line})))]
+                   (fail! ::decode-failed
+                          "failed to parse JSON-lines input"
+                          e
+                          (text-summary line))))]
     (when-not (map? parsed)
-      (fail! ::decode-failed "JSON-lines input must decode to a JSON object" nil {:line line}))
+      (fail! ::decode-failed
+             "JSON-lines input must decode to a JSON object"
+             nil
+             (assoc (text-summary line) :reason :not-an-object)))
     (reduce-kv
      (fn [envelope k v]
        (assoc envelope (keyword k)
@@ -74,11 +93,16 @@
     (fail! ::encode-failed
            "JSON-lines output must be a Maelstrom envelope object"
            nil
-           {:envelope envelope :reason :not-an-object}))
+           {:reason :not-an-object
+            :value-class (str (class envelope))}))
   (try
     (json/write-str envelope)
     (catch :default e
-      (fail! ::encode-failed "failed to encode JSON-lines envelope" e {:envelope envelope}))))
+      (fail! ::encode-failed
+             "failed to encode JSON-lines envelope"
+             e
+             {:reason :codec-failure
+              :key-count (count envelope)}))))
 
 (defn line-sender
   "Returns a node send! function. Each outbound envelope is encoded with
@@ -89,7 +113,8 @@
     (fail! ::invalid-config
            "line-sender requires a one-argument writer function"
            nil
-           {:write-line! write-line!}))
+           {:reason :writer-not-a-function
+            :value-class (str (class write-line!))}))
   (let [write-lock (Object.)]
     (fn [envelope]
       (let [line (encode-line envelope)]
@@ -106,6 +131,18 @@
   order. decode-line and handle! failures propagate unchanged to the
   caller. Returns nil."
   [read-line! handle!]
+  (when-not (fn? read-line!)
+    (fail! ::invalid-config
+           "pump! requires a zero-argument reader function"
+           nil
+           {:reason :reader-not-a-function
+            :value-class (str (class read-line!))}))
+  (when-not (fn? handle!)
+    (fail! ::invalid-config
+           "pump! requires a one-argument handler function"
+           nil
+           {:reason :handler-not-a-function
+            :value-class (str (class handle!))}))
   (loop []
     (when-let [line (read-line!)]
       (handle! (decode-line line))
