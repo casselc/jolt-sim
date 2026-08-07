@@ -14,11 +14,22 @@
 (defn- read-status [case-name]
   (parse-long (string/trim (slurp (artifact-path case-name "status")))))
 
+(defn- timed-out? [case-name]
+  (.exists (java.io.File. (artifact-path case-name "exit-timeout"))))
+
 (defn- read-wire-lines [case-name]
   (let [text (slurp (artifact-path case-name "stdout.jsonl"))]
     (if (string/blank? text)
       []
       (mapv #(json/read-str %) (string/split-lines text)))))
+
+(defn- application-stderr-lines [text]
+  ;; The launcher may report unresolved optional Maven artifacts even after
+  ;; dependency preflight and still execute entirely from the pinned Git
+  ;; dependency graph. Keep those resolver diagnostics in the forensic file,
+  ;; but do not misclassify them as application output.
+  (remove #(string/starts-with? % "[jolt.deps] maven dep ")
+          (string/split-lines text)))
 
 (def ^:private echo-payload
   {"greeting" "héllo, 世界 🌍"
@@ -28,9 +39,18 @@
    "nested" {"values" [0 255 "🚀"]}})
 
 (deftest successful-process-preserves-the-exact-json-lines-contract
-  (let [responses (read-wire-lines "success")]
+  (let [stdout (slurp (artifact-path "success" "stdout.jsonl"))
+        stderr (slurp (artifact-path "success" "stderr.log"))
+        responses (read-wire-lines "success")]
     (is (= 0 (read-status "success")))
-    (is (string/blank? (slurp (artifact-path "success" "stderr.log"))))
+    (is (false? (timed-out? "success")))
+    (is (empty? (application-stderr-lines stderr))
+        "successful child emits no application diagnostics")
+    (is (= "init_ok newline observed while stdin remained open\n"
+           (slurp (artifact-path "success" "init-observed-before-echo"))))
+    (is (string/ends-with? stdout "\n"))
+    (is (not (string/includes? stdout "\r")))
+    (is (= 2 (count (filter #(= % \newline) stdout))))
     (is (= 2 (count responses)))
     (is (= {"src" "n1" "dest" "c1"
             "body" {"type" "init_ok" "msg_id" 1 "in_reply_to" 1}}
@@ -48,14 +68,38 @@
          (slurp (artifact-path "malformed" "request.jsonl")))
         hostile-line (second request-lines)]
     (is (not= 0 (read-status "malformed")))
+    (is (false? (timed-out? "malformed")))
     ;; The first complete request has exactly one complete reply. The broken
     ;; second line can neither disappear nor create a partial/extra JSON line.
     (is (= [{"src" "n1" "dest" "c1"
              "body" {"type" "init_ok" "msg_id" 1 "in_reply_to" 1}}]
            responses))
     (is (> (count hostile-line) 4096))
-    (is (not (string/blank? stderr)))
-    (is (string/includes? stderr "failed to parse JSON-lines input"))
+    (is (= [(pr-str
+             {:type :jolt.maelstrom.echo-main/request-failed
+              :cause-type
+              :jolt.maelstrom.transport.json-lines/decode-failed})]
+           (vec (application-stderr-lines stderr))))
+    (is (< (count stderr) 2048))
+    (is (not (string/includes? stderr hostile-line)))))
+
+(deftest valid-but-invalid-envelope-cannot-expand-process-diagnostics
+  (let [responses (read-wire-lines "semantic-invalid")
+        stderr (slurp (artifact-path "semantic-invalid" "stderr.log"))
+        request-lines
+        (string/split-lines
+         (slurp (artifact-path "semantic-invalid" "request.jsonl")))
+        hostile-line (second request-lines)]
+    (is (not= 0 (read-status "semantic-invalid")))
+    (is (false? (timed-out? "semantic-invalid")))
+    (is (= [{"src" "n1" "dest" "c1"
+             "body" {"type" "init_ok" "msg_id" 1 "in_reply_to" 1}}]
+           responses))
+    (is (> (count hostile-line) 4096))
+    (is (= [(pr-str
+             {:type :jolt.maelstrom.echo-main/request-failed
+              :cause-type :jolt.maelstrom.node/invalid-envelope})]
+           (vec (application-stderr-lines stderr))))
     (is (< (count stderr) 2048))
     (is (not (string/includes? stderr hostile-line)))))
 

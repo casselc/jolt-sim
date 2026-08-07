@@ -63,6 +63,73 @@
     (is (= 128 (count (:input-prefix data))))
     (is (not-any? #(= line %) (vals data)))))
 
+(deftest decode-line-rejects-oversized-frames-before-codec-work
+  (let [line "{\"src\":\"c1\"}"
+        data (ex-data-of #(json-lines/decode-line
+                           line {:max-line-chars 8 :max-json-depth 8}))]
+    (is (= :jolt.maelstrom.transport.json-lines/decode-failed (:type data)))
+    (is (= :frame-too-large (:reason data)))
+    (is (= 8 (:max-line-chars data)))))
+
+(deftest decode-line-rejects-excessive-structural-depth
+  (let [line "{\"src\":\"c1\",\"dest\":\"n1\",\"body\":{\"type\":\"echo\",\"echo\":[[0]]}}"
+        data (ex-data-of #(json-lines/decode-line
+                           line {:max-line-chars 1024 :max-json-depth 3}))]
+    (is (= :jolt.maelstrom.transport.json-lines/decode-failed (:type data)))
+    (is (= :nesting-too-deep (:reason data)))
+    (is (= 3 (:max-json-depth data)))))
+
+(deftest decode-line-depth-scan-ignores-json-string-syntax
+  (let [line
+        (json/write-str
+         {"src" "c1" "dest" "n1"
+          "body" {"type" "echo"
+                  "echo" "literal [{ brackets, an escaped \"quote\", and \\\\ pairs ]}"}})
+        envelope (json-lines/decode-line
+                  line {:max-line-chars 1024 :max-json-depth 2})]
+    (is (= "literal [{ brackets, an escaped \"quote\", and \\\\ pairs ]}"
+           (get-in envelope [:body :echo])))))
+
+(deftest decode-line-does-not-intern-unknown-wire-property-names
+  (let [envelope
+        (json-lines/decode-line
+         "{\"src\":\"c1\",\"dest\":\"n1\",\"body\":{\"type\":\"echo\",\"msg_id\":1,\"application_owned_9f1c\":true},\"extension_owned_4b2d\":7}")]
+    (is (= true (get-in envelope [:body "application_owned_9f1c"])))
+    (is (not (contains? (:body envelope) :application_owned_9f1c)))
+    (is (= 7 (get envelope "extension_owned_4b2d")))
+    (is (not (contains? envelope :extension_owned_4b2d)))))
+
+(deftest decode-line-accepts-a-finite-workload-key-vocabulary
+  (let [envelope
+        (json-lines/decode-line
+         "{\"src\":\"c1\",\"dest\":\"n1\",\"body\":{\"type\":\"broadcast\",\"message\":7,\"future_field\":8}}"
+         {:body-key-map {"type" :must-not-replace-node-type
+                         "message" :message}})]
+    (is (= "broadcast" (get-in envelope [:body :type])))
+    (is (not (contains? (:body envelope) :must-not-replace-node-type)))
+    (is (= 7 (get-in envelope [:body :message])))
+    (is (= 8 (get-in envelope [:body "future_field"])))
+    (is (not (contains? (:body envelope) :future_field)))))
+
+(deftest decode-line-rejects-invalid-resource-limits
+  (doseq [limits [{:max-line-chars 0 :max-json-depth 8}
+                  {:max-line-chars 8 :max-json-depth -1}
+                  {:max-line-chars :large :max-json-depth 8}]]
+    (let [data (ex-data-of #(json-lines/decode-line "{}" limits))]
+      (is (= :jolt.maelstrom.transport.json-lines/invalid-config (:type data)))
+      (is (= :invalid-decode-limits (:reason data))))))
+
+(deftest decode-line-rejects-invalid-workload-key-maps
+  (doseq [body-key-map [nil
+                        {"" :empty}
+                        {:message :message}
+                        {"message" "message"}]]
+    (let [data
+          (ex-data-of #(json-lines/decode-line
+                        "{}" {:body-key-map body-key-map}))]
+      (is (= :jolt.maelstrom.transport.json-lines/invalid-config (:type data)))
+      (is (= :invalid-body-key-map (:reason data))))))
+
 (deftest decode-line-allows-json-whitespace-after-the-object
   (is (= {:src "c1" :dest "n1" :body {:type "echo"}}
          (json-lines/decode-line

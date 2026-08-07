@@ -1271,11 +1271,17 @@ not part of the simulator kernel and must not depend on `jolt.sim`. The node
 and handlers run over injected transports; `jolt-sim` owns only the optional
 deterministic transport, fault, replay, and checker adapters used by scenarios.
 JSON-lines framing remains a real process boundary. The checked process gate
-feeds init and nested-Unicode Echo requests to one fresh ordinary Jolt process,
-independently decodes its exact two-line stdout contract, and retains complete
-request/stdout/stderr/status evidence. A second witness sends a valid init
-followed by a 4 KiB malformed line, requiring a nonzero exit, exactly the
-already-completed init reply, no partial output line, and bounded diagnostics.
+keeps stdin open after init and requires the complete newline-terminated
+`init_ok` before sending the nested-Unicode Echo request, independently decodes
+the exact two-line stdout contract, and retains complete request/stdout/stderr/
+status evidence. Additional witnesses send a valid init followed by either a
+4 KiB malformed line or a valid JSON envelope rejected by the unchanged node;
+both require a nonzero exit, exactly the already-completed init reply, no
+partial output line, and coordinate-only bounded diagnostics. The adapter caps
+frame/depth work before JSON parsing and interns only its closed node/Echo key
+vocabulary. Jolt's current stdin `read-line` host seam still allocates the
+complete line before the adapter can enforce that frame cap; a future bounded
+reader seam is the remaining acquisition hardening boundary.
 
 Echo alone is application-core evidence, not distributed-safety, liveness, or
 Maelstrom interoperability evidence. The durable HTTP/SQLite/TCP outbox flow

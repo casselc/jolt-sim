@@ -7,17 +7,53 @@
   those stay entirely in jolt.maelstrom.node and whichever workload's
   handlers are wired up by the caller.
 
-  decode-line and encode-line only ever touch two levels of keys: the outer
-  envelope (:src, :dest, :body, ...) and the immediate keys of :body
-  (:type, :msg_id, :echo, ...). Everything nested inside a body field's
-  value is passed through exactly as clojure.data.json produced or expects
-  it, so a workload's own payload shapes round-trip untouched.
+  decode-line and encode-line only ever touch two levels of keys. A closed
+  set of node/Echo wire names becomes keywords; unknown application-owned
+  names remain strings rather than being interned. Everything nested inside
+  a body field's value is passed through exactly as clojure.data.json produced
+  or expects it, so a workload's own payload shapes round-trip untouched.
 
   jolt.time is required before clojure.data.json: Jolt externalizes
   java.time, and clojure.data.json must see that shim already loaded."
   (:require [jolt.time]
             [clojure.data.json :as json]
             [clojure.string :as string]))
+
+(def default-max-line-chars
+  "Default maximum JSON-lines frame size accepted before JSON parsing. The
+  current Jolt stdin primitive returns a complete line, so this bounds codec,
+  normalization, and diagnostic work but cannot prevent the host reader from
+  first allocating that line. A future bounded-reader runtime seam can close
+  that remaining acquisition boundary without changing this API."
+  1048576)
+
+(def default-max-json-depth
+  "Maximum object/array nesting accepted before JSON parsing."
+  128)
+
+(def ^:private outer-wire-keys
+  {"src" :src
+   "dest" :dest
+   "body" :body})
+
+(def ^:private body-wire-keys
+  ;; Only names that the transport-neutral node or the currently supplied
+  ;; Echo workload consumes become keywords. Unknown workload fields remain
+  ;; strings rather than permanently interning attacker-controlled names.
+  {"type" :type
+   "msg_id" :msg_id
+   "in_reply_to" :in_reply_to
+   "node_id" :node_id
+   "node_ids" :node_ids
+   "echo" :echo})
+
+(defn- valid-body-key-map? [value]
+  (and (map? value)
+       (every? (fn [[wire-name body-key]]
+                 (and (string? wire-name)
+                      (not (string/blank? wire-name))
+                      (keyword? body-key)))
+               value)))
 
 (defn- fail!
   [type message cause data]
@@ -30,9 +66,51 @@
   {:input-chars (count text)
    :input-prefix (subs text 0 (min 128 (count text)))})
 
-(defn- keywordize-keys-shallow
-  [m]
-  (reduce-kv (fn [acc k v] (assoc acc (keyword k) v)) {} m))
+(defn- normalize-known-keys
+  [key-map m]
+  (reduce-kv (fn [acc k v] (assoc acc (get key-map k k) v)) {} m))
+
+(defn- validate-json-shape!
+  [line max-line-chars max-json-depth]
+  (when (> (count line) max-line-chars)
+    (fail! ::decode-failed
+           "JSON-lines input exceeds the configured frame limit"
+           nil
+           (assoc (text-summary line)
+                  :reason :frame-too-large
+                  :max-line-chars max-line-chars)))
+  ;; Scan string/escape state so braces inside JSON strings do not affect the
+  ;; structural depth bound. Syntax remains the JSON codec's responsibility.
+  (loop [index 0 depth 0 in-string? false escaped? false]
+    (when (< index (count line))
+      (let [ch (nth line index)]
+        (cond
+          escaped?
+          (recur (inc index) depth in-string? false)
+
+          (and in-string? (= ch \\))
+          (recur (inc index) depth true true)
+
+          (= ch \")
+          (recur (inc index) depth (not in-string?) false)
+
+          (and (not in-string?) (or (= ch \{) (= ch \[)))
+          (let [next-depth (inc depth)]
+            (when (> next-depth max-json-depth)
+              (fail! ::decode-failed
+                     "JSON-lines input exceeds the configured nesting limit"
+                     nil
+                     (assoc (text-summary line)
+                            :reason :nesting-too-deep
+                            :max-json-depth max-json-depth)))
+            (recur (inc index) next-depth false false))
+
+          (and (not in-string?) (or (= ch \}) (= ch \])))
+          (recur (inc index) (max 0 (dec depth)) false false)
+
+          :else
+          (recur (inc index) depth in-string? false)))))
+  line)
 
 (defn- reject-non-whitespace-extra
   [value reader]
@@ -47,40 +125,63 @@
 (defn decode-line
   "Parses one line of JSON text into a Maelstrom envelope map.
 
-  Converts only the outer envelope keys and the immediate keys of :body to
-  keywords; any map or value nested inside a body field is returned exactly
-  as parsed, with its own keys left as strings.
+  Converts only the closed node/Echo key vocabulary at the outer envelope and
+  immediate :body levels to keywords. Unknown property names and any map or
+  value nested inside a body field are returned with their keys left as
+  strings. A workload may supply `:body-key-map` in the options map to add a
+  finite string-to-existing-keyword vocabulary without interning wire input;
+  the same options map may be passed as pump!'s third argument.
 
   Fails closed with a ::decode-failed ex-info -- preserving the original
-  cause -- when the line is not valid JSON, or when it does not decode to a
-  JSON object."
-  [line]
-  (when-not (string? line)
-    (fail! ::decode-failed
-           "JSON-lines input must be a string"
-           nil
-           {:reason :not-a-string
-            :value-class (str (class line))}))
-  (let [parsed (try
-                 (json/read-str line :extra-data-fn reject-non-whitespace-extra)
-                 (catch :default e
-                   (fail! ::decode-failed
-                          "failed to parse JSON-lines input"
-                          e
-                          (text-summary line))))]
-    (when-not (map? parsed)
-      (fail! ::decode-failed
-             "JSON-lines input must decode to a JSON object"
-             nil
-             (assoc (text-summary line) :reason :not-an-object)))
-    (reduce-kv
-     (fn [envelope k v]
-       (assoc envelope (keyword k)
-              (if (and (= k "body") (map? v))
-                (keywordize-keys-shallow v)
-                v)))
-     {}
-     parsed)))
+  codec cause -- when the line exceeds its codec/depth limits, is not valid
+  JSON, or does not decode to a JSON object. The current Jolt host read-line
+  seam still allocates a complete stdin line before this boundary sees it."
+  ([line]
+   (decode-line line {:max-line-chars default-max-line-chars
+                      :max-json-depth default-max-json-depth}))
+  ([line {:keys [max-line-chars max-json-depth body-key-map]
+          :or {max-line-chars default-max-line-chars
+               max-json-depth default-max-json-depth
+               body-key-map {}}}]
+   (when-not (string? line)
+     (fail! ::decode-failed
+            "JSON-lines input must be a string"
+            nil
+            {:reason :not-a-string
+             :value-class (str (class line))}))
+   (when-not (and (integer? max-line-chars) (pos? max-line-chars)
+                  (integer? max-json-depth) (pos? max-json-depth))
+     (fail! ::invalid-config
+            "JSON-lines decode limits must be positive integers"
+            nil
+            {:reason :invalid-decode-limits}))
+   (when-not (valid-body-key-map? body-key-map)
+     (fail! ::invalid-config
+            "JSON-lines workload key map must map strings to existing keywords"
+            nil
+            {:reason :invalid-body-key-map}))
+   (validate-json-shape! line max-line-chars max-json-depth)
+   (let [parsed (try
+                  (json/read-str line :extra-data-fn reject-non-whitespace-extra)
+                  (catch :default e
+                    (fail! ::decode-failed
+                           "failed to parse JSON-lines input"
+                           e
+                           (text-summary line))))]
+     (when-not (map? parsed)
+       (fail! ::decode-failed
+              "JSON-lines input must decode to a JSON object"
+              nil
+              (assoc (text-summary line) :reason :not-an-object)))
+     (normalize-known-keys
+      outer-wire-keys
+      (if (map? (get parsed "body"))
+        (assoc parsed "body"
+               (normalize-known-keys
+                ;; Workload extensions cannot replace node-reserved mappings.
+                (merge body-key-map body-wire-keys)
+                (get parsed "body")))
+        parsed)))))
 
 (defn encode-line
   "Serializes one outbound envelope map to a single JSON string. Appends no
@@ -130,24 +231,26 @@
   passed to the injected one-argument handle! function exactly once, in
   order. decode-line and handle! failures propagate unchanged to the
   caller. Returns nil."
-  [read-line! handle!]
-  (when-not (fn? read-line!)
-    (fail! ::invalid-config
-           "pump! requires a zero-argument reader function"
-           nil
-           {:reason :reader-not-a-function
-            :value-class (str (class read-line!))}))
-  (when-not (fn? handle!)
-    (fail! ::invalid-config
-           "pump! requires a one-argument handler function"
-           nil
-           {:reason :handler-not-a-function
-            :value-class (str (class handle!))}))
-  (loop []
-    (when-let [line (read-line!)]
-      (handle! (decode-line line))
-      (recur)))
-  nil)
+  ([read-line! handle!]
+   (pump! read-line! handle! {}))
+  ([read-line! handle! decode-options]
+   (when-not (fn? read-line!)
+     (fail! ::invalid-config
+            "pump! requires a zero-argument reader function"
+            nil
+            {:reason :reader-not-a-function
+             :value-class (str (class read-line!))}))
+   (when-not (fn? handle!)
+     (fail! ::invalid-config
+            "pump! requires a one-argument handler function"
+            nil
+            {:reason :handler-not-a-function
+             :value-class (str (class handle!))}))
+   (loop []
+     (when-let [line (read-line!)]
+       (handle! (decode-line line decode-options))
+       (recur)))
+   nil))
 
 (defn stdin-read-line!
   "Production read-line! for pump!: reads one line from stdin, or nil at
