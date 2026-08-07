@@ -133,6 +133,7 @@ test("distinguishes the two trusted presets by selection", async ({page}, testIn
   await page.goto("/");
   await page.locator("#capability").fill(capabilityToken);
   await page.locator("#load-run-presets").click();
+  await expect(page.locator("#run-preset option")).toHaveCount(2);
 
   // The closed catalog offers exactly the two trusted examples as distinct
   // selectable identities; the existing outbox preset remains the default.
