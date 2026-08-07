@@ -11,6 +11,7 @@
             [jolt.sim.explore-states-test]
             [jolt.sim.explore-test]
             [jolt.sim.explore-worker-test]
+            [jolt.sim.eval-stream-test]
             [jolt.sim.experiment-test]
             [jolt.sim.experiment-executor-test]
             [jolt.sim.fault-test]
@@ -51,6 +52,7 @@
                         'jolt.sim.explore-states-test
                         'jolt.sim.explore-test
                         'jolt.sim.explore-worker-test
+                        'jolt.sim.eval-stream-test
                         'jolt.sim.experiment-test
                         'jolt.sim.experiment-executor-test
                         'jolt.sim.fault-test

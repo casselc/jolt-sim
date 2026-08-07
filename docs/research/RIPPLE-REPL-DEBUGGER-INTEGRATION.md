@@ -1,8 +1,8 @@
 # Ripple REPL and self-observation integration
 
-Status: accepted direction and future acceptance boundary, 2026-08-06. This is
-not a claim that ordinary Jolt execution, remote Session attachment, prepl, or
-source debugging is implemented.
+Status: accepted direction; first socket-free evaluation adapter implemented,
+2026-08-07. This is not a claim that remote Session attachment, a socket/prepl
+transport, tap lifecycle, interruption, or source debugging is implemented.
 
 ## Why this is a separate contract
 
@@ -25,7 +25,9 @@ Jolt currently supplies a textual stdin REPL and a loopback nREPL server. It
 does not currently supply Clojure's `clojure.core.server/prepl`, `io-prepl`, or
 `remote-prepl` APIs.
 
-The intended direction is one Jolt evaluation engine with adapters:
+The fork now has one socket-free Jolt evaluation engine shared by the textual
+REPL and nREPL. `jolt.sim.eval-stream/evaluate!` adds the first program-facing
+structured adapter over that same engine:
 
 ```text
 Jolt evaluation engine
@@ -35,12 +37,19 @@ Jolt evaluation engine
         `-- nREPL operation adapter
 ```
 
-The prepl-compatible stream should preserve Clojure's useful event vocabulary:
+The current prepl-compatible subset preserves this vocabulary:
 
 - `:ret`: result or structured exception, namespace, elapsed time, and source
   form;
 - `:out` and `:err`: evaluation output chunks; and
-- `:tap`: observational values that may arrive between evaluations.
+- `:tap`: reserved for a later observational lifecycle; it is not emitted yet.
+
+Each call evaluates one exact form, captures stdout and stderr as post-eval
+batches, preserves raw success values, returns structured exception data plus
+Jolt's catch-site backtrace, and emits exactly one terminal `:ret`. History is
+off by default; a REPL/session owner may explicitly request thread history only
+after installing its dynamic history bindings. This is an in-process data API,
+not Clojure's full `prepl`, `io-prepl`, or `remote-prepl` implementation.
 
 This is a program-facing structured stream, not an editor protocol. nREPL keeps
 its request IDs, asynchronous multi-response lifecycle, discoverable ops,
@@ -133,8 +142,8 @@ This work follows, rather than blocks, the current ordinary-application path:
 1. land retained activity, shared Session projections, Ripple paging, and
    browser acceptance;
 2. finish the canonical HTTP/SQLite/TCP outbox experiments and human workflow;
-3. add a small prepl-compatible evaluation stream over shared evaluation
-   semantics;
+3. **done:** add a small prepl-compatible evaluation stream over shared
+   evaluation semantics;
 4. add capability-protected remote Session attachment;
 5. run the Ripple-in-Ripple acceptance scenario; and
 6. evaluate DAP only after the required Jolt runtime/compiler facts exist.

@@ -15,7 +15,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  JOLT_CORE_SHA: 79c926aa85ff31ff64d567d2b2a9e8c5c6240128
+  JOLT_CORE_SHA: d040d502505743f6631bc91b03f9e6fd251551bc
   CHEZ_RELEASE_TAG: chez-ci-10.4.1.1
 
 jobs:
