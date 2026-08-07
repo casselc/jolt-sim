@@ -28,15 +28,20 @@
   const sessionStepStatus = document.getElementById("session-step-status");
   const sessionStepRetryRow = document.getElementById("session-step-retry-row");
   const sessionStepRetry = document.getElementById("session-step-retry");
+  const sessionInstanceHeader = "X-Jolt-Sim-Session-Instance";
   let documentText = null;
   let busy = false;
   let sessionCursor = "0";
+  let sessionInstanceKnown = false;
+  let sessionInstanceId = null;
   let sessionStepEnabled = false;
   let sessionChoices = [];
   let lastStepStatus = null;
+  let lastStepCommitted = false;
   // Set only for an ambiguous step outcome (network failure or an
-  // unrecognized response): the exact serialized request bytes, so Retry
-  // can resend byte-identical and never synthesize a new coordinate.
+  // unrecognized response): the exact serialized request bytes and producer
+  // epoch, so Retry can resend the same command to the same producer and
+  // never synthesize a new coordinate.
   let pendingRetry = null;
   let activityCursors = ["0"];
   let activityPageIndex = 0;
@@ -52,6 +57,10 @@
   const canonicalSignedDecimal = (value) =>
     canonicalUnsignedDecimal(value) ||
     (typeof value === "string" && /^-[1-9][0-9]*$/.test(value));
+
+  const validSessionInstanceId = (value) =>
+    typeof value === "string" && value.length >= 16 && value.length <= 128 &&
+    /^[A-Za-z0-9._~-]+$/.test(value);
 
   const exactKeys = (value, expected) => {
     if (!value || typeof value !== "object" || Array.isArray(value)) return false;
@@ -87,6 +96,7 @@
     "400:invalid-session-cursor",
     "403:forbidden",
     "404:session-step-unavailable",
+    "409:session-instance-mismatch",
     "409:session-step-rejected",
     "413:request-too-large",
     "415:expected-application-json",
@@ -802,6 +812,22 @@
   capability.addEventListener("input", updateButtons);
   kind.addEventListener("change", updateButtons);
 
+  const clearSessionClientState = (forgetInstance,
+                                   preserveCommittedStatus = false) => {
+    sessionCursor = "0";
+    sessionStepEnabled = false;
+    sessionChoices = [];
+    if (!preserveCommittedStatus || !lastStepCommitted) {
+      lastStepStatus = null;
+      lastStepCommitted = false;
+    }
+    pendingRetry = null;
+    if (forgetInstance) {
+      sessionInstanceKnown = false;
+      sessionInstanceId = null;
+    }
+  };
+
   const refreshSessionFrame = async () => {
     if (busy) return;
     busy = true;
@@ -819,6 +845,38 @@
         cache: "no-store",
         credentials: "omit"
       });
+      const observedInstanceId = response.headers.get(sessionInstanceHeader);
+      if (observedInstanceId !== null &&
+          !validSessionInstanceId(observedInstanceId)) {
+        clearSessionClientState(true);
+        throw new Error("invalid session producer instance header");
+      }
+      // A configured producer supplies its epoch on every authenticated
+      // frame response, including an error. A successful response without
+      // the header is the compatible unversioned protocol. Do not interpret
+      // an unauthenticated/headerless error as an epoch change.
+      const observesInstance = observedInstanceId !== null || response.ok;
+      if (observesInstance) {
+        const instanceChanged = sessionInstanceKnown &&
+          observedInstanceId !== sessionInstanceId;
+        sessionInstanceKnown = true;
+        sessionInstanceId = observedInstanceId;
+        if (instanceChanged) {
+          // A recognized receipt remains authoritative even if the automatic
+          // post-commit frame refresh reaches a restarted producer. Preserve
+          // that acknowledged status, already attributed to the producer that
+          // returned it, while discarding every frame-derived coordinate.
+          clearSessionClientState(false, true);
+          sessionFrame.textContent =
+            "No current session frame; the producer instance changed.";
+          sessionStatus.textContent =
+            "Session producer changed; local cursor, choices, and retry state were reset. Refresh from cursor zero.";
+          sessionStepStatus.textContent = lastStepCommitted
+            ? `${lastStepStatus} The producer then changed; its frame was discarded. Refresh from cursor zero.`
+            : "No branch choice sent.";
+          return;
+        }
+      }
       const body = await response.json().catch(() => null);
       if (!response.ok ||
           !exactKeys(body, ["version", "revision", "nextCursor", "stepEnabled",
@@ -859,20 +917,28 @@
 
   sessionRefresh.addEventListener("click", refreshSessionFrame);
 
-  const submitStepRequest = (bodyText) => fetch("/api/session-step", {
-    method: "POST",
-    headers: {
+  const submitStepRequest = (bodyText, instanceId) => {
+    const headers = {
       "Content-Type": "application/json",
       "Accept": "application/json",
       "X-Jolt-Sim-Capability": capability.value
-    },
-    body: bodyText,
-    cache: "no-store",
-    credentials: "omit"
-  });
+    };
+    if (instanceId !== null) headers[sessionInstanceHeader] = instanceId;
+    return fetch("/api/session-step", {
+      method: "POST",
+      headers,
+      body: bodyText,
+      cache: "no-store",
+      credentials: "omit"
+    });
+  };
 
-  const performStep = async (bodyText, isRetry) => {
+  const performStep = async (bodyText, isRetry, instanceId) => {
     busy = true;
+    if (!isRetry) {
+      lastStepStatus = null;
+      lastStepCommitted = false;
+    }
     updateButtons();
     sessionStepStatus.textContent = isRetry
       ? "Retrying the identical branch-choice command..."
@@ -883,7 +949,7 @@
     try {
       let response;
       try {
-        response = await submitStepRequest(bodyText);
+        response = await submitStepRequest(bodyText, instanceId);
       } catch (networkError) {
         sessionStepStatus.textContent =
           `Network failure before any server acknowledgment; not confirmed committed. ` +
@@ -916,17 +982,24 @@
         safeStepErrors.has(`${response.status}:${receipt.error}`);
       if (committedReceipt) {
         outcome = "committed";
+        lastStepCommitted = true;
+        const producer = instanceId === null
+          ? "the unversioned session producer"
+          : `session producer ${instanceId}`;
         lastStepStatus =
-          `Committed revision ${receipt.revision} (${receipt.kind} ${receipt.value}); ` +
+          `Committed on ${producer}: revision ${receipt.revision} ` +
+          `(${receipt.kind} ${receipt.value}); ` +
           `server acknowledged the exact command.`;
         sessionStepStatus.textContent = `${lastStepStatus} Refreshing session frame.`;
       } else if (staleReceipt) {
         outcome = "stale";
+        lastStepCommitted = false;
         lastStepStatus =
           `Not committed (${receipt.outcome}); refresh the session for current choices.`;
         sessionStepStatus.textContent = lastStepStatus;
       } else if (rejectedReceipt) {
         outcome = "rejected";
+        lastStepCommitted = false;
         lastStepStatus =
           `Not committed (${receipt.error}); refresh after correcting the request or capability.`;
         sessionStepStatus.textContent = lastStepStatus;
@@ -936,7 +1009,7 @@
           `not confirmed committed. Retry sends the identical command bytes.`;
       }
     } finally {
-      pendingRetry = outcome === "ambiguous" ? bodyText : null;
+      pendingRetry = outcome === "ambiguous" ? {bodyText, instanceId} : null;
       sessionChoices = [];
       busy = false;
       updateButtons();
@@ -957,22 +1030,18 @@
         value: String(choice.value)
       }
     });
-    return performStep(bodyText, false);
+    return performStep(bodyText, false, sessionInstanceId);
   };
 
   sessionStepRetry.addEventListener("click", () => {
     if (busy || pendingRetry === null) return;
-    performStep(pendingRetry, true);
+    performStep(pendingRetry.bodyText, true, pendingRetry.instanceId);
   });
 
   sessionReset.addEventListener("click", () => {
-    sessionCursor = "0";
+    clearSessionClientState(true);
     sessionFrame.textContent = "No current session frame; refresh from cursor zero.";
     sessionStatus.textContent = "Journal cursor reset; refresh to read from the beginning.";
-    sessionStepEnabled = false;
-    sessionChoices = [];
-    lastStepStatus = null;
-    pendingRetry = null;
     sessionStepStatus.textContent = "No branch choice sent.";
     updateButtons();
   });
