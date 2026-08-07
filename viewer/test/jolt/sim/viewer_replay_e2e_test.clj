@@ -41,6 +41,36 @@
    :pipe-capacity 1
    :poll-eintr-ordinal nil})
 
+(def ^:private echo-run-scenario
+  'jolt.maelstrom.fixtures.echo-scenario/echo-roundtrip)
+
+(def ^:private echo-run-preset-id
+  :jolt.sim.preset/maelstrom-echo-roundtrip-v1)
+
+(def ^:private echo-run-label
+  "Maelstrom Echo: init and echo round trip")
+
+(def ^:private echo-run-input
+  "The exact nested Unicode echo payload the trusted preset owns. The
+   unchanged jolt.maelstrom.echo handler must round-trip every codepoint
+   through the in-memory transport, the fresh worker, and the canonical
+   result document."
+  {"greeting" "héllo, 世界 🌍"
+   "lang" "日本語"
+   "nested" {"a" "ελληνικά"
+              "b" [" 한글 " "português" 42 nil]}
+   "emoji" "🚀"})
+
+(def ^:private echo-expected-replies
+  "The exact envelopes the unchanged jolt.maelstrom.node boundary builds for
+   the official init and echo requests: node-local msg_ids 1 and 2, replied
+   in order to c1 from n1."
+  [{:src "n1" :dest "c1"
+    :body {:type "init_ok" :msg_id 1 :in_reply_to 1}}
+   {:src "n1" :dest "c1"
+    :body {:type "echo_ok" :msg_id 2 :in_reply_to 2
+            :echo echo-run-input}}])
+
 (def ^:private webhook-semantic-identities
   "The exact five semantic identities the unchanged JSON HTTP webhook
    application records in its command evidence for the accepted empty-payload
@@ -646,6 +676,189 @@
             (when-let [secondary cleanup-error]
               (throw secondary))))))))
 
+(deftest trusted-run-preset-runs-the-unchanged-maelstrom-echo-scenario
+  (let [artifact-root (required-environment
+                       "JOLT_SIM_VIEWER_ARTIFACT_DIR")
+        journal (str artifact-root "/viewer-run-new-echo-progress.edn")
+        server* (atom nil)
+        primary* (atom nil)]
+    (append-phase-best-effort! journal {:phase :echo-run-new-started})
+    (sim-repl/clear!)
+    (try
+      (let [bin (required-environment "JOLT_SIM_BIN")
+            project-dir (required-environment "JOLT_SIM_PROJECT_DIR")
+            outbox-plan (viewer-experiment/read-edn
+                         (slurp "examples/outbox-cancel-before-ack-plan.edn"))
+            echo-plan (viewer-experiment/read-edn
+                       (slurp "examples/maelstrom-echo-plan.edn"))
+            server
+            (viewer/start!
+             {:port 0
+              :capability-token capability-token
+              :max-document-bytes (* 1024 1024)
+              :allowed-scenarios #{run-new-scenario echo-run-scenario}
+              ;; The existing outbox preset stays first and byte-identical;
+              ;; the Maelstrom Echo preset is the second trusted example and
+              ;; reuses the same existing fresh worker command unchanged --
+              ;; that worker alias already resolves the defsim fixture from
+              ;; this repository's own src/test roots.
+              :run-presets
+              [{:id run-new-preset-id
+                :label "Outbox: cancel before acknowledgment"
+                :scenario run-new-scenario
+                :profile-id :hermetic
+                :input run-new-input
+                :schedule nil
+                :plan-document outbox-plan}
+               {:id echo-run-preset-id
+                :label echo-run-label
+                :scenario echo-run-scenario
+                :profile-id :hermetic
+                :input echo-run-input
+                :schedule nil
+                :plan-document echo-plan}]
+              :runtime-config
+              {:worker-command [bin "-M:outbox-delivery-explore-worker"]
+               :dir project-dir
+               :timeout-ms 60000
+               :startup-timeout-ms 120000
+               :kill-grace-ms 500
+               :temp-dir artifact-root
+               :retain-completed-artifacts? true
+               :activity-journal? true}})
+            _ (reset! server* server)
+            port (:port server)
+            _ (append-phase-best-effort!
+               journal {:phase :echo-run-new-viewer-started :port port})
+            catalog-raw
+            (viewer-test/request-over-loopback!
+             port "GET" "/api/run-presets"
+             {"X-Jolt-Sim-Capability" capability-token}
+             ""
+             5000)
+            catalog-body (response-body catalog-raw)
+            catalog (json/read-str catalog-body)
+            run-command
+            (json/write-str
+             {"version" 1
+              "presetId" "jolt.sim.preset/maelstrom-echo-roundtrip-v1"})
+            run-raw
+            (viewer-test/request-over-loopback!
+             port "POST" "/api/run"
+             {"Content-Type" "application/json"
+              "X-Jolt-Sim-Capability" capability-token}
+             run-command
+             180000)
+            run-body (response-body run-raw)
+            outcome (edn/read-string run-body)
+            recorded (sim-repl/last-run)
+            trusted-outcome (:outcome recorded)
+            ;; The worker outcome retains the simulator envelope; the
+            ;; unchanged Maelstrom application's value is its nested :result.
+            result (get-in outcome [:result :result])
+            history (get-in result [:transport :history])
+            progress-raw
+            (viewer-test/request-over-loopback!
+             port "GET" "/api/replay-progress"
+             {"X-Jolt-Sim-Capability" capability-token}
+             ""
+             5000)
+            progress-body (response-body progress-raw)
+            progress (json/read-str progress-body)
+            activity-page (get progress "activity")]
+        (append-phase-best-effort!
+         journal
+         {:phase :echo-run-new-returned
+          :status (:status outcome)
+          :artifact-dir (:artifact-dir trusted-outcome)
+          :progress progress})
+        (is (string/starts-with? catalog-raw "HTTP/1.1 200"))
+        ;; The closed catalog distinguishes exactly the two trusted presets;
+        ;; the existing outbox entry is unchanged, and the catalog never
+        ;; discloses either scenario, either input, or any host coordinate.
+        (is (= [{"id" "jolt.sim.preset/outbox-cancel-before-ack-v1"
+                 "label" "Outbox: cancel before acknowledgment"
+                 "profileId" "hermetic"
+                 "planEdn" (viewer-experiment/canonical-edn outbox-plan)}
+                {"id" "jolt.sim.preset/maelstrom-echo-roundtrip-v1"
+                 "label" echo-run-label
+                 "profileId" "hermetic"
+                 "planEdn" (viewer-experiment/canonical-edn echo-plan)}]
+               (get catalog "presets")))
+        (is (not (string/includes? catalog-body (str echo-run-scenario))))
+        (is (not (string/includes? catalog-body (str run-new-scenario))))
+        (is (not (string/includes? catalog-body "greeting")))
+        (is (not (string/includes? catalog-body "日本語")))
+        (is (not (string/includes? catalog-body "stream-capacity")))
+        (is (not (string/includes? catalog-body bin)))
+        (is (not (string/includes? catalog-body artifact-root)))
+        (is (not (string/includes? catalog-body
+                                  "-M:outbox-delivery-explore-worker")))
+        (is (string/starts-with? run-raw "HTTP/1.1 200"))
+        (is (= :completed (:status outcome)))
+        (is (= 0 (:exit outcome)))
+        (is (not (contains? outcome :artifact-dir)))
+        ;; The fresh worker ran the unchanged defsim scenario: the exact node
+        ;; identity, the exact init_ok/echo_ok reply envelopes, and the exact
+        ;; nested Unicode payload all crossed the process boundary unchanged.
+        (is (= "n1" (:node-id result)))
+        (is (= echo-expected-replies (:replies result)))
+        (is (= echo-run-input
+               (get-in (second (:replies result)) [:body :echo])))
+        ;; The in-memory transport's own local history is retained in the
+        ;; canonical result: the full enqueue/deliver sequence, with the
+        ;; Unicode payload visible in the echo request and reply events.
+        (is (= {} (get-in result [:transport :queues])))
+        (is (= (vec (range 1 9)) (mapv :ordinal history)))
+        (is (= [:enqueue :enqueue :deliver :enqueue
+                :deliver :enqueue :deliver :deliver]
+               (mapv :op history)))
+        (is (= ["n1" "n1" "n1" "c1" "n1" "c1" "c1" "c1"]
+               (mapv :endpoint history)))
+        (is (= echo-run-input
+               (get-in (nth history 1) [:envelope :body :echo])))
+        (is (= echo-run-input
+               (get-in (nth history 5) [:envelope :body :echo])))
+        (is (= echo-run-input
+               (get-in (nth history 7) [:envelope :body :echo])))
+        (is (= {:scenario echo-run-scenario
+                :input echo-run-input
+                :schedule nil}
+               (select-keys (:config recorded)
+                            [:scenario :input :schedule])))
+        (is (and (string? (:artifact-dir trusted-outcome))
+                 (fs/exists? (:artifact-dir trusted-outcome))))
+        (is (string/starts-with? progress-raw "HTTP/1.1 200"))
+        (is (= "completed" (get progress "status")))
+        (is (= ["jolt.sim.explore/scenario-started"
+                "jolt.sim.explore/scenario-completed"]
+               (mapv #(get % "tag") (get activity-page "events"))))
+        (is (every? #(string/includes?
+                      (get % "edn")
+                      "jolt.maelstrom.fixtures.echo-scenario/echo-roundtrip")
+                    (get activity-page "events")))
+        (is (= "complete"
+               (get-in activity-page ["recovery" "status"]))))
+      (catch :default error
+        (reset! primary* error)
+        (append-phase-best-effort! journal (bounded-error-phase error))
+        (throw error))
+      (finally
+        (let [cleanup-error
+              (try
+                (when-let [server @server*]
+                  (viewer/stop! server))
+                nil
+                (catch :default error error))]
+          (append-phase-best-effort!
+           journal
+           (cond-> {:phase :echo-run-new-viewer-stopped}
+             cleanup-error
+             (assoc :cleanup-error (ex-message cleanup-error))))
+          (sim-repl/clear!)
+          (when (nil? @primary*)
+            (when-let [secondary cleanup-error]
+              (throw secondary))))))))
 (defn -main [& _]
   (let [result (test/run-tests 'jolt.sim.viewer-replay-e2e-test)
         failures (+ (:fail result) (:error result))]

@@ -17,6 +17,17 @@
 (def ^:private scenario
   'jolt.sim.browser-test/activity-scenario)
 
+(def ^:private echo-scenario
+  'jolt.maelstrom.fixtures.echo-scenario/echo-roundtrip)
+
+(def ^:private echo-input
+  "The exact nested Unicode payload the trusted Echo preset owns."
+  {"greeting" "héllo, 世界 🌍"
+   "lang" "日本語"
+   "nested" {"a" "ελληνικά"
+              "b" [" 한글 " "português" 42 nil]}
+   "emoji" "🚀"})
+
 (defn- required-port []
   (let [raw (or (System/getenv "JOLT_SIM_BROWSER_PORT") "8791")
         port (parse-long raw)]
@@ -70,11 +81,16 @@
 
 (defn- config [port]
   (let [plan (viewer-experiment/read-edn
-              (slurp "examples/outbox-cancel-before-ack-plan.edn"))]
+              (slurp "examples/outbox-cancel-before-ack-plan.edn"))
+        echo-plan (viewer-experiment/read-edn
+                   (slurp "examples/maelstrom-echo-plan.edn"))]
     {:port port
      :capability-token capability-token
      :max-document-bytes (* 1024 1024)
-     :allowed-scenarios #{scenario}
+     :allowed-scenarios #{scenario echo-scenario}
+     ;; The existing outbox preset stays first and unchanged; the unchanged
+     ;; Maelstrom Echo defsim scenario is the second trusted example. The
+     ;; stubbed run-case service below never launches a worker for either.
      :run-presets
      [{:id :jolt.sim.preset/outbox-cancel-before-ack-v1
        :label "Outbox: cancel before acknowledgment"
@@ -82,7 +98,14 @@
        :profile-id :hermetic
        :input nil
        :schedule nil
-       :plan-document plan}]
+       :plan-document plan}
+      {:id :jolt.sim.preset/maelstrom-echo-roundtrip-v1
+       :label "Maelstrom Echo: init and echo round trip"
+       :scenario echo-scenario
+       :profile-id :hermetic
+       :input echo-input
+       :schedule nil
+       :plan-document echo-plan}]
      :activity-presentation-registry
      {:jolt.sim.browser-test/activity
       {:kind :jolt.sim.kind/browser-test-activity
