@@ -67,6 +67,22 @@
      :git/sha "ffe523023437862c7e474dc216346426318754c6"}}
    :main-opts ["-m" "jolt.sim.hegel-explore-test"]}
 
+  ;; In-process Hegel property lane over the unchanged Maelstrom Echo
+  ;; scenario fixture (jolt.maelstrom.fixtures.echo-scenario/echo-roundtrip):
+  ;; bounded immutable JSON-shaped payloads round-trip through the real
+  ;; node/echo handlers and memory transport under the sim controller in
+  ;; THIS process. There is no nested worker alias to preflight; run through
+  ;; script/run-hegel-gates.sh so dependency and Hegel native preflight
+  ;; still happen before generation. Pinned to the same peeled v0.1.2
+  ;; jolt-hegel commit as :hegel-explore-test.
+  :maelstrom-echo-hegel-test
+  {:extra-paths ["test"]
+   :extra-deps
+   {io.github.chucklehead-dev/jolt-hegel
+    {:git/url "https://github.com/chucklehead-dev/jolt-hegel.git"
+     :git/sha "ffe523023437862c7e474dc216346426318754c6"}}
+   :main-opts ["-m" "jolt.maelstrom.echo-hegel-test"]}
+
   ;; Hegel-owned, shrinkable capacities and poll-fault ordinals drive the
   ;; unchanged HTTP + SQLite application in a fresh worker for every case.
   :http-sqlite-hegel-test

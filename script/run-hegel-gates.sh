@@ -120,6 +120,7 @@ run_step environment directory-setup mkdir -p \
 if [[ $# -eq 0 ]]; then
   set -- \
     hegel-explore-test \
+    maelstrom-echo-hegel-test \
     tcp-bencode-hegel-test \
     outbox-delivery-hegel-test
 fi
@@ -128,6 +129,9 @@ declare -a gates=()
 declare -a preflight_aliases=()
 for gate in "$@"; do
   parent_alias="$gate"
+  # Reset every iteration so a process-backed gate's worker alias cannot
+  # leak into a later in-process gate's preflight list.
+  worker_alias=""
   case "$gate" in
     hegel-explore-test)
       worker_alias=explore-worker-test
@@ -148,15 +152,24 @@ for gate in "$@"; do
     outbox-http-webhook-hegel-test)
       worker_alias=outbox-http-webhook-explore-worker
       ;;
+    maelstrom-echo-hegel-test)
+      # In-process lane: the Echo round trip runs under the sim controller in
+      # the gate process itself, so there is no nested worker alias to
+      # preflight.
+      ;;
     *)
       echo "unknown Hegel gate: $gate" >&2
-      echo "allowed: hegel-explore-test http-sqlite-hegel-test tcp-bencode-hegel-test outbox-delivery-hegel-test outbox-delivery-cancel-hegel-test outbox-http-webhook-hegel-test" >&2
+      echo "allowed: hegel-explore-test http-sqlite-hegel-test tcp-bencode-hegel-test outbox-delivery-hegel-test outbox-delivery-cancel-hegel-test outbox-http-webhook-hegel-test maelstrom-echo-hegel-test" >&2
       echo "retained gate root: $gate_root" >&2
       exit 2
       ;;
   esac
   gates+=("$gate")
-  preflight_aliases+=("$parent_alias" "$worker_alias")
+  preflight_aliases+=("$parent_alias")
+  # Only process-backed gates have a nested worker alias to resolve.
+  if [[ -n "$worker_alias" ]]; then
+    preflight_aliases+=("$worker_alias")
+  fi
 done
 
 echo "Git dependency cache: $JOLT_GITLIBS"
