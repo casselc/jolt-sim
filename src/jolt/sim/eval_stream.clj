@@ -49,7 +49,10 @@
   (when-not (map? request)
     (throw (invalid-request :request-not-a-map
                             {:value-class (str (class request))})))
-  (when-not (ifn? emit!)
+  ;; Keywords, maps, sets, and vectors are IFn values too, but accepting one
+  ;; here would silently discard or reinterpret events rather than deliver
+  ;; them to an emitter callback.
+  (when-not (fn? emit!)
     (throw (invalid-request :emit-not-a-function
                             {:value-class (str (class emit!))})))
   (let [form (:form request)]

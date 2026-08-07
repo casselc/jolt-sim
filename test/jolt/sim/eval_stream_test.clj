@@ -160,6 +160,10 @@
                               (stream/evaluate! {:form "x" :allow-unresolved-vars? nil} (fn [_]))))
         (is (thrown-with-msg? clojure.lang.ExceptionInfo #"rejected"
                               (stream/evaluate! {:form "x"} nil)))
+        (doseq [callable-but-not-emitter [:keyword {} #{} []]]
+          (is (thrown-with-msg?
+               clojure.lang.ExceptionInfo #"rejected"
+               (stream/evaluate! {:form "x"} callable-but-not-emitter))))
         (is (thrown-with-msg? clojure.lang.ExceptionInfo #"rejected"
                               (stream/evaluate! "not-a-map" (fn [_]))))
         (is (zero? @called))))))
