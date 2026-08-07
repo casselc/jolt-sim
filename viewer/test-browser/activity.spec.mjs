@@ -113,6 +113,85 @@ test("runs one trusted canonical application preset and renders its topology", a
   });
 });
 
+test("distinguishes the two trusted presets by selection", async ({page}, testInfo) => {
+  const outboxId = "jolt.sim.preset/outbox-cancel-before-ack-v1";
+  const echoId = "jolt.sim.preset/maelstrom-echo-roundtrip-v1";
+  const echoLabel = "Maelstrom Echo: init and echo round trip";
+  let releaseRun;
+  const release = new Promise((resolve) => { releaseRun = resolve; });
+  let observeRun;
+  const observed = new Promise((resolve) => { observeRun = resolve; });
+  let runBody = null;
+
+  await page.route("**/api/run", async (route) => {
+    runBody = route.request().postData();
+    observeRun();
+    await release;
+    await route.continue();
+  });
+
+  await page.goto("/");
+  await page.locator("#capability").fill(capabilityToken);
+  await page.locator("#load-run-presets").click();
+
+  // The closed catalog offers exactly the two trusted examples as distinct
+  // selectable identities; the existing outbox preset remains the default.
+  const options = await page.locator("#run-preset option").evaluateAll(
+    (items) => items.map((item) => ({value: item.value, text: item.textContent}))
+  );
+  expect(options).toEqual([
+    {value: outboxId, text: "Outbox: cancel before acknowledgment (hermetic)"},
+    {value: echoId, text: `${echoLabel} (hermetic)`}
+  ]);
+  await expect(page.locator("#run-preset")).toHaveValue(outboxId);
+  await expect(page.frameLocator("#report").locator(".topology-node"))
+    .toHaveCount(4);
+  await expect(page.frameLocator("#report").locator(".topology-edge"))
+    .toHaveCount(3);
+
+  // Selecting the Echo preset renders its own inert two-endpoint topology.
+  await page.locator("#run-preset").selectOption(echoId);
+  await expect(page.locator("#run-preset")).toHaveValue(echoId);
+  await expect(page.getByTestId("run-preset-status")).toContainText(
+    `${echoLabel} is ready. Run new uses server-owned coordinates.`
+  );
+  await expect(page.frameLocator("#report").locator(".topology-node"))
+    .toHaveCount(2);
+  await expect(page.frameLocator("#report").locator(".topology-edge"))
+    .toHaveCount(2);
+  await expect(page.frameLocator("#report").locator("body"))
+    .toContainText("jolt.maelstrom.echo/roundtrip-v1");
+  await expect(page.frameLocator("#report").locator("body"))
+    .not.toContainText("cancel-before-ack");
+
+  // Switching back restores the outbox projection: selection is real.
+  await page.locator("#run-preset").selectOption(outboxId);
+  await expect(page.frameLocator("#report").locator(".topology-node"))
+    .toHaveCount(4);
+  await expect(page.frameLocator("#report").locator("body"))
+    .toContainText("cancel-before-ack-v1");
+
+  // Running the selected Echo preset posts its exact trusted preset ID.
+  await page.locator("#run-preset").selectOption(echoId);
+  await expect(page.getByTestId("run-preset-status")).toContainText(
+    `${echoLabel} is ready.`
+  );
+  await page.getByTestId("run-new").click();
+  await observed;
+  await expect(page.getByTestId("run-new")).toBeDisabled();
+  expect(JSON.parse(runBody)).toEqual({version: 1, presetId: echoId});
+  releaseRun();
+
+  await expect(page.locator("#status")).toHaveText(
+    `${echoLabel} completed; raw outcome and retained activity are available.`
+  );
+  await expect(page.locator("#outcome")).not.toContainText(":artifact-dir");
+  await page.screenshot({
+    path: testInfo.outputPath("run-new-maelstrom-echo.png"),
+    fullPage: true
+  });
+});
+
 test("reports an empty trusted preset catalog without inventing an error", async ({page}) => {
   await page.route("**/api/run-presets", async (route) => {
     await route.fulfill({

@@ -1,0 +1,47 @@
+{:checks []
+ :connections [{:capabilities {:from [:jolt.maelstrom/reply-v1]
+                               :to [:jolt.maelstrom/reply-v1]}
+                :from [:node :replies]
+                :handler-owners []
+                :id :reply
+                :mode :simulate
+                :pack-id :jolt.maelstrom.transport/memory-v1
+                :to [:client :replies]}
+               {:capabilities {:from [:jolt.maelstrom/request-v1]
+                               :to [:jolt.maelstrom/request-v1]}
+                :from [:client :requests]
+                :handler-owners []
+                :id :request
+                :mode :simulate
+                :pack-id :jolt.maelstrom.transport/memory-v1
+                :to [:node :requests]}]
+ :controls {:perturb {:enabled? false :reason :inspection-only}
+            :replay {:enabled? false :reason :inspection-only}
+            :step {:enabled? false :reason :inspection-only}}
+ :counts {:checks 0
+          :connections 2
+          :handler-packs 0
+          :handlers 0
+          :monitors 0
+          :nodes 2
+          :ports 4
+          :presentations 0}
+ :experiment-id :jolt.maelstrom.echo/roundtrip-v1
+ :jolt.sim.viewer.experiment/version 1
+ :kind :jolt.sim.kind/experiment-plan
+ :nodes [{:id :client
+          :ports [{:capabilities [:jolt.maelstrom/reply-v1]
+                   :direction :in
+                   :id :replies}
+                  {:capabilities [:jolt.maelstrom/request-v1]
+                   :direction :out
+                   :id :requests}]}
+         {:id :node
+          :ports [{:capabilities [:jolt.maelstrom/reply-v1]
+                   :direction :out
+                   :id :replies}
+                  {:capabilities [:jolt.maelstrom/request-v1]
+                   :direction :in
+                   :id :requests}]}]
+ :profile-id :hermetic
+ :runtime {:ffi-mode :hermetic :handler-count 0}}

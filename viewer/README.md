@@ -101,21 +101,35 @@ replay delegates to one real fresh worker for Case/Outcome documents only.
 Hosted CI drives the checked-in canonical outbox Case/Outcome through the live
 viewer HTTP API, executes its unchanged HTTP/SQLite/TCP/bencode scenario in
 that worker, and retains the complete worker directory plus an append-only
-phase log. Ripple also exposes the one trusted runnable example described
+phase log. Ripple also exposes the trusted runnable examples described
 below. The UI does not yet compare two outcomes, evaluate post-hoc invariants,
 or expose a general application-defined scenario catalog. Those are later
 viewer slices over the same evidence and execution APIs.
 
-### Run a trusted outbox example
+### Run a trusted example
 
-Ripple can start one canonical example without first uploading a retained
+Ripple can start a canonical example without first uploading a retained
 Case/Outcome. **Load examples** fetches the server's closed preset catalog,
-and **Run new** starts the selected preset in one fresh worker. The first and
-currently only executable preset is **Outbox: cancel before acknowledgment**:
+and **Run new** starts the selected preset in one fresh worker. The first
+executable preset is **Outbox: cancel before acknowledgment**:
 the ordinary compiled HTTP -> SQLite -> TCP/bencode outbox application under
 the truthful `:hermetic` profile. The application and its library adapters run
 unchanged; Ripple does not reimplement their HTTP, database, networking, codec,
 or cancellation behavior.
+
+The second executable preset is **Maelstrom Echo: init and echo round trip**:
+the existing ordinary `jolt.maelstrom.fixtures.echo-scenario/echo-roundtrip`
+defsim scenario under the same truthful `:hermetic` profile. One fresh worker
+runs the unchanged `jolt.maelstrom.node` boundary, `jolt.maelstrom.echo`
+handler, and `jolt.maelstrom.transport.memory` endpoints over one exact
+nested Unicode echo input; Ripple does not reimplement node, Echo, or
+transport behavior. Its inert plan projection is the checked-in two-endpoint
+topology [`examples/maelstrom-echo-plan.edn`](examples/maelstrom-echo-plan.edn):
+a client and a node joined by the simulated request and reply connections,
+with zero FFI handler packs. The preset carries no schedule, so the run
+drives no `:future-schedule` override, and it reuses the same trusted fresh
+worker command as the outbox preset -- that existing worker alias already
+resolves the scenario from this repository's own source and test roots.
 
 The browser is not an execution-coordinate editor. A trusted startup preset
 owns its allowlisted scenario symbol, canonical input, exact optional
@@ -127,9 +141,9 @@ remain server-owned and cannot be replaced by browser data. Run and replay
 share the same single-flight admission, progress model, path redaction,
 retained activity, and outcome handling.
 
-For this preset, start Ripple programmatically from a project REPL or a small
-launcher namespace so the trusted configuration can read the checked-in plan
-without duplicating it in the command-line EDN file:
+For these presets, start Ripple programmatically from a project REPL or a
+small launcher namespace so the trusted configuration can read the checked-in
+plans without duplicating them in the command-line EDN file:
 
 ```clojure
 (require '[jolt.sim.viewer :as viewer]
@@ -141,7 +155,8 @@ without duplicating it in the command-line EDN file:
     :capability-token (System/getenv "JOLT_SIM_VIEWER_TOKEN")
     :max-document-bytes 1048576
     :allowed-scenarios
-    #{'jolt.sim.fixtures.outbox-experiment-scenarios/exercise-cancel-before-ack-compiled}
+    #{'jolt.sim.fixtures.outbox-experiment-scenarios/exercise-cancel-before-ack-compiled
+      'jolt.maelstrom.fixtures.echo-scenario/echo-roundtrip}
     :run-presets
     [{:id :jolt.sim.preset/outbox-cancel-before-ack-v1
       :label "Outbox: cancel before acknowledgment"
@@ -155,7 +170,20 @@ without duplicating it in the command-line EDN file:
       :schedule nil
       :plan-document
       (viewer-experiment/read-edn
-       (slurp "examples/outbox-cancel-before-ack-plan.edn"))}]
+       (slurp "examples/outbox-cancel-before-ack-plan.edn"))}
+     {:id :jolt.sim.preset/maelstrom-echo-roundtrip-v1
+      :label "Maelstrom Echo: init and echo round trip"
+      :scenario 'jolt.maelstrom.fixtures.echo-scenario/echo-roundtrip
+      :profile-id :hermetic
+      :input {"greeting" "héllo, 世界 🌍"
+              "lang" "日本語"
+              "nested" {"a" "ελληνικά"
+                       "b" [" 한글 " "português" 42 nil]}
+              "emoji" "🚀"}
+      :schedule nil
+      :plan-document
+      (viewer-experiment/read-edn
+       (slurp "examples/maelstrom-echo-plan.edn"))}]
     :runtime-config
     {:worker-command [(System/getenv "JOLT_SIM_BIN")
                       "-M:outbox-delivery-explore-worker"]
@@ -173,15 +201,17 @@ Run that form with the process working directory set to `viewer`, an absolute
 least 32 characters. The `-M:viewer` command-line path remains available: put
 the same closed maps in the EDN configuration and inline the contents of
 [`examples/outbox-cancel-before-ack-plan.edn`](examples/outbox-cancel-before-ack-plan.edn)
+and [`examples/maelstrom-echo-plan.edn`](examples/maelstrom-echo-plan.edn)
 as `:plan-document`.
 
-The UI renders the preset's four-node, three-connection topology before
-execution, then uses the existing progress, retained semantic activity, and
-terminal outcome views for the run:
+The UI renders the selected preset's topology before execution -- four nodes
+and three connections for the outbox, the two endpoints and two simulated
+connections for Maelstrom Echo -- then uses the existing progress, retained
+semantic activity, and terminal outcome views for the run:
 
 [![Ripple running the compiled outbox example](docs/ripple-run-new-outbox.png)](docs/ripple-run-new-outbox.png)
 
-This one fresh run is an interactive application witness, **not** the existing
+Each fresh run is an interactive application witness, **not** the existing
 two-worker real/hermetic parity proof. Browser-selectable regimes,
 parameterized inputs, and a second independently truthful execution profile
 remain later slices; the UI will not advertise choices that the worker cannot
