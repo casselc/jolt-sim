@@ -227,9 +227,11 @@ one shared Jolt evaluation engine adapted to the textual REPL, a
 prepl-compatible structured stream, and nREPL; a separate revision-scoped
 Session control protocol; and a canonical out-of-band Ripple-in-Ripple e2e
 scenario. This follows the ordinary HTTP/SQLite/TCP application workflow and
-must not displace it with debugger protocol scaffolding. These remain
-sequenced roadmap work: the current Run-new preset does not provide a socket
-REPL/prepl stream, live evaluation, or Ripple-in-Ripple debugging.
+must not displace it with debugger protocol scaffolding. The socket-free
+`jolt.sim.eval-stream/evaluate!` subset now emits data-oriented `:out`, `:err`,
+and terminal `:ret` events over the shared Jolt evaluation engine. It does not
+yet provide a socket/prepl transport, tap lifecycle, remote Session attachment,
+browser live evaluation, or Ripple-in-Ripple debugging.
 
 The next stacked slice, draft PR `casselc/jolt-sim#29`, keeps that application
 body unchanged and runs every case in a fresh sim-enabled process. Hegel owns
