@@ -2,6 +2,7 @@
   (:require [clojure.test :as test]
             [jolt.example.outbox-test]
             [jolt.example.outbox-regimes-test]
+            [jolt.maelstrom.broadcast-sim-test]
             [jolt.maelstrom.broadcast-test]
             [jolt.maelstrom.echo-sim-test]
             [jolt.maelstrom.echo-test]
@@ -46,6 +47,7 @@
   (let [result
         (test/run-tests 'jolt.example.outbox-test
                         'jolt.example.outbox-regimes-test
+                        'jolt.maelstrom.broadcast-sim-test
                         'jolt.maelstrom.broadcast-test
                         'jolt.maelstrom.echo-sim-test
                         'jolt.maelstrom.echo-test
