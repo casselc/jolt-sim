@@ -7,8 +7,42 @@
  ;; through script/run-hegel-gates.sh so both dependency graphs are prepared
  ;; before generation and infrastructure failures retain one bounded bundle.
  :aliases
- {:test {:extra-paths ["test"]
-         :main-opts ["-m" "jolt.sim.test-main"]}
+ {:test
+  {:extra-paths ["test"]
+   :extra-deps
+   {io.github.casselc/data.json
+    {:git/url "https://github.com/casselc/data.json.git"
+     :git/sha "8a6dc9668e5c3596a335759defeb7ec80cd3b5f8"}
+    io.github.jolt-lang/time
+    {:git/url "https://github.com/jolt-lang/time.git"
+     :git/sha "da271ca302487c2c5130a0450b4ad4c78d63e656"}}
+   :main-opts ["-m" "jolt.sim.test-main"]}
+
+  ;; Real stdin/stdout Maelstrom Echo process. The node and Echo handler are
+  ;; the same transport-neutral production namespaces used by simulation.
+  :maelstrom-echo
+  {:extra-deps
+   {io.github.casselc/data.json
+    {:git/url "https://github.com/casselc/data.json.git"
+     :git/sha "8a6dc9668e5c3596a335759defeb7ec80cd3b5f8"}
+    io.github.jolt-lang/time
+    {:git/url "https://github.com/jolt-lang/time.git"
+     :git/sha "da271ca302487c2c5130a0450b4ad4c78d63e656"}}
+   :main-opts ["-m" "jolt.maelstrom.echo-main"]}
+
+  ;; Verifier side of script/run-maelstrom-echo-e2e.sh. The shell runner owns
+  ;; fresh process launch and retained artifacts; this alias independently
+  ;; checks the resulting JSON-lines wire evidence.
+  :maelstrom-echo-process-e2e-verify
+  {:extra-paths ["test"]
+   :extra-deps
+   {io.github.casselc/data.json
+    {:git/url "https://github.com/casselc/data.json.git"
+     :git/sha "8a6dc9668e5c3596a335759defeb7ec80cd3b5f8"}
+    io.github.jolt-lang/time
+    {:git/url "https://github.com/jolt-lang/time.git"
+     :git/sha "da271ca302487c2c5130a0450b4ad4c78d63e656"}}
+   :main-opts ["-m" "jolt.maelstrom.json-lines-process-e2e-test"]}
 
   ;; Focused cooperative-session gate. Keep this independent from the broad
   ;; source suite while the REPL control surface is developed in small slices.
