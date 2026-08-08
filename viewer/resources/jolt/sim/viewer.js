@@ -7,6 +7,8 @@
   const inspect = document.getElementById("inspect");
   const replay = document.getElementById("replay");
   const runPreset = document.getElementById("run-preset");
+  const runRegime = document.getElementById("run-regime");
+  const runRegimeSummary = document.getElementById("run-regime-summary");
   const loadRunPresets = document.getElementById("load-run-presets");
   const runNew = document.getElementById("run-new");
   const runPresetStatus = document.getElementById("run-preset-status");
@@ -52,6 +54,7 @@
   let activityNavigationBusy = false;
   let runPresets = [];
   let selectedRunPreset = null;
+  let selectedRunRegime = null;
 
   const canonicalUnsignedDecimal = (value) =>
     typeof value === "string" && /^(0|[1-9][0-9]*)$/.test(value);
@@ -76,12 +79,28 @@
     typeof value === "string" &&
     /^[^\s/:]+(?:\.[^\s/:]+)*\/[^\s/]+$/.test(value);
 
+  const validRunRegime = (regime) =>
+    exactKeys(regime, ["id", "label", "summary", "scope"]) &&
+    namespacedIdentifier(regime.id) &&
+    typeof regime.label === "string" && regime.label.trim().length > 0 &&
+    regime.label.length <= 128 &&
+    typeof regime.summary === "string" && regime.summary.trim().length > 0 &&
+    regime.summary.length <= 512 &&
+    Array.isArray(regime.scope) && regime.scope.length > 0 &&
+    regime.scope.length <= 16 &&
+    regime.scope.every(namespacedIdentifier) &&
+    new Set(regime.scope).size === regime.scope.length;
+
   const validRunPreset = (preset) =>
-    exactKeys(preset, ["id", "label", "profileId", "planEdn"]) &&
+    exactKeys(preset, ["id", "label", "profileId", "planEdn", "regimes"]) &&
     namespacedIdentifier(preset.id) &&
     typeof preset.label === "string" && preset.label.trim().length > 0 &&
     typeof preset.profileId === "string" && preset.profileId.length > 0 &&
-    typeof preset.planEdn === "string" && preset.planEdn.length > 0;
+    typeof preset.planEdn === "string" && preset.planEdn.length > 0 &&
+    Array.isArray(preset.regimes) && preset.regimes.length > 0 &&
+    preset.regimes.length <= 32 && preset.regimes.every(validRunRegime) &&
+    new Set(preset.regimes.map((regime) => regime.id)).size ===
+      preset.regimes.length;
 
   const validChoice = (choice, revision) =>
     exactKeys(choice, ["revision", "kind", "value", "label"]) &&
@@ -634,8 +653,10 @@
     replay.disabled = busy || !ready || kind.value !== "case-outcome";
     loadRunPresets.disabled = busy || capability.value.length === 0;
     runPreset.disabled = busy || runPresets.length === 0;
+    runRegime.disabled = busy || selectedRunPreset === null ||
+      selectedRunPreset.regimes.length === 0;
     runNew.disabled = busy || capability.value.length === 0 ||
-      selectedRunPreset === null;
+      selectedRunPreset === null || selectedRunRegime === null;
     // An unresolved ambiguous step outcome blocks a fresh frame read too, so
     // the only available action stays Retry until it resolves or Reset runs.
     sessionRefresh.disabled = busy || capability.value.length === 0 || pendingRetry !== null;
@@ -715,8 +736,31 @@
     updateButtons();
   });
 
+  const describeRunRegime = (regime) => {
+    runRegimeSummary.textContent = regime === null
+      ? "No simulation regime selected."
+      : `${regime.summary} Scope: ${regime.scope.join(", ")}.`;
+  };
+
+  const selectRunRegime = (preset, regimeId) => {
+    const regime = preset.regimes.find((candidate) => candidate.id === regimeId);
+    selectedRunRegime = regime || null;
+    describeRunRegime(selectedRunRegime);
+    return selectedRunRegime;
+  };
+
   const installRunPreset = async (preset) => {
     selectedRunPreset = preset;
+    selectedRunRegime = null;
+    runRegime.textContent = "";
+    preset.regimes.forEach((regime) => {
+      const option = document.createElement("option");
+      option.value = regime.id;
+      option.textContent = regime.label;
+      runRegime.appendChild(option);
+    });
+    runRegime.value = preset.regimes[0].id;
+    selectRunRegime(preset, preset.regimes[0].id);
     documentText = preset.planEdn;
     kind.value = "experiment-plan";
     file.value = "";
@@ -729,17 +773,24 @@
     status.textContent =
       `Validated ${preset.label} topology rendered (${preset.profileId}).`;
     runPresetStatus.textContent =
-      `${preset.label} is ready. Run new uses server-owned coordinates.`;
+      `${preset.label} is ready. Run new uses the selected server-owned regime.`;
   };
 
   const clearRunPresets = (message) => {
     runPresets = [];
     selectedRunPreset = null;
+    selectedRunRegime = null;
     runPreset.textContent = "";
     const empty = document.createElement("option");
     empty.value = "";
     empty.textContent = "No runnable examples loaded.";
     runPreset.appendChild(empty);
+    runRegime.textContent = "";
+    const emptyRegime = document.createElement("option");
+    emptyRegime.value = "";
+    emptyRegime.textContent = "No simulation regimes loaded.";
+    runRegime.appendChild(emptyRegime);
+    describeRunRegime(null);
     runPresetStatus.textContent = message;
   };
 
@@ -760,7 +811,7 @@
       });
       const body = await response.json().catch(() => null);
       if (!response.ok || !exactKeys(body, ["version", "presets"]) ||
-          body.version !== 1 || !Array.isArray(body.presets) ||
+          body.version !== 2 || !Array.isArray(body.presets) ||
           !body.presets.every(validRunPreset) ||
           new Set(body.presets.map((preset) => preset.id)).size !==
             body.presets.length) {
@@ -794,6 +845,8 @@
       candidate.id === runPreset.value);
     if (!preset) {
       selectedRunPreset = null;
+      selectedRunRegime = null;
+      describeRunRegime(null);
       runPresetStatus.textContent = "Unknown runnable example selected.";
       updateButtons();
       return;
@@ -804,12 +857,25 @@
       await installRunPreset(preset);
     } catch (error) {
       selectedRunPreset = null;
+      selectedRunRegime = null;
+      describeRunRegime(null);
       runPresetStatus.textContent =
         `Could not render runnable example: ${error.message}`;
     } finally {
       busy = false;
       updateButtons();
     }
+  });
+
+  runRegime.addEventListener("change", () => {
+    if (busy || selectedRunPreset === null) return;
+    if (!selectRunRegime(selectedRunPreset, runRegime.value)) {
+      runPresetStatus.textContent = "Unknown simulation regime selected.";
+    } else {
+      runPresetStatus.textContent =
+        `${selectedRunPreset.label} is ready with ${selectedRunRegime.label}.`;
+    }
+    updateButtons();
   });
 
   capability.addEventListener("input", updateButtons);
@@ -1140,10 +1206,11 @@
   }));
 
   runNew.addEventListener("click", () => {
-    if (busy || selectedRunPreset === null) return;
+    if (busy || selectedRunPreset === null || selectedRunRegime === null) return;
     const preset = selectedRunPreset;
+    const regime = selectedRunRegime;
     runPresetStatus.textContent =
-      `Running ${preset.label} with server-owned coordinates...`;
+      `Running ${preset.label} with ${regime.label}...`;
     return performFreshRun({
       startMessage: `Running ${preset.label} in one fresh process...`,
       completedMessage:
@@ -1157,7 +1224,8 @@
             "Accept": "application/edn",
             "X-Jolt-Sim-Capability": capability.value
           },
-          body: JSON.stringify({version: 1, presetId: preset.id}),
+          body: JSON.stringify({version: 2,
+            presetId: preset.id, regimeId: regime.id}),
           cache: "no-store",
           credentials: "omit"
         });
@@ -1166,10 +1234,11 @@
         return text;
       }
     }).then((completed) => {
-      runPresetStatus.textContent = selectedRunPreset === preset
+      runPresetStatus.textContent = selectedRunPreset === preset &&
+        selectedRunRegime === regime
         ? (completed
-          ? `${preset.label} is ready. Run new starts another fresh process.`
-          : `${preset.label} did not complete; retained evidence remains available.`)
+          ? `${preset.label} / ${regime.label} is ready. Run new starts another fresh process.`
+          : `${preset.label} / ${regime.label} did not complete; retained evidence remains available.`)
         : runPresetStatus.textContent;
     });
   });

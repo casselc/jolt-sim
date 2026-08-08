@@ -1,0 +1,66 @@
+{:checks []
+ :connections [{:capabilities {:from [:outbox.http/client-v1]
+                               :to [:outbox.http/server-v1]}
+                :from [:client :commands]
+                :handler-owners [{:handler-count 15
+                                  :pack-id :outbox.experiment/memory}]
+                :id :command
+                :mode :simulate
+                :pack-id :outbox.http/command-v1
+                :to [:app :commands]}
+               {:capabilities {:from [:outbox.tcp/client-v1]
+                               :to [:outbox.tcp/server-v1]}
+                :from [:app :deliveries]
+                :handler-owners [{:handler-count 21
+                                  :pack-id :outbox.experiment/posix}]
+                :id :delivery
+                :mode :simulate
+                :pack-id :outbox.tcp/delivery-v1
+                :to [:receiver :deliveries]}
+               {:capabilities {:from [:outbox.sqlite/client-v1]
+                               :to [:outbox.sqlite/server-v1]}
+                :from [:app :store]
+                :handler-owners [{:handler-count 23
+                                  :pack-id :outbox.experiment/sqlite}]
+                :id :store
+                :mode :simulate
+                :pack-id :outbox.sqlite/store-v1
+                :to [:sqlite :database]}]
+ :controls {:perturb {:enabled? false :reason :inspection-only}
+            :replay {:enabled? false :reason :inspection-only}
+            :step {:enabled? false :reason :inspection-only}}
+ :counts {:checks 0
+          :connections 3
+          :handler-packs 3
+          :handlers 59
+          :monitors 0
+          :nodes 4
+          :ports 6
+          :presentations 0}
+ :experiment-id :outbox.experiment/first-poll-regime-lab-v1
+ :jolt.sim.viewer.experiment/version 1
+ :kind :jolt.sim.kind/experiment-plan
+ :nodes [{:id :app
+          :ports [{:capabilities [:outbox.http/server-v1]
+                   :direction :in
+                   :id :commands}
+                  {:capabilities [:outbox.tcp/client-v1]
+                   :direction :out
+                   :id :deliveries}
+                  {:capabilities [:outbox.sqlite/client-v1]
+                   :direction :out
+                   :id :store}]}
+         {:id :client
+          :ports [{:capabilities [:outbox.http/client-v1]
+                   :direction :out
+                   :id :commands}]}
+         {:id :receiver
+          :ports [{:capabilities [:outbox.tcp/server-v1]
+                   :direction :in
+                   :id :deliveries}]}
+         {:id :sqlite
+          :ports [{:capabilities [:outbox.sqlite/server-v1]
+                   :direction :in
+                   :id :database}]}]
+ :profile-id :hermetic
+ :runtime {:ffi-mode :hermetic :handler-count 59}}

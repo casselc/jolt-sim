@@ -65,13 +65,19 @@
     <div id="status" role="status" aria-live="polite"></div>
     <section aria-labelledby="run-preset-heading">
       <h2 id="run-preset-heading">Runnable examples</h2>
-      <p class="muted">The server owns each example's scenario, input, schedule,
-        worker command, and artifact policy. Ripple receives only an inert plan
-        for inspection and sends the exact trusted preset identifier.</p>
+      <p class="muted">The server owns each example's scenario, regime inputs,
+        schedule, worker command, and artifact policy. Ripple receives only an
+        inert plan plus bounded regime descriptions and sends the exact trusted
+        preset and regime identifiers.</p>
       <div class="controls">
         <label>Example
           <select id="run-preset" disabled>
             <option value="" selected>No runnable examples loaded.</option>
+          </select>
+        </label>
+        <label>Simulation regime
+          <select id="run-regime" data-testid="run-regime" disabled>
+            <option value="" selected>No simulation regimes loaded.</option>
           </select>
         </label>
         <div>
@@ -79,6 +85,8 @@
           <button id="run-new" data-testid="run-new" type="button" disabled>Run new</button>
         </div>
       </div>
+      <p id="run-regime-summary" data-testid="run-regime-summary"
+         class="muted">Select a runnable example to inspect its regimes.</p>
       <span id="run-preset-status" data-testid="run-preset-status"
             role="status" aria-live="polite">Enter the session capability, then load examples.</span>
     </section>

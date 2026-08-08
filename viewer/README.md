@@ -101,16 +101,17 @@ replay delegates to one real fresh worker for Case/Outcome documents only.
 Hosted CI drives the checked-in canonical outbox Case/Outcome through the live
 viewer HTTP API, executes its unchanged HTTP/SQLite/TCP/bencode scenario in
 that worker, and retains the complete worker directory plus an append-only
-phase log. Ripple also exposes the trusted runnable examples described
-below. The UI does not yet compare two outcomes, evaluate post-hoc invariants,
-or expose a general application-defined scenario catalog. Those are later
-viewer slices over the same evidence and execution APIs.
+phase log. Ripple also exposes the trusted, application-defined runnable
+catalog described below. The UI does not yet compare two outcomes, evaluate
+post-hoc invariants, or discover catalogs dynamically from running
+applications. Those are later viewer slices over the same evidence and
+execution APIs.
 
 ### Run a trusted example
 
 Ripple can start a canonical example without first uploading a retained
-Case/Outcome. **Load examples** fetches the server's closed preset catalog,
-and **Run new** starts the selected preset in one fresh worker. The first
+Case/Outcome. **Load examples** fetches the server's closed v2 preset/regime
+catalog, and **Run new** starts the exact selected pair in one fresh worker. The first
 executable preset is **Outbox: cancel before acknowledgment**:
 the ordinary compiled HTTP -> SQLite -> TCP/bencode outbox application under
 the truthful `:hermetic` profile. The application and its library adapters run
@@ -131,23 +132,48 @@ drives no `:future-schedule` override, and it reuses the same trusted fresh
 worker command as the outbox preset -- that existing worker alias already
 resolves the scenario from this repository's own source and test roots.
 
+The third preset, **Outbox: first-poll regime lab**, runs the unchanged
+`exercise-reopen-with-capacities` scenario. Its ten application-owned regimes
+are the exact cross product of receiver-first versus HTTP-first initial poll
+admission and no modeled EINTR versus EINTR at poll ordinal 1, 2, 4, or 8.
+Each description names its limited scope: the coordinator controls admission
+at those two first-poll boundaries, not arbitrary thread execution or poll
+completion order. Its distinct inert plan projection is
+[`examples/outbox-regime-lab-plan.edn`](examples/outbox-regime-lab-plan.edn).
+
 The browser is not an execution-coordinate editor. A trusted startup preset
-owns its allowlisted scenario symbol, canonical input, exact optional
-schedule, and runtime profile. `GET /api/run-presets` publishes only its ID,
-label, profile ID, and validated inert experiment-plan EDN. `POST /api/run`
-accepts only the selected preset ID. Scenario, input, schedule, worker command,
+owns its allowlisted scenario symbol, exact optional schedule, runtime profile,
+and nonempty finite regime catalog; each regime owns one canonical input
+snapshot. `GET /api/run-presets` publishes catalog version 2 with preset ID,
+label, profile ID, validated inert experiment-plan EDN, and each regime's ID,
+label, bounded summary, and namespaced scope. It never publishes an input or
+schedule. `POST /api/run` accepts exactly the integer version 2 plus the
+selected preset and regime IDs. Scenario, input, schedule, worker command,
 working directory, deadlines, environment, and artifact policy therefore
 remain server-owned and cannot be replaced by browser data. Run and replay
 share the same single-flight admission, progress model, path redaction,
-retained activity, and outcome handling.
+retained activity, and outcome handling. Preset runs also retain the trusted
+catalog version, preset ID, regime ID, and declared scope in active and
+terminal progress, including launch failures, so a forensic record never has
+to infer the selected regime from mutable browser state.
 
 For these presets, start Ripple programmatically from a project REPL or a
 small launcher namespace so the trusted configuration can read the checked-in
 plans without duplicating them in the command-line EDN file:
 
 ```clojure
-(require '[jolt.sim.viewer :as viewer]
+(require '[jolt.example.outbox.regimes :as outbox-regimes]
+         '[jolt.sim.viewer :as viewer]
          '[jolt.sim.viewer.experiment :as viewer-experiment])
+
+(defn outbox-lab-regimes []
+  (mapv (fn [{:keys [id label summary scope]}]
+          {:id id
+           :label label
+           :summary summary
+           :scope scope
+           :input (outbox-regimes/scenario-input id)})
+        outbox-regimes/regimes))
 
 (def ripple
   (viewer/start!
@@ -156,18 +182,24 @@ plans without duplicating them in the command-line EDN file:
     :max-document-bytes 1048576
     :allowed-scenarios
     #{'jolt.sim.fixtures.outbox-experiment-scenarios/exercise-cancel-before-ack-compiled
-      'jolt.maelstrom.fixtures.echo-scenario/echo-roundtrip}
+      'jolt.maelstrom.fixtures.echo-scenario/echo-roundtrip
+      'jolt.sim.fixtures.outbox-delivery-scenarios/exercise-reopen-with-capacities}
     :run-presets
     [{:id :jolt.sim.preset/outbox-cancel-before-ack-v1
       :label "Outbox: cancel before acknowledgment"
       :scenario
       'jolt.sim.fixtures.outbox-experiment-scenarios/exercise-cancel-before-ack-compiled
       :profile-id :hermetic
-      :input {:payload [0 127 128 255]
-              :stream-capacity 8
-              :pipe-capacity 1
-              :poll-eintr-ordinal nil}
       :schedule nil
+      :regimes
+      [{:id :jolt.sim.regime/outbox-cancel-before-ack-canonical
+        :label "Canonical cancellation"
+        :summary "Cancel the compiled outbox delivery before acknowledgment."
+        :scope [:jolt.example.outbox/cancellation]
+        :input {:payload [0 127 128 255]
+                :stream-capacity 8
+                :pipe-capacity 1
+                :poll-eintr-ordinal nil}}]
       :plan-document
       (viewer-experiment/read-edn
        (slurp "examples/outbox-cancel-before-ack-plan.edn"))}
@@ -175,15 +207,30 @@ plans without duplicating them in the command-line EDN file:
       :label "Maelstrom Echo: init and echo round trip"
       :scenario 'jolt.maelstrom.fixtures.echo-scenario/echo-roundtrip
       :profile-id :hermetic
-      :input {"greeting" "héllo, 世界 🌍"
-              "lang" "日本語"
-              "nested" {"a" "ελληνικά"
-                       "b" [" 한글 " "português" 42 nil]}
-              "emoji" "🚀"}
       :schedule nil
+      :regimes
+      [{:id :jolt.sim.regime/maelstrom-echo-canonical
+        :label "Canonical Unicode round trip"
+        :summary "Round-trip one nested Unicode payload through Maelstrom Echo."
+        :scope [:jolt.maelstrom.echo/round-trip]
+        :input {"greeting" "héllo, 世界 🌍"
+                "lang" "日本語"
+                "nested" {"a" "ελληνικά"
+                          "b" [" 한글 " "português" 42 nil]}
+                "emoji" "🚀"}}]
       :plan-document
       (viewer-experiment/read-edn
-       (slurp "examples/maelstrom-echo-plan.edn"))}]
+       (slurp "examples/maelstrom-echo-plan.edn"))}
+     {:id :jolt.sim.preset/outbox-first-poll-regime-lab-v1
+      :label "Outbox: first-poll regime lab"
+      :scenario
+      'jolt.sim.fixtures.outbox-delivery-scenarios/exercise-reopen-with-capacities
+      :profile-id :hermetic
+      :schedule nil
+      :regimes (outbox-lab-regimes)
+      :plan-document
+      (viewer-experiment/read-edn
+       (slurp "examples/outbox-regime-lab-plan.edn"))}]
     :runtime-config
     {:worker-command [(System/getenv "JOLT_SIM_BIN")
                       "-M:outbox-delivery-explore-worker"]
@@ -201,7 +248,8 @@ Run that form with the process working directory set to `viewer`, an absolute
 least 32 characters. The `-M:viewer` command-line path remains available: put
 the same closed maps in the EDN configuration and inline the contents of
 [`examples/outbox-cancel-before-ack-plan.edn`](examples/outbox-cancel-before-ack-plan.edn)
-and [`examples/maelstrom-echo-plan.edn`](examples/maelstrom-echo-plan.edn)
+[`examples/maelstrom-echo-plan.edn`](examples/maelstrom-echo-plan.edn), and
+[`examples/outbox-regime-lab-plan.edn`](examples/outbox-regime-lab-plan.edn)
 as `:plan-document`.
 
 The UI renders the selected preset's topology before execution -- four nodes
@@ -211,11 +259,16 @@ semantic activity, and terminal outcome views for the run:
 
 [![Ripple running the compiled outbox example](docs/ripple-run-new-outbox.png)](docs/ripple-run-new-outbox.png)
 
+The Playwright fixture also captures
+`target/ripple-playwright/outbox-regime-lab-selection.png` after selecting the
+HTTP-first / first-poll-EINTR regime. Generated browser artifacts remain CI
+outputs rather than checked-in source images.
+
 Each fresh run is an interactive application witness, **not** the existing
-two-worker real/hermetic parity proof. Browser-selectable regimes,
-parameterized inputs, and a second independently truthful execution profile
-remain later slices; the UI will not advertise choices that the worker cannot
-yet enforce.
+two-worker real/hermetic parity proof. Regime selection is finite and
+server-owned; arbitrary browser-edited inputs and a second independently
+truthful execution profile remain later slices. The UI does not advertise a
+scope or distinction that the selected worker scenario cannot enforce.
 
 ### Replay activity panel
 

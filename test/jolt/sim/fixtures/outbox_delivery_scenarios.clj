@@ -56,6 +56,7 @@
     acknowledgement validation, or durable marking."
   (:require [jolt.net :as net]
             [clojure.string :as string]
+            [jolt.example.outbox.regimes :as outbox-regimes]
             [jolt.sim.clock :as clock]
             [jolt.sim.ffi-memory :as memory]
             [jolt.sim.ffi-schedule :as ffi-schedule]
@@ -83,18 +84,20 @@
 ;; Conservative bounds: the stream floor 8 is the fixed smoke capacity already
 ;; proven against the ordinary application's bounded operation deadline;
 ;; 1--2 byte HTTP fragmentation is explicitly later work. The pipe floor 1 is
-;; the smoke self-pipe bound. The closed domains deliberately mirror the Hegel lane's
-;; generator; both sides reject anything outside them before a world exists.
+;; the smoke self-pipe bound. The two regime-controlled domains are shared
+;; with the Hegel parent and interactive clients; both sides reject anything
+;; outside them before a world exists.
 (def ^:private max-payload-octets 32)
 (def ^:private supported-stream-capacities #{8 16 32})
 (def ^:private supported-pipe-capacities #{1 2 4})
-(def ^:private supported-poll-eintr-ordinals #{nil 1 2 4 8})
+(def ^:private supported-poll-eintr-ordinals
+  (set outbox-regimes/poll-eintr-ordinals))
 ;; Exactly two discriminating first-poll admission orders: the receiver
 ;; reactor's first poll released before the HTTP reactor's first poll, or the
 ;; reverse. There is deliberately no nil/unscheduled value: every case in this
 ;; lane exercises the semantic-selector coordinator.
 (def ^:private supported-admission-plans
-  #{:receiver-poll-then-http-poll :http-poll-then-receiver-poll})
+  (set outbox-regimes/admission-plans))
 
 ;; The bare filename selected by the hermetic SQLite file-image substrate for
 ;; the ordinary close/reopen lane. Only the ordinary lane opts this exact
@@ -164,13 +167,12 @@
     (throw (invalid-scenario-input
             :invalid-poll-eintr-ordinal
             {:value (:poll-eintr-ordinal input)
-             :supported [nil 1 2 4 8]})))
+             :supported outbox-regimes/poll-eintr-ordinals})))
   (when-not (contains? supported-admission-plans (:admission-plan input))
     (throw (invalid-scenario-input
             :invalid-admission-plan
             {:value (:admission-plan input)
-             :supported [:receiver-poll-then-http-poll
-                         :http-poll-then-receiver-poll]})))
+             :supported outbox-regimes/admission-plans})))
   input)
 
 (defn- foreign-symbols [effect-trace]
@@ -579,7 +581,9 @@
               :posix (posix/clean? posix-world)}}))
 
 (defn ^{:jolt.sim/scenario true
-        :jolt.sim/accepts-input true} exercise-reopen-with-capacities
+        :jolt.sim/accepts-input true
+        :jolt.sim/activity-lifecycle-owned true}
+  exercise-reopen-with-capacities
   "Runs the unchanged jolt.sim.fixtures.outbox-delivery-reopen application once
    under the shared hermetic SQLite plus POSIX loopback handler packs,
    parameterized by one canonical input map:
