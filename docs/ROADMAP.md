@@ -80,7 +80,7 @@ networking, TCP, HTTP, clocks, process isolation, Hegel, replay, and monitoring.
 | Whole HTTP -> SQLite -> TCP outbox application | Real/hermetic base and generated workload/capacity/poll-fault slice are hosted and green | Base draft PR `casselc/jolt-sim#28`; Hegel draft PR `#29`; hosted run `30861666592`; Hegel `2 tests / 5 assertions` over 2 boundaries plus 15 generated cases; aggregate `513 / 4,042`; Phase 3 below |
 | Scoped reset and ordinary retry | The unchanged DB/TCP application now closes the failed connection, reloads the pending row, and retries after one receiver-port-scoped read reset | `2d41266`; draft PR `casselc/jolt-sim#33`; exact retry boundaries plus 15 generated fresh-process cases; Phase 3 below |
 | Whole-case evidence and static reports | Versioned Case/Outcome, parent-owned monitor verdicts, stable failure/success bundles, and deterministic HTML are integrated and retained by bounded CI post-processing | Schema `f44be7a` / PR `#35`; harness `e0aa464` / PR `#36`; reporter `69e9abb` / PR `#37`; aggregate retention `8c7b270` / PR `#38`; exact aggregate outbox gate `9 tests / 48 assertions`; real retained report `41,200 bytes` |
-| Ripple trusted Run-new example | Server-owned presets run the ordinary compiled cancel-before-ack outbox application and the unchanged `jolt.maelstrom.fixtures.echo-scenario/echo-roundtrip` defsim scenario under the truthful `:hermetic` profile; the browser receives only safe catalog metadata and the inert plan projections, while topology, progress, retained activity, and outcome reuse the shared viewer models | Current integration slice; canonical plans `viewer/examples/outbox-cancel-before-ack-plan.edn` and `viewer/examples/maelstrom-echo-plan.edn`; screenshot `viewer/docs/ripple-run-new-outbox.png`; counts below are the last hosted run before the Echo preset slice: focused viewer `90 / 882`; real-process E2E `3 / 49`; Playwright `7 / 7`; full source suite `743 / 7,676` |
+| Ripple trusted Run-new example | Server-owned presets run the ordinary compiled cancel-before-ack outbox application, the unchanged `jolt.maelstrom.fixtures.echo-scenario/echo-roundtrip` defsim scenario, and the unchanged `jolt.maelstrom.fixtures.broadcast-scenario/broadcast-partition-heal` defsim scenario with its exact healthy and partition/heal inputs as two trusted regimes, under the truthful `:hermetic` profile; the browser receives only safe catalog metadata and the inert plan projections, while topology, progress, retained activity, and outcome reuse the shared viewer models | Current integration slice; canonical plans `viewer/examples/outbox-cancel-before-ack-plan.edn`, `viewer/examples/maelstrom-echo-plan.edn`, and `viewer/examples/maelstrom-broadcast-plan.edn`; screenshot `viewer/docs/ripple-run-new-outbox.png`; local gates for the Broadcast regime slice on composed image `jolt v0.6.4-20-g3bbf0673`: focused viewer `119 / 1,166`; real-process E2E `6 / 183` (two stable runs); Playwright `13 / 13`; full source suite `814 / 8,282`; counts below are the last hosted run before the Echo preset slice: focused viewer `90 / 882`; real-process E2E `3 / 49`; Playwright `7 / 7`; full source suite `743 / 7,676` |
 | Ack-gated durable delivery marking | Integrated on the current stack: ordinary and retry application paths validate the exact ack before one guarded `pending` → `delivered` transaction and final reload | Adapter API `f6f7538` / PR `#39`; guarded model plus hostile-ack, close-error, and concurrent-marker controls in the current slice; unit `557 / 4,677`; SQLite parity `1 / 47`; sim-only `3 / 51`; real/hermetic `3 / 52`; fresh-process Hegel `9 / 48` |
 
 Phase 1 was last run on Linux x86-64 using the prior simulator image
@@ -209,22 +209,26 @@ observer query, so both command encodings consume the same 24-statement
 application transcript. Generated exact-replay/conflict workloads and their
 retained viewer evidence remain the next bounded Phase 4 slice.
 
-Ripple now exposes two trusted **Run new** presets: the compiled
-cancel-before-ack application, and the ordinary Maelstrom Echo defsim
+Ripple now exposes trusted **Run new** presets: the compiled
+cancel-before-ack application, the ordinary Maelstrom Echo defsim
 scenario (`jolt.maelstrom.fixtures.echo-scenario/echo-roundtrip`) with one
-exact nested Unicode input and no schedule. The server owns the allowlisted
-scenario,
-canonical input, schedule, `:hermetic` profile, worker configuration, and
+exact nested Unicode input and no schedule, the Outbox first-poll regime lab
+with its ten application-owned regimes, and the Maelstrom Broadcast
+partition/heal defsim scenario
+(`jolt.maelstrom.fixtures.broadcast-scenario/broadcast-partition-heal`) with
+its exact healthy and partition/heal inputs as the two trusted regimes. The
+server owns the allowlisted scenario, canonical input, schedule, `:hermetic`
+profile, worker configuration, and
 artifact policy; the browser receives only the preset identity/display fields
 and the validated inert experiment-plan projection. The UI renders the
-four-node outbox topology or the two-endpoint Echo topology
-(`viewer/examples/maelstrom-echo-plan.edn`) and then consumes the existing
-progress, retained semantic
+four-node outbox topology, the two-endpoint Echo topology
+(`viewer/examples/maelstrom-echo-plan.edn`), or the four-node ten-edge
+Broadcast line topology (`viewer/examples/maelstrom-broadcast-plan.edn`) and
+then consumes the existing progress, retained semantic
 activity, and terminal outcome models. Each is one interactive fresh-process
 witness, not the two-worker real/hermetic parity proof. The next bounded
 viewer execution slices are parameterized-but-validated inputs and a second
-truthful executable profile; browser-selectable regime controls must wait
-until the worker can enforce the advertised distinction.
+truthful executable profile.
 
 Ripple's longer-term live-development boundary is recorded in
 [`research/RIPPLE-REPL-DEBUGGER-INTEGRATION.md`](research/RIPPLE-REPL-DEBUGGER-INTEGRATION.md):

@@ -60,6 +60,75 @@
 (def ^:private regime-lab-preset-id
   :jolt.sim.preset/outbox-first-poll-regime-lab-v1)
 
+(def ^:private broadcast-scenario
+  'jolt.maelstrom.fixtures.broadcast-scenario/broadcast-partition-heal)
+
+(def ^:private broadcast-preset-id
+  :jolt.sim.preset/maelstrom-broadcast-partition-heal-v1)
+
+(def ^:private broadcast-preset-label
+  "Maelstrom Broadcast: healthy line and partition/heal")
+
+(def ^:private broadcast-healthy-regime-id
+  :jolt.sim.regime/maelstrom-broadcast-healthy)
+
+(def ^:private broadcast-partition-regime-id
+  :jolt.sim.regime/maelstrom-broadcast-partition-heal)
+
+(def ^:private broadcast-healthy-label "Healthy three-node line")
+
+(def ^:private broadcast-partition-label "Partition n2-n3, heal, retry")
+
+(def ^:private broadcast-healthy-summary
+  (str "Run the trusted Maelstrom Broadcast example on the unpartitioned "
+       "n1-n2-n3 line."))
+
+(def ^:private broadcast-partition-summary
+  (str "Run the trusted Maelstrom Broadcast example with the n2-n3 link "
+       "partitioned until the post-broadcast heal."))
+
+(def ^:private broadcast-scope
+  [:jolt.maelstrom.broadcast/link-partition-selection])
+
+(def ^:private broadcast-healthy-input
+  {:message 42 :partition-links []})
+
+(def ^:private broadcast-partition-input
+  {:message 42 :partition-links [["n2" "n3"]]})
+
+(def ^:private broadcast-official-client-replies
+  "The exact [src body-type in_reply_to] triples of the official client
+   conversation: init, topology, one broadcast to n1, and the final read
+   against n3."
+  [["n1" "init_ok" 1] ["n2" "init_ok" 2] ["n3" "init_ok" 3]
+   ["n1" "topology_ok" 10] ["n2" "topology_ok" 11] ["n3" "topology_ok" 12]
+   ["n1" "broadcast_ok" 20]
+   ["n3" "read_ok" 30]])
+
+(def ^:private broadcast-healthy-activity-tags
+  ["jolt.sim.explore/scenario-started"
+   "jolt.maelstrom.broadcast/cluster-ready"
+   "jolt.maelstrom.broadcast/post-retry-state-observed"
+   "jolt.maelstrom.broadcast/read-observed"
+   "jolt.sim.explore/scenario-completed"])
+
+(def ^:private broadcast-partition-activity-tags
+  ["jolt.sim.explore/scenario-started"
+   "jolt.maelstrom.broadcast/cluster-ready"
+   "jolt.maelstrom.broadcast/link-partitioned"
+   "jolt.maelstrom.broadcast/delivery-dropped"
+   "jolt.maelstrom.broadcast/link-healed"
+   "jolt.maelstrom.broadcast/delivery-retried"
+   "jolt.maelstrom.broadcast/post-retry-state-observed"
+   "jolt.maelstrom.broadcast/read-observed"
+   "jolt.sim.explore/scenario-completed"])
+
+(def ^:private broadcast-partition-only-tags
+  #{"jolt.maelstrom.broadcast/link-partitioned"
+    "jolt.maelstrom.broadcast/delivery-dropped"
+    "jolt.maelstrom.broadcast/link-healed"
+    "jolt.maelstrom.broadcast/delivery-retried"})
+
 (defn- canonical-regime [id label summary scope input]
   {:id id :label label :summary summary :scope scope :input input})
 
@@ -1073,6 +1142,256 @@
           (when (nil? @primary*)
             (when-let [secondary cleanup-error]
               (throw secondary))))))))
+
+(defn- broadcast-reply-triple
+  [reply]
+  [(:src reply) (get-in reply [:body :type]) (get-in reply [:body :in_reply_to])])
+
+(defn- assert-broadcast-convergence
+  "The terminal application obligations shared by both Broadcast regimes:
+   every line node holds exactly the one broadcast value with no retained
+   retry obligation, the official client conversation completes in order with
+   n3's read_ok last, and the memory transport's queues are drained."
+  [obs]
+  (doseq [id ["n1" "n2" "n3"]]
+    (is (= [42] (get-in obs [:phases :final id :messages])) (str id))
+    (is (= [] (get-in obs [:phases :final id :pending])) (str id)))
+  (is (= broadcast-official-client-replies
+         (mapv broadcast-reply-triple (:client-replies obs))))
+  (is (= "n3" (:src (last (:client-replies obs)))))
+  (is (= 30 (get-in (last (:client-replies obs)) [:body :in_reply_to])))
+  (is (= [42] (get-in (last (:client-replies obs)) [:body :messages])))
+  (is (= {} (get-in obs [:transport :queues]))))
+
+(deftest trusted-run-preset-runs-broadcast-regimes-in-fresh-workers
+  (let [artifact-root (required-environment "JOLT_SIM_VIEWER_ARTIFACT_DIR")
+        journal (str artifact-root "/viewer-run-broadcast-progress.edn")
+        server* (atom nil)
+        primary* (atom nil)]
+    (append-phase-best-effort! journal {:phase :broadcast-run-new-started})
+    (sim-repl/clear!)
+    (try
+      (let [bin (required-environment "JOLT_SIM_BIN")
+            project-dir (required-environment "JOLT_SIM_PROJECT_DIR")
+            plan (viewer-experiment/read-edn
+                  (slurp "examples/maelstrom-broadcast-plan.edn"))
+            server
+            (viewer/start!
+             {:port 0
+              :capability-token capability-token
+              :max-document-bytes (* 1024 1024)
+              :allowed-scenarios #{broadcast-scenario}
+              ;; One trusted Broadcast preset over the existing scenario,
+              ;; reusing the same existing fresh worker command unchanged --
+              ;; that worker alias already resolves the defsim fixture from
+              ;; this repository's own src/test roots.
+              :run-presets
+              [{:id broadcast-preset-id
+                :label broadcast-preset-label
+                :scenario broadcast-scenario
+                :profile-id :hermetic
+                :schedule nil
+                :regimes
+                [(canonical-regime
+                  broadcast-healthy-regime-id
+                  broadcast-healthy-label
+                  broadcast-healthy-summary
+                  broadcast-scope
+                  broadcast-healthy-input)
+                 (canonical-regime
+                  broadcast-partition-regime-id
+                  broadcast-partition-label
+                  broadcast-partition-summary
+                  broadcast-scope
+                  broadcast-partition-input)]
+                :plan-document plan}]
+              :runtime-config
+              {:worker-command [bin "-M:outbox-delivery-explore-worker"]
+               :dir project-dir
+               :timeout-ms 60000
+               :startup-timeout-ms 120000
+               :kill-grace-ms 500
+               :temp-dir artifact-root
+               :retain-completed-artifacts? true
+               :activity-journal? true}})
+            _ (reset! server* server)
+            port (:port server)
+            _ (append-phase-best-effort!
+               journal {:phase :broadcast-run-new-viewer-started :port port})
+            catalog-raw
+            (viewer-test/request-over-loopback!
+             port "GET" "/api/run-presets"
+             {"X-Jolt-Sim-Capability" capability-token}
+             ""
+             5000)
+            catalog-body (response-body catalog-raw)
+            catalog (json/read-str catalog-body)]
+        (append-phase-best-effort!
+         journal {:phase :broadcast-run-new-catalog-observed})
+        (is (string/starts-with? catalog-raw "HTTP/1.1 200"))
+        (is (= 2 (get catalog "version")))
+        ;; The closed catalog publishes exactly the one trusted preset with
+        ;; its two safe regime coordinates; the scenario, the inputs, the
+        ;; worker command, and every host path stay server-owned.
+        (is (= [{"id" "jolt.sim.preset/maelstrom-broadcast-partition-heal-v1"
+                 "label" broadcast-preset-label
+                 "profileId" "hermetic"
+                 "planEdn" (viewer-experiment/canonical-edn plan)
+                 "regimes"
+                 [{"id" "jolt.sim.regime/maelstrom-broadcast-healthy"
+                   "label" broadcast-healthy-label
+                   "summary" broadcast-healthy-summary
+                   "scope"
+                   ["jolt.maelstrom.broadcast/link-partition-selection"]}
+                  {"id" "jolt.sim.regime/maelstrom-broadcast-partition-heal"
+                   "label" broadcast-partition-label
+                   "summary" broadcast-partition-summary
+                   "scope"
+                   ["jolt.maelstrom.broadcast/link-partition-selection"]}]}]
+               (get catalog "presets")))
+        (is (not (string/includes? catalog-body (str broadcast-scenario))))
+        (is (not (string/includes? catalog-body "partition-links")))
+        (is (not (string/includes? catalog-body bin)))
+        (is (not (string/includes? catalog-body artifact-root)))
+        (is (not (string/includes? catalog-body
+                                  "-M:outbox-delivery-explore-worker")))
+        (let [run-regime!
+              (fn [regime-id expected-input]
+                (let [run-raw
+                      (viewer-test/request-over-loopback!
+                       port "POST" "/api/run"
+                       {"Content-Type" "application/json"
+                        "X-Jolt-Sim-Capability" capability-token}
+                       (json/write-str
+                        {"version" 2
+                         "presetId"
+                         "jolt.sim.preset/maelstrom-broadcast-partition-heal-v1"
+                         "regimeId" (str (namespace regime-id)
+                                         "/" (name regime-id))})
+                       180000)
+                      public-outcome (edn/read-string (response-body run-raw))
+                      recorded (sim-repl/last-run)
+                      trusted-outcome (:outcome recorded)
+                      observations (get-in public-outcome [:result :result])
+                      progress-raw
+                      (viewer-test/request-over-loopback!
+                       port "GET" "/api/replay-progress"
+                       {"X-Jolt-Sim-Capability" capability-token}
+                       ""
+                       5000)
+                      progress (json/read-str (response-body progress-raw))
+                      activity-page (get progress "activity")
+                      tags (mapv #(get % "tag") (get activity-page "events"))]
+                  (append-phase-best-effort!
+                   journal
+                   {:phase :broadcast-regime-returned
+                    :regime-id regime-id
+                    :status (:status public-outcome)
+                    :artifact-dir (:artifact-dir trusted-outcome)
+                    :activity-tags tags})
+                  (is (string/starts-with? run-raw "HTTP/1.1 200"))
+                  (is (= :completed (:status public-outcome)))
+                  (is (= 0 (:exit public-outcome)))
+                  (is (not (contains? public-outcome :artifact-dir)))
+                  (is (= {:scenario broadcast-scenario
+                          :input expected-input
+                          :schedule nil}
+                         (select-keys (:config recorded)
+                                      [:scenario :input :schedule])))
+                  (is (and (string? (:artifact-dir trusted-outcome))
+                           (fs/exists? (:artifact-dir trusted-outcome))))
+                  (is (string/starts-with? progress-raw "HTTP/1.1 200"))
+                  (is (= "completed" (get progress "status")))
+                  (is (= {"catalogVersion" 2
+                          "presetId"
+                          "jolt.sim.preset/maelstrom-broadcast-partition-heal-v1"
+                          "regimeId" (str (namespace regime-id)
+                                          "/" (name regime-id))
+                          "scope"
+                          ["jolt.maelstrom.broadcast/link-partition-selection"]}
+                         (get progress "selection")))
+                  (is (= "complete"
+                         (get-in activity-page ["recovery" "status"])))
+                  {:outcome public-outcome
+                   :observations observations
+                   :tags tags
+                   :artifact-dir (:artifact-dir trusted-outcome)}))
+              healthy (run-regime! broadcast-healthy-regime-id
+                                   broadcast-healthy-input)
+              partitioned (run-regime! broadcast-partition-regime-id
+                                       broadcast-partition-input)]
+          ;; Each regime ran the unchanged scenario in its own fresh retained
+          ;; worker directory.
+          (is (= 2 (count (set [(:artifact-dir healthy)
+                                (:artifact-dir partitioned)])))
+              "each regime owns one fresh retained worker directory")
+          ;; The healthy regime: the truthful milestone sequence carries no
+          ;; partition, drop, heal, or retry claim, and the cluster converges
+          ;; without any drop evidence or retry obligation.
+          (is (= broadcast-healthy-activity-tags (:tags healthy)))
+          (is (not-any? #(contains? broadcast-partition-only-tags %)
+                        (:tags healthy)))
+          (let [obs (:observations healthy)]
+            (is (= {:records [] :dropped-total 0} (:drops obs)))
+            (is (= {"n1" [] "n2" [] "n3" []} (:retry obs)))
+            (assert-broadcast-convergence obs))
+          ;; The partition regime: the truthful milestone sequence adds the
+          ;; partition, drop, heal, and retry milestones in order, and the
+          ;; public observations evidence the exact retained/reused msg_id.
+          (is (= broadcast-partition-activity-tags (:tags partitioned)))
+          (let [obs (:observations partitioned)
+                pending-pair (first (get-in obs [:phases :pre-heal
+                                                 "n2" :pending]))
+                pending-id (:msg_id pending-pair)
+                n2-to-n3-enqueues
+                (filterv #(and (= :enqueue (:op %))
+                               (= "n2" (get-in % [:envelope :src]))
+                               (= "n3" (get-in % [:envelope :dest])))
+                         (get-in obs [:transport :history]))]
+            ;; Pre-heal nonconvergence: n1 and n2 carry the value, n3 does
+            ;; not, and n2 retains the exact pending pair.
+            (is (= [42] (get-in obs [:phases :pre-heal "n1" :messages])))
+            (is (= [42] (get-in obs [:phases :pre-heal "n2" :messages])))
+            (is (= [] (get-in obs [:phases :pre-heal "n3" :messages])))
+            (is (= {:message 42 :neighbor "n3" :status :awaiting-reply}
+                   (dissoc pending-pair :msg_id)))
+            (is (and (integer? pending-id) (pos? pending-id)))
+            ;; Exactly one dropped envelope: the n2 -> n3 broadcast carrying
+            ;; n2's pending msg_id.
+            (is (= 1 (get-in obs [:drops :dropped-total])))
+            (is (= [{:src "n2" :dest "n3"
+                     :body {:type "broadcast" :message 42
+                            :msg_id pending-id}}]
+                   (get-in obs [:drops :records])))
+            ;; The real retry-pending! evidence retains the same msg_id, and
+            ;; the transport history shows the retry reused it exactly once.
+            (is (= {"n1" [] "n2" [pending-pair] "n3" []} (:retry obs)))
+            (is (= 1 (count n2-to-n3-enqueues)))
+            (is (= pending-id
+                   (get-in (first n2-to-n3-enqueues)
+                           [:envelope :body :msg_id]))
+                "the retry reused the exact retained application msg_id")
+            (assert-broadcast-convergence obs))))
+      (catch :default error
+          (reset! primary* error)
+          (append-phase-best-effort! journal (bounded-error-phase error))
+          (throw error))
+        (finally
+          (let [cleanup-error
+                (try
+                  (when-let [server @server*]
+                    (viewer/stop! server))
+                  nil
+                  (catch :default error error))]
+            (append-phase-best-effort!
+             journal
+             (cond-> {:phase :broadcast-run-new-viewer-stopped}
+               cleanup-error
+               (assoc :cleanup-error (ex-message cleanup-error))))
+            (sim-repl/clear!)
+            (when (nil? @primary*)
+              (when-let [secondary cleanup-error]
+                (throw secondary))))))))
 
 (defn -main [& _]
   (let [result (test/run-tests 'jolt.sim.viewer-replay-e2e-test)

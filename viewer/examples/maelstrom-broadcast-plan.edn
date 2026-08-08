@@ -1,0 +1,149 @@
+{:checks []
+ :connections [{:capabilities {:from [:jolt.maelstrom/request-v1]
+                               :to [:jolt.maelstrom/request-v1]}
+                :from [:client :requests]
+                :handler-owners []
+                :id :client-to-n1-requests
+                :mode :simulate
+                :pack-id :jolt.maelstrom.transport/memory-v1
+                :to [:n1 :requests]}
+               {:capabilities {:from [:jolt.maelstrom/request-v1]
+                               :to [:jolt.maelstrom/request-v1]}
+                :from [:client :requests]
+                :handler-owners []
+                :id :client-to-n2-requests
+                :mode :simulate
+                :pack-id :jolt.maelstrom.transport/memory-v1
+                :to [:n2 :requests]}
+               {:capabilities {:from [:jolt.maelstrom/request-v1]
+                               :to [:jolt.maelstrom/request-v1]}
+                :from [:client :requests]
+                :handler-owners []
+                :id :client-to-n3-requests
+                :mode :simulate
+                :pack-id :jolt.maelstrom.transport/memory-v1
+                :to [:n3 :requests]}
+               {:capabilities {:from [:jolt.maelstrom/reply-v1]
+                               :to [:jolt.maelstrom/reply-v1]}
+                :from [:n1 :replies]
+                :handler-owners []
+                :id :n1-to-client-replies
+                :mode :simulate
+                :pack-id :jolt.maelstrom.transport/memory-v1
+                :to [:client :replies]}
+               {:capabilities {:from [:jolt.maelstrom/request-v1]
+                               :to [:jolt.maelstrom/request-v1]}
+                :from [:n1 :n2-requests]
+                :handler-owners []
+                :id :n1-to-n2-requests
+                :mode :simulate
+                :pack-id :jolt.maelstrom.transport/memory-v1
+                :to [:n2 :n1-requests]}
+               {:capabilities {:from [:jolt.maelstrom/reply-v1]
+                               :to [:jolt.maelstrom/reply-v1]}
+                :from [:n2 :replies]
+                :handler-owners []
+                :id :n2-to-client-replies
+                :mode :simulate
+                :pack-id :jolt.maelstrom.transport/memory-v1
+                :to [:client :replies]}
+               {:capabilities {:from [:jolt.maelstrom/reply-v1]
+                               :to [:jolt.maelstrom/reply-v1]}
+                :from [:n2 :n1-replies]
+                :handler-owners []
+                :id :n2-to-n1-replies
+                :mode :simulate
+                :pack-id :jolt.maelstrom.transport/memory-v1
+                :to [:n1 :n2-replies]}
+               {:capabilities {:from [:jolt.maelstrom/request-v1]
+                               :to [:jolt.maelstrom/request-v1]}
+                :from [:n2 :n3-requests]
+                :handler-owners []
+                :id :n2-to-n3-requests
+                :mode :simulate
+                :pack-id :jolt.maelstrom.transport/memory-v1
+                :to [:n3 :n2-requests]}
+               {:capabilities {:from [:jolt.maelstrom/reply-v1]
+                               :to [:jolt.maelstrom/reply-v1]}
+                :from [:n3 :replies]
+                :handler-owners []
+                :id :n3-to-client-replies
+                :mode :simulate
+                :pack-id :jolt.maelstrom.transport/memory-v1
+                :to [:client :replies]}
+               {:capabilities {:from [:jolt.maelstrom/reply-v1]
+                               :to [:jolt.maelstrom/reply-v1]}
+                :from [:n3 :n2-replies]
+                :handler-owners []
+                :id :n3-to-n2-replies
+                :mode :simulate
+                :pack-id :jolt.maelstrom.transport/memory-v1
+                :to [:n2 :n3-replies]}]
+ :controls {:perturb {:enabled? false :reason :inspection-only}
+            :replay {:enabled? false :reason :inspection-only}
+            :step {:enabled? false :reason :inspection-only}}
+ :counts {:checks 0
+          :connections 10
+          :handler-packs 0
+          :handlers 0
+          :monitors 0
+          :nodes 4
+          :ports 16
+          :presentations 0}
+ :experiment-id :jolt.maelstrom.broadcast/partition-heal-v1
+ :jolt.sim.viewer.experiment/version 1
+ :kind :jolt.sim.kind/experiment-plan
+ :nodes [{:id :client
+          :ports [{:capabilities [:jolt.maelstrom/reply-v1]
+                   :direction :in
+                   :id :replies}
+                  {:capabilities [:jolt.maelstrom/request-v1]
+                   :direction :out
+                   :id :requests}]}
+         {:id :n1
+          :ports [{:capabilities [:jolt.maelstrom/reply-v1]
+                   :direction :in
+                   :id :n2-replies}
+                  {:capabilities [:jolt.maelstrom/request-v1]
+                   :direction :out
+                   :id :n2-requests}
+                  {:capabilities [:jolt.maelstrom/reply-v1]
+                   :direction :out
+                   :id :replies}
+                  {:capabilities [:jolt.maelstrom/request-v1]
+                   :direction :in
+                   :id :requests}]}
+         {:id :n2
+          :ports [{:capabilities [:jolt.maelstrom/reply-v1]
+                   :direction :out
+                   :id :n1-replies}
+                  {:capabilities [:jolt.maelstrom/request-v1]
+                   :direction :in
+                   :id :n1-requests}
+                  {:capabilities [:jolt.maelstrom/reply-v1]
+                   :direction :in
+                   :id :n3-replies}
+                  {:capabilities [:jolt.maelstrom/request-v1]
+                   :direction :out
+                   :id :n3-requests}
+                  {:capabilities [:jolt.maelstrom/reply-v1]
+                   :direction :out
+                   :id :replies}
+                  {:capabilities [:jolt.maelstrom/request-v1]
+                   :direction :in
+                   :id :requests}]}
+         {:id :n3
+          :ports [{:capabilities [:jolt.maelstrom/reply-v1]
+                   :direction :out
+                   :id :n2-replies}
+                  {:capabilities [:jolt.maelstrom/request-v1]
+                   :direction :in
+                   :id :n2-requests}
+                  {:capabilities [:jolt.maelstrom/reply-v1]
+                   :direction :out
+                   :id :replies}
+                  {:capabilities [:jolt.maelstrom/request-v1]
+                   :direction :in
+                   :id :requests}]}]
+ :profile-id :hermetic
+ :runtime {:ffi-mode :hermetic :handler-count 0}}
