@@ -13,6 +13,7 @@
             [jolt.sim.trace :as trace]
             [jolt.sim.viewer :as viewer]
             [jolt.sim.viewer.experiment :as viewer-experiment]
+            [jolt.sim.viewer.remote-session :as remote-session]
             [jolt.sim.session-view :as viewer-session]
             [teensyp.client :as client]))
 
@@ -1271,6 +1272,281 @@
 (defn- caught-data [f]
   (try (f) nil (catch :default error (ex-data error))))
 
+;; --- Separate-process read-only Session attachment ---
+
+(def ^:private remote-read-frame-var
+  (resolve 'jolt.sim.viewer.remote-session/read-frame*))
+
+(defn- remote-source []
+  {:port 19876
+   :capability-token token
+   :session-instance-id session-instance-id
+   :timeout-ms 250})
+
+(defn- http-response
+  ([body] (http-response 200 session-instance-id "1" body []))
+  ([status instance body extra-headers]
+   (http-response status instance "1" body extra-headers))
+  ([status instance next-cursor body extra-headers]
+   (let [body-bytes (.getBytes ^String body "UTF-8")]
+     (.getBytes
+      (str "HTTP/1.1 " status " Test\r\n"
+           "Content-Type: application/edn\r\n"
+           "Content-Length: " (alength body-bytes) "\r\n"
+           "X-Jolt-Sim-Journal-Next-Cursor: " next-cursor "\r\n"
+           (when instance
+             (str "X-Jolt-Sim-Session-Instance: " instance "\r\n"))
+           (apply str (map (fn [[name value]]
+                             (str name ": " value "\r\n"))
+                           extra-headers))
+           "\r\n"
+           body)
+      "UTF-8"))))
+
+(defn- remote-ops [response read-chunks calls]
+  (let [offset (atom 0)
+        chunks (atom (vec read-chunks))]
+    {:now (fn [] 1000000)
+     :connect (fn [port deadline]
+                (swap! calls conj [:connect port deadline])
+                ::connection)
+     :send (fn [connection payload deadline]
+             (swap! calls conj
+                    [:send connection (String. payload "UTF-8") deadline]))
+     :receive
+     (fn [connection destination destination-offset length deadline]
+       (swap! calls conj [:receive connection destination-offset length deadline])
+       (if (= @offset (alength ^bytes response))
+         nil
+         (let [requested (or (first @chunks) length)
+               _ (when (seq @chunks) (swap! chunks subvec 1))
+               amount (min length requested
+                           (- (alength ^bytes response) @offset))]
+           (dotimes [index amount]
+             (aset destination (+ destination-offset index)
+                   (aget ^bytes response (+ @offset index))))
+           (swap! offset + amount)
+           amount)))
+     :close (fn [connection]
+              (swap! calls conj [:close connection]) true)}))
+
+(defn- remote-read [source response chunks calls cursor]
+  (@remote-read-frame-var
+   (remote-ops response chunks calls)
+   (assoc (remote-session/validate-source! source) :max-frame-bytes 4096)
+   cursor))
+
+(deftest remote-session-source-is-closed-and-header-safe
+  (is (= (remote-source)
+         (remote-session/validate-source! (remote-source))))
+  (doseq [[source reason]
+          [[(assoc (remote-source) :host "example.com") :unknown-keys]
+           [(assoc (remote-source) :port 0) :invalid-port]
+           [(assoc (remote-source) :capability-token
+                   (str token "\r\nX-Injected: yes"))
+            :invalid-capability-token]
+           [(assoc (remote-source) :capability-token
+                   (str token (char 127)))
+            :invalid-capability-token]
+           [(assoc (remote-source) :capability-token (str " " token))
+            :invalid-capability-token]
+           [(assoc (remote-source) :capability-token (str token " "))
+            :invalid-capability-token]
+           [(assoc (remote-source) :session-instance-id "short")
+            :invalid-session-instance-id]
+           [(assoc (remote-source) :timeout-ms 0) :invalid-timeout-ms]
+           [(assoc (remote-source) :timeout-ms 60001) :invalid-timeout-ms]
+           [(assoc (remote-source) :capability-token
+                   (apply str (repeat 257 \x)))
+            :invalid-capability-token]]]
+    (is (= reason (:reason (caught-data
+                            #(remote-session/validate-source! source))))))
+  (doseq [cursor [-1 (inc Long/MAX_VALUE)]]
+    (is (= :invalid-cursor
+           (:reason
+            (caught-data
+             #(@remote-read-frame-var
+               (remote-ops (byte-array 0) [] (atom []))
+               (assoc (remote-session/validate-source! (remote-source))
+                      :max-frame-bytes 4096)
+               cursor)))))))
+
+(deftest remote-session-read-uses-one-deadline-and-exact-request
+  (let [calls (atom [])
+        value (remote-read (remote-source)
+                           (http-response
+                            200 session-instance-id "18"
+                            "{:fixture :remote, :journal {:cursor 17, :next-cursor 18}}"
+                            [])
+                           [1 2 7 11 4096]
+                           calls 17)
+        deadlines (keep last (filter #(contains? #{:connect :send :receive}
+                                                   (first %))
+                                     @calls))
+        request-text (nth (first (filter #(= :send (first %)) @calls)) 2)]
+    (is (= {:fixture :remote
+            :journal {:cursor 17 :next-cursor 18}}
+           value))
+    (is (seq deadlines))
+    (is (apply = deadlines)
+        "connect, send, and every receive share one absolute deadline")
+    (is (string/includes? request-text
+                          "GET /api/session-frame HTTP/1.1\r\n"))
+    (is (string/includes? request-text
+                          "Accept: application/edn\r\n"))
+    (is (string/includes? request-text
+                          (str "X-Jolt-Sim-Capability: " token "\r\n")))
+    (is (string/includes? request-text
+                          "X-Jolt-Sim-Journal-Cursor: 17\r\n"))
+    (is (string/includes?
+         request-text
+         (str "X-Jolt-Sim-Session-Instance: " session-instance-id "\r\n")))
+    (is (= [:close ::connection] (last @calls)))))
+
+(deftest remote-session-http-framing-fails-closed
+  (let [body "{:ok true, :journal {:cursor 0, :next-cursor 1}}"
+        body-bytes (.getBytes ^String body "UTF-8")
+        oversized-head
+        (.getBytes
+         (str "HTTP/1.1 200 OK\r\n"
+              "Content-Type: application/edn\r\n"
+              "Content-Length: 4097\r\n"
+              "X-Jolt-Sim-Journal-Next-Cursor: 1\r\n"
+              "X-Jolt-Sim-Session-Instance: " session-instance-id
+              "\r\n\r\n")
+         "UTF-8")
+        oversized-unclosed-head
+        (.getBytes
+         (str "HTTP/1.1 200 OK\r\nX-Fill: "
+              (apply str (repeat 17000 \x)))
+         "UTF-8")
+        cases
+        [[:duplicate-header
+          (http-response 200 session-instance-id body
+                         [["Content-Length" (str (alength body-bytes))]])]
+         [:transfer-encoding-forbidden
+          (http-response 200 session-instance-id body
+                         [["Transfer-Encoding" "chunked"]])]
+         [:truncated-body
+          (java.util.Arrays/copyOfRange (http-response body) 0
+                                        (dec (alength (http-response body))))]
+         [:surplus-body
+          (.getBytes
+           (str (String. (http-response body) "UTF-8") "x") "UTF-8")]
+         [:truncated-headers (.getBytes "HTTP/1.1 200 OK\r\n" "UTF-8")]
+         [:headers-too-large oversized-unclosed-head]
+         [:body-too-large oversized-head]
+         [:empty-body
+          (http-response 200 session-instance-id "0" "" [])]
+         [:invalid-edn
+          (http-response 200 session-instance-id "1" "{" [])]
+         [:trailing-body
+          (http-response
+           200 session-instance-id "1"
+           "{:journal {:cursor 0, :next-cursor 1}} :extra" [])]
+         [:malformed-header
+          (.getBytes
+           (str "HTTP/1.1 200 OK\r\nBad Header: x\r\n"
+                "Content-Length: 0\r\n\r\n") "UTF-8")]]]
+    (doseq [[reason response] cases]
+      (let [calls (atom [])
+            data (caught-data
+                  #(remote-read (remote-source) response [4096] calls 0))]
+        (is (= :jolt.sim.viewer.remote-session/invalid-response (:type data)))
+        (is (= reason (:reason data)))
+        (is (= [:close ::connection] (last @calls))
+            (str "connection closes after " reason))))))
+
+(deftest remote-session-validates-media-and-next-cursor-contract
+  (let [body "{:journal {:cursor 0, :next-cursor 1}}"
+        missing-media
+        (.getBytes
+         (str "HTTP/1.1 200 OK\r\n"
+              "Content-Length: " (count body) "\r\n"
+              "X-Jolt-Sim-Journal-Next-Cursor: 1\r\n"
+              "X-Jolt-Sim-Session-Instance: " session-instance-id "\r\n\r\n"
+              body) "UTF-8")
+        cases
+        [[:invalid-content-type missing-media]
+         [:invalid-next-cursor
+          (http-response 200 session-instance-id "01" body [])]
+         [:next-cursor-mismatch
+          (http-response 200 session-instance-id "2" body [])]
+         [:next-cursor-mismatch
+          (http-response 200 session-instance-id "1"
+                         "{:journal {:cursor 9, :next-cursor 1}}" [])]]]
+    (doseq [[reason response] cases]
+      (is (= reason
+             (:reason
+              (caught-data
+               #(remote-read (remote-source) response [4096] (atom []) 0))))))))
+
+(deftest remote-session-authority-failure-is-not-a-false-restart
+  (let [data
+        (caught-data
+         #(remote-read (remote-source)
+                       (http-response 403 nil "{:error :forbidden}" [])
+                       [4096] (atom []) 0))]
+    (is (= remote-session/source-unavailable (:type data)))
+    (is (= 403 (:status data)))))
+
+(deftest remote-session-cleanup-cannot-replace-the-primary-failure
+  (let [response (.getBytes "HTTP/1.1 200 OK\r\n" "UTF-8")
+        close-error (ex-info "close failed" {:type ::close-failed})
+        ops (assoc (remote-ops response [4096] (atom []))
+                   :close (fn [_] (throw close-error)))
+        data (caught-data
+              #(@remote-read-frame-var
+                ops
+                (assoc (remote-session/validate-source! (remote-source))
+                       :max-frame-bytes 4096)
+                0))]
+    (is (= remote-session/invalid-response (:type data)))
+    (is (= :truncated-headers (:reason data)))
+    (is (= ::close-failed
+           (get-in data [:remote-session/cleanup-error :type])))))
+
+(deftest remote-session-surfaces-a-close-only-failure
+  (let [response
+        (http-response
+         200 session-instance-id "1"
+         "{:journal {:cursor 0, :next-cursor 1}}" [])
+        ops (assoc (remote-ops response [4096] (atom []))
+                   :close (fn [_]
+                            (throw (ex-info "close failed"
+                                            {:type ::close-failed}))))
+        data (caught-data
+              #(@remote-read-frame-var
+                ops
+                (assoc (remote-session/validate-source! (remote-source))
+                       :max-frame-bytes 4096)
+                0))]
+    (is (= ::close-failed (:type data)))))
+
+(deftest remote-session-pins-the-producer-epoch-without-adoption
+  (doseq [observed [nil "ripple-session-instance-NEW2"]]
+    (let [calls (atom [])
+          data (caught-data
+                #(remote-read (remote-source)
+                              (http-response 200 observed "{:ignored true}" [])
+                              [4096] calls 3))]
+      (is (= remote-session/source-restarted (:type data)))
+      (is (= session-instance-id (:expected-session-instance-id data)))
+      (is (= observed (:observed-session-instance-id data)))
+      (is (= [:close ::connection] (last @calls)))))
+  (let [handler
+        (viewer/make-handler
+         (assoc (config) :max-document-bytes (* 1024 1024))
+         (assoc (services (atom []) (atom []) {:status :completed})
+                :read-session-frame
+                (fn [_]
+                  (throw (ex-info "changed"
+                                  {:type remote-session/source-restarted})))))
+        response (handler (get-request "/api/session-frame"))]
+    (is (= 409 (:status response)))
+    (is (string/includes? (:body response) ":session-source-restarted"))
+    (is (not (string/includes? (:body response) "changed")))))
+
 (defn- run-to-terminal [s]
   (doseq [branch [{:revision 0 :action [:run 2]}
                   {:revision 1 :action [:run 0]}
@@ -1637,6 +1913,40 @@
         "the read-only attachment never installs a mutating capability")
     (is (= (viewer-session/read-frame s 0)
            ((get-in @captured [:services :read-session-frame]) 0)))))
+
+(deftest start-remote-session-derives-its-bound-and-installs-no-command
+  (let [captured (atom nil)
+        start-var (resolve 'jolt.sim.viewer/start!)
+        reader-var (resolve 'jolt.sim.viewer.remote-session/reader)
+        viewer-config (assoc (config) :max-document-bytes 12345)
+        source (remote-source)]
+    (with-redefs-fn
+      {reader-var
+       (fn [supplied-source supplied-limit]
+         (swap! captured assoc
+                :source supplied-source
+                :limit supplied-limit)
+         (fn [cursor] {:fixture :remote :cursor cursor}))
+       start-var
+       (fn [supplied-config supplied-services]
+         (swap! captured assoc
+                :config supplied-config
+                :services supplied-services)
+         :fake-server)}
+      #(is (= :fake-server
+              (viewer/start-remote-session! viewer-config source))))
+    (is (= source (:source @captured)))
+    (is (= 12345 (:limit @captured))
+        "the validated outer response cap is the remote response cap")
+    (is (= (assoc viewer-config :run-presets []) (:config @captured))
+        "the remote starter passes the normalized viewer config to start!")
+    (is (= #{:render-trace :render-case-outcome :replay-document
+             :read-session-frame}
+           (set (keys (:services @captured)))))
+    (is (nil? (get-in @captured [:services :step-session-frame!]))
+        "the remote attachment cannot install a command capability")
+    (is (= {:fixture :remote :cursor 7}
+           ((get-in @captured [:services :read-session-frame]) 7)))))
 
 (deftest session-frame-initial-read-is-coherent-and-closed
   (let [s (session/start (session-sim-config))

@@ -40,6 +40,7 @@
             [jolt.sim.report :as report]
             [jolt.sim.trace :as trace]
             [jolt.sim.viewer.experiment :as experiment-viewer]
+            [jolt.sim.viewer.remote-session :as remote-session]
             [jolt.sim.session-view :as viewer-session]))
 
 (def invalid-config ::invalid-config)
@@ -872,6 +873,9 @@
       ::invalid-session-cursor
       (error-response 400 :invalid-session-cursor
                       (select-keys data [:reason]))
+
+      :jolt.sim.viewer.remote-session/source-restarted
+      (error-response 409 :session-source-restarted nil)
 
       nil)))
 
@@ -1857,6 +1861,24 @@
                  :read-session-frame
                  (fn [cursor]
                    (viewer-session/read-frame sim-session cursor)))))
+
+(defn start-remote-session!
+  "Starts Ripple with one separately running loopback Session attached read-only.
+
+  `source` is the closed coordinate accepted by
+  `viewer.remote-session/validate-source!`: port, capability token, pinned
+  producer epoch, and optional timeout. The validated outer response limit is
+  also the remote body limit. Every read uses a fresh connection under one
+  absolute deadline. A producer restart pauses the
+  attachment with `409 :session-source-restarted`; this function never adopts
+  a new epoch or supplies remote stepping."
+  [config source]
+  (let [config (validate-config! config)]
+    (start! config
+            (assoc (dissoc (default-services config) :run-case)
+                   :read-session-frame
+                   (remote-session/reader source
+                                          (:max-document-bytes config))))))
 
 (defn start-steppable-session!
   "Starts Ripple with one trusted in-process Session attached for inspection

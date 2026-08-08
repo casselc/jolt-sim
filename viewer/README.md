@@ -370,5 +370,55 @@ That refresh discovers B, discards its first response because the request still
 carried A's journal cursor, clears the frame, choices, cursor, and retry, and
 requires one fresh cursor-zero read. **Reset session** also forgets the epoch.
 This slice prevents a revision-zero restart from masquerading as the earlier
-Session; it does not yet provide an HTTP client/proxy for attaching one Ripple
-process to another.
+Session.
+
+### Separate-process read-only session attachment
+
+`start-remote-session!` attaches an outer Ripple to an inner Ripple Session
+producer without moving Session logic into the viewer. The source coordinate
+is closed and loopback-only: the inner port, capability token, expected
+process-lifetime epoch, and optional timeout. Each frame read opens
+one fresh `teensyp.client` connection, sends the exact cursor, and applies one
+absolute monotonic deadline across connect, send, and every receive.
+
+```clojure
+(def outer
+  (viewer/start-remote-session!
+   outer-viewer-config
+   {:port 8790
+    :capability-token inner-capability-token
+    :session-instance-id "inner-session-process-2026-08-07-a"
+    :timeout-ms 5000}))
+```
+
+The outer viewer's validated `:max-document-bytes` is also the remote frame
+body limit, so the proxy cannot accept a document it is forbidden to return.
+
+The client accepts only bounded, exact `Content-Length` HTTP responses. It
+rejects transfer encoding, duplicate or malformed headers, truncated or
+surplus bodies, unsafe capability header characters, and non-EDN bodies. A
+missing or changed inner epoch becomes `409 :session-source-restarted` at the
+outer API. It is never silently adopted. The replacement probe necessarily
+carries the pinned old epoch and requested journal cursor. Producer B may
+compute a read-only frame from that cursor, but the outer viewer validates the
+returned producer epoch before parsing, returning, or adopting the frame, so
+no B revision or branch coordinate reaches the outer client. Adopting a new
+epoch currently requires constructing a new attachment explicitly.
+
+This first remote slice is deliberately read-only. It installs only the same
+trusted `cursor -> coherent-frame` service used by the in-process adapter; it
+does not proxy `step-frame!`, implement another Session protocol, or add a root
+dependency. The Linux acceptance fixture proves the boundary with two
+independent live Jolt processes coordinated only by retained control files. It
+compares the direct and relayed canonical frames, proves the JSON relay is
+read-only and the absent step route cannot mutate the producer, observes one
+producer-side step from the next journal cursor without duplication, then
+replaces producer A with revision-zero epoch B on A's same port while the outer
+process stays alive and proves the pinned attachment returns 409 without
+leaking B's frame. Every request, response header/body, readiness marker, and
+process transcript is retained:
+
+```sh
+JOLT_SIM_BIN=/absolute/path/to/sim/jolt \
+  test/remote-session-process-smoke.sh
+```
