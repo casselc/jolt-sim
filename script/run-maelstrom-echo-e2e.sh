@@ -53,80 +53,34 @@ echo "[dependency-preflight] maelstrom-echo"
 "$jolt_bin" -P -M:maelstrom-echo
 echo "[dependency-preflight] maelstrom-echo-process-e2e-verify"
 "$jolt_bin" -P -M:maelstrom-echo-process-e2e-verify
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "python3 is required for bounded process supervision" >&2
+  exit 69
+fi
 
 start_case_process() {
   local case_dir="$1"
   local input_path="$2"
-  (
-    set +e
-    # The interactive parent holds fd 3 open on the FIFO. Do not let the
-    # supervised child inherit that writer, or closing the parent's copy can
-    # never deliver EOF to the child.
-    exec 3>&-
-    "$jolt_bin" -M:maelstrom-echo \
-      < "$input_path" \
-      > "$case_dir/stdout.jsonl" \
-      2> "$case_dir/stderr.log" &
-    local child_pid=$!
-    printf '%s\n' "$child_pid" > "$case_dir/child-pid.tmp"
-    mv "$case_dir/child-pid.tmp" "$case_dir/child-pid"
-    wait "$child_pid"
-    local status=$?
-    printf '%s\n' "$status" > "$case_dir/status.tmp"
-    mv "$case_dir/status.tmp" "$case_dir/status"
-  ) &
+  local deadline_seconds="$3"
+  python3 "$repo_dir/script/run-bounded-process.py" \
+    --deadline-seconds "$deadline_seconds" \
+    --term-grace-seconds 2 \
+    --stdin "$input_path" \
+    --stdout "$case_dir/stdout.jsonl" \
+    --stderr "$case_dir/stderr.log" \
+    --pid-file "$case_dir/child-pid" \
+    --status-file "$case_dir/status" \
+    --timeout-file "$case_dir/exit-timeout" \
+    --cleanup-failed-file "$case_dir/cleanup-failed" \
+    -- "$jolt_bin" -M:maelstrom-echo 3>&- &
   case_supervisor_pid=$!
-
-  for _attempt in $(seq 1 200); do
-    if [[ -f "$case_dir/child-pid" ]]; then
-      case_child_pid="$(sed -n '1p' "$case_dir/child-pid")"
-      return
-    fi
-    sleep 0.01
-  done
-  printf '%s\n' "child pid was not published within 2 seconds" \
-    > "$case_dir/start-timeout"
-  kill -TERM "$case_supervisor_pid" 2>/dev/null || true
-  set +e
-  wait "$case_supervisor_pid"
-  set -e
-  printf '%s\n' 124 > "$case_dir/status"
-  return 1
 }
 
 wait_for_child() {
   local supervisor_pid="$1"
-  local child_pid="$2"
-  local case_dir="$3"
-
-  # The supervisor owns wait(2) for the actual Jolt child and atomically
-  # publishes its status. Poll that file rather than kill -0, which cannot
-  # distinguish a running process from an unreaped zombie. This is compatible
-  # with macOS's Bash 3, which has neither wait -n nor wait -p.
-  for _attempt in $(seq 1 600); do
-    if [[ -f "$case_dir/status" ]]; then
-      set +e
-      wait "$supervisor_pid"
-      set -e
-      return
-    fi
-    sleep 0.05
-  done
-
-  printf '%s\n' "child did not exit within 30 seconds after input closed" \
-    > "$case_dir/exit-timeout"
-  kill -TERM "$child_pid" 2>/dev/null || true
-  for _attempt in $(seq 1 40); do
-    [[ -f "$case_dir/status" ]] && break
-    sleep 0.05
-  done
-  if [[ ! -f "$case_dir/status" ]]; then
-    kill -KILL "$child_pid" 2>/dev/null || true
-  fi
   set +e
   wait "$supervisor_pid"
   set -e
-  printf '%s\n' 124 > "$case_dir/status"
 }
 
 run_case() {
@@ -134,8 +88,8 @@ run_case() {
   local case_dir="$gate_root/$case_name"
   mkdir -p "$case_dir"
   echo "[process-case] $case_name"
-  start_case_process "$case_dir" "$case_dir/request.jsonl"
-  wait_for_child "$case_supervisor_pid" "$case_child_pid" "$case_dir"
+  start_case_process "$case_dir" "$case_dir/request.jsonl" 30
+  wait_for_child "$case_supervisor_pid"
 }
 
 run_interactive_success_case() {
@@ -144,9 +98,8 @@ run_interactive_success_case() {
   local observed="$case_dir/init-observed-before-echo"
   mkfifo "$fifo"
   exec 3<>"$fifo"
-  start_case_process "$case_dir" "$fifo"
+  start_case_process "$case_dir" "$fifo" 45
   local supervisor_pid="$case_supervisor_pid"
-  local child_pid="$case_child_pid"
   printf '%s\n' "$(sed -n '1p' "$case_dir/request.jsonl")" >&3
 
   local observed_reply=0
@@ -168,7 +121,7 @@ run_interactive_success_case() {
   fi
   exec 3>&-
 
-  wait_for_child "$supervisor_pid" "$child_pid" "$case_dir"
+  wait_for_child "$supervisor_pid"
 }
 
 mkdir -p "$gate_root/success" "$gate_root/malformed" "$gate_root/semantic-invalid"
