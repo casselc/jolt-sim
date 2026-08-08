@@ -1420,6 +1420,19 @@
          (str "HTTP/1.1 200 OK\r\nX-Fill: "
               (apply str (repeat 17000 \x)))
          "UTF-8")
+        malformed-utf8-body
+        (byte-array (map unchecked-byte [0x22 0xC3 0x28 0x22]))
+        malformed-utf8-response
+        (concat-byte-arrays
+         [(.getBytes
+           (str "HTTP/1.1 200 OK\r\n"
+                "Content-Type: application/edn\r\n"
+                "Content-Length: " (alength malformed-utf8-body) "\r\n"
+                "X-Jolt-Sim-Journal-Next-Cursor: 1\r\n"
+                "X-Jolt-Sim-Session-Instance: " session-instance-id
+                "\r\n\r\n")
+           "UTF-8")
+          malformed-utf8-body])
         cases
         [[:duplicate-header
           (http-response 200 session-instance-id body
@@ -1440,6 +1453,7 @@
           (http-response 200 session-instance-id "0" "" [])]
          [:invalid-edn
           (http-response 200 session-instance-id "1" "{" [])]
+         [:invalid-utf8 malformed-utf8-response]
          [:trailing-body
           (http-response
            200 session-instance-id "1"

@@ -173,6 +173,23 @@
         (throw error)
         (invalid-response! :invalid-edn nil)))))
 
+(defn- decode-utf8-exact [^bytes bytes offset length]
+  ;; Jolt's host String constructor replaces malformed UTF-8 with U+FFFD.
+  ;; Round-tripping is an exact validator because RFC 3629 scalar UTF-8 has
+  ;; one canonical byte representation for every accepted string.
+  (let [text (String. bytes offset length "UTF-8")
+        encoded (.getBytes ^String text "UTF-8")]
+    (when-not (and (= length (alength ^bytes encoded))
+                   (loop [index 0]
+                     (cond
+                       (= index length) true
+                       (= (aget bytes (+ offset index))
+                          (aget ^bytes encoded index))
+                       (recur (inc index))
+                       :else false)))
+      (invalid-response! :invalid-utf8 nil))
+    text))
+
 (defn- checked-response [source cursor ^bytes bytes length boundary head]
   (let [body-start (+ boundary 4)
         content-length (:content-length head)
@@ -229,7 +246,7 @@
                        (= raw-next-cursor (str next-cursor)))
           (invalid-response! :invalid-next-cursor nil))
         (let [frame (parse-edn-exact
-                     (String. bytes body-start content-length "UTF-8"))]
+                     (decode-utf8-exact bytes body-start content-length))]
           (when-not (and (map? frame)
                          (map? (:journal frame))
                          (= cursor (get-in frame [:journal :cursor]))
