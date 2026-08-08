@@ -210,6 +210,240 @@ test("reports an empty trusted preset catalog without inventing an error", async
   await expect(page.getByTestId("run-new")).toBeDisabled();
 });
 
+test("preserves a producer-attributed commit when its automatic refresh finds a restart", async ({page}) => {
+  const instanceA = "ripple-browser-session-instance-A";
+  const instanceB = "ripple-browser-session-instance-B";
+  const instanceC = "ripple-browser-session-instance-C";
+  const frameCursors = [];
+  const stepInstances = [];
+  let frameCall = 0;
+  let stepCall = 0;
+
+  const frame = (revision, nextCursor, label) => ({
+    version: 1,
+    revision: String(revision),
+    nextCursor: String(nextCursor),
+    stepEnabled: true,
+    frameEdn: `{:fixture ${label} :revision ${revision}}`,
+    choices: [{
+      revision: String(revision),
+      kind: "run",
+      value: "2",
+      label: `run ${label}`
+    }]
+  });
+
+  await page.route("**/api/session-frame", async (route) => {
+    frameCall += 1;
+    frameCursors.push(await route.request().headerValue(
+      "X-Jolt-Sim-Journal-Cursor"));
+    const [instance, body] = frameCall === 1
+      ? [instanceA, frame(0, 1, "A0")]
+      : frameCall === 2
+        // The acknowledged A command is followed immediately by an automatic
+        // refresh whose old cursor reaches restarted producer B.
+        ? [instanceB, frame(0, 1, "B-stale-cursor")]
+        : frameCall === 3
+          ? [instanceB, frame(0, 1, "B0")]
+          : [instanceC, frame(0, 1, "C0")];
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      headers: {"X-Jolt-Sim-Session-Instance": instance},
+      body: JSON.stringify(body)
+    });
+  });
+
+  await page.route("**/api/session-step", async (route) => {
+    stepCall += 1;
+    stepInstances.push(await route.request().headerValue(
+      "X-Jolt-Sim-Session-Instance"));
+    const command = JSON.parse(route.request().postData()).branch;
+    if (stepCall === 1) {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          version: 1,
+          outcome: "committed",
+          committed: true,
+          revision: command.revision,
+          kind: command.kind,
+          value: command.value,
+          receiptEdn: "{:version 1 :status :committed}"
+        })
+      });
+      return;
+    }
+    await route.fulfill({
+      status: 409,
+      contentType: "application/json",
+      body: JSON.stringify({
+        version: 1,
+        outcome: "error",
+        committed: false,
+        error: "session-step-rejected"
+      })
+    });
+  });
+
+  await page.goto("/");
+  await page.locator("#capability").fill(capabilityToken);
+  await page.locator("#session-refresh").click();
+  await expect(page.locator("#session-choices button")).toHaveCount(1);
+  await page.locator("#session-choices button").click();
+  await expect(page.locator("#session-status")).toContainText(
+    "Session producer changed; local cursor, choices, and retry state were reset"
+  );
+  await expect(page.locator("#session-step-status")).toContainText(
+    `Committed on session producer ${instanceA}`
+  );
+  await expect(page.locator("#session-step-status")).toContainText(
+    "The producer then changed; its frame was discarded"
+  );
+  expect(stepInstances).toEqual([instanceA]);
+
+  // The automatic B response is deliberately discarded, but the recognized
+  // A receipt above remains visible and authoritative.
+  await expect(page.locator("#session-choices button")).toHaveCount(0);
+  await page.locator("#session-refresh").click();
+  await expect(page.locator("#session-frame")).toContainText(":fixture B0");
+  await page.locator("#session-choices button").click();
+  await expect(page.locator("#session-step-status")).toContainText(
+    "Not committed"
+  );
+  expect(stepInstances).toEqual([instanceA, instanceB]);
+
+  // User reset forgets the cached epoch as well as coordinates. One C frame
+  // is therefore enough to establish the new producer and offer its choice.
+  await page.locator("#session-reset").click();
+  await page.locator("#session-refresh").click();
+  await expect(page.locator("#session-frame")).toContainText(":fixture C0");
+  await expect(page.locator("#session-choices button")).toHaveCount(1);
+  await page.locator("#session-choices button").click();
+  await expect(page.locator("#session-step-status")).toContainText(
+    "Not committed"
+  );
+  expect(stepInstances).toEqual([instanceA, instanceB, instanceC]);
+  expect(frameCursors).toEqual(["0", "1", "0", "0"]);
+});
+
+test("retries an ambiguous command byte-identically on A before reconciling restarted B", async ({page}) => {
+  const instanceA = "ripple-browser-session-instance-A";
+  const instanceB = "ripple-browser-session-instance-B";
+  const frameCursors = [];
+  const stepBodies = [];
+  const stepInstances = [];
+  let frameCall = 0;
+  let stepCall = 0;
+
+  const frame = (label) => ({
+    version: 1,
+    revision: "0",
+    nextCursor: "1",
+    stepEnabled: true,
+    frameEdn: `{:fixture ${label} :revision 0}`,
+    choices: [{revision: "0", kind: "run", value: "2", label: `run ${label}`}]
+  });
+
+  await page.route("**/api/session-frame", async (route) => {
+    frameCall += 1;
+    frameCursors.push(await route.request().headerValue(
+      "X-Jolt-Sim-Journal-Cursor"));
+    const instance = frameCall === 1 ? instanceA : instanceB;
+    const body = frameCall === 1
+      ? frame("A0")
+      : frameCall === 2
+        ? frame("B-stale-cursor")
+        : frame("B0");
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      headers: {"X-Jolt-Sim-Session-Instance": instance},
+      body: JSON.stringify(body)
+    });
+  });
+
+  await page.route("**/api/session-step", async (route) => {
+    stepCall += 1;
+    stepBodies.push(route.request().postData());
+    stepInstances.push(await route.request().headerValue(
+      "X-Jolt-Sim-Session-Instance"));
+    if (stepCall === 1) {
+      await route.abort("connectionreset");
+      return;
+    }
+    await route.fulfill({
+      status: 409,
+      contentType: "application/json",
+      body: JSON.stringify({
+        version: 1,
+        outcome: "error",
+        committed: false,
+        error: "session-instance-mismatch"
+      })
+    });
+  });
+
+  await page.goto("/");
+  await page.locator("#capability").fill(capabilityToken);
+  await page.locator("#session-refresh").click();
+  await page.locator("#session-choices button").click();
+  await expect(page.locator("#session-step-status")).toContainText(
+    "Network failure before any server acknowledgment"
+  );
+  await expect(page.locator("#session-step-retry-row")).toBeVisible();
+
+  await page.locator("#session-step-retry").click();
+  await expect(page.locator("#session-step-status")).toContainText(
+    "Not committed (session-instance-mismatch)"
+  );
+  await expect(page.locator("#session-step-retry-row")).toBeHidden();
+  expect(stepBodies).toHaveLength(2);
+  expect(stepBodies[1]).toBe(stepBodies[0]);
+  expect(stepInstances).toEqual([instanceA, instanceA]);
+
+  // Only an explicit frame refresh may discover B. Its first response was
+  // requested with A's cursor and is discarded; the next starts at zero.
+  await page.locator("#session-refresh").click();
+  await expect(page.locator("#session-status")).toContainText(
+    "Session producer changed; local cursor, choices, and retry state were reset"
+  );
+  await expect(page.locator("#session-choices button")).toHaveCount(0);
+  await page.locator("#session-refresh").click();
+  await expect(page.locator("#session-frame")).toContainText(":fixture B0");
+  await expect(page.locator("#session-choices button")).toHaveCount(1);
+  expect(frameCursors).toEqual(["0", "1", "0"]);
+});
+
+test("rejects an unsafe session producer header without offering choices", async ({page}) => {
+  await page.route("**/api/session-frame", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      headers: {"X-Jolt-Sim-Session-Instance": "too-short"},
+      body: JSON.stringify({
+        version: 1,
+        revision: "0",
+        nextCursor: "1",
+        stepEnabled: true,
+        frameEdn: "{:must-not-be-installed true}",
+        choices: [{revision: "0", kind: "run", value: "2", label: "unsafe"}]
+      })
+    });
+  });
+  await page.goto("/");
+  await page.locator("#capability").fill(capabilityToken);
+  await page.locator("#session-refresh").click();
+  await expect(page.locator("#session-status")).toContainText(
+    "invalid session producer instance header"
+  );
+  await expect(page.locator("#session-frame")).not.toContainText(
+    "must-not-be-installed"
+  );
+  await expect(page.locator("#session-choices button")).toHaveCount(0);
+});
+
 test("never labels a non-completed process outcome as completed", async ({page}) => {
   await page.goto("/");
   await page.locator("#capability").fill(capabilityToken);

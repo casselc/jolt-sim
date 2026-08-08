@@ -17,6 +17,7 @@
             [teensyp.client :as client]))
 
 (def token "0123456789abcdef0123456789abcdef")
+(def session-instance-id "ripple-session-instance-0001")
 (def scenario 'example.viewer/replay-case)
 (def other-scenario 'example.viewer/not-allowed)
 
@@ -203,6 +204,38 @@
       (is (= viewer/invalid-config (:type data)))
       (is (= reason (:reason data))))))
 
+(deftest session-instance-id-is-optional-and-header-safe
+  (is (not (contains? (viewer/validate-config! (config))
+                      :session-instance-id)))
+  (doseq [value [(apply str (repeat 16 "a"))
+                 session-instance-id
+                 (apply str (repeat 128 "Z"))]]
+    (is (= value
+           (:session-instance-id
+            (viewer/validate-config!
+             (assoc (config) :session-instance-id value))))))
+  (doseq [value [nil
+                 1
+                 ""
+                 (apply str (repeat 15 "a"))
+                 (apply str (repeat 129 "a"))
+                 "session instance"
+                 "session/instance"
+                 "session:instance"
+                 "session\r\nInjected: yes"
+                 "ελληνικά-session-instance"]]
+    (let [data (try
+                 (viewer/validate-config!
+                  (assoc (config) :session-instance-id value))
+                 nil
+                 (catch :default error (ex-data error)))]
+      (is (= viewer/invalid-config (:type data)))
+      (is (= :invalid-session-instance-id (:reason data)))
+      (is (= {:minimum-length 16 :maximum-length 128}
+             (:detail data)))
+      (is (not (string/includes? (pr-str data) "Injected"))
+          "invalid header text is never reflected in diagnostics"))))
+
 (deftest run-presets-are-closed-trusted-and-profile-consistent
   (is (= [] (:run-presets (viewer/validate-config! (config)))))
   (is (= [(run-preset)]
@@ -323,6 +356,12 @@
     (is (string/includes? (:body shell) "id=\"session-frame\""))
     (is (string/includes? (:body script) "fetch(\"/api/session-frame\""))
     (is (string/includes? (:body script) "X-Jolt-Sim-Journal-Cursor"))
+    (is (string/includes? (:body script)
+                          "X-Jolt-Sim-Session-Instance"))
+    (is (string/includes? (:body script) "validSessionInstanceId"))
+    (is (string/includes? (:body script) "sessionInstanceKnown"))
+    (is (string/includes? (:body script)
+                          "Session producer changed; local cursor"))
     (is (string/includes? (:body script) "sessionFrame.textContent = body.frameEdn"))
     (is (string/includes? (:body shell) "id=\"session-choices\""))
     (is (string/includes? (:body shell) "id=\"session-step-retry\""))
@@ -1308,6 +1347,41 @@
     (is (= before-journal (session/journal s))
         "reading through HTTP neither steps nor appends to the Session")))
 
+(deftest session-frame-publishes-the-configured-instance-only-after-authority
+  (let [s (session/start (session-sim-config))
+        calls (atom [])
+        viewer-config (assoc (config)
+                             :max-document-bytes (* 1024 1024)
+                             :session-instance-id session-instance-id)
+        base-services (services (atom []) (atom []) {:status :completed})
+        handler
+        (viewer/make-handler
+         viewer-config
+         (assoc base-services
+                :read-session-frame
+                (fn [cursor]
+                  (swap! calls conj cursor)
+                  (viewer-session/read-frame s cursor))))
+        unavailable (viewer/make-handler viewer-config base-services)
+        forbidden (handler (get-request "/api/session-frame" "wrong"))
+        available (handler (get-request "/api/session-frame"))
+        missing (unavailable (get-request "/api/session-frame"))]
+    (is (= 403 (:status forbidden)))
+    (is (nil? (get-in forbidden
+                      [:headers "X-Jolt-Sim-Session-Instance"]))
+        "an unauthorized response has no producer-instance oracle")
+    (is (= 200 (:status available)))
+    (is (= session-instance-id
+           (get-in available
+                   [:headers "X-Jolt-Sim-Session-Instance"])))
+    (is (= 404 (:status missing)))
+    (is (= session-instance-id
+           (get-in missing
+                   [:headers "X-Jolt-Sim-Session-Instance"]))
+        "every authorized frame response identifies the producer")
+    (is (= [0] @calls)
+        "authorization and unavailable-service handling do not call the reader")))
+
 (deftest session-frame-json-is-explicit-closed-and-preserves-the-edn-frame
   (let [s (session/start (session-sim-config))
         base-services
@@ -1793,12 +1867,16 @@
 (defn- step-request
   "Builds a POST /api/session-step request carrying the JSON step contract."
   ([text] (step-request text token))
-  ([text supplied-token]
+  ([text supplied-token] (step-request text supplied-token nil))
+  ([text supplied-token instance-id]
    {:request-method :post
     :uri "/api/session-step"
-    :headers {"content-type" "application/json"
-              "content-length" (str (count (.getBytes ^String text "UTF-8")))
-              "x-jolt-sim-capability" supplied-token}
+    :headers (cond->
+              {"content-type" "application/json"
+               "content-length" (str (count (.getBytes ^String text "UTF-8")))
+               "x-jolt-sim-capability" supplied-token}
+               (some? instance-id)
+               (assoc "x-jolt-sim-session-instance" instance-id))
     :body (body [(.getBytes ^String text "UTF-8")])}))
 
 (defn- recording-body
@@ -1962,6 +2040,86 @@
     (is (false? @read?))
     (is (= [] @step-calls)
         "rejected requests never invoke the trusted stepper")))
+
+(deftest session-step-orders-instance-before-availability-media-body-and-service
+  (let [text (step-body "0" "0" "run" "2")
+        read? (atom false)
+        step-calls (atom [])
+        epoch-config (assoc (config) :session-instance-id session-instance-id)
+        tracked (assoc (step-request text)
+                       :body (recording-body read?))
+        steppable
+        (viewer/make-handler
+         epoch-config
+         (steppable-services (session/start (session-sim-config)) step-calls))
+        read-only
+        (viewer/make-handler
+         epoch-config
+         (assoc (services (atom []) (atom []) {:status :completed})
+                :read-session-frame
+                (fn [_] (throw (ex-info "unused" {})))))
+        forbidden
+        (steppable
+         (-> tracked
+             (assoc-in [:headers "x-jolt-sim-capability"] "wrong")
+             (assoc-in [:headers "x-jolt-sim-session-instance"] "wrong")))
+        missing (steppable tracked)
+        stale (steppable
+               (assoc-in tracked
+                         [:headers "x-jolt-sim-session-instance"]
+                         "ripple-session-instance-stale"))
+        unavailable
+        (read-only
+         (assoc-in tracked
+                   [:headers "x-jolt-sim-session-instance"]
+                   session-instance-id))
+        wrong-media
+        (steppable
+         (-> tracked
+             (assoc-in [:headers "x-jolt-sim-session-instance"]
+                       session-instance-id)
+             (assoc-in [:headers "content-type"] "text/plain")))]
+    (is (= 403 (:status forbidden))
+        "authority precedes the epoch and reveals no match oracle")
+    (is (nil? (get-in forbidden
+                      [:headers "X-Jolt-Sim-Session-Instance"])))
+    (doseq [response [missing stale]]
+      (is (= 409 (:status response)))
+      (is (string/includes? (:body response)
+                            ":session-instance-mismatch")))
+    (is (= 404 (:status unavailable))
+        "an exact epoch reaches service availability")
+    (is (= 415 (:status wrong-media))
+        "an exact epoch reaches media validation")
+    (is (false? @read?)
+        "all epoch, availability, and media rejections precede body reads")
+    (is (= [] @step-calls)
+        "no rejected request invokes the trusted stepper")))
+
+(deftest session-step-instance-is-a-coordinate-not-an-authority
+  (let [text (step-body "0" "0" "run" "2")
+        configured-session (session/start (session-sim-config))
+        compatible-session (session/start (session-sim-config))
+        configured-calls (atom [])
+        compatible-calls (atom [])
+        configured
+        (viewer/make-handler
+         (assoc (config) :session-instance-id session-instance-id)
+         (steppable-services configured-session configured-calls))
+        compatible
+        (viewer/make-handler
+         (config)
+         (steppable-services compatible-session compatible-calls))
+        exact (configured
+               (step-request text token session-instance-id))
+        omitted (compatible (step-request text))]
+    (is (= 200 (:status exact)))
+    (is (= 200 (:status omitted))
+        "omitting startup epoch configuration preserves the old protocol")
+    (is (= [{:revision 0 :action [:run 2]}] @configured-calls))
+    (is (= [{:revision 0 :action [:run 2]}] @compatible-calls))
+    (is (= 1 (:revision (session/snapshot configured-session))))
+    (is (= 1 (:revision (session/snapshot compatible-session))))))
 
 (deftest session-step-rejects-malformed-noncanonical-and-wrong-type-bodies
   (let [s (session/start (session-sim-config))

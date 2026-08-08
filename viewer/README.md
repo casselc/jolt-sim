@@ -328,3 +328,47 @@ A stale branch is never silently rebased just because the same action identity
 remains enabled: shared state may have changed since the displayed preview.
 Instead, the result is `:stale`, carries a refreshed frame, and requires the
 human or agent to choose again explicitly.
+
+An embedding may additionally assign the attached producer one process-lifetime
+epoch with `:session-instance-id`. The value is 16--128 characters drawn only
+from RFC 3986 unreserved ASCII (`A-Z`, `a-z`, `0-9`, `.`, `_`, `~`, and `-`),
+must remain stable for that producer lifetime, and should never be reused after
+a restart:
+
+```clojure
+(def ripple
+  (viewer/start-steppable-session!
+   (assoc viewer-config
+          :session-instance-id "ripple-dev-session-2026-08-07-a")
+   sim-session))
+```
+
+The epoch is a consistency coordinate, not a credential. The capability token
+remains the sole HTTP authority and is always checked first. Every authorized
+`GET /api/session-frame` response from a configured producer carries
+`X-Jolt-Sim-Session-Instance`; an unauthorized response never does. A
+configured `POST /api/session-step` must echo the exact header before Ripple
+checks service availability, media type, admission, the request body, or the
+trusted step closure. A missing or stale value receives
+`409 :session-instance-mismatch` without consuming the body or mutating the
+Session. Omitting `:session-instance-id` preserves the original unversioned
+in-process protocol.
+
+The browser caches the epoch only from a frame response and sends it with each
+choice. A recognized committed receipt remains authoritative and visible even
+if the automatic post-commit refresh reaches a different epoch: Ripple
+attributes that acknowledgment to the old producer, discards only the new
+frame requested with the old cursor, and requires a cursor-zero read of the
+new producer.
+
+A network-ambiguous step exposes only **Retry same command** or **Reset
+session**. Retry preserves both the exact serialized body and the cached epoch.
+If producer A disappeared and restarted producer B now owns the endpoint, that
+A-pinned retry receives `409 :session-instance-mismatch`; it is not silently
+retargeted to B. The now-unambiguous rejection enables **Refresh session**.
+That refresh discovers B, discards its first response because the request still
+carried A's journal cursor, clears the frame, choices, cursor, and retry, and
+requires one fresh cursor-zero read. **Reset session** also forgets the epoch.
+This slice prevents a revision-zero restart from masquerading as the earlier
+Session; it does not yet provide an HTTP client/proxy for attaching one Ripple
+process to another.

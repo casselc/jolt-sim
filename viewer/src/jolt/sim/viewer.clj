@@ -57,7 +57,7 @@
 (def ^:private config-keys
   #{:port :capability-token :max-document-bytes
     :allowed-scenarios :runtime-config :presentation-registry
-    :activity-presentation-registry :run-presets})
+    :activity-presentation-registry :run-presets :session-instance-id})
 
 (def ^:private run-preset-keys
   #{:id :label :scenario :profile-id :input :schedule :plan-document})
@@ -77,6 +77,10 @@
 (def ^:private default-max-document-bytes (* 1024 1024))
 (def ^:private maximum-max-document-bytes (* 16 1024 1024))
 (def ^:private minimum-token-length 32)
+(def ^:private minimum-session-instance-id-length 16)
+(def ^:private maximum-session-instance-id-length 128)
+(def ^:private session-instance-header
+  "X-Jolt-Sim-Session-Instance")
 
 (def ^:private progress-log-byte-limit 65536)
 (def ^:private maximum-session-cursor-digits 19)
@@ -113,6 +117,16 @@
 
 (defn- namespaced-keyword? [value]
   (and (keyword? value) (some? (namespace value))))
+
+(defn- valid-session-instance-id? [value]
+  (and (string? value)
+       (<= minimum-session-instance-id-length
+           (count value)
+           maximum-session-instance-id-length)
+       ;; Restrict the trusted value to RFC 3986 unreserved ASCII. Besides
+       ;; keeping the coordinate portable, this excludes every HTTP header
+       ;; delimiter, whitespace character, and CR/LF injection vector.
+       (boolean (re-matches #"[A-Za-z0-9._~-]+" value))))
 
 (defn- exact-map? [value expected-keys]
   (and (map? value)
@@ -176,9 +190,11 @@
 (defn validate-config!
   "Validates and normalizes trusted viewer startup configuration.
 
-  The capability token must contain at least 32 characters. Runtime config is
-  the exact ambient map later passed to `replay-document!`; replay-coordinate
-  keys are rejected at startup as well as by the replay API."
+  The capability token must contain at least 32 characters. The optional
+  session instance ID is a 16--128 character RFC 3986 unreserved-ASCII epoch,
+  not an authority credential. Runtime config is the exact ambient map later
+  passed to `replay-document!`; replay-coordinate keys are rejected at
+  startup as well as by the replay API."
   [config]
   (when-not (map? config)
     (throw (config-error :not-a-map (str (class config)))))
@@ -187,6 +203,7 @@
       (throw (config-error :unknown-keys unknown))))
   (let [port (get config :port 8788)
         token (:capability-token config)
+        session-instance-id (:session-instance-id config)
         max-bytes (get config :max-document-bytes
                        default-max-document-bytes)
         scenarios (:allowed-scenarios config)
@@ -206,6 +223,12 @@
                    (>= (count token) minimum-token-length))
       (throw (config-error :weak-capability-token
                            {:minimum-length minimum-token-length})))
+    (when (and (contains? config :session-instance-id)
+               (not (valid-session-instance-id? session-instance-id)))
+      (throw (config-error
+              :invalid-session-instance-id
+              {:minimum-length minimum-session-instance-id-length
+               :maximum-length maximum-session-instance-id-length})))
     (when-not (and (integer? max-bytes)
                    (<= 1 (long max-bytes) maximum-max-document-bytes))
       (throw (config-error :invalid-max-document-bytes
@@ -798,6 +821,18 @@
   (secure-string= (:capability-token config)
                   (get-in request [:headers "x-jolt-sim-capability"])))
 
+(defn- session-instance-matches? [config request]
+  (if-let [expected (:session-instance-id config)]
+    (secure-string=
+     expected
+     (get-in request [:headers "x-jolt-sim-session-instance"]))
+    true))
+
+(defn- with-session-instance-header [config response]
+  (if-let [instance-id (:session-instance-id config)]
+    (update response :headers assoc session-instance-header instance-id)
+    response))
+
 (defn- session-cursor!
   "Reads the optional unsigned decimal journal cursor without interning or
   evaluating browser-controlled data. Missing means the complete journal
@@ -952,13 +987,17 @@
     (error-response 403 :forbidden nil)
 
     (not (compare-and-set! session-active? false true))
-    (error-response 429 :session-frame-busy nil)
+    (with-session-instance-header
+     config
+     (error-response 429 :session-frame-busy nil))
 
     :else
-    (try
-      (session-frame-response config services request)
-      (finally
-        (reset! session-active? false)))))
+    (with-session-instance-header
+     config
+     (try
+       (session-frame-response config services request)
+       (finally
+         (reset! session-active? false))))))
 
 (defn- content-length-too-large? [request limit]
   (let [raw (get-in request [:headers "content-length"])
@@ -1427,17 +1466,23 @@
 
 (defn- execute-session-step-request
   "Admits one exact revision-scoped session step at a time. Authorization is
-  checked before service availability, the admission gates, and the body so
-  an untrusted local caller cannot observe step service state. The session
+  checked before the optional producer-instance epoch, and that epoch is
+  checked before service availability, the admission gates, and the body. An
+  untrusted local caller therefore cannot observe step service state, and a
+  stale authorized caller cannot command a restarted producer. The session
   gate is shared with `GET /api/session-frame`, so a simultaneous frame read
   and step rejects with 429 before either the trusted reader or stepper is
   invoked. The body is consumed only while holding the shared
-  document/body-consumer gate, so a busy response precedes any streaming
-  body read on the pool shared with jolt-http's parser."
+  document/body-consumer gate, so a busy response precedes any streaming body
+  read on the pool shared with jolt-http's parser."
   [config services session-active? document-active? request]
   (cond
     (not (authorized? config request))
     (negotiated-session-error-response request 403 :forbidden nil)
+
+    (not (session-instance-matches? config request))
+    (negotiated-session-error-response
+     request 409 :session-instance-mismatch nil)
 
     (not (fn? (:step-session-frame! services)))
     (negotiated-session-error-response request 404 :session-step-unavailable nil)
@@ -1638,6 +1683,14 @@
   shared with `POST /api/session-step`, admits only one frame computation or
   step at a time.
 
+  When startup config contains `:session-instance-id`, every authorized frame
+  response carries it in `X-Jolt-Sim-Session-Instance`. The ID is a producer
+  epoch, not authority; the capability token remains required. A configured
+  step request must echo the exact epoch header after authorization and before
+  service availability, media-type, admission, body, or service evaluation.
+  Missing and stale epochs therefore cannot command a restarted producer.
+  Omitting the startup key preserves the original frame and step protocol.
+
   `POST /api/session-step` is an optional embedding-only command surface,
   present only when the trusted services map supplies `:step-session-frame!`.
   It applies exactly one exact revision-scoped branch supplied in the closed
@@ -1650,8 +1703,8 @@
   the only duplicate-execution guard, so the identical request retried after
   a commit is stale and never advances the revision again. Without the
   service key the route is absent and answers 404 `:session-step-unavailable`;
-  authorization is checked before that availability, the admission gates, and
-  the body.
+  authorization is checked before the optional producer epoch, which is
+  checked before that availability, the admission gates, and the body.
 
   `GET /api/replay-progress` reports the one active or most recently
   completed replay's status (`:idle`, `:starting`, `:worker-ready`,
