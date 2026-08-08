@@ -117,6 +117,20 @@
      :git/sha "ffe523023437862c7e474dc216346426318754c6"}}
    :main-opts ["-m" "jolt.maelstrom.echo-hegel-test"]}
 
+  ;; In-process paired-regime property lane over the unchanged three-node
+  ;; Broadcast defsim. Every generated signed-64-bit message runs both the
+  ;; healthy line topology and the fixed n2--n3 partition/heal input, so the
+  ;; fault cannot be omitted or shrunk away. There is no nested worker alias;
+  ;; use script/run-hegel-gates.sh for dependency/native preflight and retained
+  ;; gate evidence. Pinned to the same peeled v0.1.2 jolt-hegel commit.
+  :maelstrom-broadcast-hegel-test
+  {:extra-paths ["test"]
+   :extra-deps
+   {io.github.chucklehead-dev/jolt-hegel
+    {:git/url "https://github.com/chucklehead-dev/jolt-hegel.git"
+     :git/sha "ffe523023437862c7e474dc216346426318754c6"}}
+   :main-opts ["-m" "jolt.maelstrom.broadcast-hegel-test"]}
+
   ;; Hegel-owned, shrinkable capacities and poll-fault ordinals drive the
   ;; unchanged HTTP + SQLite application in a fresh worker for every case.
   :http-sqlite-hegel-test
