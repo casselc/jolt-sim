@@ -1,6 +1,7 @@
 (ns jolt.sim.test-main
   (:require [clojure.test :as test]
             [jolt.example.outbox-test]
+            [jolt.example.outbox-regimes-test]
             [jolt.maelstrom.echo-sim-test]
             [jolt.maelstrom.echo-test]
             [jolt.maelstrom.json-lines-test]
@@ -43,6 +44,7 @@
 (defn -main [& _]
   (let [result
         (test/run-tests 'jolt.example.outbox-test
+                        'jolt.example.outbox-regimes-test
                         'jolt.maelstrom.echo-sim-test
                         'jolt.maelstrom.echo-test
                         'jolt.maelstrom.json-lines-test

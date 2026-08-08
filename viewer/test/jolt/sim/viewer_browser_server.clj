@@ -5,7 +5,8 @@
   seam returns one real retained activity journal with forty small semantic
   events. This keeps browser acceptance independent of the expensive
   whole-application worker already covered by the raw HTTP E2E lane."
-  (:require [jolt.fs :as fs]
+  (:require [jolt.example.outbox.regimes :as outbox-regimes]
+            [jolt.fs :as fs]
             [jolt.sim.activity :as activity]
             [jolt.sim.report :as report]
             [jolt.sim.viewer :as viewer]
@@ -20,6 +21,9 @@
 (def ^:private echo-scenario
   'jolt.maelstrom.fixtures.echo-scenario/echo-roundtrip)
 
+(def ^:private outbox-regime-lab-scenario
+  'jolt.sim.fixtures.outbox-delivery-scenarios/exercise-reopen-with-capacities)
+
 (def ^:private echo-input
   "The exact nested Unicode payload the trusted Echo preset owns."
   {"greeting" "héllo, 世界 🌍"
@@ -27,6 +31,32 @@
    "nested" {"a" "ελληνικά"
               "b" [" 한글 " "português" 42 nil]}
    "emoji" "🚀"})
+
+(def ^:private outbox-cancel-regime
+  {:id :jolt.sim.regime/outbox-cancel-before-ack-canonical
+   :label "Canonical cancellation path"
+   :summary (str "Run the trusted cancel-before-ack example with its fixed "
+                 "server-owned coordinates.")
+   :scope [:jolt.example.outbox/cancellation]
+   :input {:payload [0 127 128 255]
+           :stream-capacity 8
+           :pipe-capacity 1
+           :poll-eintr-ordinal nil}})
+
+(def ^:private echo-regime
+  {:id :jolt.sim.regime/maelstrom-echo-canonical
+   :label "Canonical Echo round trip"
+   :summary (str "Run the trusted Maelstrom Echo example with its fixed "
+                 "server-owned Unicode payload.")
+   :scope [:jolt.maelstrom.echo/roundtrip]
+   :input echo-input})
+
+(defn- outbox-lab-regime [{:keys [id label summary scope]}]
+  {:id id
+   :label label
+   :summary summary
+   :scope scope
+   :input (outbox-regimes/scenario-input id)})
 
 (defn- required-port []
   (let [raw (or (System/getenv "JOLT_SIM_BROWSER_PORT") "8791")
@@ -83,29 +113,39 @@
   (let [plan (viewer-experiment/read-edn
               (slurp "examples/outbox-cancel-before-ack-plan.edn"))
         echo-plan (viewer-experiment/read-edn
-                   (slurp "examples/maelstrom-echo-plan.edn"))]
+                   (slurp "examples/maelstrom-echo-plan.edn"))
+        outbox-regime-lab-plan
+        (viewer-experiment/read-edn
+         (slurp "examples/outbox-regime-lab-plan.edn"))]
     {:port port
      :capability-token capability-token
      :max-document-bytes (* 1024 1024)
-     :allowed-scenarios #{scenario echo-scenario}
-     ;; The existing outbox preset stays first and unchanged; the unchanged
-     ;; Maelstrom Echo defsim scenario is the second trusted example. The
-     ;; stubbed run-case service below never launches a worker for either.
+     :allowed-scenarios #{scenario echo-scenario outbox-regime-lab-scenario}
+     ;; Each preset uses the same v2 shape. The first two expose one canonical
+     ;; regime; the lab exposes the application's complete finite catalog. The
+     ;; stubbed run-case service below never launches a worker for any preset.
      :run-presets
      [{:id :jolt.sim.preset/outbox-cancel-before-ack-v1
        :label "Outbox: cancel before acknowledgment"
        :scenario scenario
        :profile-id :hermetic
-       :input nil
        :schedule nil
-       :plan-document plan}
+       :plan-document plan
+       :regimes [outbox-cancel-regime]}
       {:id :jolt.sim.preset/maelstrom-echo-roundtrip-v1
        :label "Maelstrom Echo: init and echo round trip"
        :scenario echo-scenario
        :profile-id :hermetic
-       :input echo-input
        :schedule nil
-       :plan-document echo-plan}]
+       :plan-document echo-plan
+       :regimes [echo-regime]}
+      {:id :jolt.sim.preset/outbox-first-poll-regime-lab-v1
+       :label "Outbox: poll admission and EINTR regime lab"
+       :scenario outbox-regime-lab-scenario
+       :profile-id :hermetic
+       :schedule nil
+       :plan-document outbox-regime-lab-plan
+       :regimes (mapv outbox-lab-regime outbox-regimes/regimes)}]
      :activity-presentation-registry
      {:jolt.sim.browser-test/activity
       {:kind :jolt.sim.kind/browser-test-activity

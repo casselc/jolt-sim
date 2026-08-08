@@ -104,13 +104,24 @@
    :label "Outbox run"
    :scenario scenario
    :profile-id :hermetic
-   :input {:payload [0 255]}
    :schedule [1 0]
+   :regimes
+   [{:id :example.viewer.regime/canonical
+     :label "Canonical"
+     :summary "Run the canonical bounded example input."
+     :scope [:example.viewer/application]
+     :input {:payload [0 255]}}]
    :plan-document
    (viewer-experiment/read-edn (slurp "examples/experiment-plan.edn"))})
 
 (defn run-config []
   (assoc (config) :run-presets [(run-preset)]))
+
+(defn run-selection []
+  {"catalogVersion" 2
+   "presetId" "example.viewer/outbox-run"
+   "regimeId" "example.viewer.regime/canonical"
+   "scope" ["example.viewer/application"]})
 
 (defn services [render-calls replay-calls replay-outcome]
   {:render-trace
@@ -251,8 +262,32 @@
             :run-preset-scenario-not-allowed]
            [[(assoc (run-preset) :schedule [1 1])]
             :invalid-run-preset-schedule]
-           [[(assoc (run-preset) :input (fn [] nil))]
-            :invalid-run-preset-input]
+           [[(assoc (run-preset) :regimes [])] :invalid-run-regimes]
+           [[(update-in (run-preset) [:regimes 0] assoc :extra true)]
+            :invalid-run-regime-shape]
+           [[(update (run-preset) :regimes
+                     #(conj % (first %)))]
+            :duplicate-run-regime-ids]
+           [[(assoc-in (run-preset) [:regimes 0 :id] :not-namespaced)]
+            :invalid-run-regime-id]
+           [[(assoc-in (run-preset) [:regimes 0 :label] " ")]
+            :invalid-run-regime-label]
+           [[(assoc-in (run-preset) [:regimes 0 :label]
+                      (apply str (repeat 129 "x")))]
+            :invalid-run-regime-label]
+           [[(assoc-in (run-preset) [:regimes 0 :summary] " ")]
+            :invalid-run-regime-summary]
+           [[(assoc-in (run-preset) [:regimes 0 :summary]
+                      (apply str (repeat 513 "x")))]
+            :invalid-run-regime-summary]
+           [[(assoc-in (run-preset) [:regimes 0 :scope] [])]
+            :invalid-run-regime-scope]
+           [[(assoc-in (run-preset) [:regimes 0 :scope]
+                      [:example.viewer/application
+                       :example.viewer/application])]
+            :invalid-run-regime-scope]
+           [[(assoc-in (run-preset) [:regimes 0 :input] (fn [] nil))]
+            :invalid-run-regime-input]
            [[(assoc (run-preset) :profile-id :other)]
             :run-preset-profile-mismatch]
            [[(assoc (run-preset) :plan-document {})]
@@ -266,9 +301,9 @@
       (is (= viewer/invalid-config (:type data)))
       (is (= reason (:reason data))))))
 
-(deftest run-preset-input-is-snapshotted-at-handler-construction
+(deftest run-regime-input-is-snapshotted-at-handler-construction
   (let [payload (byte-array [0 1])
-        preset (assoc (run-preset) :input {:payload payload})
+        preset (assoc-in (run-preset) [:regimes 0 :input] {:payload payload})
         submitted (atom nil)
         handler
         (viewer/make-handler
@@ -285,7 +320,9 @@
             (handler
              (json-post-request
               "/api/run"
-              {"version" 1 "presetId" "example.viewer/outbox-run"})))))
+              {"version" 2
+               "presetId" "example.viewer/outbox-run"
+               "regimeId" "example.viewer.regime/canonical"})))))
     (is (= [0 1]
            (mapv #(bit-and (long %) 0xff)
                  (seq (get-in @submitted [:input :payload]))))
@@ -303,17 +340,101 @@
         preset (first (get decoded "presets"))]
     (is (= 403 (:status forbidden)))
     (is (= 200 (:status response)))
-    (is (= 1 (get decoded "version")))
-    (is (= #{"id" "label" "profileId" "planEdn"}
+    (is (= #{"version" "presets"} (set (keys decoded))))
+    (is (= 2 (get decoded "version")))
+    (is (= decoded (viewer/run-catalog (run-config)))
+        "HTTP and alternate UIs consume the same public catalog projection")
+    (is (= #{"id" "label" "profileId" "planEdn" "regimes"}
            (set (keys preset))))
     (is (= "example.viewer/outbox-run" (get preset "id")))
     (is (= "Outbox run" (get preset "label")))
     (is (= "hermetic" (get preset "profileId")))
+    (is (= [{"id" "example.viewer.regime/canonical"
+             "label" "Canonical"
+             "summary" "Run the canonical bounded example input."
+             "scope" ["example.viewer/application"]}]
+           (get preset "regimes")))
     (is (= (:plan-document (run-preset))
            (viewer-experiment/read-edn (get preset "planEdn"))))
+    ;; Exact object-key assertions above prove that no execution-coordinate
+    ;; key crosses the JSON boundary. Do not search for the ordinary word
+    ;; "input" in display text: the canonical regime summary uses it
+    ;; truthfully without disclosing the trusted value.
     (doseq [private-text [(str scenario) "payload" "schedule"
                           "/tmp/example-project" "/tmp/example-artifacts"]]
       (is (not (string/includes? (:body response) private-text))))))
+
+(deftest public-run-selection-resolves-only-the-exact-trusted-pair
+  (is (= {:scenario scenario
+          :input {:payload [0 255]}
+          :schedule [1 0]}
+         (viewer/resolve-run-selection
+          (run-config)
+          "example.viewer/outbox-run"
+          "example.viewer.regime/canonical")))
+  (doseq [[preset-id regime-id reason]
+          [["example.viewer/missing"
+            "example.viewer.regime/canonical"
+            :preset-not-found]
+           ["example.viewer/outbox-run"
+            "example.viewer.regime/missing"
+            :regime-not-found]]]
+    (let [data (try
+                 (viewer/resolve-run-selection
+                  (run-config) preset-id regime-id)
+                 nil
+                 (catch :default error (ex-data error)))]
+      (is (= :jolt.sim.viewer/run-selection-not-found (:type data)))
+      (is (= reason (:reason data))))))
+
+(deftest handler-caches-the-catalog-and-snapshots-only-the-selected-regime
+  (let [second-regime
+        {:id :example.viewer.regime/unrelated
+         :label "Unrelated"
+         :summary "An unrelated trusted input."
+         :scope [:example.viewer/other-boundary]
+         :input {:payload [7 8 9]}}
+        cfg (assoc (config)
+                   :run-presets
+                   [(update (run-preset) :regimes conj second-regime)])
+        paths (atom [])
+        original trace/canonical-value]
+    (with-redefs
+     [trace/canonical-value
+      (fn
+        ([value]
+         (swap! paths conj [])
+         (original value))
+        ([value path]
+         (swap! paths conj path)
+         (original value path)))]
+      (let [handler
+            (viewer/make-handler
+             cfg
+             {:render-trace identity
+              :render-case-outcome identity
+              :replay-document (fn [_ _] nil)
+              :run-case (fn [_] {:status :completed :exit 0})})]
+        (reset! paths [])
+        (is (= 200 (:status (handler (get-request "/api/run-presets")))))
+        (is (empty? (filter #(= :selected-input (last %)) @paths))
+            "catalog GET reuses the startup projection")
+        (reset! paths [])
+        (is (= 200
+               (:status
+                (handler
+                 (json-post-request
+                  "/api/run"
+                  {"version" 2
+                   "presetId" "example.viewer/outbox-run"
+                   "regimeId" "example.viewer.regime/canonical"})))))
+        (is (= [[:run-preset
+                 :example.viewer/outbox-run
+                 :regime
+                 :example.viewer.regime/canonical
+                 :selected-input]]
+               (filterv #(= :selected-input (last %)) @paths))
+            "only the selected input receives a fresh per-run snapshot")))))
 
 (deftest shell-is-static-and-does-not-disclose-the-token
   (let [handler (viewer/make-handler
@@ -888,6 +1009,7 @@
   (let [handler* (atom nil)
         calls (atom [])
         busy-response* (atom nil)
+        active-progress* (atom nil)
         outcome {:status :completed
                  :exit 0
                  :artifact-dir "/tmp/private-run-artifacts"
@@ -908,17 +1030,21 @@
                     (@handler*
                      (request "/api/replay"
                               (case-outcome/canonical-edn (document)))))
+            (reset! active-progress*
+                    (@handler* (get-request "/api/replay-progress")))
             ((:on-run-dir trusted-config) "/tmp/private-run-artifacts")
             outcome)})]
     (reset! handler* handler)
     (let [response (handler
                     (json-post-request
                      "/api/run"
-                     {"version" 1
-                      "presetId" "example.viewer/outbox-run"}))
+                     {"version" 2
+                      "presetId" "example.viewer/outbox-run"
+                      "regimeId" "example.viewer.regime/canonical"}))
           public-outcome (edn/read-string (:body response))
           progress (json/read-str
                     (:body (handler (get-request "/api/replay-progress"))))
+          active-progress (json/read-str (:body @active-progress*))
           submitted (first @calls)]
       (is (= 200 (:status response)))
       (is (= 1 (count @calls)))
@@ -935,7 +1061,10 @@
       (is (not (string/includes? (:body response)
                                  "/tmp/private-run-artifacts")))
       (is (= 429 (:status @busy-response*)))
+      (is (= "starting" (get active-progress "status")))
+      (is (= (run-selection) (get active-progress "selection")))
       (is (= "completed" (get progress "status")))
+      (is (= (run-selection) (get progress "selection")))
       (is (= "ok" (get-in progress ["stdout" "text"]))))))
 
 (deftest run-preset-rejections-never-call-the-service
@@ -953,23 +1082,47 @@
          :headers {"content-type" "application/json"
                    "x-jolt-sim-capability" token}
          :body (body [(.getBytes "{" "UTF-8")])}
+        duplicate-id-json
+        (str "{\"version\":2,"
+             "\"presetId\":\"example.viewer/outbox-run\","
+             "\"regimeId\":\"example.viewer.regime/canonical\","
+             "\"regimeId\":\"example.viewer.regime/missing\"}")
+        duplicate-id
+        {:request-method :post
+         :uri "/api/run"
+         :headers {"content-type" "application/json"
+                   "x-jolt-sim-capability" token}
+         :body (body [(.getBytes duplicate-id-json "UTF-8")])}
         responses
         [(handler (json-post-request "/api/run"
-                                    {"version" 1
-                                     "presetId" "example.viewer/outbox-run"}
+                                    {"version" 2
+                                     "presetId" "example.viewer/outbox-run"
+                                     "regimeId" "example.viewer.regime/canonical"}
                                     "wrong"))
          (handler malformed)
+         (handler duplicate-id)
          (handler (json-post-request "/api/run"
                                      {"version" 2
                                       "presetId" "example.viewer/outbox-run"}))
          (handler (json-post-request "/api/run"
-                                     {"version" 1
-                                      "presetId" "example.viewer/missing"}))
-         (handler (json-post-request "/api/run"
-                                     {"version" 1
+                                     {"version" 2
                                       "presetId" "example.viewer/outbox-run"
+                                      "regimeId" "not-namespaced"}))
+         (handler (json-post-request "/api/run"
+                                     {"version" 2
+                                      "presetId" "example.viewer/missing"
+                                      "regimeId" "example.viewer.regime/canonical"}))
+         (handler (json-post-request "/api/run"
+                                     {"version" 2
+                                      "presetId" "example.viewer/outbox-run"
+                                      "regimeId" "example.viewer.regime/missing"}))
+         (handler (json-post-request "/api/run"
+                                     {"version" 2
+                                      "presetId" "example.viewer/outbox-run"
+                                      "regimeId" "example.viewer.regime/canonical"
                                       "extra" true}))]]
-    (is (= [403 400 400 404 400] (mapv :status responses)))
+    (is (= [403 400 400 400 400 404 404 400]
+           (mapv :status responses)))
     (is (zero? @calls))))
 
 (deftest run-route-is-absent-without-the-optional-service
@@ -3447,7 +3600,9 @@
             (handler
              (json-post-request
               "/api/run"
-              {"version" 1 "presetId" "example.viewer/outbox-run"}))
+              {"version" 2
+               "presetId" "example.viewer/outbox-run"
+               "regimeId" "example.viewer.regime/canonical"}))
             nil
             (catch :default error error))
           progress-response
@@ -3459,6 +3614,7 @@
              (:type (ex-data run-error))))
       (is (= 200 (:status progress-response)))
       (is (= "failed" (get progress "status")))
+      (is (= (run-selection) (get progress "selection")))
       (is (= "retained crash evidence" (get-in progress ["stderr" "text"])))
       (is (= "ok" (get-in progress ["activity" "status"])))
       (is (= ["jolt.sim.explore/scenario-started"]

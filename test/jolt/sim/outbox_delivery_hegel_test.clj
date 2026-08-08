@@ -89,6 +89,7 @@
   (:require [clojure.test :as test :refer [deftest is]]
             [hegel.core :as h]
             [hegel.generator :as g]
+            [jolt.example.outbox.regimes :as outbox-regimes]
             [jolt.fs :as fs]
             [jolt.sim.case-outcome :as case-outcome]
             [jolt.sim.hegel :as sim-hegel]
@@ -146,14 +147,15 @@
 ;; no-fault case while still exercising larger capacities and later poll
 ;; attempts. The stream floor 8 is the fixed smoke capacity proven against
 ;; the ordinary application's bounded operation deadline; 1--2 byte HTTP
-;; fragmentation is explicitly later work. These literals deliberately mirror
-;; the closed domains in the scenario namespace, which this parent cannot load
-;; (the app
-;; dependency stack is absent here); the worker child rejects anything
-;; outside them before a world exists.
+;; fragmentation is explicitly later work. The capacity literals deliberately
+;; mirror the closed domains in the scenario namespace, which this parent
+;; cannot load because the application dependency stack is absent here. The
+;; poll-EINTR and admission domains come from the shared application catalog;
+;; the worker child rejects anything outside all four domains before a world
+;; exists.
 (def ^:private stream-capacity-domain [8 16 32])
 (def ^:private pipe-capacity-domain [1 2 4])
-(def ^:private poll-eintr-domain [nil 1 2 4 8])
+(def ^:private poll-eintr-domain outbox-regimes/poll-eintr-ordinals)
 (def ^:private max-payload-octets 32)
 (def ^:private http-webhook-response-modes
   [:accepted :accepted-json-whitespace :non-2xx :malformed-json
@@ -162,15 +164,14 @@
 (def ^:private terminal-deadline-boundaries
   [:after-command-commit :before-ack :before-mark])
 (def ^:private terminal-deadline-offsets [0 -1 1])
-;; Exactly two discriminating first-poll admission orders, mirrored from the
+;; Exactly two discriminating first-poll admission orders, shared with the
 ;; scenario namespace's closed domain: the receiver reactor's first poll
 ;; released before the HTTP reactor's first poll, or the reverse. There is no
 ;; nil/unscheduled value; every case exercises the semantic-selector
 ;; coordinator. The step ids are the scenario namespace's own ::receiver-poll
 ;; and ::http-poll literals, mirrored here for the exact release-order
 ;; assertion (release evidence carries step ids, never selectors).
-(def ^:private admission-plan-domain
-  [:receiver-poll-then-http-poll :http-poll-then-receiver-poll])
+(def ^:private admission-plan-domain outbox-regimes/admission-plans)
 (def ^:private receiver-poll-step-id
   :jolt.sim.fixtures.outbox-delivery-scenarios/receiver-poll)
 (def ^:private http-poll-step-id
@@ -1823,16 +1824,11 @@
 ;; Hegel generation so the boundary semantics hold even if a future generator
 ;; edit stops drawing them.
 (def ^:private boundary-witness-inputs
-  [{:payload []
-    :stream-capacity 8
-    :pipe-capacity 1
-    :poll-eintr-ordinal nil
-    :admission-plan :receiver-poll-then-http-poll}
-   {:payload [0 127 128 255]
-    :stream-capacity 8
-    :pipe-capacity 1
-    :poll-eintr-ordinal 1
-    :admission-plan :http-poll-then-receiver-poll}])
+  [(outbox-regimes/scenario-input
+    {:payload [] :stream-capacity 8 :pipe-capacity 1}
+    :jolt.example.outbox.regime/receiver-first-no-eintr)
+   (outbox-regimes/scenario-input
+    :jolt.example.outbox.regime/http-first-poll-eintr-1)])
 
 (deftest outbox-delivery-payload-boundary-witness
   (doseq [[index input] (map-indexed vector boundary-witness-inputs)]

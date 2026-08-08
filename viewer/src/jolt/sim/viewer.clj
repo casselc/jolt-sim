@@ -61,7 +61,10 @@
     :activity-presentation-registry :run-presets :session-instance-id})
 
 (def ^:private run-preset-keys
-  #{:id :label :scenario :profile-id :input :schedule :plan-document})
+  #{:id :label :scenario :profile-id :schedule :plan-document :regimes})
+
+(def ^:private run-regime-keys
+  #{:id :label :summary :scope :input})
 
 (def ^:private replay-coordinate-keys
   #{:scenario :mode :input :schedule})
@@ -87,6 +90,10 @@
 (def ^:private maximum-session-cursor-digits 19)
 (def ^:private session-step-body-limit 4096)
 (def ^:private run-command-body-limit 4096)
+(def ^:private maximum-run-regimes 32)
+(def ^:private maximum-run-regime-label-length 128)
+(def ^:private maximum-run-regime-summary-length 512)
+(def ^:private maximum-run-regime-scope-size 16)
 ;; A signed decimal carries one leading minus sign plus the unsigned digit
 ;; budget, so Long/MIN_VALUE's 20 characters remain representable.
 (def ^:private maximum-step-signed-decimal-chars
@@ -134,6 +141,68 @@
        (nil? (meta value))
        (= expected-keys (set (keys value)))))
 
+(defn- bounded-nonblank-string? [value maximum]
+  (and (string? value)
+       (not (string/blank? value))
+       (<= (count value) maximum)))
+
+(defn- validate-run-regime! [preset-id regime]
+  (when-not (exact-map? regime run-regime-keys)
+    (throw (config-error :invalid-run-regime-shape
+                         {:preset-id preset-id
+                          :keys (when (map? regime) (set (keys regime)))})))
+  (when-not (namespaced-keyword? (:id regime))
+    (throw (config-error :invalid-run-regime-id
+                         {:preset-id preset-id :regime-id (:id regime)})))
+  (when-not (bounded-nonblank-string?
+             (:label regime) maximum-run-regime-label-length)
+    (throw (config-error :invalid-run-regime-label
+                         {:preset-id preset-id :regime-id (:id regime)})))
+  (when-not (bounded-nonblank-string?
+             (:summary regime) maximum-run-regime-summary-length)
+    (throw (config-error :invalid-run-regime-summary
+                         {:preset-id preset-id :regime-id (:id regime)})))
+  (let [scope (:scope regime)]
+    (when-not (and (vector? scope)
+                   (nil? (meta scope))
+                   (seq scope)
+                   (<= (count scope) maximum-run-regime-scope-size)
+                   (= (count scope) (count (set scope)))
+                   (every? namespaced-keyword? scope))
+      (throw (config-error :invalid-run-regime-scope
+                           {:preset-id preset-id :regime-id (:id regime)}))))
+  (let [input-form
+        (try
+          (trace/canonical-value (:input regime)
+                                 [:run-preset preset-id :regime
+                                  (:id regime) :input])
+          (catch :default error
+            (throw (config-error :invalid-run-regime-input
+                                 {:preset-id preset-id
+                                  :regime-id (:id regime)
+                                  :error
+                                  (select-keys (ex-data error)
+                                               [:reason :path
+                                                :value-class])}))))]
+    ;; Rebuild from the canonical form so byte arrays and every other mutable
+    ;; canonical leaf are snapshotted when the trusted catalog is installed.
+    (assoc regime :input (trace/restore-value input-form))))
+
+(defn- validate-run-regimes! [preset-id regimes]
+  (when-not (and (vector? regimes)
+                 (nil? (meta regimes))
+                 (seq regimes)
+                 (<= (count regimes) maximum-run-regimes))
+    (throw (config-error :invalid-run-regimes
+                         {:preset-id preset-id
+                          :maximum maximum-run-regimes})))
+  (let [validated (mapv #(validate-run-regime! preset-id %) regimes)
+        ids (mapv :id validated)]
+    (when-not (= (count ids) (count (set ids)))
+      (throw (config-error :duplicate-run-regime-ids
+                           {:preset-id preset-id :ids ids})))
+    validated))
+
 (defn- validate-run-preset! [scenarios preset]
   (when-not (exact-map? preset run-preset-keys)
     (throw (config-error :invalid-run-preset-shape
@@ -151,33 +220,24 @@
   (when-not (keyword? (:profile-id preset))
     (throw (config-error :invalid-run-preset-profile
                          (:profile-id preset))))
-  (let [input-form
-        (try
-          (trace/canonical-value (:input preset) [:run-preset :input])
-          (catch :default error
-            (throw (config-error :invalid-run-preset-input
-                                 (select-keys (ex-data error)
-                                              [:reason :path :value-class])))))
-        ;; Restore the accepted canonical value so mutable leaves such as byte
-        ;; arrays are snapshotted when the trusted catalog is installed.
-        input (trace/restore-value input-form)]
-    (when-not (or (nil? (:schedule preset))
-                  (future-schedule/valid-schedule? (:schedule preset)))
-      (throw (config-error :invalid-run-preset-schedule (:schedule preset))))
-    (let [plan (try
-                 (experiment-viewer/validate-document! (:plan-document preset))
-                 (catch :default error
-                   (throw (config-error :invalid-run-preset-plan
-                                        (select-keys (ex-data error)
-                                                     [:reason])))))]
-      (when-not (= (:profile-id preset) (:profile-id plan))
-        (throw (config-error :run-preset-profile-mismatch
-                             {:preset (:profile-id preset)
-                              :plan (:profile-id plan)})))
-      (assoc preset
-             :input input
-             :schedule (when-let [schedule (:schedule preset)] (vec schedule))
-             :plan-document plan))))
+  (when-not (or (nil? (:schedule preset))
+                (future-schedule/valid-schedule? (:schedule preset)))
+    (throw (config-error :invalid-run-preset-schedule (:schedule preset))))
+  (let [plan (try
+               (experiment-viewer/validate-document! (:plan-document preset))
+               (catch :default error
+                 (throw (config-error :invalid-run-preset-plan
+                                      (select-keys (ex-data error)
+                                                   [:reason])))))
+        regimes (validate-run-regimes! (:id preset) (:regimes preset))]
+    (when-not (= (:profile-id preset) (:profile-id plan))
+      (throw (config-error :run-preset-profile-mismatch
+                           {:preset (:profile-id preset)
+                            :plan (:profile-id plan)})))
+    (assoc preset
+           :regimes regimes
+           :schedule (when-let [schedule (:schedule preset)] (vec schedule))
+           :plan-document plan)))
 
 (defn- validate-run-presets! [scenarios presets]
   (when-not (and (vector? presets) (nil? (meta presets)))
@@ -489,13 +549,17 @@
     :idle {:status :idle}
 
     :terminal
-    {:status (:status state)
-     :stdout (:stdout state)
-     :stderr (:stderr state)}
+    (cond-> {:status (:status state)
+             :stdout (:stdout state)
+             :stderr (:stderr state)}
+      (:run-selection state)
+      (assoc :run-selection (:run-selection state)))
 
     :active
     (cond-> {:status (get state :status :starting)
              :result-observed? (boolean (:result-observed? state))}
+      (:run-selection state)
+      (assoc :run-selection (:run-selection state))
       (contains? state :stdout) (assoc :stdout (:stdout state))
       (contains? state :stderr) (assoc :stderr (:stderr state)))))
 
@@ -508,6 +572,8 @@
   "The closed wire projection of `replay-progress-state`'s small status shape."
   [state]
   (cond-> {"status" (name (:status state))}
+    (:run-selection state)
+    (assoc "selection" (:run-selection state))
     (contains? state :result-observed?)
     (assoc "result-observed?" (boolean (:result-observed? state)))
     (contains? state :stdout) (assoc "stdout" (diagnostic-wire (:stdout state)))
@@ -741,70 +807,95 @@
   "Runs one trusted fresh-process operation through the viewer's single
   progress/activity lifecycle. `invoke` receives only the runtime map with the
   private run-directory observer installed and must return a process outcome."
-  [config active-replay invoke]
-  (reset! active-replay
-          {:phase :active
-           :run-dir nil
-           :status :starting
-           :result-observed? false})
-  (try
-    (let [observer (fn [run-dir]
-                     (swap! active-replay assoc :run-dir run-dir))
-          runtime (assoc (:runtime-config config) :on-run-dir observer)
-          outcome (invoke runtime)]
-      (reset! active-replay
-              (cond-> {:phase :terminal
-                       :status (outcome->progress-status outcome)
-                       :stdout (get-in outcome [:diagnostics :stdout]
-                                       empty-progress-diagnostic)
-                       :stderr (get-in outcome [:diagnostics :stderr]
-                                       empty-progress-diagnostic)}
-                (activity-journal-enabled? config)
-                (assoc :outcome outcome)))
-      (response 200 "application/edn; charset=utf-8"
-                (trace/canonical-edn (public-replay-outcome outcome))))
-    (catch :default error
-      (let [retained-run-dir (:artifact-dir (ex-data error))
-            active (cond-> @active-replay
-                     retained-run-dir
-                     (assoc :phase :active :run-dir retained-run-dir))
-            observed (observe-active-replay active)
-            run-dir (:run-dir observed)]
-        (reset! active-replay
-                (cond-> {:phase :terminal
-                         :status :failed
-                         :stdout (or (:stdout observed)
-                                     empty-progress-diagnostic)
-                         :stderr (or (:stderr observed)
-                                     empty-progress-diagnostic)}
-                  run-dir
-                  (assoc :run-dir run-dir)
+  ([config active-replay invoke]
+   (execute-run-with-progress! config active-replay nil invoke))
+  ([config active-replay run-selection invoke]
+   (reset! active-replay
+           (cond-> {:phase :active
+                    :run-dir nil
+                    :status :starting
+                    :result-observed? false}
+             run-selection (assoc :run-selection run-selection)))
+   (try
+     (let [observer (fn [run-dir]
+                      (swap! active-replay assoc :run-dir run-dir))
+           runtime (assoc (:runtime-config config) :on-run-dir observer)
+           outcome (invoke runtime)]
+       (reset! active-replay
+               (cond-> {:phase :terminal
+                        :status (outcome->progress-status outcome)
+                        :stdout (get-in outcome [:diagnostics :stdout]
+                                        empty-progress-diagnostic)
+                        :stderr (get-in outcome [:diagnostics :stderr]
+                                        empty-progress-diagnostic)}
+                 run-selection (assoc :run-selection run-selection)
+                 (activity-journal-enabled? config)
+                 (assoc :outcome outcome)))
+       (response 200 "application/edn; charset=utf-8"
+                 (trace/canonical-edn (public-replay-outcome outcome))))
+     (catch :default error
+       (let [retained-run-dir (:artifact-dir (ex-data error))
+             active (cond-> @active-replay
+                      retained-run-dir
+                      (assoc :phase :active :run-dir retained-run-dir))
+             observed (observe-active-replay active)
+             run-dir (:run-dir observed)]
+         (reset! active-replay
+                 (cond-> {:phase :terminal
+                          :status :failed
+                          :stdout (or (:stdout observed)
+                                      empty-progress-diagnostic)
+                          :stderr (or (:stderr observed)
+                                      empty-progress-diagnostic)}
+                   run-selection (assoc :run-selection run-selection)
+                   run-dir
+                   (assoc :run-dir run-dir)
 
-                  (and run-dir (activity-journal-enabled? config))
-                  ;; An escaping retained-child-death exception has no
-                  ;; ordinary outcome, but the fixed trusted journal remains
-                  ;; recoverable without exposing its directory to the wire.
-                  (assoc :outcome
-                         {:status :worker-error
-                          :artifact-dir run-dir
-                          :activity {:observer-status nil}}))))
-      (throw error))))
+                   (and run-dir (activity-journal-enabled? config))
+                   ;; An escaping retained-child-death exception has no
+                   ;; ordinary outcome, but the fixed trusted journal remains
+                   ;; recoverable without exposing its directory to the wire.
+                   (assoc :outcome
+                          {:status :worker-error
+                           :artifact-dir run-dir
+                           :activity {:observer-status nil}}))))
+       (throw error)))))
 
 (defn- keyword-coordinate-text [value]
   (if-let [ns (namespace value)]
     (str ns "/" (name value))
     (name value)))
 
+(defn- run-regime-wire [regime]
+  {"id" (keyword-coordinate-text (:id regime))
+   "label" (:label regime)
+   "summary" (:summary regime)
+   "scope" (mapv keyword-coordinate-text (:scope regime))})
+
 (defn- run-preset-wire [preset]
   {"id" (keyword-coordinate-text (:id preset))
    "label" (:label preset)
    "profileId" (keyword-coordinate-text (:profile-id preset))
-   "planEdn" (experiment-viewer/canonical-edn (:plan-document preset))})
+   "planEdn" (experiment-viewer/canonical-edn (:plan-document preset))
+   "regimes" (mapv run-regime-wire (:regimes preset))})
 
-(defn- run-presets-response [config]
-  (json-response 200
-                 {"version" 1
-                  "presets" (mapv run-preset-wire (:run-presets config))}))
+(defn- run-catalog-validated [validated]
+  {"version" 2
+   "presets" (mapv run-preset-wire (:run-presets validated))})
+
+(defn run-catalog
+  "Returns the closed v2 run-catalog projection used by Ripple's HTTP API.
+
+  `config` is validated exactly as viewer startup configuration. The returned
+  value contains inert display data only: scenario symbols, trusted inputs,
+  schedules, worker configuration, paths, and environment never cross this
+  boundary. REPLs and alternate UIs can consume the same value without
+  scraping Ripple's HTML or reimplementing catalog projection."
+  [config]
+  (run-catalog-validated (validate-config! config)))
+
+(defn- run-presets-response [catalog]
+  (json-response 200 catalog))
 
 (defn- secure-string= [expected supplied]
   (and (string? supplied)
@@ -1212,11 +1303,16 @@
                      :reason :decimal-out-of-range})))
         [{:revision revision :action [tag payload]} cursor]))))
 
-(def ^:private run-command-keys #{"version" "presetId"})
+(def ^:private run-command-keys #{"version" "presetId" "regimeId"})
+
+(defn- wire-run-id? [value]
+  (and (string? value)
+       (<= 3 (count value) 256)
+       (boolean (re-matches #"[^\s/:]+(?:\.[^\s/:]+)*/[^\s/]+" value))))
 
 (defn- run-command!
-  "Reads the closed run-preset command and returns its opaque string ID.
-  Browser text is compared with trusted preset IDs and is never interned."
+  "Reads the closed v2 run command and returns opaque preset/regime IDs.
+  Browser text is compared with trusted catalog IDs and is never interned."
   [request]
   (let [bytes (bounded-body-bytes request run-command-body-limit)
         seen-keys (atom #{})
@@ -1247,23 +1343,76 @@
        (ex-info "viewer run command keys are not the closed set"
                 {:type ::invalid-run-command :reason :unexpected-keys})))
     (when-not (and (integer? (get value "version"))
-                   (= 1 (get value "version")))
+                   (= 2 (get value "version")))
       (throw
-       (ex-info "viewer run command version is not the integer 1"
+       (ex-info "viewer run command version is not the integer 2"
                 {:type ::invalid-run-command
                  :reason :unsupported-version})))
-    (let [preset-id (get value "presetId")]
-      (when-not (and (string? preset-id)
-                     (not (string/blank? preset-id)))
+    (let [preset-id (get value "presetId")
+          regime-id (get value "regimeId")]
+      (when-not (wire-run-id? preset-id)
         (throw
          (ex-info "viewer run command preset ID is invalid"
                   {:type ::invalid-run-command
                    :reason :invalid-preset-id})))
-      preset-id)))
+      (when-not (wire-run-id? regime-id)
+        (throw
+         (ex-info "viewer run command regime ID is invalid"
+                  {:type ::invalid-run-command
+                   :reason :invalid-regime-id})))
+      {:preset-id preset-id :regime-id regime-id})))
 
 (defn- find-run-preset [config wire-id]
   (some #(when (= wire-id (keyword-coordinate-text (:id %))) %)
         (:run-presets config)))
+
+(defn- find-run-regime [preset wire-id]
+  (some #(when (= wire-id (keyword-coordinate-text (:id %))) %)
+        (:regimes preset)))
+
+(defn- fresh-run-input [preset regime]
+  ;; Startup validation owns one immutable catalog snapshot. Each execution
+  ;; restores only the selected input so mutable canonical leaves (notably
+  ;; byte arrays) cannot leak mutations into later runs. Unrelated regimes are
+  ;; never revisited on the request path.
+  (trace/restore-value
+   (trace/canonical-value
+    (:input regime)
+    [:run-preset (:id preset) :regime (:id regime) :selected-input])))
+
+(defn- run-selection-wire [preset regime]
+  {"catalogVersion" 2
+   "presetId" (keyword-coordinate-text (:id preset))
+   "regimeId" (keyword-coordinate-text (:id regime))
+   "scope" (mapv keyword-coordinate-text (:scope regime))})
+
+(defn- resolve-run-selection-validated [validated preset-id regime-id]
+  (if-let [preset (find-run-preset validated preset-id)]
+    (if-let [regime (find-run-regime preset regime-id)]
+      {:coordinates
+       {:scenario (:scenario preset)
+        :input (fresh-run-input preset regime)
+        :schedule (:schedule preset)}
+       :run-selection (run-selection-wire preset regime)}
+      (throw (ex-info "Ripple run regime was not found"
+                      {:type ::run-selection-not-found
+                       :reason :regime-not-found})))
+    (throw (ex-info "Ripple run preset was not found"
+                    {:type ::run-selection-not-found
+                     :reason :preset-not-found}))))
+
+(defn resolve-run-selection
+  "Resolves one exact v2 preset/regime wire coordinate to trusted execution
+  coordinates.
+
+  Both IDs remain strings and are compared only with the validated immutable
+  catalog; caller text is never interned or resolved as code. Returns exactly
+  `{:scenario :input :schedule}`. Unknown presets and regimes fail with a
+  bounded typed error suitable for REPLs, alternate UIs, and the HTTP adapter."
+  [config preset-id regime-id]
+  (:coordinates
+   (resolve-run-selection-validated
+    (validate-config! config) preset-id regime-id)))
 
 (defn- execute-run-request
   [config services document-active? active-replay request]
@@ -1282,15 +1431,13 @@
 
     :else
     (try
-      (let [wire-id (run-command! request)]
-        (if-let [preset (find-run-preset config wire-id)]
-          (execute-run-with-progress!
-           config active-replay
-           (fn [runtime]
-             ((:run-case services)
-              (merge runtime
-                     (select-keys preset [:scenario :input :schedule])))))
-          (error-response 404 :run-preset-not-found nil)))
+      (let [{:keys [preset-id regime-id]} (run-command! request)
+            {:keys [coordinates run-selection]}
+            (resolve-run-selection-validated config preset-id regime-id)]
+        (execute-run-with-progress!
+         config active-replay run-selection
+         (fn [runtime]
+           ((:run-case services) (merge runtime coordinates)))))
       (catch :default error
         (let [data (ex-data error)]
           (cond
@@ -1301,6 +1448,14 @@
             (= ::invalid-run-command (:type data))
             (error-response 400 :invalid-run-command
                             (select-keys data [:reason]))
+
+            (= ::run-selection-not-found (:type data))
+            (error-response
+             404
+             (if (= :preset-not-found (:reason data))
+               :run-preset-not-found
+               :run-regime-not-found)
+             nil)
 
             :else
             (throw error))))
@@ -1695,12 +1850,16 @@
 
   The optional startup `:run-presets` vector is a closed trusted catalog.
   Each preset owns its namespaced ID, label, allowlisted scenario, profile,
-  canonical input, optional exact schedule, and validated inert plan document.
-  `GET /api/run-presets` returns only ID, label, profile ID, and canonical plan
-  EDN; execution coordinates never cross the wire. `POST /api/run` accepts
-  only `{version: 1, presetId: namespace/name}` JSON and, when the optional
-  `:run-case` service is installed, merges the selected trusted coordinates
-  into the ambient runtime config and invokes that service exactly once.
+  optional exact schedule, nonempty finite regime catalog, and validated inert
+  plan document. Each regime owns its namespaced ID, bounded display metadata,
+  nonempty namespaced scope, and canonical input snapshot.
+  `GET /api/run-presets` returns catalog v2 with preset display data, canonical
+  plan EDN, and regime ID/label/summary/scope only; execution coordinates never
+  cross the wire. `POST /api/run` accepts only
+  `{version: 2, presetId: namespace/name, regimeId: namespace/name}` JSON and,
+  when the optional `:run-case` service is installed, resolves that exact
+  trusted pair, merges its coordinates into the ambient runtime config, and
+  invokes that service exactly once.
   Browser strings are never interned or treated as execution coordinates.
   Run and replay share the same body-consuming admission lease, progress
   state, public artifact-path redaction, and terminal activity paging.
@@ -1745,7 +1904,10 @@
   reading only fixed basenames (`worker-ready.edn`, `stdout.log`,
   `stderr.log`, and -- existence only, never parsed -- `result.edn`) from the
   trusted active run directory. It never accepts a filesystem path from the
-  browser.
+  browser. A catalog run additionally carries its trusted catalog version,
+  preset ID, regime ID, and declared scope through active and terminal
+  progress, including launch failures; ordinary document replay has no such
+  selection field.
 
   When the trusted runtime config enables `:activity-journal?` (which
   requires `:retain-completed-artifacts?` true), a terminal replay's response
@@ -1765,6 +1927,7 @@
    (make-handler config (default-services config)))
   ([config services]
     (let [config (validate-config! config)
+          run-catalog (run-catalog-validated config)
           unknown-services (into #{} (remove service-keys) (keys services))
           document-active? (atom false)
           session-active? (atom false)
@@ -1804,7 +1967,7 @@
            (and (= :get method) (= "/api/run-presets" uri))
            (if-not (authorized? config request)
              (error-response 403 :forbidden nil)
-             (run-presets-response config))
+             (run-presets-response run-catalog))
 
            (and (= :get method) (= "/api/session-frame" uri))
            (execute-session-frame-request

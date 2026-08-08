@@ -6,6 +6,54 @@ const testDir = path.dirname(fileURLToPath(import.meta.url));
 const fixture = path.join(testDir, "fixtures", "activity-case-outcome.edn");
 const capabilityToken = "ripple-browser-test-capability-0123456789abcdef";
 const semanticKind = "jolt.sim.kind/browser-test-activity";
+const outboxPresetId = "jolt.sim.preset/outbox-cancel-before-ack-v1";
+const outboxRegimeId = "jolt.sim.regime/outbox-cancel-before-ack-canonical";
+const echoPresetId = "jolt.sim.preset/maelstrom-echo-roundtrip-v1";
+const echoRegimeId = "jolt.sim.regime/maelstrom-echo-canonical";
+const outboxLabPresetId =
+  "jolt.sim.preset/outbox-first-poll-regime-lab-v1";
+const receiverFirstNoEintr =
+  "jolt.example.outbox.regime/receiver-first-no-eintr";
+const httpFirstEintr1 =
+  "jolt.example.outbox.regime/http-first-poll-eintr-1";
+
+function expectRunCatalogV2(catalog) {
+  expect(Object.keys(catalog).sort()).toEqual(["presets", "version"]);
+  expect(catalog.version).toBe(2);
+  expect(catalog.presets).toHaveLength(3);
+  for (const preset of catalog.presets) {
+    expect(Object.keys(preset).sort()).toEqual(
+      ["id", "label", "planEdn", "profileId", "regimes"]);
+    expect(preset.regimes.length).toBeGreaterThan(0);
+    for (const regime of preset.regimes) {
+      expect(Object.keys(regime).sort()).toEqual(
+        ["id", "label", "scope", "summary"]);
+      expect(regime.scope.length).toBeGreaterThan(0);
+    }
+  }
+  const objectKeys = [];
+  const visit = (value) => {
+    if (Array.isArray(value)) {
+      value.forEach(visit);
+    } else if (value !== null && typeof value === "object") {
+      for (const [key, child] of Object.entries(value)) {
+        objectKeys.push(key);
+        visit(child);
+      }
+    }
+  };
+  visit(catalog);
+  expect(objectKeys).not.toContain("input");
+  expect(objectKeys).not.toContain("coordinates");
+  expect(objectKeys).not.toContain("scenario");
+  expect(objectKeys).not.toContain("schedule");
+  expect(catalog.presets.find(({id}) => id === outboxPresetId).regimes)
+    .toHaveLength(1);
+  expect(catalog.presets.find(({id}) => id === echoPresetId).regimes)
+    .toHaveLength(1);
+  expect(catalog.presets.find(({id}) => id === outboxLabPresetId).regimes)
+    .toHaveLength(10);
+}
 
 async function expectActivityRows(page, start, end) {
   const rows = page.locator('[data-testid="activity-row"]');
@@ -73,13 +121,21 @@ test("runs one trusted canonical application preset and renders its topology", a
   await page.goto("/");
   await page.locator("#capability").fill(capabilityToken);
   await expect(page.locator("#load-run-presets")).toBeEnabled();
+  const catalogResponse = page.waitForResponse((response) =>
+    new URL(response.url()).pathname === "/api/run-presets");
   await page.locator("#load-run-presets").click();
+  expectRunCatalogV2(await (await catalogResponse).json());
 
   await expect(page.locator("#run-preset")).toHaveValue(
-    "jolt.sim.preset/outbox-cancel-before-ack-v1"
+    outboxPresetId
   );
   await expect(page.getByTestId("run-preset-status")).toContainText(
-    "is ready. Run new uses server-owned coordinates."
+    "is ready. Run new uses the selected server-owned regime."
+  );
+  await expect(page.getByTestId("run-regime")).toHaveValue(outboxRegimeId);
+  await expect(page.getByTestId("run-regime-summary")).toHaveText(
+    "Run the trusted cancel-before-ack example with its fixed server-owned " +
+    "coordinates. Scope: jolt.example.outbox/cancellation."
   );
   await expect(page.frameLocator("#report").locator(".topology-node"))
     .toHaveCount(4);
@@ -91,9 +147,12 @@ test("runs one trusted canonical application preset and renders its topology", a
   await page.getByTestId("run-new").click();
   await observed;
   await expect(page.getByTestId("run-new")).toBeDisabled();
+  await expect(page.locator("#run-preset")).toBeDisabled();
+  await expect(page.getByTestId("run-regime")).toBeDisabled();
   expect(JSON.parse(runBody)).toEqual({
-    version: 1,
-    presetId: "jolt.sim.preset/outbox-cancel-before-ack-v1"
+    version: 2,
+    presetId: outboxPresetId,
+    regimeId: outboxRegimeId
   });
   releaseRun();
 
@@ -113,9 +172,7 @@ test("runs one trusted canonical application preset and renders its topology", a
   });
 });
 
-test("distinguishes the two trusted presets by selection", async ({page}, testInfo) => {
-  const outboxId = "jolt.sim.preset/outbox-cancel-before-ack-v1";
-  const echoId = "jolt.sim.preset/maelstrom-echo-roundtrip-v1";
+test("distinguishes trusted presets and their simulation regimes", async ({page}, testInfo) => {
   const echoLabel = "Maelstrom Echo: init and echo round trip";
   let releaseRun;
   const release = new Promise((resolve) => { releaseRun = resolve; });
@@ -133,28 +190,37 @@ test("distinguishes the two trusted presets by selection", async ({page}, testIn
   await page.goto("/");
   await page.locator("#capability").fill(capabilityToken);
   await page.locator("#load-run-presets").click();
-  await expect(page.locator("#run-preset option")).toHaveCount(2);
+  await expect(page.locator("#run-preset option")).toHaveCount(3);
 
-  // The closed catalog offers exactly the two trusted examples as distinct
+  // The closed catalog offers exactly the three trusted examples as distinct
   // selectable identities; the existing outbox preset remains the default.
   const options = await page.locator("#run-preset option").evaluateAll(
     (items) => items.map((item) => ({value: item.value, text: item.textContent}))
   );
   expect(options).toEqual([
-    {value: outboxId, text: "Outbox: cancel before acknowledgment (hermetic)"},
-    {value: echoId, text: `${echoLabel} (hermetic)`}
+    {value: outboxPresetId,
+      text: "Outbox: cancel before acknowledgment (hermetic)"},
+    {value: echoPresetId, text: `${echoLabel} (hermetic)`},
+    {value: outboxLabPresetId,
+      text: "Outbox: poll admission and EINTR regime lab (hermetic)"}
   ]);
-  await expect(page.locator("#run-preset")).toHaveValue(outboxId);
+  await expect(page.locator("#run-preset")).toHaveValue(outboxPresetId);
   await expect(page.frameLocator("#report").locator(".topology-node"))
     .toHaveCount(4);
   await expect(page.frameLocator("#report").locator(".topology-edge"))
     .toHaveCount(3);
 
   // Selecting the Echo preset renders its own inert two-endpoint topology.
-  await page.locator("#run-preset").selectOption(echoId);
-  await expect(page.locator("#run-preset")).toHaveValue(echoId);
+  await page.locator("#run-preset").selectOption(echoPresetId);
+  await expect(page.locator("#run-preset")).toHaveValue(echoPresetId);
   await expect(page.getByTestId("run-preset-status")).toContainText(
-    `${echoLabel} is ready. Run new uses server-owned coordinates.`
+    `${echoLabel} is ready. Run new uses the selected server-owned regime.`
+  );
+  await expect(page.getByTestId("run-regime").locator("option"))
+    .toHaveCount(1);
+  await expect(page.getByTestId("run-regime")).toHaveValue(echoRegimeId);
+  await expect(page.getByTestId("run-regime-summary")).toContainText(
+    "Scope: jolt.maelstrom.echo/roundtrip."
   );
   await expect(page.frameLocator("#report").locator(".topology-node"))
     .toHaveCount(2);
@@ -166,21 +232,50 @@ test("distinguishes the two trusted presets by selection", async ({page}, testIn
     .not.toContainText("cancel-before-ack");
 
   // Switching back restores the outbox projection: selection is real.
-  await page.locator("#run-preset").selectOption(outboxId);
+  await page.locator("#run-preset").selectOption(outboxPresetId);
   await expect(page.frameLocator("#report").locator(".topology-node"))
     .toHaveCount(4);
   await expect(page.frameLocator("#report").locator("body"))
     .toContainText("cancel-before-ack-v1");
 
-  // Running the selected Echo preset posts its exact trusted preset ID.
-  await page.locator("#run-preset").selectOption(echoId);
+  // The regime lab exposes all ten application-owned choices and updates its
+  // explanatory projection without revealing their trusted input maps.
+  await page.locator("#run-preset").selectOption(outboxLabPresetId);
+  await expect(page.getByTestId("run-regime").locator("option"))
+    .toHaveCount(10);
+  await expect(page.getByTestId("run-regime")).toHaveValue(receiverFirstNoEintr);
+  await page.getByTestId("run-regime").selectOption(httpFirstEintr1);
+  await expect(page.getByTestId("run-preset-status")).toContainText(
+    "Outbox: poll admission and EINTR regime lab is ready with HTTP poll " +
+    "first; EINTR at poll 1."
+  );
+  await expect(page.getByTestId("run-regime-summary")).toContainText(
+    "Admit the HTTP reactor's first poll before the receiver reactor's first poll"
+  );
+  await expect(page.getByTestId("run-regime-summary")).toContainText(
+    "jolt.example.outbox/first-poll-admission, " +
+    "jolt.example.outbox/modeled-poll-eintr"
+  );
+  await page.screenshot({
+    path: testInfo.outputPath("outbox-regime-lab-selection.png"),
+    fullPage: true
+  });
+
+  // Running the selected Echo preset posts only its exact trusted pair of IDs.
+  await page.locator("#run-preset").selectOption(echoPresetId);
   await expect(page.getByTestId("run-preset-status")).toContainText(
     `${echoLabel} is ready.`
   );
   await page.getByTestId("run-new").click();
   await observed;
   await expect(page.getByTestId("run-new")).toBeDisabled();
-  expect(JSON.parse(runBody)).toEqual({version: 1, presetId: echoId});
+  await expect(page.locator("#run-preset")).toBeDisabled();
+  await expect(page.getByTestId("run-regime")).toBeDisabled();
+  expect(JSON.parse(runBody)).toEqual({
+    version: 2,
+    presetId: echoPresetId,
+    regimeId: echoRegimeId
+  });
   releaseRun();
 
   await expect(page.locator("#status")).toHaveText(
@@ -198,7 +293,7 @@ test("reports an empty trusted preset catalog without inventing an error", async
     await route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({version: 1, presets: []})
+      body: JSON.stringify({version: 2, presets: []})
     });
   });
   await page.goto("/");
@@ -535,7 +630,8 @@ test("never labels a non-completed process outcome as completed", async ({page})
     "failed: terminal process status failed; raw outcome preserved below."
   );
   await expect(page.getByTestId("run-preset-status")).toHaveText(
-    "Outbox: cancel before acknowledgment did not complete; retained evidence remains available."
+    "Outbox: cancel before acknowledgment / Canonical cancellation path " +
+    "did not complete; retained evidence remains available."
   );
   await expect(page.locator("#status")).not.toContainText(" completed;");
 });

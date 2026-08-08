@@ -12,6 +12,7 @@
             [clojure.string :as string]
             [clojure.test :as test :refer [deftest is]]
             [jolt.fs :as fs]
+            [jolt.example.outbox.regimes :as outbox-regimes]
             [jolt.sim.case-outcome :as case-outcome]
             [jolt.sim.repl :as sim-repl]
             [jolt.sim.report :as report]
@@ -35,6 +36,9 @@
 (def ^:private run-new-preset-id
   :jolt.sim.preset/outbox-cancel-before-ack-v1)
 
+(def ^:private run-new-regime-id
+  :jolt.sim.regime/outbox-cancel-before-ack-canonical)
+
 (def ^:private run-new-input
   {:payload [0 127 128 255]
    :stream-capacity 8
@@ -46,6 +50,38 @@
 
 (def ^:private echo-run-preset-id
   :jolt.sim.preset/maelstrom-echo-roundtrip-v1)
+
+(def ^:private echo-run-regime-id
+  :jolt.sim.regime/maelstrom-echo-canonical)
+
+(def ^:private regime-lab-scenario
+  'jolt.sim.fixtures.outbox-delivery-scenarios/exercise-reopen-with-capacities)
+
+(def ^:private regime-lab-preset-id
+  :jolt.sim.preset/outbox-first-poll-regime-lab-v1)
+
+(defn- canonical-regime [id label summary scope input]
+  {:id id :label label :summary summary :scope scope :input input})
+
+(defn- outbox-lab-run-regimes []
+  (mapv (fn [{:keys [id label summary scope]}]
+          (canonical-regime id label summary scope
+                            (outbox-regimes/scenario-input id)))
+        outbox-regimes/regimes))
+
+(def ^:private receiver-poll-step-id
+  :jolt.sim.fixtures.outbox-delivery-scenarios/receiver-poll)
+
+(def ^:private http-poll-step-id
+  :jolt.sim.fixtures.outbox-delivery-scenarios/http-poll)
+
+(defn- expected-first-poll-releases [plan]
+  (mapv (fn [id] [:release id])
+        (case plan
+          :receiver-poll-then-http-poll
+          [receiver-poll-step-id http-poll-step-id]
+          :http-poll-then-receiver-poll
+          [http-poll-step-id receiver-poll-step-id])))
 
 (def ^:private echo-run-label
   "Maelstrom Echo: init and echo round trip")
@@ -525,8 +561,14 @@
                 :label "Outbox: cancel before acknowledgment"
                 :scenario run-new-scenario
                 :profile-id :hermetic
-                :input run-new-input
                 :schedule nil
+                :regimes
+                [(canonical-regime
+                  run-new-regime-id
+                  "Canonical cancellation"
+                  "Cancel the compiled outbox delivery before acknowledgment."
+                  [:jolt.example.outbox/cancellation]
+                  run-new-input)]
                 :plan-document plan}]
               :runtime-config
               {:worker-command [bin "-M:outbox-delivery-explore-worker"]
@@ -551,8 +593,10 @@
             catalog (json/read-str catalog-body)
             run-command
             (json/write-str
-             {"version" 1
-              "presetId" "jolt.sim.preset/outbox-cancel-before-ack-v1"})
+             {"version" 2
+              "presetId" "jolt.sim.preset/outbox-cancel-before-ack-v1"
+              "regimeId"
+              "jolt.sim.regime/outbox-cancel-before-ack-canonical"})
             run-raw
             (viewer-test/request-over-loopback!
              port "POST" "/api/run"
@@ -596,10 +640,17 @@
           :artifact-dir (:artifact-dir trusted-outcome)
           :progress progress})
         (is (string/starts-with? catalog-raw "HTTP/1.1 200"))
+        (is (= 2 (get catalog "version")))
         (is (= #{{"id" "jolt.sim.preset/outbox-cancel-before-ack-v1"
                   "label" "Outbox: cancel before acknowledgment"
                   "profileId" "hermetic"
-                  "planEdn" (viewer-experiment/canonical-edn plan)}}
+                  "planEdn" (viewer-experiment/canonical-edn plan)
+                  "regimes"
+                  [{"id" "jolt.sim.regime/outbox-cancel-before-ack-canonical"
+                    "label" "Canonical cancellation"
+                    "summary"
+                    "Cancel the compiled outbox delivery before acknowledgment."
+                    "scope" ["jolt.example.outbox/cancellation"]}]}}
                (set (get catalog "presets"))))
         (is (not (string/includes? catalog-body (str run-new-scenario))))
         (is (not (string/includes? catalog-body "stream-capacity")))
@@ -707,15 +758,27 @@
                 :label "Outbox: cancel before acknowledgment"
                 :scenario run-new-scenario
                 :profile-id :hermetic
-                :input run-new-input
                 :schedule nil
+                :regimes
+                [(canonical-regime
+                  run-new-regime-id
+                  "Canonical cancellation"
+                  "Cancel the compiled outbox delivery before acknowledgment."
+                  [:jolt.example.outbox/cancellation]
+                  run-new-input)]
                 :plan-document outbox-plan}
                {:id echo-run-preset-id
                 :label echo-run-label
                 :scenario echo-run-scenario
                 :profile-id :hermetic
-                :input echo-run-input
                 :schedule nil
+                :regimes
+                [(canonical-regime
+                  echo-run-regime-id
+                  "Canonical Unicode round trip"
+                  "Round-trip one nested Unicode payload through Maelstrom Echo."
+                  [:jolt.maelstrom.echo/round-trip]
+                  echo-run-input)]
                 :plan-document echo-plan}]
               :runtime-config
               {:worker-command [bin "-M:outbox-delivery-explore-worker"]
@@ -740,8 +803,9 @@
             catalog (json/read-str catalog-body)
             run-command
             (json/write-str
-             {"version" 1
-              "presetId" "jolt.sim.preset/maelstrom-echo-roundtrip-v1"})
+             {"version" 2
+              "presetId" "jolt.sim.preset/maelstrom-echo-roundtrip-v1"
+              "regimeId" "jolt.sim.regime/maelstrom-echo-canonical"})
             run-raw
             (viewer-test/request-over-loopback!
              port "POST" "/api/run"
@@ -776,14 +840,27 @@
         ;; The closed catalog distinguishes exactly the two trusted presets;
         ;; the existing outbox entry is unchanged, and the catalog never
         ;; discloses either scenario, either input, or any host coordinate.
+        (is (= 2 (get catalog "version")))
         (is (= [{"id" "jolt.sim.preset/outbox-cancel-before-ack-v1"
                  "label" "Outbox: cancel before acknowledgment"
                  "profileId" "hermetic"
-                 "planEdn" (viewer-experiment/canonical-edn outbox-plan)}
+                 "planEdn" (viewer-experiment/canonical-edn outbox-plan)
+                 "regimes"
+                 [{"id" "jolt.sim.regime/outbox-cancel-before-ack-canonical"
+                   "label" "Canonical cancellation"
+                   "summary"
+                   "Cancel the compiled outbox delivery before acknowledgment."
+                   "scope" ["jolt.example.outbox/cancellation"]}]}
                 {"id" "jolt.sim.preset/maelstrom-echo-roundtrip-v1"
                  "label" echo-run-label
                  "profileId" "hermetic"
-                 "planEdn" (viewer-experiment/canonical-edn echo-plan)}]
+                 "planEdn" (viewer-experiment/canonical-edn echo-plan)
+                 "regimes"
+                 [{"id" "jolt.sim.regime/maelstrom-echo-canonical"
+                   "label" "Canonical Unicode round trip"
+                   "summary"
+                   "Round-trip one nested Unicode payload through Maelstrom Echo."
+                   "scope" ["jolt.maelstrom.echo/round-trip"]}]}]
                (get catalog "presets")))
         (is (not (string/includes? catalog-body (str echo-run-scenario))))
         (is (not (string/includes? catalog-body (str run-new-scenario))))
@@ -859,6 +936,144 @@
           (when (nil? @primary*)
             (when-let [secondary cleanup-error]
               (throw secondary))))))))
+
+(deftest outbox-regime-lab-runs-two-discriminating-boundaries
+  (let [artifact-root (required-environment "JOLT_SIM_VIEWER_ARTIFACT_DIR")
+        journal (str artifact-root "/viewer-regime-lab-progress.edn")
+        server* (atom nil)
+        primary* (atom nil)
+        cases
+        [{:id :jolt.example.outbox.regime/receiver-first-no-eintr
+          :expected-firings 0}
+         {:id :jolt.example.outbox.regime/http-first-poll-eintr-1
+          :expected-firings 1}]]
+    (append-phase-best-effort! journal {:phase :regime-lab-started})
+    (sim-repl/clear!)
+    (try
+      (let [bin (required-environment "JOLT_SIM_BIN")
+            project-dir (required-environment "JOLT_SIM_PROJECT_DIR")
+            plan (viewer-experiment/read-edn
+                  (slurp "examples/outbox-regime-lab-plan.edn"))
+            server
+            (viewer/start!
+             {:port 0
+              :capability-token capability-token
+              :max-document-bytes (* 1024 1024)
+              :allowed-scenarios #{regime-lab-scenario}
+              :run-presets
+              [{:id regime-lab-preset-id
+                :label "Outbox: first-poll regime lab"
+                :scenario regime-lab-scenario
+                :profile-id :hermetic
+                :schedule nil
+                :regimes (outbox-lab-run-regimes)
+                :plan-document plan}]
+              :runtime-config
+              {:worker-command [bin "-M:outbox-delivery-explore-worker"]
+               :dir project-dir
+               :timeout-ms 60000
+               :startup-timeout-ms 120000
+               :kill-grace-ms 500
+               :temp-dir artifact-root
+               :retain-completed-artifacts? true
+               :activity-journal? true}})
+            _ (reset! server* server)
+            port (:port server)
+            catalog-raw
+            (viewer-test/request-over-loopback!
+             port "GET" "/api/run-presets"
+             {"X-Jolt-Sim-Capability" capability-token}
+             ""
+             5000)
+            catalog-body (response-body catalog-raw)
+            catalog (json/read-str catalog-body)]
+        (append-phase-best-effort!
+         journal {:phase :regime-lab-viewer-started :port port})
+        (is (= 2 (get catalog "version")))
+        (is (= 10 (count (get-in catalog ["presets" 0 "regimes"]))))
+        (doseq [private-text ["admission-plan" "poll-eintr-ordinal"
+                              "stream-capacity" "pipe-capacity" "input"]]
+          (is (not (string/includes? catalog-body private-text))))
+        (let [observed
+              (mapv
+               (fn [{:keys [id expected-firings]}]
+                 (let [input (outbox-regimes/scenario-input id)
+                       run-raw
+                       (viewer-test/request-over-loopback!
+                        port "POST" "/api/run"
+                        {"Content-Type" "application/json"
+                         "X-Jolt-Sim-Capability" capability-token}
+                        (json/write-str
+                         {"version" 2
+                          "presetId"
+                          "jolt.sim.preset/outbox-first-poll-regime-lab-v1"
+                          "regimeId" (str (namespace id) "/" (name id))})
+                        180000)
+                       public-outcome (edn/read-string (response-body run-raw))
+                       recorded (sim-repl/last-run)
+                       trusted-outcome (:outcome recorded)
+                       evidence (:result public-outcome)
+                       admission (:admission evidence)
+                       fault (:fault evidence)]
+                   (append-phase-best-effort!
+                    journal
+                    {:phase :regime-lab-case-returned
+                     :regime-id id
+                     :status (:status public-outcome)
+                     :artifact-dir (:artifact-dir trusted-outcome)})
+                   (is (string/starts-with? run-raw "HTTP/1.1 200"))
+                   (is (= :completed (:status public-outcome)))
+                   (is (= {:scenario regime-lab-scenario
+                           :input input
+                           :schedule nil}
+                          (select-keys (:config recorded)
+                                       [:scenario :input :schedule])))
+                   (is (= (:admission-plan input) (:plan admission)))
+                   (is (= (expected-first-poll-releases
+                           (:admission-plan input))
+                          (:release-evidence admission)))
+                   (is (= expected-firings (:firings fault)))
+                   (is (= (if (zero? expected-firings) 0 1)
+                          (count (:fired-attempts fault))))
+                   (is (= 200 (get-in evidence [:http :status])))
+                   (is (true? (get-in evidence
+                                      [:application :marking :changed?])))
+                   (is (= {:plan-index 25 :plan-count 25
+                           :open-dbs 0 :active-stmts 0}
+                          (:sqlite evidence)))
+                   (is (= {:memory true :sqlite true :posix true}
+                          (:clean? evidence)))
+                   (is (true? (get-in evidence [:routes :all-handled?])))
+                   (is (and (string? (:artifact-dir trusted-outcome))
+                            (fs/exists? (:artifact-dir trusted-outcome))))
+                   {:id id
+                    :input input
+                    :artifact-dir (:artifact-dir trusted-outcome)}))
+               cases)]
+          (is (= (mapv :id cases) (mapv :id observed)))
+          (is (= 2 (count (set (map :artifact-dir observed))))
+              "each regime owns one fresh retained worker directory")))
+      (catch :default error
+        (reset! primary* error)
+        (append-phase-best-effort! journal (bounded-error-phase error))
+        (throw error))
+      (finally
+        (let [cleanup-error
+              (try
+                (when-let [server @server*]
+                  (viewer/stop! server))
+                nil
+                (catch :default error error))]
+          (append-phase-best-effort!
+           journal
+           (cond-> {:phase :regime-lab-viewer-stopped}
+             cleanup-error
+             (assoc :cleanup-error (ex-message cleanup-error))))
+          (sim-repl/clear!)
+          (when (nil? @primary*)
+            (when-let [secondary cleanup-error]
+              (throw secondary))))))))
+
 (defn -main [& _]
   (let [result (test/run-tests 'jolt.sim.viewer-replay-e2e-test)
         failures (+ (:fail result) (:error result))]
