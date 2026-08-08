@@ -24,6 +24,31 @@
 (def ^:private outbox-regime-lab-scenario
   'jolt.sim.fixtures.outbox-delivery-scenarios/exercise-reopen-with-capacities)
 
+(def ^:private broadcast-scenario
+  'jolt.maelstrom.fixtures.broadcast-scenario/broadcast-partition-heal)
+
+(def ^:private broadcast-scope
+  "Both Broadcast regimes select only the scenario's partition-link
+   coordinate; every other behavior belongs to the unchanged scenario,
+   Broadcast application, node boundary, and memory transport."
+  [:jolt.maelstrom.broadcast/link-partition-selection])
+
+(def ^:private broadcast-healthy-regime
+  {:id :jolt.sim.regime/maelstrom-broadcast-healthy
+   :label "Healthy three-node line"
+   :summary (str "Run the trusted Maelstrom Broadcast example on the "
+                 "unpartitioned n1-n2-n3 line.")
+   :scope broadcast-scope
+   :input {:message 42 :partition-links []}})
+
+(def ^:private broadcast-partition-regime
+  {:id :jolt.sim.regime/maelstrom-broadcast-partition-heal
+   :label "Partition n2-n3, heal, retry"
+   :summary (str "Run the trusted Maelstrom Broadcast example with the n2-n3 "
+                 "link partitioned until the post-broadcast heal.")
+   :scope broadcast-scope
+   :input {:message 42 :partition-links [["n2" "n3"]]}})
+
 (def ^:private echo-input
   "The exact nested Unicode payload the trusted Echo preset owns."
   {"greeting" "héllo, 世界 🌍"
@@ -116,14 +141,20 @@
                    (slurp "examples/maelstrom-echo-plan.edn"))
         outbox-regime-lab-plan
         (viewer-experiment/read-edn
-         (slurp "examples/outbox-regime-lab-plan.edn"))]
+         (slurp "examples/outbox-regime-lab-plan.edn"))
+        broadcast-plan
+        (viewer-experiment/read-edn
+         (slurp "examples/maelstrom-broadcast-plan.edn"))]
     {:port port
      :capability-token capability-token
      :max-document-bytes (* 1024 1024)
-     :allowed-scenarios #{scenario echo-scenario outbox-regime-lab-scenario}
+     :allowed-scenarios #{scenario echo-scenario outbox-regime-lab-scenario
+                          broadcast-scenario}
      ;; Each preset uses the same v2 shape. The first two expose one canonical
-     ;; regime; the lab exposes the application's complete finite catalog. The
-     ;; stubbed run-case service below never launches a worker for any preset.
+     ;; regime; the lab exposes the application's complete finite catalog; the
+     ;; Broadcast preset exposes its scenario's exact healthy and
+     ;; partition/heal inputs. The stubbed run-case service below never
+     ;; launches a worker for any preset.
      :run-presets
      [{:id :jolt.sim.preset/outbox-cancel-before-ack-v1
        :label "Outbox: cancel before acknowledgment"
@@ -145,7 +176,14 @@
        :profile-id :hermetic
        :schedule nil
        :plan-document outbox-regime-lab-plan
-       :regimes (mapv outbox-lab-regime outbox-regimes/regimes)}]
+       :regimes (mapv outbox-lab-regime outbox-regimes/regimes)}
+      {:id :jolt.sim.preset/maelstrom-broadcast-partition-heal-v1
+       :label "Maelstrom Broadcast: healthy line and partition/heal"
+       :scenario broadcast-scenario
+       :profile-id :hermetic
+       :schedule nil
+       :plan-document broadcast-plan
+       :regimes [broadcast-healthy-regime broadcast-partition-regime]}]
      :activity-presentation-registry
      {:jolt.sim.browser-test/activity
       {:kind :jolt.sim.kind/browser-test-activity

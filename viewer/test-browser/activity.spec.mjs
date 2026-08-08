@@ -16,11 +16,17 @@ const receiverFirstNoEintr =
   "jolt.example.outbox.regime/receiver-first-no-eintr";
 const httpFirstEintr1 =
   "jolt.example.outbox.regime/http-first-poll-eintr-1";
+const broadcastPresetId =
+  "jolt.sim.preset/maelstrom-broadcast-partition-heal-v1";
+const broadcastHealthyRegimeId =
+  "jolt.sim.regime/maelstrom-broadcast-healthy";
+const broadcastPartitionRegimeId =
+  "jolt.sim.regime/maelstrom-broadcast-partition-heal";
 
 function expectRunCatalogV2(catalog) {
   expect(Object.keys(catalog).sort()).toEqual(["presets", "version"]);
   expect(catalog.version).toBe(2);
-  expect(catalog.presets).toHaveLength(3);
+  expect(catalog.presets).toHaveLength(4);
   for (const preset of catalog.presets) {
     expect(Object.keys(preset).sort()).toEqual(
       ["id", "label", "planEdn", "profileId", "regimes"]);
@@ -53,6 +59,8 @@ function expectRunCatalogV2(catalog) {
     .toHaveLength(1);
   expect(catalog.presets.find(({id}) => id === outboxLabPresetId).regimes)
     .toHaveLength(10);
+  expect(catalog.presets.find(({id}) => id === broadcastPresetId).regimes)
+    .toHaveLength(2);
 }
 
 async function expectActivityRows(page, start, end) {
@@ -190,9 +198,9 @@ test("distinguishes trusted presets and their simulation regimes", async ({page}
   await page.goto("/");
   await page.locator("#capability").fill(capabilityToken);
   await page.locator("#load-run-presets").click();
-  await expect(page.locator("#run-preset option")).toHaveCount(3);
+  await expect(page.locator("#run-preset option")).toHaveCount(4);
 
-  // The closed catalog offers exactly the three trusted examples as distinct
+  // The closed catalog offers exactly the four trusted examples as distinct
   // selectable identities; the existing outbox preset remains the default.
   const options = await page.locator("#run-preset option").evaluateAll(
     (items) => items.map((item) => ({value: item.value, text: item.textContent}))
@@ -202,7 +210,9 @@ test("distinguishes trusted presets and their simulation regimes", async ({page}
       text: "Outbox: cancel before acknowledgment (hermetic)"},
     {value: echoPresetId, text: `${echoLabel} (hermetic)`},
     {value: outboxLabPresetId,
-      text: "Outbox: poll admission and EINTR regime lab (hermetic)"}
+      text: "Outbox: poll admission and EINTR regime lab (hermetic)"},
+    {value: broadcastPresetId,
+      text: "Maelstrom Broadcast: healthy line and partition/heal (hermetic)"}
   ]);
   await expect(page.locator("#run-preset")).toHaveValue(outboxPresetId);
   await expect(page.frameLocator("#report").locator(".topology-node"))
@@ -284,6 +294,111 @@ test("distinguishes trusted presets and their simulation regimes", async ({page}
   await expect(page.locator("#outcome")).not.toContainText(":artifact-dir");
   await page.screenshot({
     path: testInfo.outputPath("run-new-maelstrom-echo.png"),
+    fullPage: true
+  });
+});
+
+test("selects and submits one trusted Broadcast regime with its exact line topology", async ({page}, testInfo) => {
+  const broadcastLabel = "Maelstrom Broadcast: healthy line and partition/heal";
+  let releaseRun;
+  const release = new Promise((resolve) => { releaseRun = resolve; });
+  let observeRun;
+  const observed = new Promise((resolve) => { observeRun = resolve; });
+  let runBody = null;
+
+  await page.route("**/api/run", async (route) => {
+    runBody = route.request().postData();
+    observeRun();
+    await release;
+    await route.continue();
+  });
+
+  await page.goto("/");
+  await page.locator("#capability").fill(capabilityToken);
+  await page.locator("#load-run-presets").click();
+  await expect(page.locator("#run-preset option")).toHaveCount(4);
+
+  // Selecting the Broadcast preset renders its inert four-node line
+  // topology: client, n1, n2, n3 joined by the ten truthful directed
+  // request/reply connections of the n1-n2-n3 line; there is no n1-n3 edge.
+  await page.locator("#run-preset").selectOption(broadcastPresetId);
+  await expect(page.getByTestId("run-preset-status")).toContainText(
+    `${broadcastLabel} is ready. Run new uses the selected server-owned regime.`
+  );
+  await expect(page.frameLocator("#report").locator(".topology-node"))
+    .toHaveCount(4);
+  await expect(page.frameLocator("#report").locator(".topology-edge"))
+    .toHaveCount(10);
+  const topologyNodes = await page.frameLocator("#report")
+    .locator(".topology-node")
+    .evaluateAll((items) => items.map((item) => item.dataset.node).sort());
+  expect(topologyNodes).toEqual([":client", ":n1", ":n2", ":n3"]);
+  const topologyEdges = await page.frameLocator("#report")
+    .locator(".topology-edge")
+    .evaluateAll((items) => items.map((item) => ({
+      connection: item.dataset.connection,
+      from: item.dataset.fromNode,
+      to: item.dataset.toNode
+    })).sort((left, right) => left.connection.localeCompare(right.connection)));
+  expect(topologyEdges).toEqual([
+    {connection: ":client-to-n1-requests", from: ":client", to: ":n1"},
+    {connection: ":client-to-n2-requests", from: ":client", to: ":n2"},
+    {connection: ":client-to-n3-requests", from: ":client", to: ":n3"},
+    {connection: ":n1-to-client-replies", from: ":n1", to: ":client"},
+    {connection: ":n1-to-n2-requests", from: ":n1", to: ":n2"},
+    {connection: ":n2-to-client-replies", from: ":n2", to: ":client"},
+    {connection: ":n2-to-n1-replies", from: ":n2", to: ":n1"},
+    {connection: ":n2-to-n3-requests", from: ":n2", to: ":n3"},
+    {connection: ":n3-to-client-replies", from: ":n3", to: ":client"},
+    {connection: ":n3-to-n2-replies", from: ":n3", to: ":n2"}
+  ]);
+  expect(topologyEdges.some(({from, to}) =>
+    (from === ":n1" && to === ":n3") ||
+    (from === ":n3" && to === ":n1"))).toBe(false);
+  await expect(page.frameLocator("#report").locator("body"))
+    .toContainText("jolt.maelstrom.broadcast/partition-heal-v1");
+
+  // The preset owns exactly two server-owned regime choices and selecting the
+  // partition regime changes only the server-owned coordinate pair.
+  await expect(page.getByTestId("run-regime").locator("option"))
+    .toHaveCount(2);
+  await expect(page.getByTestId("run-regime"))
+    .toHaveValue(broadcastHealthyRegimeId);
+  await expect(page.getByTestId("run-regime-summary")).toContainText(
+    "Scope: jolt.maelstrom.broadcast/link-partition-selection."
+  );
+  await page.getByTestId("run-regime").selectOption(broadcastPartitionRegimeId);
+  await expect(page.getByTestId("run-preset-status")).toContainText(
+    `${broadcastLabel} is ready with Partition n2-n3, heal, retry.`
+  );
+
+  // Submitting posts only the exact trusted pair of IDs: no scenario, input,
+  // schedule, path, or environment coordinate ever leaves the browser. This
+  // deterministic browser fixture returns generic activity; the separate
+  // real-worker E2E proves actual Broadcast execution.
+  await page.getByTestId("run-new").click();
+  await observed;
+  await expect(page.getByTestId("run-new")).toBeDisabled();
+  await expect(page.locator("#run-preset")).toBeDisabled();
+  await expect(page.getByTestId("run-regime")).toBeDisabled();
+  expect(JSON.parse(runBody)).toEqual({
+    version: 2,
+    presetId: broadcastPresetId,
+    regimeId: broadcastPartitionRegimeId
+  });
+  releaseRun();
+
+  await expect(page.locator("#status")).toHaveText(
+    `${broadcastLabel} completed; raw outcome and retained activity are available.`
+  );
+  await expect(page.locator("#activity")).toContainText("status: completed");
+  await expect(page.getByTestId("activity-page-status")).toHaveText(
+    "Showing events 0–31 of 40."
+  );
+  await expectActivityRows(page, 0, 31);
+  await expect(page.locator("#outcome")).not.toContainText(":artifact-dir");
+  await page.screenshot({
+    path: testInfo.outputPath("select-maelstrom-broadcast-partition.png"),
     fullPage: true
   });
 });

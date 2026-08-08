@@ -141,6 +141,23 @@ at those two first-poll boundaries, not arbitrary thread execution or poll
 completion order. Its distinct inert plan projection is
 [`examples/outbox-regime-lab-plan.edn`](examples/outbox-regime-lab-plan.edn).
 
+The fourth preset, **Maelstrom Broadcast: healthy line and partition/heal**,
+runs the unchanged
+`jolt.maelstrom.fixtures.broadcast-scenario/broadcast-partition-heal` defsim
+scenario: the real `jolt.maelstrom.broadcast` application slice on unchanged
+`jolt.maelstrom.node` instances over the in-memory transport, in the fixed
+n1 -- n2 -- n3 line topology. Its two regimes are exactly the scenario's two
+accepted inputs: the healthy unpartitioned line, and the n2 -- n3 link
+partitioned until the post-broadcast heal so the application's real
+`retry-pending!` resends the retained delivery with its exact msg_id. Ripple
+does not interpret the fault or reimplement Broadcast, node, or transport
+behavior. Its inert plan projection is
+[`examples/maelstrom-broadcast-plan.edn`](examples/maelstrom-broadcast-plan.edn):
+a client and the three cluster nodes joined by the ten truthful directed
+request/reply connections of the line, with no n1 -- n3 edge. The preset
+carries no schedule and reuses the same trusted fresh worker command as the
+outbox preset.
+
 The browser is not an execution-coordinate editor. A trusted startup preset
 owns its allowlisted scenario symbol, exact optional schedule, runtime profile,
 and nonempty finite regime catalog; each regime owns one canonical input
@@ -183,7 +200,8 @@ plans without duplicating them in the command-line EDN file:
     :allowed-scenarios
     #{'jolt.sim.fixtures.outbox-experiment-scenarios/exercise-cancel-before-ack-compiled
       'jolt.maelstrom.fixtures.echo-scenario/echo-roundtrip
-      'jolt.sim.fixtures.outbox-delivery-scenarios/exercise-reopen-with-capacities}
+      'jolt.sim.fixtures.outbox-delivery-scenarios/exercise-reopen-with-capacities
+      'jolt.maelstrom.fixtures.broadcast-scenario/broadcast-partition-heal}
     :run-presets
     [{:id :jolt.sim.preset/outbox-cancel-before-ack-v1
       :label "Outbox: cancel before acknowledgment"
@@ -230,7 +248,27 @@ plans without duplicating them in the command-line EDN file:
       :regimes (outbox-lab-regimes)
       :plan-document
       (viewer-experiment/read-edn
-       (slurp "examples/outbox-regime-lab-plan.edn"))}]
+       (slurp "examples/outbox-regime-lab-plan.edn"))}
+     {:id :jolt.sim.preset/maelstrom-broadcast-partition-heal-v1
+      :label "Maelstrom Broadcast: healthy line and partition/heal"
+      :scenario
+      'jolt.maelstrom.fixtures.broadcast-scenario/broadcast-partition-heal
+      :profile-id :hermetic
+      :schedule nil
+      :regimes
+      [{:id :jolt.sim.regime/maelstrom-broadcast-healthy
+        :label "Healthy three-node line"
+        :summary "Run Broadcast on the unpartitioned n1-n2-n3 line."
+        :scope [:jolt.maelstrom.broadcast/link-partition-selection]
+        :input {:message 42 :partition-links []}}
+       {:id :jolt.sim.regime/maelstrom-broadcast-partition-heal
+        :label "Partition n2-n3, heal, retry"
+        :summary "Partition n2-n3 until the post-broadcast heal."
+        :scope [:jolt.maelstrom.broadcast/link-partition-selection]
+        :input {:message 42 :partition-links [["n2" "n3"]]}}]
+      :plan-document
+      (viewer-experiment/read-edn
+       (slurp "examples/maelstrom-broadcast-plan.edn"))}]
     :runtime-config
     {:worker-command [(System/getenv "JOLT_SIM_BIN")
                       "-M:outbox-delivery-explore-worker"]
@@ -248,21 +286,29 @@ Run that form with the process working directory set to `viewer`, an absolute
 least 32 characters. The `-M:viewer` command-line path remains available: put
 the same closed maps in the EDN configuration and inline the contents of
 [`examples/outbox-cancel-before-ack-plan.edn`](examples/outbox-cancel-before-ack-plan.edn)
-[`examples/maelstrom-echo-plan.edn`](examples/maelstrom-echo-plan.edn), and
-[`examples/outbox-regime-lab-plan.edn`](examples/outbox-regime-lab-plan.edn)
+[`examples/maelstrom-echo-plan.edn`](examples/maelstrom-echo-plan.edn),
+[`examples/outbox-regime-lab-plan.edn`](examples/outbox-regime-lab-plan.edn),
+and
+[`examples/maelstrom-broadcast-plan.edn`](examples/maelstrom-broadcast-plan.edn)
 as `:plan-document`.
 
 The UI renders the selected preset's topology before execution -- four nodes
 and three connections for the outbox, the two endpoints and two simulated
-connections for Maelstrom Echo -- then uses the existing progress, retained
-semantic activity, and terminal outcome views for the run:
+connections for Maelstrom Echo, the four endpoints and ten directed
+request/reply connections for Maelstrom Broadcast -- then uses the existing
+progress, retained semantic activity, and terminal outcome views for the run:
 
 [![Ripple running the compiled outbox example](docs/ripple-run-new-outbox.png)](docs/ripple-run-new-outbox.png)
 
 The Playwright fixture also captures
 `target/ripple-playwright/outbox-regime-lab-selection.png` after selecting the
-HTTP-first / first-poll-EINTR regime. Generated browser artifacts remain CI
-outputs rather than checked-in source images.
+HTTP-first / first-poll-EINTR regime and
+`select-maelstrom-broadcast-partition.png` under `test-results` after selecting
+and submitting the Broadcast partition/heal coordinate through the
+deterministic browser fixture. That browser lane proves the catalog, topology,
+selection, and request UI; the real fresh-worker E2E is the separate execution
+proof. Generated browser artifacts remain CI outputs rather than checked-in
+source images.
 
 Each fresh run is an interactive application witness, **not** the existing
 two-worker real/hermetic parity proof. Regime selection is finite and
