@@ -28,8 +28,16 @@
   ;; dependency preflight and still execute entirely from the pinned Git
   ;; dependency graph. Keep those resolver diagnostics in the forensic file,
   ;; but do not misclassify them as application output.
-  (remove #(string/starts-with? % "[jolt.deps] maven dep ")
-          (string/split-lines text)))
+  (if (empty? text)
+    []
+    (remove #(string/starts-with? % "[jolt.deps] maven dep ")
+            (string/split-lines text))))
+
+(deftest empty-stderr-is-zero-application-lines
+  ;; `clojure.string/split-lines` differs on the empty string across the Jolt
+  ;; host targets. Normalize the wire fact explicitly rather than allowing an
+  ;; empty forensic file to become one phantom diagnostic.
+  (is (= [] (application-stderr-lines ""))))
 
 (def ^:private echo-payload
   {"greeting" "héllo, 世界 🌍"
