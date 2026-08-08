@@ -121,6 +121,7 @@ if [[ $# -eq 0 ]]; then
   set -- \
     hegel-explore-test \
     maelstrom-echo-hegel-test \
+    maelstrom-broadcast-hegel-test \
     tcp-bencode-hegel-test \
     outbox-delivery-hegel-test
 fi
@@ -157,9 +158,13 @@ for gate in "$@"; do
       # the gate process itself, so there is no nested worker alias to
       # preflight.
       ;;
+    maelstrom-broadcast-hegel-test)
+      # In-process lane: each message runs both Broadcast regimes under the sim
+      # controller in this gate process, with no nested worker to preflight.
+      ;;
     *)
       echo "unknown Hegel gate: $gate" >&2
-      echo "allowed: hegel-explore-test http-sqlite-hegel-test tcp-bencode-hegel-test outbox-delivery-hegel-test outbox-delivery-cancel-hegel-test outbox-http-webhook-hegel-test maelstrom-echo-hegel-test" >&2
+      echo "allowed: hegel-explore-test http-sqlite-hegel-test tcp-bencode-hegel-test outbox-delivery-hegel-test outbox-delivery-cancel-hegel-test outbox-http-webhook-hegel-test maelstrom-echo-hegel-test maelstrom-broadcast-hegel-test" >&2
       echo "retained gate root: $gate_root" >&2
       exit 2
       ;;
