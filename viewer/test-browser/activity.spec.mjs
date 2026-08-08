@@ -263,6 +263,7 @@ test("preserves a producer-attributed commit when its automatic refresh finds a 
       await route.fulfill({
         status: 200,
         contentType: "application/json",
+        headers: {"X-Jolt-Sim-Session-Instance": instanceA},
         body: JSON.stringify({
           version: 1,
           outcome: "committed",
@@ -328,6 +329,74 @@ test("preserves a producer-attributed commit when its automatic refresh finds a 
   expect(frameCursors).toEqual(["0", "1", "0", "0"]);
 });
 
+test("does not attribute a receipt without the pinned producer epoch", async ({page}) => {
+  const instanceA = "ripple-browser-session-instance-A";
+  const instanceB = "ripple-browser-session-instance-B";
+  let stepCall = 0;
+
+  await page.route("**/api/session-frame", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      headers: {"X-Jolt-Sim-Session-Instance": instanceA},
+      body: JSON.stringify({
+        version: 1,
+        revision: "0",
+        nextCursor: "1",
+        stepEnabled: true,
+        frameEdn: "{:fixture :epoch-receipt-control :revision 0}",
+        choices: [{revision: "0", kind: "run", value: "2", label: "run 2"}]
+      })
+    });
+  });
+
+  await page.route("**/api/session-step", async (route) => {
+    stepCall += 1;
+    const command = JSON.parse(route.request().postData()).branch;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      // The first response omits the producer epoch; the explicit retry lies
+      // about its source by claiming a replacement epoch. Neither is an
+      // authoritative acknowledgment of A's pinned command.
+      headers: stepCall === 1
+        ? {}
+        : {"X-Jolt-Sim-Session-Instance": instanceB},
+      body: JSON.stringify({
+        version: 1,
+        outcome: "committed",
+        committed: true,
+        revision: command.revision,
+        kind: command.kind,
+        value: command.value,
+        receiptEdn: "{:version 1 :status :committed}"
+      })
+    });
+  });
+
+  await page.goto("/");
+  await page.locator("#capability").fill(capabilityToken);
+  await page.locator("#session-refresh").click();
+  await page.locator("#session-choices button").click();
+  await expect(page.locator("#session-step-status")).toContainText(
+    "without a recognizable receipt"
+  );
+  await expect(page.locator("#session-step-status")).not.toContainText(
+    "Committed on"
+  );
+  await expect(page.locator("#session-step-retry-row")).toBeVisible();
+
+  await page.locator("#session-step-retry").click();
+  await expect(page.locator("#session-step-status")).toContainText(
+    "without a recognizable receipt"
+  );
+  await expect(page.locator("#session-step-status")).not.toContainText(
+    "Committed on"
+  );
+  await expect(page.locator("#session-step-retry-row")).toBeVisible();
+  expect(stepCall).toBe(2);
+});
+
 test("retries an ambiguous command byte-identically on A before reconciling restarted B", async ({page}) => {
   const instanceA = "ripple-browser-session-instance-A";
   const instanceB = "ripple-browser-session-instance-B";
@@ -390,13 +459,19 @@ test("retries an ambiguous command byte-identically on A before reconciling rest
   await page.locator("#session-refresh").click();
   await page.locator("#session-choices button").click();
   await expect(page.locator("#session-step-status")).toContainText(
-    "Network failure before any server acknowledgment"
+    "Network failure without receiving a server acknowledgment"
   );
   await expect(page.locator("#session-step-retry-row")).toBeVisible();
 
   await page.locator("#session-step-retry").click();
   await expect(page.locator("#session-step-status")).toContainText(
-    "Not committed (session-instance-mismatch)"
+    "explicit retry was rejected (session-instance-mismatch)"
+  );
+  await expect(page.locator("#session-step-status")).toContainText(
+    "original command outcome remains unknown"
+  );
+  await expect(page.locator("#session-step-status")).toContainText(
+    "Reconcile or inspect the journal"
   );
   await expect(page.locator("#session-step-retry-row")).toBeHidden();
   expect(stepBodies).toHaveLength(2);

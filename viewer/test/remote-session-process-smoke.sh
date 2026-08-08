@@ -123,6 +123,22 @@ http_get() {
     "http://127.0.0.1:$port/api/session-frame" >"$run_dir/$label.status"
 }
 
+http_step() {
+  local label="$1" port="$2" token="$3" body="$4"
+  printf '%s\n' "$body" >"$run_dir/$label.request.body"
+  printf 'POST /api/session-step HTTP/1.1\nHost: 127.0.0.1:%s\nContent-Type: application/json\nAccept: application/edn\nX-Jolt-Sim-Capability: %s\n\n%s\n' \
+    "$port" "$token" "$body" >"$run_dir/$label.request.txt"
+  curl --noproxy '*' --silent --show-error --max-time 5 \
+    -D "$run_dir/$label.response.headers" \
+    -o "$run_dir/$label.response.body" -w '%{http_code}' \
+    -H 'Content-Type: application/json' \
+    -H 'Accept: application/edn' \
+    -H "X-Jolt-Sim-Capability: $token" \
+    --data-binary "@$run_dir/$label.request.body" \
+    "http://127.0.0.1:$port/api/session-step" \
+    >"$run_dir/$label.status"
+}
+
 expect_status() {
   local label="$1" expected="$2"
   local actual
@@ -152,24 +168,32 @@ inner_port="$(edn_value "$a_ready" port)"
 record "{:phase :producer-a-ready :port $inner_port :epoch \"$epoch_a\"}"
 
 outer_ready="$run_dir/outer-ready.edn"
+outer_reconcile="$run_dir/outer-reconcile.edn"
+outer_reconciled="$run_dir/outer-reconciled.edn"
 outer_release="$run_dir/outer-release.edn"
 (
   cd "$viewer_dir"
   exec "$JOLT_SIM_BIN" -M:remote-session-consumer \
-    "$a_ready" "$outer_ready" "$outer_release"
+    "$a_ready" "$outer_ready" "$outer_reconcile" "$outer_reconciled" \
+    "$outer_release"
 ) >"$run_dir/outer.stdout.log" 2>"$run_dir/outer.stderr.log" &
 outer_pid=$!
 record "{:phase :outer-launched :pid $outer_pid}"
 wait_ready "$outer_ready" "$outer_pid" outer
 outer_port="$(edn_value "$outer_ready" port)"
-record "{:phase :outer-ready :port $outer_port :pinned-epoch \"$epoch_a\"}"
+steppable_port="$(edn_value "$outer_ready" steppable-port)"
+record "{:phase :outer-ready :port $outer_port :steppable-port $steppable_port :pinned-epoch \"$epoch_a\"}"
 
 # Direct A and relayed outer EDN must be byte-for-byte canonical frame equals.
 http_get direct-a0 "$inner_port" "$inner_token" 0 application/edn
 http_get outer-a0 "$outer_port" "$outer_token" 0 application/edn
+http_get outer-steppable-a0 "$steppable_port" "$outer_token" 0 application/edn
 expect_status direct-a0 200
 expect_status outer-a0 200
+expect_status outer-steppable-a0 200
 cmp "$run_dir/direct-a0.response.body" "$run_dir/outer-a0.response.body"
+cmp "$run_dir/direct-a0.response.body" \
+    "$run_dir/outer-steppable-a0.response.body"
 record '{:phase :initial-canonical-frames-equal}'
 
 # The JSON projection is explicitly read-only.
@@ -177,6 +201,11 @@ http_get outer-a0-json "$outer_port" "$outer_token" 0 application/json
 expect_status outer-a0-json 200
 grep -Fq '"stepEnabled":false' "$run_dir/outer-a0-json.response.body"
 record '{:phase :outer-json-read-only}'
+
+http_get outer-steppable-a0-json "$steppable_port" "$outer_token" 0 application/json
+expect_status outer-steppable-a0-json 200
+grep -Fq '"stepEnabled":true' "$run_dir/outer-steppable-a0-json.response.body"
+record '{:phase :steppable-relay-explicit}'
 
 # A step POST to the outer process is absent and cannot mutate A.
 step_body='{"version":1,"cursor":"0","branch":{"revision":"0","kind":"run","value":"0"}}'
@@ -199,11 +228,31 @@ cmp "$run_dir/direct-a0.response.body" \
     "$run_dir/direct-a0-after-rejected-step.response.body"
 record '{:phase :outer-step-rejected-without-inner-mutation}'
 
-# A advances once outside the outer viewer. Cursor 1 must expose exactly its
-# single appended journal record, identically direct and relayed, on repeats.
-printf '%s\n' '{:command :step}' >"$a_step"
-wait_ready "$a_stepped" "$producer_pid" producer-a-step
-record '{:phase :producer-a-stepped}'
+# The explicitly steppable relay sends one exact branch once. Repeating the
+# byte-identical command is stale and cannot append a duplicate journal entry.
+remote_step_body='{"version":1,"cursor":"0","branch":{"revision":"0","kind":"run","value":"0"}}'
+http_step outer-remote-step "$steppable_port" "$outer_token" "$remote_step_body"
+expect_status outer-remote-step 200
+grep -Fq ':status :committed' "$run_dir/outer-remote-step.response.body"
+grep -Fq ':committed? true' "$run_dir/outer-remote-step.response.body"
+record '{:phase :remote-step-committed}'
+
+http_step outer-remote-step-retry "$steppable_port" "$outer_token" "$remote_step_body"
+expect_status outer-remote-step-retry 409
+grep -Fq ':status :stale' "$run_dir/outer-remote-step-retry.response.body"
+grep -Fq ':committed? false' "$run_dir/outer-remote-step-retry.response.body"
+record '{:phase :identical-retry-stale}'
+
+# Reconciliation is an explicit read-only operation from the original cursor.
+printf '%s\n' '{:branch {:revision 0, :action [:run 0]}, :cursor 0}' \
+  >"$outer_reconcile"
+wait_ready "$outer_reconciled" "$outer_pid" outer-reconciliation
+grep -Fq ':status :committed' "$outer_reconciled"
+grep -Fq ':seq 1' "$outer_reconciled"
+record '{:phase :journal-reconciliation-committed}'
+
+# Cursor 1 exposes exactly the remotely appended journal record, identically
+# direct and relayed, on repeats.
 http_get direct-a1 "$inner_port" "$inner_token" 1 application/edn
 http_get outer-a1 "$outer_port" "$outer_token" 1 application/edn
 http_get outer-a1-repeat "$outer_port" "$outer_token" 1 application/edn
@@ -246,6 +295,14 @@ record "{:phase :producer-b-ready :port $inner_port :epoch \"$epoch_b\"}"
 http_get direct-b0 "$inner_port" "$inner_token" 0 application/edn
 expect_status direct-b0 200
 grep -Fq ':revision 0' "$run_dir/direct-b0.response.body"
+http_step outer-step-after-b "$steppable_port" "$outer_token" "$remote_step_body"
+expect_status outer-step-after-b 409
+grep -Fq ':session-source-restarted' "$run_dir/outer-step-after-b.response.body"
+http_get direct-b0-after-rejected-step "$inner_port" "$inner_token" 0 application/edn
+expect_status direct-b0-after-rejected-step 200
+cmp "$run_dir/direct-b0.response.body" \
+    "$run_dir/direct-b0-after-rejected-step.response.body"
+record '{:phase :replacement-step-rejected-without-mutation}'
 http_get outer-after-b "$outer_port" "$outer_token" 1 application/edn
 expect_status outer-after-b 409
 grep -Fq ':session-source-restarted' "$run_dir/outer-after-b.response.body"

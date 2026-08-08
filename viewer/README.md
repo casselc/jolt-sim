@@ -361,11 +361,14 @@ attributes that acknowledgment to the old producer, discards only the new
 frame requested with the old cursor, and requires a cursor-zero read of the
 new producer.
 
-A network-ambiguous step exposes only **Retry same command** or **Reset
-session**. Retry preserves both the exact serialized body and the cached epoch.
+A network-ambiguous step exposes only **Explicitly retry identical command
+(original outcome unknown)** or **Reset session**. Retry preserves both the
+exact serialized body and the cached epoch.
 If producer A disappeared and restarted producer B now owns the endpoint, that
 A-pinned retry receives `409 :session-instance-mismatch`; it is not silently
-retargeted to B. The now-unambiguous rejection enables **Refresh session**.
+retargeted to B. That rejection proves only that the retry did not commit; the
+original outcome remains unknown until journal reconciliation. Ripple says so
+explicitly and enables **Refresh session** for inspection.
 That refresh discovers B, discards its first response because the request still
 carried A's journal cursor, clears the frame, choices, cursor, and retry, and
 requires one fresh cursor-zero read. **Reset session** also forgets the epoch.
@@ -422,3 +425,71 @@ process transcript is retained:
 JOLT_SIM_BIN=/absolute/path/to/sim/jolt \
   test/remote-session-process-smoke.sh
 ```
+
+### Separate-process exact stepping and reconciliation
+
+Remote commands are opt-in through a different constructor;
+`start-remote-session!` above remains read-only:
+
+```clojure
+(def outer
+  (viewer/start-remote-steppable-session!
+   outer-viewer-config
+   {:port 8790
+    :capability-token inner-capability-token
+    :session-instance-id "inner-session-process-2026-08-07-a"
+    :timeout-ms 5000}))
+```
+
+The outer still delegates to the inner Session's existing `step-frame!`
+semantics. It does not implement a scheduler, rebase a branch, or add an
+effect layer. Every command uses the exact closed JSON branch/cursor contract,
+one fresh loopback connection, and one monotonic deadline across connect,
+send, and receive. The inner verifies authority and the pinned producer epoch
+before checking step availability, admission, media type, or consuming the
+body. Every authorized step response carries that epoch; an unauthorized
+response never does.
+
+The transport sends a command at most once. A complete pinned committed or
+stale receipt is authoritative even if closing that connection subsequently
+fails. Connect, send, receive, malformed response, and 5xx failures instead
+surface as typed `::remote-session/step-outcome-unknown`; they are never
+retried automatically. Closed authenticated pre-service rejections are
+definitively not committed and retain only their allowlisted status/reason;
+the authority-first `403 :forbidden` is also definitive despite intentionally
+carrying no producer epoch. An identical explicit retry is protected by the
+Session revision: after a commit it is stale and cannot append another
+transition, but that stale retry alone is not evidence that an earlier
+ambiguous attempt failed to commit.
+
+Agents, REPLs, and alternative UIs can keep the underlying operations as plain
+data-oriented functions:
+
+```clojure
+(def remote
+  (remote-session/attachment source max-frame-bytes))
+
+((:read-frame remote) cursor)
+((:step-frame! remote) branch cursor)       ; sends exactly once
+((:reconcile-step! remote) branch cursor)   ; reads only
+```
+
+Reconciliation must use the original branch and original journal cursor. It
+pages the pinned producer's append-only Session journal and returns one closed
+status: `:committed` when the command's exact revision slot contains that
+branch, `:different` when another command owns the slot, or `:missing` when
+the complete observed journal has no such slot. It neither resends the command
+nor adopts a replacement producer. Pages must preserve the Session invariant
+`revision = journal-count - 1`, cannot regress revision/count, and contain a
+recognized start entry followed only by exact revision-aligned step entries.
+One call reads at most 64 pages and then fails with typed
+`::remote-session/reconciliation-limit-exceeded`. This is process-lifetime
+evidence only; crash-safe reconciliation still requires the planned durable
+Session journal.
+
+The retained process acceptance campaign now runs both relay modes against
+the same producer. It keeps the old read-only route/absence-of-mutation checks,
+commits exactly one step through the steppable relay, proves the byte-identical
+retry is stale, reconciles the commit from cursor zero, observes exactly one
+new journal entry, then replaces producer A with revision-zero producer B on
+the same port and proves an A-pinned command cannot mutate B.
