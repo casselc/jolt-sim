@@ -49,7 +49,7 @@
                                 {:type ::invalid-port :port port-text})))
             sim-session (session/start (sim-config))
             server
-            (viewer/start-session!
+            (viewer/start-steppable-session!
              {:port port
               :capability-token token
               :session-instance-id instance-id

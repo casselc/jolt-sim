@@ -1409,7 +1409,20 @@
 
 (defn- session-step-error-response [error]
   (let [data (ex-data error)
-        type (:type data)]
+        type (:type data)
+        remote-definite?
+        (contains?
+         #{[400 :invalid-session-step]
+           [400 :invalid-session-cursor]
+           [403 :forbidden]
+           [404 :session-step-unavailable]
+           [409 :session-instance-mismatch]
+           [409 :session-step-rejected]
+           [413 :request-too-large]
+           [415 :expected-application-json]
+           [429 :session-step-busy]
+           [429 :viewer-busy]}
+         [(:status data) (:reason data)])]
     (cond
       (= request-too-large type)
       (error-response 413 :request-too-large
@@ -1431,6 +1444,17 @@
       (error-response 409 :session-step-rejected
                       (when (keyword? (:reason data))
                         (select-keys data [:reason])))
+
+      (= :jolt.sim.viewer.remote-session/source-restarted type)
+      (error-response 409 :session-source-restarted nil)
+
+      (and (= :jolt.sim.viewer.remote-session/source-unavailable type)
+           remote-definite?)
+      (error-response (:status data) (:reason data) nil)
+
+      (= :jolt.sim.viewer.remote-session/step-outcome-unknown type)
+      (error-response 503 :session-step-outcome-unknown
+                      (select-keys data [:phase :cause-type :status]))
 
       :else nil)))
 
@@ -1480,33 +1504,37 @@
   document/body-consumer gate, so a busy response precedes any streaming body
   read on the pool shared with jolt-http's parser."
   [config services session-active? document-active? request]
-  (cond
-    (not (authorized? config request))
+  (if-not (authorized? config request)
+    ;; Never disclose a producer epoch to an unauthorized caller.
     (negotiated-session-error-response request 403 :forbidden nil)
+    (with-session-instance-header
+     config
+     (cond
+       (not (session-instance-matches? config request))
+       (negotiated-session-error-response
+        request 409 :session-instance-mismatch nil)
 
-    (not (session-instance-matches? config request))
-    (negotiated-session-error-response
-     request 409 :session-instance-mismatch nil)
+       (not (fn? (:step-session-frame! services)))
+       (negotiated-session-error-response
+        request 404 :session-step-unavailable nil)
 
-    (not (fn? (:step-session-frame! services)))
-    (negotiated-session-error-response request 404 :session-step-unavailable nil)
+       (not (json-content-type? request))
+       (negotiated-session-error-response
+        request 415 :expected-application-json nil)
 
-    (not (json-content-type? request))
-    (negotiated-session-error-response request 415 :expected-application-json nil)
+       (not (compare-and-set! session-active? false true))
+       (negotiated-session-error-response request 429 :session-step-busy nil)
 
-    (not (compare-and-set! session-active? false true))
-    (negotiated-session-error-response request 429 :session-step-busy nil)
-
-    :else
-    (try
-      (if-not (compare-and-set! document-active? false true)
-        (negotiated-session-error-response request 429 :viewer-busy nil)
-        (try
-          (session-step-response services request)
-          (finally
-            (reset! document-active? false))))
-      (finally
-        (reset! session-active? false)))))
+       :else
+       (try
+         (if-not (compare-and-set! document-active? false true)
+           (negotiated-session-error-response request 429 :viewer-busy nil)
+           (try
+             (session-step-response services request)
+             (finally
+               (reset! document-active? false))))
+         (finally
+           (reset! session-active? false)))))))
 
 (defn- edn-content-type? [request]
   (let [value (get-in request [:headers "content-type"])]
@@ -1688,12 +1716,13 @@
   step at a time.
 
   When startup config contains `:session-instance-id`, every authorized frame
-  response carries it in `X-Jolt-Sim-Session-Instance`. The ID is a producer
-  epoch, not authority; the capability token remains required. A configured
-  step request must echo the exact epoch header after authorization and before
-  service availability, media-type, admission, body, or service evaluation.
-  Missing and stale epochs therefore cannot command a restarted producer.
-  Omitting the startup key preserves the original frame and step protocol.
+  or step response carries it in `X-Jolt-Sim-Session-Instance`; unauthorized
+  responses never do. The ID is a producer epoch, not authority; the
+  capability token remains required. A configured step request must echo the
+  exact epoch header after authorization and before service availability,
+  media-type, admission, body, or service evaluation. Missing and stale epochs
+  therefore cannot command a restarted producer. Omitting the startup key
+  preserves the original frame and step protocol.
 
   `POST /api/session-step` is an optional embedding-only command surface,
   present only when the trusted services map supplies `:step-session-frame!`.
@@ -1879,6 +1908,26 @@
                    :read-session-frame
                    (remote-session/reader source
                                           (:max-document-bytes config))))))
+
+(defn start-remote-steppable-session!
+  "Starts Ripple with an explicitly command-capable remote Session attachment.
+
+  This is separate from `start-remote-session!`, which remains read-only. The
+  closed source coordinate pins one inner producer epoch. Frame reads and each
+  exact revision-scoped step use fresh loopback connections and one absolute
+  deadline. A command is sent at most once: an ambiguous transport, malformed
+  response, or 5xx result becomes typed
+  `:session-step-outcome-unknown`, never an automatic retry. Use
+  `viewer.remote-session/attachment` directly when a REPL or another UI needs
+  its explicit read-only `:reconcile-step!` journal operation."
+  [config source]
+  (let [config (validate-config! config)
+        attachment (remote-session/attachment
+                    source (:max-document-bytes config))]
+    (start! config
+            (assoc (dissoc (default-services config) :run-case)
+                   :read-session-frame (:read-frame attachment)
+                   :step-session-frame! (:step-frame! attachment)))))
 
 (defn start-steppable-session!
   "Starts Ripple with one trusted in-process Session attached for inspection

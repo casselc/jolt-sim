@@ -38,10 +38,12 @@
   let sessionChoices = [];
   let lastStepStatus = null;
   let lastStepCommitted = false;
+  let lastStepUnknown = false;
   // Set only for an ambiguous step outcome (network failure or an
   // unrecognized response): the exact serialized request bytes and producer
-  // epoch, so Retry can resend the same command to the same producer and
-  // never synthesize a new coordinate.
+  // epoch, so an explicitly requested Retry can resend the same command to the
+  // same producer and never synthesize a new coordinate. A later stale or
+  // rejected retry does not resolve whether the original attempt committed.
   let pendingRetry = null;
   let activityCursors = ["0"];
   let activityPageIndex = 0;
@@ -97,6 +99,7 @@
     "403:forbidden",
     "404:session-step-unavailable",
     "409:session-instance-mismatch",
+    "409:session-source-restarted",
     "409:session-step-rejected",
     "413:request-too-large",
     "415:expected-application-json",
@@ -813,13 +816,14 @@
   kind.addEventListener("change", updateButtons);
 
   const clearSessionClientState = (forgetInstance,
-                                   preserveCommittedStatus = false) => {
+                                   preserveStepStatus = false) => {
     sessionCursor = "0";
     sessionStepEnabled = false;
     sessionChoices = [];
-    if (!preserveCommittedStatus || !lastStepCommitted) {
+    if (!preserveStepStatus || (!lastStepCommitted && !lastStepUnknown)) {
       lastStepStatus = null;
       lastStepCommitted = false;
+      lastStepUnknown = false;
     }
     pendingRetry = null;
     if (forgetInstance) {
@@ -871,7 +875,7 @@
             "No current session frame; the producer instance changed.";
           sessionStatus.textContent =
             "Session producer changed; local cursor, choices, and retry state were reset. Refresh from cursor zero.";
-          sessionStepStatus.textContent = lastStepCommitted
+          sessionStepStatus.textContent = lastStepStatus
             ? `${lastStepStatus} The producer then changed; its frame was discarded. Refresh from cursor zero.`
             : "No branch choice sent.";
           return;
@@ -938,6 +942,7 @@
     if (!isRetry) {
       lastStepStatus = null;
       lastStepCommitted = false;
+      lastStepUnknown = false;
     }
     updateButtons();
     sessionStepStatus.textContent = isRetry
@@ -952,24 +957,34 @@
         response = await submitStepRequest(bodyText, instanceId);
       } catch (networkError) {
         sessionStepStatus.textContent =
-          `Network failure before any server acknowledgment; not confirmed committed. ` +
+          `Network failure without receiving a server acknowledgment; not confirmed committed. ` +
           `(${networkError.message}) Retry sends the identical command bytes.`;
         return;
       }
       receipt = await response.json().catch(() => null);
+      const responseInstance = response.headers.get(sessionInstanceHeader);
+      // A receipt is authoritative only when its response proves that it came
+      // from the same producer epoch as the displayed branch coordinate. The
+      // cached non-null instance was already validated while reading the
+      // frame; exact equality therefore also enforces the closed syntax.
+      const receiptInstanceMatches = instanceId === null
+        ? responseInstance === null
+        : responseInstance === instanceId;
       const jsonResponse = (response.headers.get("Content-Type") || "")
         .toLowerCase().startsWith("application/json");
       const exactCoordinate = receipt &&
         receipt.revision === command.revision &&
         receipt.kind === command.kind &&
         receipt.value === command.value;
-      const committedReceipt = jsonResponse && response.ok &&
+      const committedReceipt = receiptInstanceMatches &&
+        jsonResponse && response.ok &&
         exactKeys(receipt, ["version", "outcome", "committed", "revision", "kind",
           "value", "receiptEdn"]) &&
         receipt.version === 1 && receipt.outcome === "committed" &&
         receipt.committed === true && exactCoordinate &&
         typeof receipt.receiptEdn === "string";
-      const staleReceipt = jsonResponse && response.status === 409 &&
+      const staleReceipt = receiptInstanceMatches &&
+        jsonResponse && response.status === 409 &&
         exactKeys(receipt, ["version", "outcome", "committed", "revision", "kind",
           "value", "receiptEdn"]) &&
         receipt.version === 1 && receipt.outcome === "stale" &&
@@ -983,6 +998,7 @@
       if (committedReceipt) {
         outcome = "committed";
         lastStepCommitted = true;
+        lastStepUnknown = false;
         const producer = instanceId === null
           ? "the unversioned session producer"
           : `session producer ${instanceId}`;
@@ -992,16 +1008,22 @@
           `server acknowledged the exact command.`;
         sessionStepStatus.textContent = `${lastStepStatus} Refreshing session frame.`;
       } else if (staleReceipt) {
-        outcome = "stale";
+        outcome = isRetry ? "unresolved" : "stale";
         lastStepCommitted = false;
-        lastStepStatus =
-          `Not committed (${receipt.outcome}); refresh the session for current choices.`;
+        lastStepUnknown = isRetry;
+        lastStepStatus = isRetry
+          ? `The explicit retry was stale; the original command outcome remains unknown. ` +
+            `Reconcile or inspect the journal from the original cursor before proceeding.`
+          : `Not committed (${receipt.outcome}); refresh the session for current choices.`;
         sessionStepStatus.textContent = lastStepStatus;
       } else if (rejectedReceipt) {
-        outcome = "rejected";
+        outcome = isRetry ? "unresolved" : "rejected";
         lastStepCommitted = false;
-        lastStepStatus =
-          `Not committed (${receipt.error}); refresh after correcting the request or capability.`;
+        lastStepUnknown = isRetry;
+        lastStepStatus = isRetry
+          ? `The explicit retry was rejected (${receipt.error}); the original command outcome remains unknown. ` +
+            `Reconcile or inspect the journal from the original cursor before proceeding.`
+          : `Not committed (${receipt.error}); refresh after correcting the request or capability.`;
         sessionStepStatus.textContent = lastStepStatus;
       } else {
         sessionStepStatus.textContent =

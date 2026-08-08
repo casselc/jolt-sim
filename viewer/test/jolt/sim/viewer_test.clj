@@ -1277,6 +1277,12 @@
 (def ^:private remote-read-frame-var
   (resolve 'jolt.sim.viewer.remote-session/read-frame*))
 
+(def ^:private remote-step-frame-var
+  (resolve 'jolt.sim.viewer.remote-session/step-frame*))
+
+(def ^:private remote-reconcile-step-var
+  (resolve 'jolt.sim.viewer.remote-session/reconcile-step*))
+
 (defn- remote-source []
   {:port 19876
    :capability-token token
@@ -1335,6 +1341,25 @@
    (remote-ops response chunks calls)
    (assoc (remote-session/validate-source! source) :max-frame-bytes 4096)
    cursor))
+
+(defn- remote-step [ops branch cursor]
+  (@remote-step-frame-var
+   ops
+   (assoc (remote-session/validate-source! (remote-source))
+          :max-frame-bytes 4096)
+   branch cursor))
+
+(defn- step-http-response [status body]
+  (http-response status session-instance-id "0"
+                 (trace/canonical-edn body) []))
+
+(def committed-remote-receipt
+  {:version 1
+   :status :committed
+   :committed? true
+   :ack {:branch {:revision 0 :action [:run 2]}
+         :revision 1}
+   :frame-status :available})
 
 (deftest remote-session-source-is-closed-and-header-safe
   (is (= (remote-source)
@@ -1560,6 +1585,279 @@
     (is (= 409 (:status response)))
     (is (string/includes? (:body response) ":session-source-restarted"))
     (is (not (string/includes? (:body response) "changed")))))
+
+(deftest remote-session-step-sends-one-exact-pinned-command
+  (let [calls (atom [])
+        branch {:revision 0 :action [:run 2]}
+        result (remote-step
+                (remote-ops (step-http-response 200 committed-remote-receipt)
+                            [1 3 7 4096] calls)
+                branch 0)
+        request-text (nth (first (filter #(= :send (first %)) @calls)) 2)
+        deadlines (keep last (filter #(contains? #{:connect :send :receive}
+                                                   (first %)) @calls))]
+    (is (= :committed (:status result)))
+    (is (= {:branch branch :revision 1} (:ack result)))
+    (is (= {:jolt.sim.session-view/type :frame} (:frame result)))
+    (is (apply = deadlines))
+    (is (= 1 (count (filter #(= :connect (first %)) @calls))))
+    (is (= 1 (count (filter #(= :send (first %)) @calls))))
+    (is (string/includes? request-text
+                          "POST /api/session-step HTTP/1.1\r\n"))
+    (is (string/includes? request-text
+                          (str "X-Jolt-Sim-Session-Instance: "
+                               session-instance-id "\r\n")))
+    (is (string/ends-with?
+         request-text
+         "\r\n\r\n{\"version\":1,\"cursor\":\"0\",\"branch\":{\"revision\":\"0\",\"kind\":\"run\",\"value\":\"2\"}}"))))
+
+(deftest remote-session-step-preserves-a-recognized-receipt-on-close-failure
+  (let [branch {:revision 0 :action [:run 2]}
+        ops (assoc
+             (remote-ops (step-http-response 200 committed-remote-receipt)
+                         [4096] (atom []))
+             :close (fn [_]
+                      (throw (ex-info "close failed" {:type ::close-failed}))))
+        result (remote-step ops branch 0)]
+    (is (= :committed (:status result)))
+    (is (true? (:committed? result)))
+    (is (= {:branch branch :revision 1} (:ack result)))))
+
+(deftest remote-session-step-preserves-custom-post-commit-frame-failure
+  (let [branch {:revision 0 :action [:run 2]}
+        receipt (assoc committed-remote-receipt
+                       :frame-status :unavailable
+                       :frame-error {:type :app/preview-failed
+                                     :phase :post-commit})
+        result (remote-step
+                (remote-ops (step-http-response 200 receipt)
+                            [4096] (atom []))
+                branch 0)]
+    (is (= :committed (:status result)))
+    (is (true? (:committed? result)))
+    (is (nil? (:frame result)))
+    (is (= {:type :app/preview-failed :phase :post-commit}
+           (:frame-error result)))))
+
+(deftest remote-session-step-ambiguity-is-typed-and-never-retried
+  (let [branch {:revision 0 :action [:run 2]}
+        malformed (.getBytes "HTTP/1.1 200 OK\r\n" "UTF-8")
+        server-error (step-http-response 500 {:error :session-step-error})
+        cases
+        [[:connect
+          (assoc (remote-ops (byte-array 0) [] (atom []))
+                 :connect (fn [& _]
+                            (throw (ex-info "connect failed" {}))))]
+         [:exchange
+          (assoc (remote-ops (byte-array 0) [] (atom []))
+                 :send (fn [& _]
+                         (throw (ex-info "send failed" {}))))]
+         [:exchange (remote-ops malformed [4096] (atom []))]
+         [:exchange (remote-ops server-error [4096] (atom []))]]]
+    (doseq [[phase ops] cases]
+      (let [data (caught-data #(remote-step ops branch 0))]
+        (is (= remote-session/step-outcome-unknown (:type data)))
+        (is (= phase (:phase data)))))))
+
+(deftest remote-session-step-rejects-a-replacement-before-receipt-adoption
+  (let [branch {:revision 0 :action [:run 2]}
+        replacement
+        (http-response 409 "ripple-session-instance-NEW2" "0"
+                       "{:error :session-instance-mismatch}" [])
+        data (caught-data
+              #(remote-step (remote-ops replacement [4096] (atom []))
+                            branch 0))]
+    (is (= remote-session/source-restarted (:type data)))
+    (is (= session-instance-id (:expected-session-instance-id data)))
+    (is (= "ripple-session-instance-NEW2"
+           (:observed-session-instance-id data)))))
+
+(deftest remote-session-step-recognizes-closed-pre-service-rejections
+  (let [branch {:revision 0 :action [:run 2]}
+        cases [[403 nil :forbidden]
+               [400 session-instance-id :invalid-session-step]
+               [404 session-instance-id :session-step-unavailable]
+               [409 session-instance-id :session-step-rejected]
+               [413 session-instance-id :request-too-large]
+               [415 session-instance-id :expected-application-json]
+               [429 session-instance-id :session-step-busy]
+               [429 session-instance-id :viewer-busy]]]
+    (doseq [[status instance reason] cases]
+      (let [response (http-response status instance "0"
+                                    (trace/canonical-edn {:error reason}) [])
+            data (caught-data
+                  #(remote-step (remote-ops response [4096] (atom []))
+                                branch 0))]
+        (is (= remote-session/source-unavailable (:type data)))
+        (is (= status (:status data)))
+        (is (= reason (:reason data)))))))
+
+(deftest remote-session-step-unknown-is-a-typed-outer-response
+  (let [text "{\"version\":1,\"cursor\":\"0\",\"branch\":{\"revision\":\"0\",\"kind\":\"run\",\"value\":\"2\"}}"
+        request {:request-method :post
+                 :uri "/api/session-step"
+                 :headers {"content-type" "application/json"
+                           "content-length"
+                           (str (alength (.getBytes ^String text "UTF-8")))
+                           "x-jolt-sim-capability" token}
+                 :body (body [(.getBytes ^String text "UTF-8")])}
+        handler
+        (viewer/make-handler
+         (config)
+         (assoc (services (atom []) (atom []) {:status :completed})
+                :step-session-frame!
+                (fn [& _]
+                  (throw (ex-info "inner transport secret"
+                                  {:type remote-session/step-outcome-unknown
+                                   :phase :exchange
+                                   :cause-type ::receive-failed
+                                   :secret "must-not-cross"})))))
+        response (handler request)]
+    (is (= 503 (:status response)))
+    (is (string/includes? (:body response)
+                          ":session-step-outcome-unknown"))
+    (is (string/includes? (:body response) ":phase :exchange"))
+    (is (not (string/includes? (:body response) "inner transport secret")))
+    (is (not (string/includes? (:body response) "must-not-cross")))))
+
+(deftest remote-session-definite-rejection-is-a-secret-free-json-error
+  (let [text "{\"version\":1,\"cursor\":\"0\",\"branch\":{\"revision\":\"0\",\"kind\":\"run\",\"value\":\"2\"}}"
+        request {:request-method :post
+                 :uri "/api/session-step"
+                 :headers {"content-type" "application/json"
+                           "accept" "application/json"
+                           "content-length"
+                           (str (alength (.getBytes ^String text "UTF-8")))
+                           "x-jolt-sim-capability" token}
+                 :body (body [(.getBytes ^String text "UTF-8")])}
+        handler
+        (viewer/make-handler
+         (config)
+         (assoc (services (atom []) (atom []) {:status :completed})
+                :step-session-frame!
+                (fn [& _]
+                  (throw (ex-info "inner authority secret"
+                                  {:type remote-session/source-unavailable
+                                   :status 403
+                                   :reason :forbidden
+                                   :secret "must-not-cross"})))))
+        response (handler request)]
+    (is (= 403 (:status response)))
+    (is (= {"version" 1 "outcome" "error" "committed" false
+            "error" "forbidden"}
+           (json/read-str (:body response))))
+    (is (not (string/includes? (:body response) "must-not-cross")))))
+
+(deftest remote-session-step-reconciliation-is-explicit-and-read-only
+  (let [branch {:revision 0 :action [:run 2]}
+        start {:seq 0 :command :start}
+        exact {:seq 1 :command :step :branch branch}
+        other {:seq 1 :command :step
+               :branch {:revision 0 :action [:run 0]}}
+        frame (fn [entries]
+                {:revision (dec (count entries))
+                 :journal {:cursor 0
+                           :next-cursor (count entries)
+                           :count (count entries)
+                           :page-size (count entries)
+                           :remaining? false
+                           :entries entries}})
+        reconcile (fn [entries]
+                    (@remote-reconcile-step-var
+                     (fn [_] (frame entries)) branch 0))]
+    (is (= :committed (:status (reconcile [start exact]))))
+    (is (= {:seq 1 :command :step :branch branch}
+           (:observed (reconcile [start exact]))))
+    (is (= :different (:status (reconcile [start other]))))
+    (is (= (:branch other)
+           (get-in (reconcile [start other]) [:observed :branch])))
+    (is (= :missing (:status (reconcile [start]))))))
+
+(deftest remote-session-step-reconciliation-pages-from-the-original-cursor
+  (let [branch {:revision 0 :action [:run 2]}
+        cursors (atom [])
+        read-frame
+        (fn [cursor]
+          (swap! cursors conj cursor)
+          (case cursor
+            0 {:revision 1
+               :journal {:cursor 0 :next-cursor 1 :count 2 :page-size 1
+                         :remaining? true
+                         :entries [{:seq 0 :command :start}]}}
+            1 {:revision 1
+               :journal {:cursor 1 :next-cursor 2 :count 2 :page-size 1
+                         :remaining? false
+                         :entries [{:seq 1 :command :step :branch branch}]}}))
+        result (@remote-reconcile-step-var read-frame branch 0)]
+    (is (= :committed (:status result)))
+    (is (= [0 1] @cursors))))
+
+(deftest remote-session-step-reconciliation-rejects-regressing-pages
+  (let [branch {:revision 1 :action [:run 0]}
+        read-frame
+        (fn [cursor]
+          (case cursor
+            0 {:revision 1
+               :journal {:cursor 0 :next-cursor 1 :count 2 :page-size 1
+                         :remaining? true
+                         :entries [{:seq 0 :command :start}]}}
+            1 {:revision 0
+               :journal {:cursor 1 :next-cursor 1 :count 1 :page-size 0
+                         :remaining? false :entries []}}))
+        data (caught-data
+              #(@remote-reconcile-step-var read-frame branch 0))]
+    (is (= remote-session/invalid-response (:type data)))
+    (is (= :invalid-reconciliation-journal (:reason data)))))
+
+(deftest remote-session-step-reconciliation-requires-semantic-journal-entries
+  (let [branch {:revision 0 :action [:run 2]}
+        malformed
+        [{:seq 1 :command :mystery :branch branch}
+         {:seq 1 :command :step
+          :branch {:revision 1 :action [:run 0]}}
+         {:seq 1 :command :step :branch {:revision 0 :action [:run -1]}}]]
+    (doseq [entry malformed]
+      (let [frame {:revision 1
+                   :journal {:cursor 0 :next-cursor 2 :count 2 :page-size 2
+                             :remaining? false
+                             :entries [{:seq 0 :command :start} entry]}}
+            data (caught-data
+                  #(@remote-reconcile-step-var (fn [_] frame) branch 0))]
+        (is (= remote-session/invalid-response (:type data)))
+        (is (= :invalid-reconciliation-journal (:reason data)))))
+    (let [frame {:revision 1
+                 :journal {:cursor 0 :next-cursor 2 :count 2 :page-size 2
+                           :remaining? false
+                           :entries [{:seq 0 :command :mystery}
+                                     {:seq 1 :command :step
+                                      :branch branch}]}}
+          data (caught-data
+                #(@remote-reconcile-step-var (fn [_] frame) branch 0))]
+      (is (= remote-session/invalid-response (:type data)))
+      (is (= :invalid-reconciliation-journal (:reason data))))))
+
+(deftest remote-session-step-reconciliation-has-a-hard-page-budget
+  (let [branch {:revision 64 :action [:run 0]}
+        calls (atom 0)
+        read-frame
+        (fn [cursor]
+          (swap! calls inc)
+          {:revision 65
+           :journal {:cursor cursor
+                     :next-cursor (inc cursor)
+                     :count 66
+                     :page-size 1
+                     :remaining? true
+                     :entries [(if (zero? cursor)
+                                 {:seq 0 :command :start}
+                                 {:seq cursor :command :step
+                                  :branch {:revision (dec cursor)
+                                           :action [:run 0]}})]}})
+        data (caught-data
+              #(@remote-reconcile-step-var read-frame branch 0))]
+    (is (= remote-session/reconciliation-limit-exceeded (:type data)))
+    (is (= 64 (:maximum-pages data)))
+    (is (= 64 @calls))))
 
 (defn- run-to-terminal [s]
   (doseq [branch [{:revision 0 :action [:run 2]}
@@ -1961,6 +2259,43 @@
         "the remote attachment cannot install a command capability")
     (is (= {:fixture :remote :cursor 7}
            ((get-in @captured [:services :read-session-frame]) 7)))))
+
+(deftest start-remote-steppable-session-is-explicit-and-installs-the-attachment
+  (let [captured (atom nil)
+        start-var (resolve 'jolt.sim.viewer/start!)
+        attachment-var (resolve 'jolt.sim.viewer.remote-session/attachment)
+        viewer-config (assoc (config) :max-document-bytes 12345)
+        source (remote-source)
+        attachment {:read-frame (fn [cursor] [:read cursor])
+                    :step-frame! (fn [branch cursor] [:step branch cursor])
+                    :reconcile-step! (fn [branch cursor]
+                                       [:reconcile branch cursor])}]
+    (with-redefs-fn
+      {attachment-var
+       (fn [supplied-source supplied-limit]
+         (swap! captured assoc :source supplied-source :limit supplied-limit)
+         attachment)
+       start-var
+       (fn [supplied-config supplied-services]
+         (swap! captured assoc :config supplied-config
+                :services supplied-services)
+         :fake-server)}
+      #(is (= :fake-server
+              (viewer/start-remote-steppable-session!
+               viewer-config source))))
+    (is (= source (:source @captured)))
+    (is (= 12345 (:limit @captured)))
+    (is (= #{:render-trace :render-case-outcome :replay-document
+             :read-session-frame :step-session-frame!}
+           (set (keys (:services @captured)))))
+    (is (= [:read 7]
+           ((get-in @captured [:services :read-session-frame]) 7)))
+    (is (= [:step {:revision 0 :action [:run 2]} 0]
+           ((get-in @captured [:services :step-session-frame!])
+            {:revision 0 :action [:run 2]} 0)))
+    (is (= [:reconcile {:revision 0 :action [:run 2]} 0]
+           ((:reconcile-step! attachment)
+            {:revision 0 :action [:run 2]} 0)))))
 
 (deftest session-frame-initial-read-is-coherent-and-closed
   (let [s (session/start (session-sim-config))
@@ -2410,11 +2745,16 @@
     (doseq [response [missing stale]]
       (is (= 409 (:status response)))
       (is (string/includes? (:body response)
-                            ":session-instance-mismatch")))
+                            ":session-instance-mismatch"))
+      (is (= session-instance-id
+             (get-in response [:headers "X-Jolt-Sim-Session-Instance"]))))
     (is (= 404 (:status unavailable))
         "an exact epoch reaches service availability")
     (is (= 415 (:status wrong-media))
         "an exact epoch reaches media validation")
+    (doseq [response [unavailable wrong-media]]
+      (is (= session-instance-id
+             (get-in response [:headers "X-Jolt-Sim-Session-Instance"]))))
     (is (false? @read?)
         "all epoch, availability, and media rejections precede body reads")
     (is (= [] @step-calls)
@@ -2438,6 +2778,8 @@
                (step-request text token session-instance-id))
         omitted (compatible (step-request text))]
     (is (= 200 (:status exact)))
+    (is (= session-instance-id
+           (get-in exact [:headers "X-Jolt-Sim-Session-Instance"])))
     (is (= 200 (:status omitted))
         "omitting startup epoch configuration preserves the old protocol")
     (is (= [{:revision 0 :action [:run 2]}] @configured-calls))
