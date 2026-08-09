@@ -158,6 +158,29 @@ request/reply connections of the line, with no n1 -- n3 edge. The preset
 carries no schedule and reuses the same trusted fresh worker command as the
 outbox preset.
 
+The fifth preset, **Outbox: JSON idempotency replay/conflict lab**, runs the
+existing marked
+`jolt.sim.fixtures.outbox-json-delivery-scenarios/exercise-replay-or-conflict`
+scenario: two ordinary routed-JSON request cycles through the unchanged
+production `jolt.example.outbox.http-json` facade on one hermetic SQLite
+connection, then the unchanged framed TCP/bencode delivery, correlated-ack
+validation, and ack-gated durable marking. Its two regimes are exactly the
+scenario's two accepted modes over one fixed canonical command: **exact
+replay**, where the second request carries the same command value and must
+return 200 with the same response-body octets and no second emission, and
+**conflict**, where the
+second request reuses the request id with a different payload and must return
+the exact 409 `request-id-conflict` envelope without authorizing a second
+command. Both regimes require equal decoded durable-state snapshots across
+the second request and exactly one delivery and mark. Ripple does not
+reimplement the facade, idempotency, database, networking, or codec behavior.
+Its inert plan
+projection is
+[`examples/outbox-json-idempotency-plan.edn`](examples/outbox-json-idempotency-plan.edn):
+the same four-node client/app/receiver/SQLite outbox topology. The preset
+carries no schedule and reuses the same trusted fresh worker command as the
+other presets.
+
 The browser is not an execution-coordinate editor. A trusted startup preset
 owns its allowlisted scenario symbol, exact optional schedule, runtime profile,
 and nonempty finite regime catalog; each regime owns one canonical input
@@ -201,7 +224,8 @@ plans without duplicating them in the command-line EDN file:
     #{'jolt.sim.fixtures.outbox-experiment-scenarios/exercise-cancel-before-ack-compiled
       'jolt.maelstrom.fixtures.echo-scenario/echo-roundtrip
       'jolt.sim.fixtures.outbox-delivery-scenarios/exercise-reopen-with-capacities
-      'jolt.maelstrom.fixtures.broadcast-scenario/broadcast-partition-heal}
+      'jolt.maelstrom.fixtures.broadcast-scenario/broadcast-partition-heal
+      'jolt.sim.fixtures.outbox-json-delivery-scenarios/exercise-replay-or-conflict}
     :run-presets
     [{:id :jolt.sim.preset/outbox-cancel-before-ack-v1
       :label "Outbox: cancel before acknowledgment"
@@ -250,25 +274,51 @@ plans without duplicating them in the command-line EDN file:
       (viewer-experiment/read-edn
        (slurp "examples/outbox-regime-lab-plan.edn"))}
      {:id :jolt.sim.preset/maelstrom-broadcast-partition-heal-v1
-      :label "Maelstrom Broadcast: healthy line and partition/heal"
-      :scenario
-      'jolt.maelstrom.fixtures.broadcast-scenario/broadcast-partition-heal
-      :profile-id :hermetic
-      :schedule nil
-      :regimes
-      [{:id :jolt.sim.regime/maelstrom-broadcast-healthy
-        :label "Healthy three-node line"
-        :summary "Run Broadcast on the unpartitioned n1-n2-n3 line."
-        :scope [:jolt.maelstrom.broadcast/link-partition-selection]
-        :input {:message 42 :partition-links []}}
-       {:id :jolt.sim.regime/maelstrom-broadcast-partition-heal
-        :label "Partition n2-n3, heal, retry"
-        :summary "Partition n2-n3 until the post-broadcast heal."
-        :scope [:jolt.maelstrom.broadcast/link-partition-selection]
-        :input {:message 42 :partition-links [["n2" "n3"]]}}]
-      :plan-document
-      (viewer-experiment/read-edn
-       (slurp "examples/maelstrom-broadcast-plan.edn"))}]
+       :label "Maelstrom Broadcast: healthy line and partition/heal"
+       :scenario
+       'jolt.maelstrom.fixtures.broadcast-scenario/broadcast-partition-heal
+       :profile-id :hermetic
+       :schedule nil
+       :regimes
+       [{:id :jolt.sim.regime/maelstrom-broadcast-healthy
+         :label "Healthy three-node line"
+         :summary "Run Broadcast on the unpartitioned n1-n2-n3 line."
+         :scope [:jolt.maelstrom.broadcast/link-partition-selection]
+         :input {:message 42 :partition-links []}}
+        {:id :jolt.sim.regime/maelstrom-broadcast-partition-heal
+         :label "Partition n2-n3, heal, retry"
+         :summary "Partition n2-n3 until the post-broadcast heal."
+         :scope [:jolt.maelstrom.broadcast/link-partition-selection]
+         :input {:message 42 :partition-links [["n2" "n3"]]}}]
+       :plan-document
+       (viewer-experiment/read-edn
+        (slurp "examples/maelstrom-broadcast-plan.edn"))}
+      {:id :jolt.sim.preset/outbox-json-idempotency-lab-v1
+       :label "Outbox: JSON idempotency replay/conflict lab"
+       :scenario
+       'jolt.sim.fixtures.outbox-json-delivery-scenarios/exercise-replay-or-conflict
+       :profile-id :hermetic
+       :schedule nil
+       :regimes
+       [{:id :jolt.sim.regime/outbox-json-exact-replay
+         :label "Exact replay of the accepted command"
+         :summary "Replay the same accepted command value."
+         :scope [:jolt.example.outbox/request-id-reuse]
+         :input {:mode :exact-replay
+                 :payload [0 127 128 255]
+                 :request-id "req-1"
+                 :entity-id "entity-a"}}
+        {:id :jolt.sim.regime/outbox-json-conflict
+         :label "Conflicting reuse of the request id"
+         :summary "Reuse the request id with a different payload."
+         :scope [:jolt.example.outbox/request-id-reuse]
+         :input {:mode :conflict
+                 :payload [0 127 128 255]
+                 :request-id "req-1"
+                 :entity-id "entity-a"}}]
+       :plan-document
+       (viewer-experiment/read-edn
+        (slurp "examples/outbox-json-idempotency-plan.edn"))}]
     :runtime-config
     {:worker-command [(System/getenv "JOLT_SIM_BIN")
                       "-M:outbox-delivery-explore-worker"]
@@ -288,13 +338,15 @@ the same closed maps in the EDN configuration and inline the contents of
 [`examples/outbox-cancel-before-ack-plan.edn`](examples/outbox-cancel-before-ack-plan.edn)
 [`examples/maelstrom-echo-plan.edn`](examples/maelstrom-echo-plan.edn),
 [`examples/outbox-regime-lab-plan.edn`](examples/outbox-regime-lab-plan.edn),
+[`examples/maelstrom-broadcast-plan.edn`](examples/maelstrom-broadcast-plan.edn),
 and
-[`examples/maelstrom-broadcast-plan.edn`](examples/maelstrom-broadcast-plan.edn)
+[`examples/outbox-json-idempotency-plan.edn`](examples/outbox-json-idempotency-plan.edn)
 as `:plan-document`.
 
 The UI renders the selected preset's topology before execution -- four nodes
-and three connections for the outbox, the two endpoints and two simulated
-connections for Maelstrom Echo, the four endpoints and ten directed
+and three connections for the outbox and JSON idempotency presets, the two
+endpoints and two simulated connections for Maelstrom Echo, the four endpoints
+and ten directed
 request/reply connections for Maelstrom Broadcast -- then uses the existing
 progress, retained semantic activity, and terminal outcome views for the run:
 
@@ -302,9 +354,11 @@ progress, retained semantic activity, and terminal outcome views for the run:
 
 The Playwright fixture also captures
 `target/ripple-playwright/outbox-regime-lab-selection.png` after selecting the
-HTTP-first / first-poll-EINTR regime and
+HTTP-first / first-poll-EINTR regime,
 `select-maelstrom-broadcast-partition.png` under `test-results` after selecting
-and submitting the Broadcast partition/heal coordinate through the
+and submitting the Broadcast partition/heal coordinate, and
+`run-new-outbox-json-conflict.png` under `test-results` after selecting and
+submitting the JSON idempotency conflict coordinate through the
 deterministic browser fixture. That browser lane proves the catalog, topology,
 selection, and request UI; the real fresh-worker E2E is the separate execution
 proof. Generated browser artifacts remain CI outputs rather than checked-in

@@ -4,8 +4,15 @@
    exact-plan SQLite, and POSIX loopback controller worlds; the application is
    jolt.sim.fixtures.outbox-json-delivery/exercise-outbox-json-replay-conflict,
    which runs two ordinary jolt-http cycles through the production facade on
-   one SQLite connection and then the existing TCP/bencode delivery path."
+   one SQLite connection and then the existing TCP/bencode delivery path.
+
+   jolt.sim.activity/emit! records small bounded semantic milestones: one
+   workload-validated event after input acceptance and one mode-specific
+   terminal observation derived from the completed evidence. Emission is a
+   no-op without an observer; any observer lifecycle belongs to an external
+   worker, never to this fixture."
   (:require [jolt.net :as net]
+            [jolt.sim.activity :as activity]
             [jolt.sim.ffi-memory :as memory]
             [jolt.sim.fixtures.outbox-json-delivery :as fixture]
             [jolt.sim.fixtures.outbox-sqlite-plans :as plans]
@@ -78,16 +85,33 @@
        sort
        vec))
 
+(defn- emit!
+  "One closed v1 activity event; a no-op unless an external worker owns a
+   bound observer. The data map carries only bounded canonical values: the
+   validated mode, the route-safe identifiers, and small integers."
+  [tag data]
+  (activity/emit! [tag nil nil data]))
+
 (defn ^{:jolt.sim/scenario true
-        :jolt.sim/accepts-input true} exercise-replay-or-conflict
+        :jolt.sim/accepts-input true
+        :jolt.sim/activity-lifecycle-owned true} exercise-replay-or-conflict
   "Runs one validated replay/conflict input in a fresh worker. The mode and
    accepted command are converted to the ordinary fixture's closed workload;
    no simulator-side command handler or storage implementation is introduced.
-   Accepts the process-explorer protocol-v2 (runtime-overrides, input) arity."
+   Accepts the process-explorer protocol-v2 (runtime-overrides, input) arity.
+   Emits two bounded semantic milestones around the run: the validated
+   workload coordinate, then the mode-specific terminal observation with the
+   exact HTTP statuses, delivery count, and durable-mark witness taken from
+   the completed evidence."
   ([input]
    (exercise-replay-or-conflict {} input))
   ([overrides input]
    (validate-input! input)
+   (emit! :jolt.example.outbox/json-replay-conflict-workload
+          {:mode (:mode input)
+           :request-id (:request-id input)
+           :entity-id (:entity-id input)
+           :payload-octets (count (:payload input))})
    (let [workload (workload-for input)
          mem (memory/world)
          sqlite-world
@@ -109,6 +133,15 @@
           #(fixture/exercise-outbox-json-replay-conflict workload))
          result (:result controlled)
          effect-trace (:effect-trace controlled)]
+     (emit! (if (= :exact-replay (:mode input))
+              :jolt.example.outbox/json-exact-replay-observed
+              :jolt.example.outbox/json-conflict-observed)
+            {:request-id (:request-id input)
+             :entity-id (:entity-id input)
+             :http-statuses (mapv :status (get-in result [:http :requests]))
+             :deliveries (count (get-in result [:receiver :requests]))
+             :mark-changed?
+             (get-in result [:application :marking :changed?])})
      {:application (:application result)
       :http (:http result)
       :workload (:workload result)
