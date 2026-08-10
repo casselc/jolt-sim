@@ -1,0 +1,58 @@
+{:paths
+ [;; This workbench's own entry points.
+  "src"
+  ;; The canonical application's test root, added solely so the unchanged
+  ;; jolt.sim.fixtures.outbox-json-delivery namespace (and the fixture seams it
+  ;; shares) resolve as ordinary source. No fixture or application namespace
+  ;; is copied or modified.
+  "../../test"]
+
+ :deps
+ {;; Ripple: jolt.sim.viewer plus its own exact jolt-http / jolt-tcp /
+  ;; jolt-net / data.json / time pins, and jolt-sim-core itself through the
+  ;; viewer's ../report -> .. local chain. Those pins already match the root
+  ;; repository's :outbox-json-delivery-test alias byte-for-byte.
+  io.github.casselc/jolt-sim-viewer
+  {:local/root "../../viewer"}
+
+  ;; Real SQLite lane: the complete public DB coordinate so its native library
+  ;; declaration is available to the launcher. Deliberately NOT
+  ;; :deps/root "clj" -- that source-only root exists for hermetic
+  ;; simulation lanes, and this workbench runs the real host flow.
+  io.github.casselc/db
+  {:git/url "https://github.com/casselc/db.git"
+   :git/sha "df8f434f7ebf5e63b3f52ab6c5c2a2b2c92d3a6d"}
+
+  ;; The exact pins from the root :outbox-json-delivery-test alias that the
+  ;; viewer composition does not already carry. jolt-bytes is pinned directly
+  ;; (rather than left to jolt-bencode's own transitive pin) so this exact
+  ;; commit wins by dependency depth, exactly as in the root alias.
+  io.github.casselc/jolt-bencode
+  {:git/url "https://github.com/casselc/jolt-bencode.git"
+   :git/sha "6c68bf2a1dbd7e438923ce38252c2abbdcb1643f"}
+  io.github.casselc/jolt-bytes
+  {:git/url "https://github.com/casselc/jolt-bytes.git"
+   :git/sha "9c3280eb49c00d0373e32ee6cae74f961a254712"}
+  jolt-lang/router
+  {:git/url "https://github.com/jolt-lang/router"
+   :git/sha "a66fc944f1b1a43d2dff9b322619159c77809885"}
+  metosin/reitit-core
+  {:git/url "https://github.com/metosin/reitit"
+   :git/sha "5d5c965deb3c7c8d64b8dd636432eaa14f0324ec"
+   :deps/root "modules/reitit-core"}
+  weavejester/meta-merge
+  {:git/url "https://github.com/weavejester/meta-merge"
+   :git/sha "c968c38baccd4219fe0ba592d89af37ea8e426bf"}}
+
+ :aliases
+ {;; The workbench itself:
+  ;;   JOLT_SIM_VIEWER_TOKEN=<32+ chars> jolt -M:workbench [CONFIG.edn]
+  :workbench
+  {:main-opts ["-m" "outbox-workbench.main"]}
+
+  ;; Focused fresh-process gate: one real HTTP -> SQLite -> TCP/bencode flow
+  ;; driven through the live loopback /api/eval endpoint of an eval-only
+  ;; Ripple server started programmatically in this same process.
+  :eval-flow-test
+  {:extra-paths ["test"]
+   :main-opts ["-m" "outbox-workbench.eval-flow-test-main"]}}}

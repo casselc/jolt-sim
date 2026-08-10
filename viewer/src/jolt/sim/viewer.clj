@@ -263,7 +263,17 @@
   session instance ID is a 16--128 character RFC 3986 unreserved-ASCII epoch,
   not an authority credential. Runtime config is the exact ambient map later
   passed to `replay-document!`; replay-coordinate keys are rejected at
-  startup as well as by the replay API."
+  startup as well as by the replay API.
+
+  `:allowed-scenarios` and `:runtime-config` are an all-or-nothing replay
+  pair. Supplying both enables the fresh-process replay/run workbench exactly
+  as before. Omitting both selects the explicit evaluation/document-inspection
+  workbench: rendering and an injected `:evaluate-form!` service keep working,
+  while `/api/run`, `/api/replay`, `/api/replay-progress`, and
+  `/api/run-presets` fail closed as unavailable. Supplying only one of the two
+  keys is rejected, and a nonempty `:run-presets` catalog is rejected without
+  the replay pair because every preset resolves to coordinates only a fresh
+  worker can execute."
   [config]
   (when-not (map? config)
     (throw (config-error :not-a-map (str (class config)))))
@@ -275,6 +285,8 @@
         session-instance-id (:session-instance-id config)
         max-bytes (get config :max-document-bytes
                        default-max-document-bytes)
+        has-scenarios (contains? config :allowed-scenarios)
+        has-runtime (contains? config :runtime-config)
         scenarios (:allowed-scenarios config)
         runtime (:runtime-config config)
         run-presets (get config :run-presets [])
@@ -303,13 +315,30 @@
       (throw (config-error :invalid-max-document-bytes
                            {:value max-bytes
                             :maximum maximum-max-document-bytes})))
-    (when-not (and (set? scenarios)
-                   (seq scenarios)
-                   (every? namespaced-symbol? scenarios))
-      (throw (config-error :invalid-allowed-scenarios scenarios)))
-    (when-not (map? runtime)
-      (throw (config-error :runtime-config-not-a-map
-                           (str (class runtime)))))
+    ;; The replay pair is all-or-nothing. Omitting both keys selects the
+    ;; explicit evaluation/document-inspection-only workbench; supplying only
+    ;; one is a configuration error because replay needs both the scenario
+    ;; allowlist and the ambient runtime map to run a fresh worker.
+    (when (not= has-scenarios has-runtime)
+      (throw (config-error :replay-config-must-be-a-pair
+                           {:allowed-scenarios has-scenarios
+                            :runtime-config has-runtime})))
+    ;; A nonempty trusted run catalog is meaningless without the replay pair:
+    ;; every preset resolves to a scenario/input/schedule that only a fresh
+    ;; worker can execute, so it must fail startup rather than silently serve
+    ;; an unusable catalog.
+    (when (and (not has-scenarios)
+               (vector? run-presets)
+               (seq run-presets))
+      (throw (config-error :run-presets-require-replay-config nil)))
+    (when has-scenarios
+      (when-not (and (set? scenarios)
+                     (seq scenarios)
+                     (every? namespaced-symbol? scenarios))
+        (throw (config-error :invalid-allowed-scenarios scenarios)))
+      (when-not (map? runtime)
+        (throw (config-error :runtime-config-not-a-map
+                             (str (class runtime))))))
     (when (contains? config :presentation-registry)
       (try
         (presentation/validate-registry! (:presentation-registry config))
@@ -333,50 +362,50 @@
              :reason :invalid-activity-presentation-registry
              :detail (select-keys (ex-data error) [:reason :detail])}
             error)))))
-    (when (seq collisions)
-      (throw (config-error :runtime-coordinate-collision collisions)))
-    (when (seq unknown-runtime-keys)
-      (throw (config-error :unknown-runtime-keys unknown-runtime-keys)))
-    (when-not (valid-worker-command? (:worker-command runtime))
-      (throw (config-error :invalid-worker-command
-                           (:worker-command runtime))))
-    (when-not (and (string? (:dir runtime))
-                   (not (string/blank? (:dir runtime))))
-      (throw (config-error :invalid-project-directory (:dir runtime))))
-    (when-not (positive-integer? (:timeout-ms runtime))
-      (throw (config-error :invalid-timeout-ms (:timeout-ms runtime))))
-    (doseq [[key reason] [[:startup-timeout-ms :invalid-startup-timeout-ms]
-                          [:kill-grace-ms :invalid-kill-grace-ms]]]
-      (when (and (contains? runtime key)
-                 (not (positive-integer? (get runtime key))))
-        (throw (config-error reason (get runtime key)))))
-    (when (and (contains? runtime :extra-env)
-               (not (string-map? (:extra-env runtime))))
-      (throw (config-error :invalid-extra-env (:extra-env runtime))))
-    (when (and (contains? runtime :temp-dir)
-               (not (and (string? (:temp-dir runtime))
-                         (not (string/blank? (:temp-dir runtime))))))
-      (throw (config-error :invalid-temp-dir (:temp-dir runtime))))
-    (when (and (contains? runtime :retain-completed-artifacts?)
-               (not (boolean? (:retain-completed-artifacts? runtime))))
-      (throw (config-error :invalid-retain-completed-artifacts
-                           (:retain-completed-artifacts? runtime))))
-    ;; The opt-in worker lifecycle activity journal is a trusted runtime
-    ;; toggle only; the browser never supplies it. Enabling it requires
-    ;; retained completed artifacts so fast successful journal evidence
-    ;; cannot disappear before a terminal replay-progress poll.
-    (when (and (contains? runtime :activity-journal?)
-               (not (boolean? (:activity-journal? runtime))))
-      (throw (config-error :invalid-activity-journal
-                           (:activity-journal? runtime))))
-    (when (and (true? (:activity-journal? runtime))
-               (not (true? (:retain-completed-artifacts? runtime))))
-      (throw (config-error :activity-journal-requires-retention
-                           {:retain-completed-artifacts?
-                            (:retain-completed-artifacts? runtime)})))
+    (when has-scenarios
+      (when (seq collisions)
+        (throw (config-error :runtime-coordinate-collision collisions)))
+      (when (seq unknown-runtime-keys)
+        (throw (config-error :unknown-runtime-keys unknown-runtime-keys)))
+      (when-not (valid-worker-command? (:worker-command runtime))
+        (throw (config-error :invalid-worker-command
+                             (:worker-command runtime))))
+      (when-not (and (string? (:dir runtime))
+                     (not (string/blank? (:dir runtime))))
+        (throw (config-error :invalid-project-directory (:dir runtime))))
+      (when-not (positive-integer? (:timeout-ms runtime))
+        (throw (config-error :invalid-timeout-ms (:timeout-ms runtime))))
+      (doseq [[key reason] [[:startup-timeout-ms :invalid-startup-timeout-ms]
+                            [:kill-grace-ms :invalid-kill-grace-ms]]]
+        (when (and (contains? runtime key)
+                   (not (positive-integer? (get runtime key))))
+          (throw (config-error reason (get runtime key)))))
+      (when (and (contains? runtime :extra-env)
+                 (not (string-map? (:extra-env runtime))))
+        (throw (config-error :invalid-extra-env (:extra-env runtime))))
+      (when (and (contains? runtime :temp-dir)
+                 (not (and (string? (:temp-dir runtime))
+                           (not (string/blank? (:temp-dir runtime))))))
+        (throw (config-error :invalid-temp-dir (:temp-dir runtime))))
+      (when (and (contains? runtime :retain-completed-artifacts?)
+                 (not (boolean? (:retain-completed-artifacts? runtime))))
+        (throw (config-error :invalid-retain-completed-artifacts
+                             (:retain-completed-artifacts? runtime))))
+      (when (and (contains? runtime :activity-journal?)
+                 (not (boolean? (:activity-journal? runtime))))
+        (throw (config-error :invalid-activity-journal
+                             (:activity-journal? runtime))))
+      (when (and (true? (:activity-journal? runtime))
+                 (not (true? (:retain-completed-artifacts? runtime))))
+        (throw (config-error :activity-journal-requires-retention
+                             {:retain-completed-artifacts?
+                              (:retain-completed-artifacts? runtime)}))))
     (assoc config
            :port port
            :max-document-bytes max-bytes
+           ;; Even without replay, retain the existing closed catalog type.
+           ;; Only the empty vector is valid; nil, maps, lists, and metadata
+           ;; must not become accepted merely because no route can execute it.
            :run-presets (validate-run-presets! scenarios run-presets))))
 
 (defmacro ^:private embedded-resource [resource]
@@ -920,6 +949,15 @@
 (defn- authorized? [config request]
   (secure-string= (:capability-token config)
                   (get-in request [:headers "x-jolt-sim-capability"])))
+
+(defn- replay-enabled?
+  "True when the validated config carries the all-or-nothing replay pair.
+  `validate-config!` guarantees `:allowed-scenarios` and `:runtime-config` are
+  either both present (fresh-process replay/run workbench) or both absent
+  (explicit evaluation/document-inspection-only workbench), so testing one key
+  is sufficient."
+  [config]
+  (contains? config :allowed-scenarios))
 
 (defn- session-instance-matches? [config request]
   (if-let [expected (:session-instance-id config)]
@@ -1972,6 +2010,18 @@
   Run and replay share the same body-consuming admission lease, progress
   state, public artifact-path redaction, and terminal activity paging.
 
+  `:allowed-scenarios` and `:runtime-config` are an all-or-nothing replay
+  pair. When startup config omits both, Ripple runs as an explicit
+  evaluation/document-inspection-only workbench: rendering and an injected
+  `:evaluate-form!` service keep working, while authorized `/api/run`,
+  `/api/replay`, `/api/replay-progress`, and `/api/run-presets` fail closed as
+  unavailable (`:run-config-unavailable`, `:replay-unavailable`,
+  `:replay-progress-unavailable`, and `:run-presets-unavailable`) before any
+  request body is read or any service is invoked. Unauthorized requests to
+  those routes still answer 403. Supplying only one of the two keys is
+  rejected at startup, and a nonempty `:run-presets` catalog is rejected
+  without the replay pair.
+
   `GET /api/session-frame` is an optional embedding-only, inspection surface.
   When the trusted services map supplies `:read-session-frame`, it returns one
   coherent canonical Session projection, enabled branch references, isolated
@@ -2071,13 +2121,17 @@
            (and (= :get method) (= "/api/replay-progress" uri))
             (if-not (authorized? config request)
               (error-response 403 :forbidden nil)
-              (replay-progress-response
-               config activity-registry active-replay request))
+              (if (replay-enabled? config)
+                (replay-progress-response
+                 config activity-registry active-replay request)
+                (error-response 404 :replay-progress-unavailable nil)))
 
            (and (= :get method) (= "/api/run-presets" uri))
            (if-not (authorized? config request)
              (error-response 403 :forbidden nil)
-             (run-presets-response run-catalog))
+             (if (replay-enabled? config)
+               (run-presets-response run-catalog)
+               (error-response 404 :run-presets-unavailable nil)))
 
            (and (= :get method) (= "/api/session-frame" uri))
            (execute-session-frame-request
@@ -2088,8 +2142,18 @@
             config services session-active? document-active? request)
 
            (and (= :post method) (= "/api/run" uri))
-           (execute-run-request
-            config services document-active? active-replay request)
+           (if (replay-enabled? config)
+             (execute-run-request
+              config services document-active? active-replay request)
+             ;; Eval-only workbench: fail closed as unavailable before reading
+             ;; any request body or invoking any service. Authorization is
+             ;; still checked first so an untrusted caller gets 403, never an
+             ;; availability oracle.
+             (if-not (authorized? config request)
+               (error-response 403 :forbidden nil)
+               ;; Distinguish missing replay authority/configuration from the
+               ;; existing :run-unavailable response for a missing service.
+               (error-response 404 :run-config-unavailable nil)))
 
            (and (= :post method) (= "/api/eval" uri))
            (execute-eval-request
@@ -2109,26 +2173,34 @@
                           ((render-service services kind) document)))))
 
            (and (= :post method) (= "/api/replay" uri))
-           (execute-document-request
-            config document-active? request
-            (fn [kind document]
-              ;; Reject trace documents before any restore or worker
-              ;; execution: replay is a Case/Outcome-only path.
-              (when-not (= :case-outcome kind)
-                (throw
-                 (ex-info
-                  "viewer replay accepts only Case/Outcome documents"
-                  {:type (case kind
-                           :experiment-plan experiment-plan-not-replayable
-                           :official-maelstrom-run
-                           official-maelstrom-run-not-replayable
-                           trace-not-replayable)
-                   :kind kind})))
-              (allowed-replay! config document)
-              (execute-run-with-progress!
-               config active-replay
-               (fn [runtime]
-                 ((:replay-document services) document runtime)))))
+           (if (replay-enabled? config)
+             (execute-document-request
+              config document-active? request
+              (fn [kind document]
+                ;; Reject trace documents before any restore or worker
+                ;; execution: replay is a Case/Outcome-only path.
+                (when-not (= :case-outcome kind)
+                  (throw
+                   (ex-info
+                    "viewer replay accepts only Case/Outcome documents"
+                    {:type (case kind
+                             :experiment-plan experiment-plan-not-replayable
+                             :official-maelstrom-run
+                             official-maelstrom-run-not-replayable
+                             trace-not-replayable)
+                     :kind kind})))
+                (allowed-replay! config document)
+                (execute-run-with-progress!
+                 config active-replay
+                 (fn [runtime]
+                   ((:replay-document services) document runtime)))))
+             ;; Eval-only workbench: fail closed as unavailable before reading
+             ;; any request body or invoking any service. Authorization is
+             ;; still checked first so an untrusted caller gets 403, never an
+             ;; availability oracle.
+             (if-not (authorized? config request)
+               (error-response 403 :forbidden nil)
+               (error-response 404 :replay-unavailable nil)))
 
            :else
            (error-response 404 :not-found nil)))))))

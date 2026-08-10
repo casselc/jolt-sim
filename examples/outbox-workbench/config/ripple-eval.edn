@@ -1,0 +1,13 @@
+;; Eval-only Ripple workbench config for the canonical outbox application.
+;;
+;; The capability token deliberately never appears here; jolt.sim.viewer reads
+;; it from the JOLT_SIM_VIEWER_TOKEN environment variable at startup.
+;;
+;; Both replay keys (:allowed-scenarios and :runtime-config) are omitted, so
+;; this is the explicit evaluation/document-inspection-only workbench:
+;; /api/eval and document inspection work, while /api/run, /api/replay,
+;; /api/replay-progress, and /api/run-presets fail closed as unavailable.
+;;
+;; Port 8788 is the documented default for repeated interactive use; use
+;; :port 0 in an override config for an ephemeral loopback port.
+{:port 8788}
