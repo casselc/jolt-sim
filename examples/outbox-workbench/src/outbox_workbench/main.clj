@@ -9,6 +9,7 @@
   JOLT_SIM_VIEWER_TOKEN; the default config listens on port 8788. Pass one
   alternate config path to override the checked-in default."
   (:require [jolt.sim.fixtures.outbox-json-delivery]
+            [jolt.sim.fixtures.outbox-json-delivery-live]
             [jolt.sim.viewer :as viewer]))
 
 (def default-config-path

@@ -297,10 +297,15 @@
      :delivery-id [:outbox/delivery outbox-id]
      :attempt-id [:outbox/delivery-attempt outbox-id 1]}))
 
-(defn- row->delivery-wire
+(defn delivery-message
+  "Projects one canonical durable outbox row into the ordinary framed
+  delivery protocol's exact wire value. The optional attempt is a positive
+  attempt number; the default is the first attempt."
   ([row]
-   (row->delivery-wire row 1))
+   (delivery-message row 1))
   ([row attempt]
+   (when-not (and (integer? attempt) (pos? attempt))
+     (fail! :invalid-delivery-attempt {:value attempt}))
    {"type" "outbox_delivery"
     "outbox-id" (:outbox-id row)
     "request-id" (:request-id row)
@@ -319,16 +324,34 @@
    "outbox-id" (get message "outbox-id")
    "attempt" (get message "attempt")})
 
-(defn- receiver-reply [received reply-for]
+(defn- receiver-reply [record-received! reply-for]
   (fn [message]
     (when-not (and (map? message)
                    (= delivery-wire-keys (set (keys message)))
                    (= "outbox_delivery" (get message "type")))
       (fail! :invalid-delivery-wire {:value message}))
-    (swap! received conj message)
+    (record-received! message)
     (reply-for message)))
 
-(defn- exchange-deliveries!
+(defn delivery-receiver-handler
+  "Builds the unchanged framed TCP/bencode receiver handler for an app-owned
+  listener. Every exact delivery message is reported to `record-received!` before
+  `reply-for` chooses its acknowledgement. `record-received!` is a function
+  of one exact message, allowing the owner to impose its own retention bound.
+  The returned handler is the same public framed handler used by the one-shot
+  canonical flow."
+  [record-received! reply-for]
+  (when-not (and (fn? record-received!) (fn? reply-for))
+    (fail! :invalid-delivery-receiver
+           {:record-function? (fn? record-received!)
+            :reply-function? (fn? reply-for)}))
+  (framed/framed-handler (receiver-reply record-received! reply-for)))
+
+(defn exchange-deliveries!
+  "Exchanges exact delivery messages with an already-running framed receiver
+  over one fresh real teensyp connection. The caller retains receiver and
+  durable-state ownership; this function owns and idempotently closes only
+  its connection."
   ([host port messages]
    (exchange-deliveries! host port messages nil))
   ([host port messages operation-context]
@@ -369,11 +392,15 @@
          rows (filterv #(= :pending (:status %)) (:outbox state))
          _ (when-not (= 1 (count rows))
              (fail! :unexpected-pending-count {:count (count rows)}))
-         messages (mapv #(row->delivery-wire % attempt) rows)]
+         messages (mapv #(delivery-message % attempt) rows)]
      {:state state
       :messages messages})))
 
-(defn- validate-acks! [messages replies]
+(defn validate-acknowledgements!
+  "Fails closed unless every reply is the exact correlated acknowledgement
+  for its delivery message. This function is deliberately pure with respect
+  to storage; callers may mark durable rows only after it returns."
+  [messages replies]
   (let [expected (mapv expected-ack messages)]
     (when-not (= expected replies)
       (fail! :ack-mismatch
@@ -386,7 +413,7 @@
   ([host port messages operation-context]
    (check-operation-deadline! operation-context :before-delivery)
    (let [exchange (exchange-deliveries! host port messages operation-context)]
-     (validate-acks! messages (:replies exchange))
+     (validate-acknowledgements! messages (:replies exchange))
      (check-operation-deadline! operation-context :after-ack)
      exchange)))
 
@@ -880,8 +907,7 @@
          (tcp/run-server
           :port 0
           :reuse-address? true
-          :handler (framed/framed-handler
-                    (receiver-reply received reply-for))
+          :handler (delivery-receiver-handler #(swap! received conj %) reply-for)
           :error-logger
           #(swap! receiver-errors conj (stable-error-summary %)))
          body
@@ -1069,7 +1095,7 @@
           :port 0
           :reuse-address? true
           :handler (framed/framed-handler
-                    (receiver-reply received expected-ack))
+                    (receiver-reply #(swap! received conj %) expected-ack))
           :error-logger
           #(swap! receiver-errors conj (stable-error-summary %)))
          command-evidence* (atom nil)
@@ -1166,8 +1192,8 @@
                         (fail! :retry-attempt-2-failed
                                {:attempt-2 (dissoc attempt-2 :status)}))
                     delivery (:exchange attempt-2)
-                    _ (validate-acks! (:messages reloaded)
-                                      (:replies delivery))
+                    _ (validate-acknowledgements! (:messages reloaded)
+                                                  (:replies delivery))
                     ;; Only after the exact correlated attempt-2 ack: durable
                     ;; marking for the one outbox id through the same
                     ;; still-open connection, then the final reload checks.
@@ -1385,7 +1411,7 @@
           :port 0
           :reuse-address? true
           :handler (framed/framed-handler
-                    (receiver-reply received expected-ack))
+                    (receiver-reply #(swap! received conj %) expected-ack))
           :error-logger
           #(swap! receiver-errors conj (stable-error-summary %)))
          command-evidence* (atom nil)
@@ -1583,7 +1609,7 @@
           :port 0
           :reuse-address? true
           :handler (framed/framed-handler
-                    (receiver-reply received expected-ack))
+                    (receiver-reply #(swap! received conj %) expected-ack))
           :error-logger
           #(swap! receiver-errors conj (stable-error-summary %)))
          body

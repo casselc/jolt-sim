@@ -164,6 +164,61 @@
        :headers headers
        :body    body})))
 
+(defn- request-running-server-raw!
+  [host port request-builder server-errors operation-context]
+   (let [connection* (atom nil)
+         outcome
+         (try
+           {:value
+            (let [connection (client/connect host port
+                                             (connect-options operation-context))
+                  _ (reset! connection* connection)
+                  request (request-builder host port)
+                  sent (client/send-all! connection request
+                                         (io-options operation-context))
+                  raw (read-response-until-eof! connection operation-context)
+                  parsed (parse-response raw server-errors)]
+              {:port port
+               :sent-result sent
+               :raw-length (alength raw)
+               :parsed parsed
+               :connection-info (client/connection-info connection)
+               :close-results
+               {:connection [(client/close! connection)
+                             (client/close! connection)]}})}
+           (catch :default error
+             {:error error})
+           (finally
+             (when-let [connection @connection*]
+               (client/close! connection))))]
+     (if-let [error (:error outcome)]
+       (throw error)
+       (:value outcome))))
+
+(defn request-running-server!
+  "Drives one request/response cycle against an already-running HTTP server.
+
+  `request-builder` receives `host` and `port` and must return the exact byte
+  array to send. `server-errors` is the owning server's error atom; it is read
+  only to attach stable diagnostics when response parsing or client I/O fails.
+  The optional operation context carries the same absolute deadline through
+  connect, send, and every response read. The caller retains server ownership;
+  this function owns and idempotently closes only its client connection."
+  ([host port request-builder server-errors]
+   (request-running-server! host port request-builder server-errors nil))
+  ([host port request-builder server-errors operation-context]
+   (try
+     (request-running-server-raw!
+      host port request-builder server-errors operation-context)
+     (catch :default error
+       (throw
+        (ex-info
+         (or (ex-message error) (str error))
+         (assoc (or (ex-data error) {})
+                :http-sqlite/client-error (stable-error-summary error)
+                :http-sqlite/server-errors @server-errors)
+         error))))))
+
 (defn run-request-cycle
   "Starts a jolt-http server on an ephemeral port with `handler`, drives one
    request/response cycle through the public teensyp.client -- itself built
@@ -189,34 +244,15 @@
                                   :reuse-address? true
                                   :error-logger
                                   #(swap! server-errors conj
-                                          (stable-error-summary %)))
-         connection* (atom nil)]
+                                          (stable-error-summary %)))]
      (let [outcome
            (try
-             {:value
-              (let [port (:port server)
-                    connection (client/connect
-                                "127.0.0.1" port
-                                (connect-options operation-context))
-                    _ (reset! connection* connection)
-                    request (request-builder "127.0.0.1" port)
-                    sent (client/send-all! connection request
-                                           (io-options operation-context))
-                    raw (read-response-until-eof! connection operation-context)
-                    parsed (parse-response raw server-errors)]
-                {:port port
-                 :sent-result sent
-                 :raw-length (alength raw)
-                 :parsed parsed
-                 :connection-info (client/connection-info connection)
-                 :close-results
-                 {:connection [(client/close! connection)
-                               (client/close! connection)]}})}
+             {:value (request-running-server-raw!
+                      "127.0.0.1" (:port server) request-builder server-errors
+                      operation-context)}
              (catch :default error
                {:error error})
              (finally
-               (when-let [connection @connection*]
-                 (client/close! connection))
                (http/stop-server server)))]
        ;; stop-server quiesces the reactor and active handlers, either of which
        ;; may report a late error. Snapshot only after shutdown has completed.
