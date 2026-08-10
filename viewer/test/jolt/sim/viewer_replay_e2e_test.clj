@@ -129,6 +129,126 @@
     "jolt.maelstrom.broadcast/link-healed"
     "jolt.maelstrom.broadcast/delivery-retried"})
 
+(def ^:private json-idempotency-scenario
+  'jolt.sim.fixtures.outbox-json-delivery-scenarios/exercise-replay-or-conflict)
+
+(def ^:private json-idempotency-preset-id
+  :jolt.sim.preset/outbox-json-idempotency-lab-v1)
+
+(def ^:private json-idempotency-preset-label
+  "Outbox: JSON idempotency replay/conflict lab")
+
+(def ^:private json-exact-replay-regime-id
+  :jolt.sim.regime/outbox-json-exact-replay)
+
+(def ^:private json-conflict-regime-id
+  :jolt.sim.regime/outbox-json-conflict)
+
+(def ^:private json-exact-replay-label
+  "Exact replay of the accepted command")
+
+(def ^:private json-conflict-label
+  "Conflicting reuse of the request id")
+
+(def ^:private json-exact-replay-summary
+  (str "Run the trusted routed-JSON outbox example with the second request "
+       "carrying the same accepted command value."))
+
+(def ^:private json-conflict-summary
+  (str "Run the trusted routed-JSON outbox example with the second request "
+       "reusing the request id with a different payload."))
+
+(def ^:private json-idempotency-scope
+  [:jolt.example.outbox/request-id-reuse])
+
+(def ^:private json-exact-replay-input
+  {:mode :exact-replay
+   :payload [0 127 128 255]
+   :request-id "req-1"
+   :entity-id "entity-a"})
+
+(def ^:private json-conflict-input
+  {:mode :conflict
+   :payload [0 127 128 255]
+   :request-id "req-1"
+   :entity-id "entity-a"})
+
+(def ^:private json-exact-replay-activity-tags
+  ["jolt.sim.explore/scenario-started"
+   "jolt.example.outbox/json-replay-conflict-workload"
+   "jolt.example.outbox/json-exact-replay-observed"
+   "jolt.sim.explore/scenario-completed"])
+
+(def ^:private json-conflict-activity-tags
+  ["jolt.sim.explore/scenario-started"
+   "jolt.example.outbox/json-replay-conflict-workload"
+   "jolt.example.outbox/json-conflict-observed"
+   "jolt.sim.explore/scenario-completed"])
+
+;; The exact evidence projections the unchanged routed-JSON fixture and shared
+;; delivery flow must produce for the canonical req-1/entity-a input. The
+;; conflict regime's second command keeps the reused request id and gains the
+;; scenario-derived distinct payload [0 127 128 255 0].
+(def ^:private json-accepted-command
+  {:request-id "req-1" :entity-id "entity-a" :payload [0 127 128 255]})
+
+(def ^:private json-conflict-second-command
+  (assoc json-accepted-command :payload [0 127 128 255 0]))
+
+(def ^:private json-command-result
+  {:status :committed
+   :request-id "req-1"
+   :entity-id "entity-a"
+   :version 1
+   :outbox-id 1})
+
+(def ^:private json-expected-identities
+  {:request-id "req-1"
+   :transaction-id [:outbox/command "req-1"]
+   :outbox-id 1
+   :delivery-id [:outbox/delivery 1]
+   :attempt-id [:outbox/delivery-attempt 1 1]})
+
+(def ^:private json-pending-row
+  {:outbox-id 1
+   :request-id "req-1"
+   :entity-id "entity-a"
+   :version 1
+   :payload [0 127 128 255]
+   :status :pending})
+
+(def ^:private json-pending-state
+  {:entities {"entity-a" {:version 1 :payload [0 127 128 255]}}
+   :request-log {"req-1" {:command json-accepted-command
+                          :result json-command-result}}
+   :next-outbox-id 2
+   :outbox [json-pending-row]})
+
+(def ^:private json-delivered-state
+  (assoc json-pending-state
+         :outbox [(assoc json-pending-row :status :delivered)]))
+
+(def ^:private json-committed-wire
+  {"status" "committed"
+   "request-id" "req-1"
+   "entity-id" "entity-a"
+   "version" 1
+   "outbox-id" 1})
+
+(def ^:private json-conflict-wire
+  {"error" {"type" "request-id-conflict"
+            "reason" "request-id-conflict"
+            "request-id" "req-1"}})
+
+(def ^:private json-delivery-message
+  {"type" "outbox_delivery"
+   "outbox-id" 1
+   "request-id" "req-1"
+   "entity-id" "entity-a"
+   "version" 1
+   "payload" [0 127 128 255]
+   "attempt" 1})
+
 (defn- canonical-regime [id label summary scope input]
   {:id id :label label :summary summary :scope scope :input input})
 
@@ -288,7 +408,11 @@
               {:worker-command [bin "-M:outbox-delivery-explore-worker"]
                :dir project-dir
                :timeout-ms 60000
-               :startup-timeout-ms 30000
+               ;; A fresh checkout may need to resolve and load the complete
+               ;; HTTP/SQLite/TCP worker graph before it can publish the
+               ;; application checkpoint. Keep bootstrap and execution
+               ;; separately bounded, using the established whole-app limit.
+               :startup-timeout-ms 120000
                :kill-grace-ms 500
                :temp-dir artifact-root
                :extra-env
@@ -334,12 +458,12 @@
                      "X-Jolt-Sim-Capability" capability-token
                      "X-Jolt-Sim-Document-Kind" "case-outcome"}
                     (case-outcome/canonical-edn document)
-                    120000)}
+                    240000)}
                   (catch :default error {:error error})))))
             _ (.setDaemon replay-thread true)
             _ (.start replay-thread)
             _ (reset! replay-outcome* replay-thread-outcome)
-            activity (wait-for-checkpoint! activity-checkpoint 60000)
+            activity (wait-for-checkpoint! activity-checkpoint 180000)
             _ (when (= :timeout activity)
                 (throw
                  (ex-info "ordinary outbox application checkpoint timed out"
@@ -516,7 +640,11 @@
               {:worker-command [bin "-M:outbox-http-webhook-explore-worker"]
                :dir project-dir
                :timeout-ms 60000
-               :startup-timeout-ms 30000
+               ;; This worker resolves the HTTP/webhook/native dependency
+               ;; graph cold in fresh checkouts. Keep startup separately
+               ;; bounded, but use the same two-minute bootstrap allowance as
+               ;; the later whole-application presets.
+               :startup-timeout-ms 120000
                :kill-grace-ms 500
                :temp-dir artifact-root
                :retain-completed-artifacts? true}}
@@ -548,7 +676,7 @@
               "X-Jolt-Sim-Capability" capability-token
               "X-Jolt-Sim-Document-Kind" "case-outcome"}
              encoded
-             120000)
+             180000)
             replay-body (response-body replay-raw)
             outcome (edn/read-string replay-body)
             trusted-outcome @trusted-outcome*]
@@ -1386,6 +1514,290 @@
             (append-phase-best-effort!
              journal
              (cond-> {:phase :broadcast-run-new-viewer-stopped}
+               cleanup-error
+               (assoc :cleanup-error (ex-message cleanup-error))))
+            (sim-repl/clear!)
+            (when (nil? @primary*)
+              (when-let [secondary cleanup-error]
+                (throw secondary))))))))
+
+(deftest trusted-run-preset-runs-json-idempotency-regimes-in-fresh-workers
+  (let [artifact-root (required-environment
+                       "JOLT_SIM_VIEWER_ARTIFACT_DIR")
+        journal (str artifact-root "/viewer-run-json-idempotency-progress.edn")
+        server* (atom nil)
+        primary* (atom nil)]
+    (append-phase-best-effort! journal {:phase :json-idempotency-started})
+    (sim-repl/clear!)
+    (try
+      (let [bin (required-environment "JOLT_SIM_BIN")
+            project-dir (required-environment "JOLT_SIM_PROJECT_DIR")
+            plan (viewer-experiment/read-edn
+                  (slurp "examples/outbox-json-idempotency-plan.edn"))
+            server
+            (viewer/start!
+             {:port 0
+              :capability-token capability-token
+              :max-document-bytes (* 1024 1024)
+              :allowed-scenarios #{json-idempotency-scenario}
+              ;; One trusted routed-JSON idempotency preset over the existing
+              ;; marked replay/conflict scenario, reusing the same existing
+              ;; fresh worker command unchanged -- that worker alias already
+              ;; resolves the fixture from this repository's own test roots.
+              :run-presets
+              [{:id json-idempotency-preset-id
+                :label json-idempotency-preset-label
+                :scenario json-idempotency-scenario
+                :profile-id :hermetic
+                :schedule nil
+                :regimes
+                [(canonical-regime
+                  json-exact-replay-regime-id
+                  json-exact-replay-label
+                  json-exact-replay-summary
+                  json-idempotency-scope
+                  json-exact-replay-input)
+                 (canonical-regime
+                  json-conflict-regime-id
+                  json-conflict-label
+                  json-conflict-summary
+                  json-idempotency-scope
+                  json-conflict-input)]
+                :plan-document plan}]
+              :runtime-config
+              {:worker-command [bin "-M:outbox-delivery-explore-worker"]
+               :dir project-dir
+               :timeout-ms 60000
+               :startup-timeout-ms 120000
+               :kill-grace-ms 500
+               :temp-dir artifact-root
+               :retain-completed-artifacts? true
+               :activity-journal? true}})
+            _ (reset! server* server)
+            port (:port server)
+            _ (append-phase-best-effort!
+               journal {:phase :json-idempotency-viewer-started :port port})
+            catalog-raw
+            (viewer-test/request-over-loopback!
+             port "GET" "/api/run-presets"
+             {"X-Jolt-Sim-Capability" capability-token}
+             ""
+             5000)
+            catalog-body (response-body catalog-raw)
+            catalog (json/read-str catalog-body)]
+        (append-phase-best-effort!
+         journal {:phase :json-idempotency-catalog-observed})
+        (is (string/starts-with? catalog-raw "HTTP/1.1 200"))
+        (is (= 2 (get catalog "version")))
+        ;; The closed catalog publishes exactly the one trusted preset with
+        ;; its two safe regime coordinates; the scenario, the inputs, the
+        ;; worker command, and every host path stay server-owned.
+        (is (= [{"id" "jolt.sim.preset/outbox-json-idempotency-lab-v1"
+                 "label" json-idempotency-preset-label
+                 "profileId" "hermetic"
+                 "planEdn" (viewer-experiment/canonical-edn plan)
+                 "regimes"
+                 [{"id" "jolt.sim.regime/outbox-json-exact-replay"
+                   "label" json-exact-replay-label
+                   "summary" json-exact-replay-summary
+                   "scope" ["jolt.example.outbox/request-id-reuse"]}
+                  {"id" "jolt.sim.regime/outbox-json-conflict"
+                   "label" json-conflict-label
+                   "summary" json-conflict-summary
+                   "scope" ["jolt.example.outbox/request-id-reuse"]}]}]
+               (get catalog "presets")))
+        (is (not (string/includes? catalog-body (str json-idempotency-scenario))))
+        (is (not (string/includes? catalog-body "req-1")))
+        (is (not (string/includes? catalog-body "entity-a")))
+        (is (not (string/includes? catalog-body ":exact-replay")))
+        (is (not (string/includes? catalog-body ":conflict")))
+        (is (not (string/includes? catalog-body bin)))
+        (is (not (string/includes? catalog-body artifact-root)))
+        (is (not (string/includes? catalog-body
+                                  "-M:outbox-delivery-explore-worker")))
+        (let [run-regime!
+              (fn [regime-id expected-input expected-tags]
+                (let [run-raw
+                      (viewer-test/request-over-loopback!
+                       port "POST" "/api/run"
+                       {"Content-Type" "application/json"
+                        "X-Jolt-Sim-Capability" capability-token}
+                       (json/write-str
+                        {"version" 2
+                         "presetId"
+                         "jolt.sim.preset/outbox-json-idempotency-lab-v1"
+                         "regimeId" (str (namespace regime-id)
+                                         "/" (name regime-id))})
+                       180000)
+                      public-outcome (edn/read-string (response-body run-raw))
+                      recorded (sim-repl/last-run)
+                      trusted-outcome (:outcome recorded)
+                      evidence (:result public-outcome)
+                      http (:http evidence)
+                      requests (:requests http)
+                      first-http (first requests)
+                      second-http (second requests)
+                      workload (:workload evidence)
+                      application (:application evidence)
+                      receiver (:receiver evidence)
+                      progress-raw
+                      (viewer-test/request-over-loopback!
+                       port "GET" "/api/replay-progress"
+                       {"X-Jolt-Sim-Capability" capability-token}
+                       ""
+                       5000)
+                      progress (json/read-str (response-body progress-raw))
+                      activity-page (get progress "activity")
+                      events (get activity-page "events")
+                      tags (mapv #(get % "tag") events)
+                      semantic-data
+                      (->> events
+                           (filter #(string/starts-with?
+                                     (get % "tag")
+                                     "jolt.example.outbox/json-"))
+                           (mapv #(nth (edn/read-string (get % "edn")) 3)))]
+                  (append-phase-best-effort!
+                   journal
+                   {:phase :json-idempotency-regime-returned
+                    :regime-id regime-id
+                    :status (:status public-outcome)
+                    :artifact-dir (:artifact-dir trusted-outcome)
+                    :activity-tags tags})
+                  (is (string/starts-with? run-raw "HTTP/1.1 200"))
+                  (is (= :completed (:status public-outcome)))
+                  (is (= 0 (:exit public-outcome)))
+                  (is (not (contains? public-outcome :artifact-dir)))
+                  (is (= {:scenario json-idempotency-scenario
+                          :input expected-input
+                          :schedule nil}
+                         (select-keys (:config recorded)
+                                      [:scenario :input :schedule])))
+                  ;; Both regimes commit the same fresh command, run exactly
+                  ;; two ordinary jolt-http cycles, and leave durable state
+                  ;; unchanged across the second request.
+                  (is (= 2 (count requests)))
+                  (is (= 201 (:status first-http)))
+                  (is (every? #(and (= "application/json" (:content-type %))
+                                    (= [] (:server-errors %))
+                                    (= {:connection [true false]}
+                                       (:close-results %)))
+                              requests))
+                  (is (= json-committed-wire (:response first-http)))
+                  (is (= #{:mode :accepted-command :second-command
+                           :state-before-second :state-after-second
+                           :second-command-evidence
+                           :delivery-authorized-command}
+                         (set (keys workload))))
+                  (is (= (:mode expected-input) (:mode workload)))
+                  (is (= json-accepted-command (:accepted-command workload)))
+                  (is (= json-pending-state (:state-before-second workload)))
+                  (is (= (:state-before-second workload)
+                         (:state-after-second workload))
+                      "request two must not mutate durable state")
+                  (is (= json-accepted-command
+                         (:delivery-authorized-command workload))
+                      "only the accepted command may authorize delivery")
+                  (is (= {:value json-accepted-command
+                          :result json-command-result
+                          :emitted [json-pending-row]}
+                         (:command application)))
+                  (is (= json-expected-identities (:identities application)))
+                  (is (= json-pending-state (:pending-state application)))
+                  ;; Exactly one delivery and exactly one durable mark.
+                  (is (= [json-delivery-message]
+                         (get-in application [:delivery :requests])))
+                  (is (= {:row (assoc json-pending-row :status :delivered)
+                          :changed? true}
+                         (:marking application)))
+                  (is (= json-delivered-state (:store-state application)))
+                  (is (= [json-delivery-message] (:requests receiver)))
+                  (is (= [] (:server-errors receiver)))
+                  (is (= {:plan-index 35 :plan-count 35
+                          :open-dbs 0 :active-stmts 0}
+                         (:sqlite evidence)))
+                  (is (true? (get-in evidence [:routes :all-handled?])))
+                  (is (= {:memory true :sqlite true :posix true}
+                         (:clean? evidence)))
+                  (is (and (string? (:artifact-dir trusted-outcome))
+                           (fs/exists? (:artifact-dir trusted-outcome))))
+                  (is (string/starts-with? progress-raw "HTTP/1.1 200"))
+                  (is (= "completed" (get progress "status")))
+                  (is (= {"catalogVersion" 2
+                          "presetId"
+                          "jolt.sim.preset/outbox-json-idempotency-lab-v1"
+                          "regimeId" (str (namespace regime-id)
+                                          "/" (name regime-id))
+                          "scope" ["jolt.example.outbox/request-id-reuse"]}
+                         (get progress "selection")))
+                  (is (= expected-tags tags))
+                  (is (= [{:mode (:mode expected-input)
+                           :request-id "req-1"
+                           :entity-id "entity-a"
+                           :payload-octets 4}
+                          {:request-id "req-1"
+                           :entity-id "entity-a"
+                           :http-statuses
+                           [201 (if (= :exact-replay (:mode expected-input))
+                                  200
+                                  409)]
+                           :deliveries 1
+                           :mark-changed? true}]
+                         semantic-data)
+                      "retained semantic activity must match the run evidence")
+                  (is (= "complete"
+                         (get-in activity-page ["recovery" "status"])))
+                  {:evidence evidence
+                   :first-http first-http
+                   :second-http second-http
+                   :workload workload
+                   :artifact-dir (:artifact-dir trusted-outcome)}))
+              replay (run-regime! json-exact-replay-regime-id
+                                  json-exact-replay-input
+                                  json-exact-replay-activity-tags)
+              conflict (run-regime! json-conflict-regime-id
+                                    json-conflict-input
+                                    json-conflict-activity-tags)]
+          ;; Each regime ran the unchanged scenario in its own fresh retained
+          ;; worker directory.
+          (is (= 2 (count (set [(:artifact-dir replay)
+                                (:artifact-dir conflict)])))
+              "each regime owns one fresh retained worker directory")
+          ;; Exact replay: 200, byte-identical response bytes, and the second
+          ;; request published no new emission.
+          (is (= 200 (:status (:second-http replay))))
+          (is (= (:body-octets (:first-http replay))
+                 (:body-octets (:second-http replay)))
+              "the exact replay response must be byte-identical")
+          (is (= {:identities json-expected-identities
+                  :command {:value json-accepted-command
+                            :result json-command-result
+                            :emitted []}}
+                 (get-in replay [:workload :second-command-evidence]))
+              "the exact replay emits no second pending row")
+          (is (= json-accepted-command
+                 (get-in replay [:workload :second-command])))
+          ;; Conflict: the exact 409 envelope, no authorized second command,
+          ;; and the scenario-derived distinct second payload.
+          (is (= 409 (:status (:second-http conflict))))
+          (is (= json-conflict-wire (:response (:second-http conflict))))
+          (is (nil? (get-in conflict [:workload :second-command-evidence]))
+              "a conflict must not publish command evidence")
+          (is (= json-conflict-second-command
+                 (get-in conflict [:workload :second-command])))))
+        (catch :default error
+          (reset! primary* error)
+          (append-phase-best-effort! journal (bounded-error-phase error))
+          (throw error))
+        (finally
+          (let [cleanup-error
+                (try
+                  (when-let [server @server*]
+                    (viewer/stop! server))
+                  nil
+                  (catch :default error error))]
+            (append-phase-best-effort!
+             journal
+             (cond-> {:phase :json-idempotency-viewer-stopped}
                cleanup-error
                (assoc :cleanup-error (ex-message cleanup-error))))
             (sim-repl/clear!)

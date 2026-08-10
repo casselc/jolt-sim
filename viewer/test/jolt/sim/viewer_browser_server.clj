@@ -27,6 +27,9 @@
 (def ^:private broadcast-scenario
   'jolt.maelstrom.fixtures.broadcast-scenario/broadcast-partition-heal)
 
+(def ^:private json-idempotency-scenario
+  'jolt.sim.fixtures.outbox-json-delivery-scenarios/exercise-replay-or-conflict)
+
 (def ^:private broadcast-scope
   "Both Broadcast regimes select only the scenario's partition-link
    coordinate; every other behavior belongs to the unchanged scenario,
@@ -56,6 +59,34 @@
    "nested" {"a" "ελληνικά"
               "b" [" 한글 " "português" 42 nil]}
    "emoji" "🚀"})
+
+(def ^:private json-idempotency-scope
+  "Both JSON idempotency regimes select only the second-request mode under
+   one reused request id; every other behavior belongs to the unchanged
+   scenario, the production routed-JSON facade, and the shared delivery flow."
+  [:jolt.example.outbox/request-id-reuse])
+
+(def ^:private json-exact-replay-regime
+  {:id :jolt.sim.regime/outbox-json-exact-replay
+   :label "Exact replay of the accepted command"
+   :summary (str "Run the trusted routed-JSON outbox example with the second "
+                 "request carrying the same accepted command value.")
+   :scope json-idempotency-scope
+   :input {:mode :exact-replay
+           :payload [0 127 128 255]
+           :request-id "req-1"
+           :entity-id "entity-a"}})
+
+(def ^:private json-conflict-regime
+  {:id :jolt.sim.regime/outbox-json-conflict
+   :label "Conflicting reuse of the request id"
+   :summary (str "Run the trusted routed-JSON outbox example with the second "
+                 "request reusing the request id with a different payload.")
+   :scope json-idempotency-scope
+   :input {:mode :conflict
+           :payload [0 127 128 255]
+           :request-id "req-1"
+           :entity-id "entity-a"}})
 
 (def ^:private outbox-cancel-regime
   {:id :jolt.sim.regime/outbox-cancel-before-ack-canonical
@@ -144,17 +175,21 @@
          (slurp "examples/outbox-regime-lab-plan.edn"))
         broadcast-plan
         (viewer-experiment/read-edn
-         (slurp "examples/maelstrom-broadcast-plan.edn"))]
+         (slurp "examples/maelstrom-broadcast-plan.edn"))
+        json-idempotency-plan
+        (viewer-experiment/read-edn
+         (slurp "examples/outbox-json-idempotency-plan.edn"))]
     {:port port
      :capability-token capability-token
      :max-document-bytes (* 1024 1024)
      :allowed-scenarios #{scenario echo-scenario outbox-regime-lab-scenario
-                          broadcast-scenario}
+                          broadcast-scenario json-idempotency-scenario}
      ;; Each preset uses the same v2 shape. The first two expose one canonical
      ;; regime; the lab exposes the application's complete finite catalog; the
      ;; Broadcast preset exposes its scenario's exact healthy and
-     ;; partition/heal inputs. The stubbed run-case service below never
-     ;; launches a worker for any preset.
+     ;; partition/heal inputs; the JSON idempotency lab exposes the scenario's
+     ;; exact exact-replay and conflict inputs. The stubbed run-case service
+     ;; below never launches a worker for any preset.
      :run-presets
      [{:id :jolt.sim.preset/outbox-cancel-before-ack-v1
        :label "Outbox: cancel before acknowledgment"
@@ -183,7 +218,14 @@
        :profile-id :hermetic
        :schedule nil
        :plan-document broadcast-plan
-       :regimes [broadcast-healthy-regime broadcast-partition-regime]}]
+       :regimes [broadcast-healthy-regime broadcast-partition-regime]}
+      {:id :jolt.sim.preset/outbox-json-idempotency-lab-v1
+       :label "Outbox: JSON idempotency replay/conflict lab"
+       :scenario json-idempotency-scenario
+       :profile-id :hermetic
+       :schedule nil
+       :plan-document json-idempotency-plan
+       :regimes [json-exact-replay-regime json-conflict-regime]}]
      :activity-presentation-registry
      {:jolt.sim.browser-test/activity
       {:kind :jolt.sim.kind/browser-test-activity
