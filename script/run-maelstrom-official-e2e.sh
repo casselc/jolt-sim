@@ -153,7 +153,9 @@ cat > "$verifier" <<'CLOJURE'
   (count (filter #(and (= :ok (:type %)) (= function (:f %))) operations)))
 
 (let [[profile results-path history-path] *command-line-args*
-      results (edn/read-string (slurp results-path))
+      results (edn/read-string
+               {:readers {'jepsen.history.Op identity}}
+               (slurp results-path))
       workload (:workload results)
       operations (history-operations history-path)]
   (ensure! profile (map? results) :results-not-a-map {})
