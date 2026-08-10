@@ -152,6 +152,14 @@ report implementation, and it does not yet provide live event streaming,
 trace comparison, or a GTK frontend. See the [viewer guide](viewer/README.md)
 and its closed [example configuration](viewer/example-config.edn).
 
+The [canonical outbox workbench](examples/outbox-workbench/) composes that
+same unchanged HTTP/SQLite/TCP/bencode application with Ripple's persistent
+Jolt evaluation session. It provides an eval-only browser REPL for running and
+inspecting a real delivery, plus a fresh-process gate that drives the complete
+flow through Ripple's loopback `/api/eval` boundary. The application is still
+one-shot and post-run inspectable; live mid-flight pause and perturbation need
+the later app-owned lifecycle rather than a second implementation here.
+
 ### Executed scenario coverage
 
 This is an execution manifest, not a namespace-import checklist. A row records
