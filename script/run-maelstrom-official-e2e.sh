@@ -87,6 +87,8 @@ echo "[dependency-preflight] maelstrom-echo"
 "$jolt_bin" -P -M:maelstrom-echo
 echo "[dependency-preflight] maelstrom-broadcast"
 "$jolt_bin" -P -M:maelstrom-broadcast
+echo "[dependency-preflight] official-run-export"
+"$jolt_bin" -P -M:maelstrom-official-run-export
 
 build_entry() {
   local alias="$1"
@@ -139,25 +141,69 @@ cat > "$verifier" <<'CLOJURE'
   (when-not truth
     (fail! profile reason data)))
 
-(defn history-operations [path]
+(defn history-operations [profile path]
   (with-open [reader (java.io.PushbackReader. (io/reader path))]
-    (loop [found []]
+    (loop [found []
+           form-index 0]
       (let [value (edn/read {:eof ::eof} reader)]
         (if (= ::eof value)
           found
-          (recur (if (map? value)
-                   (conj found value)
-                   found)))))))
+          (if (map? value)
+            (recur (conj found value) (inc form-index))
+            (fail! profile :unexpected-history-form
+                   {:form-index form-index
+                    :class (str (class value))})))))))
 
 (defn successful-count [operations function]
   (count (filter #(and (= :ok (:type %)) (= function (:f %))) operations)))
 
-(let [[profile results-path history-path] *command-line-args*
+(def max-staged-operations 4096)
+
+(defn run-coordinate [profile]
+  (case profile
+    "echo"
+    {:profile :echo
+     :workload :echo
+     :parameters {:node-count 1 :time-limit 10}}
+
+    "broadcast-healthy"
+    {:profile :broadcast-healthy
+     :workload :broadcast
+     :parameters {:node-count 5 :time-limit 20 :rate 10 :topology :tree4}}
+
+    "broadcast-partition"
+    {:profile :broadcast-partition
+     :workload :broadcast
+     :parameters {:node-count 5 :time-limit 20 :rate 10 :topology :tree4
+                  :nemesis :partition :nemesis-interval 5}}
+
+    (fail! profile :unknown-profile {})))
+
+(defn staged-operation [operation]
+  (select-keys operation [:type :f :process :time :value]))
+
+(let [[profile results-path history-path staging-path] *command-line-args*
       results (edn/read-string
                {:readers {'jepsen.history.Op identity}}
                (slurp results-path))
       workload (:workload results)
-      operations (history-operations history-path)]
+      operations (history-operations profile history-path)
+      partition-completed?
+      (boolean
+       (some #(and (= :info (:type %))
+                   (= :start-partition (:f %))
+                   (vector? (:value %))
+                   (= :isolated (first (:value %)))
+                   (map? (second (:value %))))
+             operations))
+      network-healed?
+      (boolean
+       (some #(and (= :info (:type %))
+                   (= :stop-partition (:f %))
+                   (= :network-healed (:value %)))
+             operations))
+      successful-echo-count (successful-count operations :echo)
+      successful-read-count (successful-count operations :read)]
   (ensure! profile (map? results) :results-not-a-map {})
   (ensure! profile (true? (:valid? results)) :top-level-invalid
            {:valid? (:valid? results)})
@@ -168,12 +214,12 @@ cat > "$verifier" <<'CLOJURE'
     (do
       (ensure! profile (empty? (:errors workload)) :echo-errors
                {:error-count (count (:errors workload))})
-      (ensure! profile (pos? (successful-count operations :echo))
+      (ensure! profile (pos? successful-echo-count)
                :vacuous-echo {}))
     (do
       (ensure! profile (pos? (:attempt-count workload 0))
                :vacuous-broadcast {})
-      (ensure! profile (pos? (successful-count operations :read))
+      (ensure! profile (pos? successful-read-count)
                :no-successful-reads {})
       (ensure! profile (zero? (:never-read-count workload -1))
                :messages-never-read
@@ -184,31 +230,43 @@ cat > "$verifier" <<'CLOJURE'
                :duplicated-messages
                {:duplicated-count (:duplicated-count workload)})))
   (when (= "broadcast-partition" profile)
-    (ensure! profile
-             (some #(and (= :info (:type %))
-                         (= :start-partition (:f %))
-                         (vector? (:value %))
-                         (= :isolated (first (:value %)))
-                         (map? (second (:value %))))
-                   operations)
-             :missing-completed-partition {})
-    (ensure! profile
-             (some #(and (= :info (:type %))
-                         (= :stop-partition (:f %))
-                         (= :network-healed (:value %)))
-                   operations)
-             :missing-completed-heal {}))
-  (println (pr-str {:profile profile
-                    :valid? true
-                    :workload-valid? true
-                    :successful-echo-count
-                    (successful-count operations :echo)
-                    :successful-read-count
-                    (successful-count operations :read)
-                    :attempt-count (:attempt-count workload)
-                    :never-read-count (:never-read-count workload)
-                    :lost-count (:lost-count workload)
-                    :duplicated-count (:duplicated-count workload)})))
+    (ensure! profile partition-completed? :missing-completed-partition {})
+    (ensure! profile network-healed? :missing-completed-heal {}))
+  (let [checks
+        {:positive-workload? true
+         :partition-completed?
+         (when (= "broadcast-partition" profile) partition-completed?)
+         :network-healed?
+         (when (= "broadcast-partition" profile) network-healed?)}
+        stats
+        {:operation-count (count operations)
+         :successful-echo-count successful-echo-count
+         :successful-read-count successful-read-count
+         :attempt-count (:attempt-count workload)
+         :never-read-count (:never-read-count workload)
+         :lost-count (:lost-count workload)
+         :duplicated-count (:duplicated-count workload)}
+        captured
+        (mapv staged-operation
+              (take max-staged-operations operations))
+        staging
+        {:run (run-coordinate profile)
+         :outcome {:status :passed
+                   :exit 0
+                   :official-valid? true
+                   :workload-valid? true
+                   :checks checks
+                   :stats stats}
+         :history {:total-count (count operations)
+                   :artifact "history.edn"
+                   :operations captured}}]
+    ;; This is trusted bounded staging data, not the public evidence codec.
+    ;; The Jolt exporter below owns canonicalization and final validation.
+    (spit staging-path (str (pr-str staging) "\n"))
+    (println (pr-str (merge {:profile profile
+                            :valid? true
+                            :workload-valid? true}
+                           stats)))))
 CLOJURE
 
 gate_failed=0
@@ -221,6 +279,9 @@ run_case() {
   local command_path="$case_dir/command.sh"
   local status
   local run_dir
+  local staging_path="$case_dir/official-run.staging.edn"
+  local artifacts_path="$case_dir/official-run.artifacts.edn"
+  local official_run_path="$case_dir/official-run.edn"
   local -a command=("$maelstrom_bin" "$@")
 
   mkdir -p "$case_dir"
@@ -286,6 +347,7 @@ run_case() {
   set +e
   java -cp "$maelstrom_jar" clojure.main "$verifier" \
     "$profile" "$run_dir/results.edn" "$run_dir/history.edn" \
+    "$staging_path" \
     > "$case_dir/verification.stdout" \
     2> "$case_dir/verification.stderr"
   status=$?
@@ -293,6 +355,39 @@ run_case() {
   printf '%s\n' "$status" > "$case_dir/verification.status"
   if [[ "$status" != "0" ]]; then
     echo "$profile retained result verification failed" >&2
+    gate_failed=1
+    return
+  fi
+  if [[ ! -s "$staging_path" ]]; then
+    echo "$profile verifier produced no official-run staging evidence" >&2
+    gate_failed=1
+    return
+  fi
+
+  local history_bytes results_bytes history_sha256 results_sha256
+  history_bytes="$(wc -c < "$run_dir/history.edn")"
+  results_bytes="$(wc -c < "$run_dir/results.edn")"
+  history_sha256="$(sha256sum "$run_dir/history.edn")"
+  history_sha256="${history_sha256%% *}"
+  results_sha256="$(sha256sum "$run_dir/results.edn")"
+  results_sha256="${results_sha256%% *}"
+  {
+    printf '[{:name "history.edn" :role :history :bytes %s :sha256 "%s"}\n' \
+      "$history_bytes" "$history_sha256"
+    printf ' {:name "results.edn" :role :results :bytes %s :sha256 "%s"}]\n' \
+      "$results_bytes" "$results_sha256"
+  } > "$artifacts_path"
+
+  set +e
+  "$jolt_bin" -M:maelstrom-official-run-export \
+    "$staging_path" "$artifacts_path" "$official_run_path" \
+    > "$case_dir/official-run-export.stdout" \
+    2> "$case_dir/official-run-export.stderr"
+  status=$?
+  set -e
+  printf '%s\n' "$status" > "$case_dir/official-run-export.status"
+  if [[ "$status" != "0" || ! -s "$official_run_path" ]]; then
+    echo "$profile official-run evidence export failed with status $status" >&2
     gate_failed=1
   fi
 }
