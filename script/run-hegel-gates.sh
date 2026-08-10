@@ -151,6 +151,10 @@ for gate in "$@"; do
       parent_alias=outbox-delivery-hegel-test
       worker_alias=outbox-delivery-explore-worker
       ;;
+    outbox-live-lifecycle-hegel-test)
+      parent_alias=outbox-delivery-hegel-test
+      worker_alias=outbox-delivery-explore-worker
+      ;;
     outbox-http-webhook-hegel-test)
       worker_alias=outbox-http-webhook-explore-worker
       ;;
@@ -169,7 +173,7 @@ for gate in "$@"; do
       ;;
     *)
       echo "unknown Hegel gate: $gate" >&2
-      echo "allowed: hegel-explore-test http-sqlite-hegel-test tcp-bencode-hegel-test outbox-delivery-hegel-test outbox-delivery-cancel-hegel-test outbox-http-webhook-hegel-test maelstrom-echo-hegel-test maelstrom-broadcast-hegel-test flow-effect-stateful-hegel-test" >&2
+      echo "allowed: hegel-explore-test http-sqlite-hegel-test tcp-bencode-hegel-test outbox-delivery-hegel-test outbox-delivery-cancel-hegel-test outbox-live-lifecycle-hegel-test outbox-http-webhook-hegel-test maelstrom-echo-hegel-test maelstrom-broadcast-hegel-test flow-effect-stateful-hegel-test" >&2
       echo "retained gate root: $gate_root" >&2
       exit 2
       ;;
@@ -200,6 +204,9 @@ for gate in "${gates[@]}"; do
   if [[ "$gate" == outbox-delivery-cancel-hegel-test ]]; then
     run_step hegel-gate "$gate" \
       "$sim_bin" -M:outbox-delivery-hegel-test --cancel-only
+  elif [[ "$gate" == outbox-live-lifecycle-hegel-test ]]; then
+    run_step hegel-gate "$gate" \
+      "$sim_bin" -M:outbox-delivery-hegel-test --live-lifecycle-only
   else
     run_step hegel-gate "$gate" \
       "$sim_bin" "-M:$gate"
