@@ -15,8 +15,13 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  JOLT_CORE_SHA: d040d502505743f6631bc91b03f9e6fd251551bc
+  # Broadcast retries must be able to publish while Maelstrom leaves stdin idle.
+  # This pin includes the reviewed cooperative-stdin runtime fix; do not replace
+  # it with a jolt-sim-side transport workaround.
+  JOLT_CORE_SHA: 9f5e072c453bbfe90a8431946354c8528b4f8c50
   CHEZ_RELEASE_TAG: chez-ci-10.4.1.1
+  MAELSTROM_RELEASE: v0.2.4
+  MAELSTROM_ARCHIVE_SHA256: 301ec71d6b12af0d765edb413f5cf5aa1046b5609bd4e31376a0b549548e5799
 
 jobs:
   sim-posix:
@@ -161,7 +166,7 @@ jobs:
 
       - name: Run Maelstrom Echo JSON-lines process gate
         id: maelstrom_json_lines_gate
-        if: always()
+        if: always() && !cancelled()
         # Preserve this boundary's complete request/stdout/stderr/status bundle
         # without letting a failure skip the longer application and Hegel gates.
         continue-on-error: true
@@ -191,6 +196,60 @@ jobs:
         with:
           name: maelstrom-json-lines-${{ matrix.toolchain }}
           path: jolt-sim/target/maelstrom-json-lines-gates/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Install verified official Maelstrom release
+        id: maelstrom_install
+        if: always() && !cancelled() && matrix.name == 'Linux x86_64'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y graphviz gnuplot
+          archive="$RUNNER_TEMP/maelstrom-${MAELSTROM_RELEASE}.tar.bz2"
+          curl -fsSL \
+            "https://github.com/jepsen-io/maelstrom/releases/download/${MAELSTROM_RELEASE}/maelstrom.tar.bz2" \
+            -o "$archive"
+          printf '%s  %s\n' "$MAELSTROM_ARCHIVE_SHA256" "$archive" | sha256sum -c -
+          tar -xjf "$archive" -C "$RUNNER_TEMP"
+          test -x "$RUNNER_TEMP/maelstrom/maelstrom"
+          test -f "$RUNNER_TEMP/maelstrom/lib/maelstrom.jar"
+          {
+            echo "MAELSTROM_BIN=$RUNNER_TEMP/maelstrom/maelstrom"
+            echo "MAELSTROM_JAR=$RUNNER_TEMP/maelstrom/lib/maelstrom.jar"
+          } >> "$GITHUB_ENV"
+
+      - name: Run official Maelstrom Echo and Broadcast gates
+        id: maelstrom_official_gate
+        if: always() && !cancelled() && matrix.name == 'Linux x86_64'
+        continue-on-error: true
+        timeout-minutes: 15
+        shell: bash
+        env:
+          JOLT_AOT_CACHE: "0"
+        run: |
+          set -euo pipefail
+          export HOME="$RUNNER_TEMP/jolt-home"
+          export JOLT_CACHE_DIR="$RUNNER_TEMP/jolt-cache"
+          export TMPDIR="$RUNNER_TEMP/jolt-tmp"
+          mkdir -p "$HOME" "$JOLT_CACHE_DIR" "$TMPDIR"
+          sim="$GITHUB_WORKSPACE/jolt-core/target/sim/jolt"
+          repo="$GITHUB_WORKSPACE/jolt-sim"
+          export JOLT_SIM_GATE_PARENT="$repo/target/maelstrom-official-gates"
+          mkdir -p "$JOLT_SIM_GATE_PARENT"
+          cd "$repo"
+          JOLT_SIM_BIN="$sim" JOLT_SIM_PROJECT_DIR="$repo" \
+            script/run-maelstrom-official-e2e.sh
+
+      - name: Preserve official Maelstrom evidence
+        id: maelstrom_official_upload
+        if: always() && matrix.name == 'Linux x86_64'
+        continue-on-error: true
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: maelstrom-official-linux-x86_64
+          path: jolt-sim/target/maelstrom-official-gates/
           if-no-files-found: error
           retention-days: 14
 
@@ -312,7 +371,7 @@ jobs:
 
       - name: Install Node for Ripple browser acceptance
         id: viewer_node
-        if: always() && matrix.name == 'Linux x86_64'
+        if: always() && !cancelled() && matrix.name == 'Linux x86_64'
         continue-on-error: true
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
@@ -355,7 +414,7 @@ jobs:
 
       - name: Run Ripple remote Session process acceptance
         id: viewer_remote_gate
-        if: always() && matrix.name == 'Linux x86_64'
+        if: always() && !cancelled() && matrix.name == 'Linux x86_64'
         # Keep the new cross-process attachment witness failure-independent
         # from the established retained-case replay and browser gates.
         continue-on-error: true
@@ -380,7 +439,7 @@ jobs:
 
       - name: Run Ripple browser acceptance
         id: viewer_browser_gate
-        if: always() && matrix.name == 'Linux x86_64' && steps.viewer_node.outcome == 'success'
+        if: always() && !cancelled() && matrix.name == 'Linux x86_64' && steps.viewer_node.outcome == 'success'
         # Browser acceptance is failure-independent from the raw HTTP E2E and
         # Hegel campaigns. Its own Playwright output retains screenshots plus
         # trace/video/screenshot diagnostics for a failed or retried attempt.
@@ -443,7 +502,7 @@ jobs:
             script/run-hegel-gates.sh
 
       - name: Explore JSON webhook acknowledgement boundaries
-        if: always() && matrix.hegel
+        if: always() && !cancelled() && matrix.hegel
         # Keep this fresh-worker application campaign failure-independent from
         # the already long general Hegel campaign. Both invocations retain
         # their own mktemp gate roots beneath the shared artifact parent.
@@ -470,7 +529,7 @@ jobs:
             script/run-hegel-gates.sh outbox-http-webhook-hegel-test
 
       - name: Render retained whole-application case reports
-        if: always() && matrix.hegel
+        if: always() && !cancelled() && matrix.hegel
         timeout-minutes: 10
         shell: bash
         env:
@@ -509,7 +568,7 @@ jobs:
           retention-days: 14
 
       - name: Enforce deferred application results
-        if: always()
+        if: always() && !cancelled()
         shell: bash
         run: |
           failed=0
@@ -519,6 +578,21 @@ jobs:
           fi
           if [[ "${{ steps.maelstrom_json_lines_upload.outcome }}" != "success" ]]; then
             echo "Maelstrom JSON-lines artifact upload outcome: ${{ steps.maelstrom_json_lines_upload.outcome }}" >&2
+            failed=1
+          fi
+          if [[ "${{ matrix.name }}" = "Linux x86_64" && \
+                "${{ steps.maelstrom_install.outcome }}" != "success" ]]; then
+            echo "official Maelstrom install outcome: ${{ steps.maelstrom_install.outcome }}" >&2
+            failed=1
+          fi
+          if [[ "${{ matrix.name }}" = "Linux x86_64" && \
+                "${{ steps.maelstrom_official_gate.outcome }}" != "success" ]]; then
+            echo "official Maelstrom gate outcome: ${{ steps.maelstrom_official_gate.outcome }}" >&2
+            failed=1
+          fi
+          if [[ "${{ matrix.name }}" = "Linux x86_64" && \
+                "${{ steps.maelstrom_official_upload.outcome }}" != "success" ]]; then
+            echo "official Maelstrom artifact upload outcome: ${{ steps.maelstrom_official_upload.outcome }}" >&2
             failed=1
           fi
           if [[ "${{ steps.outbox_gate.outcome }}" != "success" ]]; then

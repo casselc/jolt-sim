@@ -30,6 +30,20 @@
      :git/sha "da271ca302487c2c5130a0450b4ad4c78d63e656"}}
    :main-opts ["-m" "jolt.maelstrom.echo-main"]}
 
+  ;; Real stdin/stdout Maelstrom Broadcast process. This entry point composes
+  ;; the same transport-neutral application and node namespaces used by the
+  ;; simulator, adding only the process-owned periodic retry lifecycle that a
+  ;; lossy real network requires.
+  :maelstrom-broadcast
+  {:extra-deps
+   {io.github.casselc/data.json
+    {:git/url "https://github.com/casselc/data.json.git"
+     :git/sha "8a6dc9668e5c3596a335759defeb7ec80cd3b5f8"}
+    io.github.jolt-lang/time
+    {:git/url "https://github.com/jolt-lang/time.git"
+     :git/sha "da271ca302487c2c5130a0450b4ad4c78d63e656"}}
+   :main-opts ["-m" "jolt.maelstrom.broadcast-main"]}
+
   ;; Verifier side of script/run-maelstrom-echo-e2e.sh. The shell runner owns
   ;; fresh process launch and retained artifacts; this alias independently
   ;; checks the resulting JSON-lines wire evidence.

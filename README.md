@@ -166,7 +166,8 @@ only the application surfaces and modes exercised by a durable gate.
 | Length-framed TCP bencode echo | `teensyp.server`, `teensyp.client`, `teensyp.buffer`, `jolt.bytes`, `jolt.bencode`, `jolt.net`, `jolt.ffi` | Host loopback parity witness | Modeled POSIX loopback and native memory | Pipelined requests, finite stream/self-pipe capacities, captured `EINTR`, and Hegel-generated UTF-8; no half-close or concurrent clients |
 | HTTP SQLite outbox delivery | `jolt-http`, `jdbc.core`, `db.sqlite`, `teensyp.server/client`, `jolt.bytes`, `jolt.bencode`, `jolt.net`, `jolt.ffi` | Host HTTP/TCP sockets plus system SQLite | Shared FFI-memory, POSIX, exact-plan SQLite, and one shared virtual clock | Ordinary, scoped-reset retry, clean close/reopen, post-COMMIT process-exit/recovery, cancellation-before-ack, and one-operation absolute-deadline witnesses; Hegel varies payload bytes, capacities, poll interruption, admission, and a closed terminal-action axis; no general scheduler, power-loss, or exactly-once claim |
 | JSON HTTP webhook outbox delivery | `jolt-http`, `jolt.http-client`, `jdbc.core`, `db.sqlite`, `jolt-tcp`, `jolt.net`, `jolt.ffi` | Host command/webhook sockets plus system SQLite | Shared FFI-memory, POSIX, and exact-plan SQLite worlds | Fixed real/hermetic parity plus fresh-worker Hegel payload/response-mode exploration; exact correlation gates marking; no TLS, auth, or concurrent deliveries |
-| Maelstrom Echo | `jolt.maelstrom` node/handler code and `clojure.data.json` framing | Fresh Jolt process over stdin/stdout JSON-lines | Deterministic memory transport with Hegel-generated JSON-shaped payloads | Exact init/Echo correlation and retained malformed-input prefix evidence; no multi-node, nemesis, interoperability, or liveness claim |
+| Maelstrom Echo | `jolt.maelstrom` node/handler code and `clojure.data.json` framing | Fresh standalone Jolt process under the official Maelstrom Echo checker | Deterministic memory transport with Hegel-generated JSON-shaped payloads | Positive successful Echo operations plus exact init/Echo correlation and retained malformed-input prefix evidence; no multi-node or fault claim |
+| Maelstrom Broadcast | The same transport-neutral node/Broadcast handlers plus one process-owned retry worker | Five standalone Jolt nodes under official healthy and partition/heal Broadcast checkers | Deterministic memory transport with the ordinary handlers and explicit partition/heal regimes | Positive reads, every generated integer observed, zero lost/duplicated/never-read messages, and completed partition/heal effects; fixed `tree4`, rate, duration, and retry cadence rather than a general distributed-safety claim |
 
 These capabilities belong to two deliberately different execution tracks:
 
@@ -1283,11 +1284,32 @@ vocabulary. Jolt's current stdin `read-line` host seam still allocates the
 complete line before the adapter can enforce that frame cap; a future bounded
 reader seam is the remaining acquisition hardening boundary.
 
-Echo alone is application-core evidence, not distributed-safety, liveness, or
-Maelstrom interoperability evidence. The durable HTTP/SQLite/TCP outbox flow
-is now the canonical whole-ecosystem application; Maelstrom workloads remain
-focused examples that must use the same Case/Outcome, evidence, replay, and
-extension boundaries rather than growing a parallel simulator architecture.
+The official gate builds standalone Echo and Broadcast executables, then runs
+the pinned Maelstrom release through independent Echo, healthy Broadcast, and
+partition/heal Broadcast profiles:
+
+```bash
+JOLT_SIM_BIN=/absolute/path/to/jolt \
+MAELSTROM_BIN=/absolute/path/to/maelstrom \
+MAELSTROM_JAR=/absolute/path/to/maelstrom.jar \
+script/run-maelstrom-official-e2e.sh
+```
+
+Every profile retains its exact command, process-group lifecycle journal,
+stdout/stderr/status, resolved non-`latest` store path, history, checker result,
+and node/network artifacts. Acceptance requires positive successful workload
+operations, zero lost/duplicated/never-read Broadcast values, and successful
+completed partition and heal effects, so an empty or invocation-only run
+cannot pass. The process supervisor retains an unreaped session leader as a
+non-reusable PID/PGID anchor through descendant cleanup on this Linux-only
+official lane.
+
+These checker results are scoped interoperability and partition-recovery
+evidence, not a proof of general distributed safety or liveness. The durable
+HTTP/SQLite/TCP outbox flow remains the canonical whole-ecosystem application;
+Maelstrom workloads remain focused examples using the same Case/Outcome,
+evidence, replay, and extension boundaries rather than growing a parallel
+simulator architecture.
 
 ## Roadmap
 
