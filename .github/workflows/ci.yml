@@ -166,7 +166,7 @@ jobs:
 
       - name: Run Maelstrom Echo JSON-lines process gate
         id: maelstrom_json_lines_gate
-        if: always()
+        if: always() && !cancelled()
         # Preserve this boundary's complete request/stdout/stderr/status bundle
         # without letting a failure skip the longer application and Hegel gates.
         continue-on-error: true
@@ -201,7 +201,7 @@ jobs:
 
       - name: Install verified official Maelstrom release
         id: maelstrom_install
-        if: always() && matrix.name == 'Linux x86_64'
+        if: always() && !cancelled() && matrix.name == 'Linux x86_64'
         continue-on-error: true
         shell: bash
         run: |
@@ -222,7 +222,7 @@ jobs:
 
       - name: Run official Maelstrom Echo and Broadcast gates
         id: maelstrom_official_gate
-        if: always() && matrix.name == 'Linux x86_64'
+        if: always() && !cancelled() && matrix.name == 'Linux x86_64'
         continue-on-error: true
         timeout-minutes: 15
         shell: bash
@@ -371,7 +371,7 @@ jobs:
 
       - name: Install Node for Ripple browser acceptance
         id: viewer_node
-        if: always() && matrix.name == 'Linux x86_64'
+        if: always() && !cancelled() && matrix.name == 'Linux x86_64'
         continue-on-error: true
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
@@ -414,7 +414,7 @@ jobs:
 
       - name: Run Ripple remote Session process acceptance
         id: viewer_remote_gate
-        if: always() && matrix.name == 'Linux x86_64'
+        if: always() && !cancelled() && matrix.name == 'Linux x86_64'
         # Keep the new cross-process attachment witness failure-independent
         # from the established retained-case replay and browser gates.
         continue-on-error: true
@@ -439,7 +439,7 @@ jobs:
 
       - name: Run Ripple browser acceptance
         id: viewer_browser_gate
-        if: always() && matrix.name == 'Linux x86_64' && steps.viewer_node.outcome == 'success'
+        if: always() && !cancelled() && matrix.name == 'Linux x86_64' && steps.viewer_node.outcome == 'success'
         # Browser acceptance is failure-independent from the raw HTTP E2E and
         # Hegel campaigns. Its own Playwright output retains screenshots plus
         # trace/video/screenshot diagnostics for a failed or retried attempt.
@@ -502,7 +502,7 @@ jobs:
             script/run-hegel-gates.sh
 
       - name: Explore JSON webhook acknowledgement boundaries
-        if: always() && matrix.hegel
+        if: always() && !cancelled() && matrix.hegel
         # Keep this fresh-worker application campaign failure-independent from
         # the already long general Hegel campaign. Both invocations retain
         # their own mktemp gate roots beneath the shared artifact parent.
@@ -529,7 +529,7 @@ jobs:
             script/run-hegel-gates.sh outbox-http-webhook-hegel-test
 
       - name: Render retained whole-application case reports
-        if: always() && matrix.hegel
+        if: always() && !cancelled() && matrix.hegel
         timeout-minutes: 10
         shell: bash
         env:
@@ -568,7 +568,7 @@ jobs:
           retention-days: 14
 
       - name: Enforce deferred application results
-        if: always()
+        if: always() && !cancelled()
         shell: bash
         run: |
           failed=0
