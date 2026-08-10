@@ -55,4 +55,10 @@
   ;; Ripple server started programmatically in this same process.
   :eval-flow-test
   {:extra-paths ["test"]
-   :main-opts ["-m" "outbox-workbench.eval-flow-test-main"]}}}
+   :main-opts ["-m" "outbox-workbench.eval-flow-test-main"]}
+
+  ;; App-owned live lifecycle gate: persistent real HTTP and TCP listeners,
+  ;; stable post-COMMIT inspection, explicit delivery, and EvalSession use.
+  :live-lifecycle-test
+  {:extra-paths ["test"]
+   :main-opts ["-m" "outbox-workbench.live-lifecycle-test-main"]}}}

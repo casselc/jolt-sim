@@ -415,6 +415,8 @@ jobs:
           cd "$repo/examples/outbox-workbench"
           JOLT_SIM_OUTBOX_WORKBENCH_PROGRESS_FILE="$viewer_artifacts/outbox-workbench-progress.edn" \
             "$sim" -M:eval-flow-test
+          JOLT_SIM_OUTBOX_LIVE_PROGRESS_FILE="$viewer_artifacts/outbox-live-lifecycle-progress.edn" \
+            "$sim" -M:live-lifecycle-test
 
       - name: Run Ripple remote Session process acceptance
         id: viewer_remote_gate

@@ -17,6 +17,11 @@ Launching this workbench gives you Ripple's persistent Jolt REPL (`--eval`)
 with the canonical fixture already loaded, so the browser pane can run one
 real HTTP → SQLite → TCP/bencode delivery by evaluating ordinary forms.
 
+The workbench also statically loads the app-owned live lifecycle. Unlike the
+original one-shot witness, it keeps the real SQLite connection and real HTTP
+and TCP listeners alive across REPL evaluations, so COMMIT and delivery are
+separate explicit operations.
+
 ## Launch
 
 From this directory (`examples/outbox-workbench`), with a capability token of
@@ -83,20 +88,42 @@ TCP/bencode delivery to a real loopback receiver, the exact correlated
 
 ## What this is not
 
-The existing canonical application is **one-shot**: each
+The original canonical witness remains **one-shot**: each
 `exercise-outbox-json-delivery` evaluation runs the complete HTTP → SQLite →
 TCP/bencode flow to completion inside a single `/api/eval` request and
-returns its immutable evidence. The workbench is therefore **post-run
-inspectable, not pausable mid-flight** — you can evaluate forms before and
-after a run and inspect the retained `canonical-run` evidence with ordinary
-REPL expressions, but you cannot suspend the application between COMMIT and
-delivery and resume it later. (Ripple's separate fresh-process replay/run
-workbench, which this config deliberately leaves disabled, is the layer that
-owns worker lifecycles; even it is a run-to-completion witness, not a
-mid-flight debugger.)
+returns its immutable evidence. The live lifecycle below adds one honest
+pause boundary—after durable COMMIT and before delivery—without pretending it
+can suspend an arbitrary native call or transaction mid-instruction. It also
+does not add simulation scheduling, rewind, or fresh-worker interruption;
+those remain separate jolt-sim controller responsibilities.
 
 The capability token grants arbitrary code execution in the workbench
 process. Keep it private even though the listener is loopback-only.
+
+## Live post-COMMIT inspection and explicit delivery
+
+The live lifecycle is UI-neutral; the same forms work in Ripple, nREPL, or an
+ordinary persistent Jolt evaluation session:
+
+```clojure
+(require '[jolt.sim.fixtures.outbox-json-delivery-live :as live]
+         '[jolt.sim.fixtures.outbox-json-delivery :as fixture])
+(def app (live/start!))
+(live/submit-command! app fixture/default-command) ; real HTTP, returns 201
+(live/snapshot! app)                               ; durable row is :pending
+(live/deliver-next! app)                           ; real TCP/bencode + ack
+(live/snapshot! app)                               ; durable row is :delivered
+(live/stop! app)                                   ; true, then false
+```
+
+`datafy` returns a bounded immutable summary. `nav` expands retained
+submission, delivery, receiver-request, and error observations without
+exposing connections, threads, native handles, or mutable storage. The exact
+durable `:store-state` remains directly inspectable. SQLite access is
+single-owner serialized; client-side HTTP I/O does not hold the SQLite lock,
+while `deliver-next!` holds it from the pending reload through acknowledgement
+validation and the durable delivered mark. A mismatched acknowledgement fails
+before marking and leaves the row pending.
 
 ## Focused fresh-process test
 
@@ -125,3 +152,17 @@ with the prebuilt evaluator
 `/home/chuck/ai-src/worktrees/jolt-eval-engine-v064-deepseek/target/debug/jolt`
 (jolt v0.6.4-21-g79c926aa-dirty); no Jolt compilation is involved or
 required.
+
+`:live-lifecycle-test` is the focused gate for the persistent form. It checks
+empty start, the real HTTP post-COMMIT boundary, exact replay and conflict
+non-mutation, explicit real TCP delivery, hostile-ack fail-closed behavior,
+datafy/nav, idempotent stop, post-stop rejection, and the same workflow through
+a persistent EvalSession:
+
+```sh
+cd examples/outbox-workbench
+/absolute/path/to/jolt -M:live-lifecycle-test
+```
+
+Its append-only progress path can be pinned with
+`JOLT_SIM_OUTBOX_LIVE_PROGRESS_FILE`; failures and timeouts are never deleted.
