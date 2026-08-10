@@ -6,6 +6,7 @@
             [clojure.test :as test :refer [deftest is testing]]
             [jolt.sim.case-outcome :as case-outcome]
             [jolt.sim.kernel :as kernel]
+            [jolt.sim.maelstrom.official-run :as official-run]
             [jolt.sim.monitor :as monitor]
             [jolt.sim.presentation :as presentation]
             [jolt.sim.report :as report]
@@ -38,6 +39,70 @@
 
 (defn- sample-doc []
   (trace/document (sample-events)))
+
+(defn- official-run-doc
+  ([] (official-run-doc 35))
+  ([operation-count]
+   (let [operations (mapv (fn [index]
+                            {:type (if (even? index) :invoke :ok)
+                             :f :broadcast :process (mod index 3) :time index
+                             :value {:message index}})
+                          (range operation-count))]
+    (official-run/document
+     {:profile :official :workload :broadcast :parameters {:nodes 3}}
+     {:status :passed :exit 0 :official-valid? true :workload-valid? true
+      :checks {:valid? true} :stats {:messages operation-count}}
+     {:total-count operation-count :truncated? false :artifact "history.edn"
+      :operations operations}
+     [{:name "history.edn" :role :history :bytes 1234
+       :sha256 (apply str (repeat 64 "0"))}]))))
+
+(deftest official-run-report-pages-through-the-shared-view-model
+  (let [doc (official-run-doc)
+        vm (report/official-run->view-model doc)
+        html (report/official-run->html doc)]
+    (is (= 1 (:view-model-version vm)))
+    (is (= 35 (count (:operations vm))))
+    (is (= (range 35) (map :index (:operations vm))))
+    (is (= html (report/official-run->html doc)))
+    (is (string/includes? html "official Maelstrom run report"))
+    (is (string/includes? html ":broadcast"))
+    (is (= 35 (count (re-seq #"jolt.sim.kind/maelstrom-operation" html))))))
+
+(deftest official-run-report-fails-closed-and-escapes-values
+  (let [doc (official-run-doc)
+        hostile (assoc-in doc
+                          [:jolt.sim.maelstrom.official-run/run :parameters]
+                          (trace/canonical-value {:label "<script>x</script>"}))
+        html (report/official-run->html hostile)
+        bad (dissoc doc :jolt.sim.maelstrom.official-run/outcome)]
+    (is (string/includes? html "&lt;script&gt;x&lt;/script&gt;"))
+    (is (not (string/includes? html "<script>x</script>")))
+    (is (= official-run/invalid-document
+           (:type (caught-data #(report/official-run->html bad)))))))
+
+(deftest official-run-report-validates-once-at-the-history-limit
+  (let [doc (official-run-doc official-run/max-captured-operations)
+        original official-run/validate-document!
+        calls (atom 0)]
+    (with-redefs [official-run/validate-document!
+                  (fn [value]
+                    (swap! calls inc)
+                    (original value))]
+      (let [vm (report/official-run->view-model doc)]
+        (is (= official-run/max-captured-operations
+               (count (:operations vm))))
+        (is (= 1 @calls))))))
+
+(deftest official-run-report-preserves-namespaced-artifact-roles
+  (let [artifact-key :jolt.sim.maelstrom.official-run/artifacts
+        doc (update (official-run-doc) artifact-key conj
+                    {:name "checker.edn" :role :checker/result :bytes 7
+                     :sha256 (apply str (repeat 64 "1"))})
+        vm (report/official-run->view-model doc)
+        html (report/official-run->html doc)]
+    (is (= ":checker/result" (get-in vm [:artifacts 1 :role-text])))
+    (is (string/includes? html ":checker/result"))))
 
 (defn- temp-path [suffix]
   (str (java.io.File/createTempFile "report" suffix)))
@@ -1526,6 +1591,21 @@
     (is (= :wrong-argument-count (:reason no-args)))
     (is (= report/invalid-arguments (:type too-many)))
     (is (= :wrong-argument-count (:reason too-many)))))
+
+(deftest main-official-run-selector-writes-only-its-read-only-report
+  (let [input (temp-path ".edn")
+        output (temp-path ".html")]
+    (spit input (official-run/canonical-edn (official-run-doc)))
+    (report/-main report/official-run-selector input output)
+    (let [html (slurp output)]
+      (is (string/includes? html "official Maelstrom run report"))
+      (is (string/includes? html ":broadcast")))
+    (spit input (trace/canonical-edn (sample-doc)))
+    (let [data (caught-data
+                #(report/-main report/official-run-selector input output))]
+      (is (= official-run/invalid-document (:type data))))
+    (.delete (io/file input))
+    (.delete (io/file output))))
 
 (deftest committed-example-reports-are-current
   (let [trace-doc

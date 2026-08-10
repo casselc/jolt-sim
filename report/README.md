@@ -1,7 +1,8 @@
 # jolt-sim static reports
 
-This optional dependency root renders validated jolt-sim trace and
-Case/Outcome documents as self-contained, byte-deterministic HTML. It is
+This optional dependency root renders validated jolt-sim trace, Case/Outcome,
+and retained official Maelstrom-run documents as self-contained,
+byte-deterministic HTML. It is
 separate from the simulator kernel so scheduler-only applications do not
 resolve Selmer or its Jolt host-support dependencies.
 
@@ -12,6 +13,13 @@ by the parent harness. Neither renderer runs monitor functions or infers
 whether a surrounding Hegel campaign was proved, bounded-complete, sampled,
 or assumption-backed; those claims must already be represented by the owning
 artifact and test lane.
+
+An official-run report is a read-only projection of bounded evidence emitted
+only after the existing official checker succeeds. It displays the open
+profile/workload facts, tri-state validity, checks, statistics, captured
+history, and digest-bearing logical artifact descriptors. It neither reruns
+Maelstrom nor treats the captured history as a replacement for the retained
+raw artifacts.
 
 Trace events are projected through `jolt.sim.presentation/default-registry`
 before rendering. The built-ins give scheduler choices, task transitions,
@@ -83,6 +91,7 @@ cd report
 jolt -M:test
 jolt -M:trace-report INPUT.edn [OUTPUT.html]
 jolt -M:case-report CASE-OUTCOME.edn [OUTPUT.html]
+jolt -M:official-run-report OFFICIAL-RUN.edn [OUTPUT.html]
 ```
 
 The [`examples`](examples/) directory contains a small cooperative scheduler

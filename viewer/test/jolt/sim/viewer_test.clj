@@ -8,6 +8,7 @@
             [jolt.sim.activity :as activity]
             [jolt.sim.case-outcome :as case-outcome]
             [jolt.sim.kernel :as kernel]
+            [jolt.sim.maelstrom.official-run :as official-run]
             [jolt.sim.presentation :as presentation]
             [jolt.sim.session :as session]
             [jolt.sim.trace :as trace]
@@ -48,6 +49,19 @@
       :status :pass
       :detail nil
       :index nil}])))
+
+(defn official-run-document []
+  (official-run/document
+   {:profile :official :workload :echo :parameters {:nodes 3}}
+   {:status :passed :exit 0 :official-valid? true :workload-valid? true
+    :checks {:valid? true} :stats {:messages 2}}
+   {:total-count 2 :truncated? false :artifact "history.edn"
+    :operations [{:type :invoke :f :echo :process 0 :time 1
+                  :value {:msg-id 1}}
+                 {:type :ok :f :echo :process 0 :time 2
+                  :value {:msg-id 1}}]}
+   [{:name "history.edn" :role :history :bytes 512
+     :sha256 (apply str (repeat 64 "0"))}]))
 
 (defn body [chunks]
   (let [remaining (atom (vec chunks))]
@@ -769,6 +783,27 @@
     (is (= 200 (:status response)))
     (is (= "<html>case-outcome</html>" (:body response)))
     (is (= [[:case-outcome doc]] @render-calls))
+    (is (= [] @replay-calls))))
+
+(deftest official-maelstrom-run-is-read-only-and-bypasses-viewer-services
+  (let [render-calls (atom [])
+        replay-calls (atom [])
+        handler (viewer/make-handler
+                 (config)
+                 (services render-calls replay-calls {:status :completed}))
+        text (official-run/canonical-edn (official-run-document))
+        rendered (handler (request "/api/render" text token
+                                   :official-maelstrom-run))
+        replayed (handler (request "/api/replay" text token
+                                   :official-maelstrom-run))]
+    (is (= 200 (:status rendered)))
+    (is (string/includes? (:body rendered)
+                          "official Maelstrom run report"))
+    (is (string/includes? (:body rendered) ":echo"))
+    (is (= 400 (:status replayed)))
+    (is (string/includes? (:body replayed)
+                          ":official-maelstrom-run-not-replayable"))
+    (is (= [] @render-calls))
     (is (= [] @replay-calls))))
 
 (deftest malformed-unauthorized-and-wrong-media-requests-never-delegate

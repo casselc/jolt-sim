@@ -36,4 +36,8 @@
   ;; The explicit --case-outcome selector routes -main to the Case/Outcome
   ;; renderer; the trace and Case/Outcome schemas are never guessed at.
   :case-report
-  {:main-opts ["-m" "jolt.sim.report" "--case-outcome"]}}}
+  {:main-opts ["-m" "jolt.sim.report" "--case-outcome"]}
+
+  ;; Read-only retained official Maelstrom evidence; never replayed.
+  :official-run-report
+  {:main-opts ["-m" "jolt.sim.report" "--official-maelstrom-run"]}}}

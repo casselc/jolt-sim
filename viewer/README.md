@@ -1,19 +1,21 @@
 # Ripple
 
 Ripple is the offline jolt-sim document viewer. This optional dependency root
-serves a small loopback-only web UI over the existing trace and Case/Outcome
-reporters, a safe experiment-plan inspector, and the fresh-process replay
+serves a small loopback-only web UI over the existing trace, Case/Outcome, and
+read-only official Maelstrom-run reporters, a safe experiment-plan inspector,
+and the fresh-process replay
 helper. It does not implement another
 scheduler, controller, monitor, evidence schema, or worker protocol.
 
 The browser keeps the selected EDN file locally until **Inspect** or **Replay
 once** is pressed. Every request requires a startup capability token. The
 upload UI requires an explicit document kind -- **Trace**, **Case/Outcome**,
-or **Experiment plan** -- and the server never infers or guesses a schema from
-the uploaded bytes.
+**Experiment plan**, or **Official Maelstrom run** -- and the server never
+infers or guesses a schema from the uploaded bytes.
 Trace documents render through `jolt.sim.report/trace->html` and are never
-replayable; experiment-plan documents render only their safe projection and
-are also never replayable. Case/Outcome documents render through
+replayable; experiment-plan documents render only their safe projection, and
+official-run documents reuse the static report's bounded public view model.
+Both are also never replayable. Case/Outcome documents render through
 `jolt.sim.report/case-outcome->html` and keep the existing replay path. Replay
 uses only the scenario, input, and schedule restored from the validated
 Case/Outcome document; worker command, working directory, deadlines,
