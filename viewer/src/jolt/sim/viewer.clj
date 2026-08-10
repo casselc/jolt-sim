@@ -35,6 +35,7 @@
             [jolt.http.server :as http]
             [jolt.sim.activity-view :as activity-view]
             [jolt.sim.case-outcome :as case-outcome]
+            [jolt.sim.eval-session :as eval-session]
             [jolt.sim.maelstrom.official-run :as official-run]
             [jolt.sim.future-schedule :as future-schedule]
             [jolt.sim.presentation :as presentation]
@@ -43,6 +44,7 @@
             [jolt.sim.report :as report]
             [jolt.sim.trace :as trace]
             [jolt.sim.viewer.experiment :as experiment-viewer]
+            [jolt.sim.viewer.eval :as viewer-eval]
             [jolt.sim.viewer.remote-session :as remote-session]
             [jolt.sim.session-view :as viewer-session]))
 
@@ -81,7 +83,7 @@
 
 (def ^:private service-keys
   #{:render-trace :render-case-outcome :replay-document
-    :read-session-frame :step-session-frame! :run-case})
+    :read-session-frame :step-session-frame! :run-case :evaluate-form!})
 
 (def ^:private default-max-document-bytes (* 1024 1024))
 (def ^:private maximum-max-document-bytes (* 16 1024 1024))
@@ -95,6 +97,7 @@
 (def ^:private maximum-session-cursor-digits 19)
 (def ^:private session-step-body-limit 4096)
 (def ^:private run-command-body-limit 4096)
+(def ^:private eval-command-body-limit 65536)
 (def ^:private maximum-run-regimes 32)
 (def ^:private maximum-run-regime-label-length 128)
 (def ^:private maximum-run-regime-summary-length 512)
@@ -1367,6 +1370,99 @@
                    :reason :invalid-regime-id})))
       {:preset-id preset-id :regime-id regime-id})))
 
+(def ^:private eval-command-keys #{"version" "form"})
+
+(defn- eval-command!
+  "Reads the closed v1 evaluation command. Browser text remains one opaque
+  form string and is passed only to the trusted evaluation service."
+  [request]
+  (let [bytes (bounded-body-bytes request eval-command-body-limit)
+        seen-keys (atom #{})
+        value (try
+                (json/read-str
+                 (trim-json-whitespace (String. bytes "UTF-8"))
+                 :extra-data-fn json/on-extra-throw
+                 :value-fn
+                 (fn [key entry-value]
+                   (when (contains? @seen-keys key)
+                     (throw
+                      (ex-info "viewer eval command repeats an object key"
+                               {:type ::invalid-eval-command
+                                :reason :duplicate-key})))
+                   (swap! seen-keys conj key)
+                   entry-value))
+                (catch :default error
+                  (if (= ::invalid-eval-command (:type (ex-data error)))
+                    (throw error)
+                    (throw
+                     (ex-info
+                      "viewer eval command is not exactly one JSON value"
+                      {:type ::invalid-eval-command
+                       :reason :malformed-json})))))]
+    (when-not (and (map? value)
+                   (= eval-command-keys (set (keys value))))
+      (throw
+       (ex-info "viewer eval command keys are not the closed set"
+                {:type ::invalid-eval-command :reason :unexpected-keys})))
+    (when-not (and (integer? (get value "version"))
+                   (= 1 (get value "version")))
+      (throw
+       (ex-info "viewer eval command version is not the integer 1"
+                {:type ::invalid-eval-command
+                 :reason :unsupported-version})))
+    (let [form (get value "form")]
+      (when-not (string? form)
+        (throw
+         (ex-info "viewer eval command form is not a string"
+                  {:type ::invalid-eval-command :reason :invalid-form})))
+      {:form form})))
+
+(defn- execute-eval-request
+  [config services document-active? request]
+  (cond
+    (not (authorized? config request))
+    (error-response 403 :forbidden nil)
+
+    (not (fn? (:evaluate-form! services)))
+    (error-response 404 :eval-unavailable nil)
+
+    (not (json-content-type? request))
+    (error-response 415 :expected-application-json nil)
+
+    ;; Evaluation consumes a streaming body through the same two-thread HTTP
+    ;; pool as document/run requests, so it shares their admission lease.
+    (not (compare-and-set! document-active? false true))
+    (error-response 429 :viewer-busy nil)
+
+    :else
+    (try
+      (let [{:keys [form]} (eval-command! request)
+            result ((:evaluate-form! services) form)
+            body (json/write-str result)]
+        ;; Once evaluation commits its bounded receipt must remain a definite
+        ;; 200 response. Returning a size error here would make a non-idempotent
+        ;; form's outcome ambiguous and tempt an unsafe retry.
+        (response 200 "application/json; charset=utf-8" body))
+      (catch :default error
+        (let [data (ex-data error)]
+          (cond
+            (= request-too-large (:type data))
+            (error-response 413 :request-too-large
+                            (select-keys data [:limit :actual]))
+
+            (= ::invalid-eval-command (:type data))
+            (error-response 400 :invalid-eval-command
+                            (select-keys data [:reason]))
+
+            (and (= :jolt.sim.eval-session/rejected (:type data))
+                 (= :closed (:reason data)))
+            (error-response 409 :eval-session-closed nil)
+
+            :else
+            (throw error))))
+      (finally
+        (reset! document-active? false)))))
+
 (defn- find-run-preset [config wire-id]
   (some #(when (= wire-id (keyword-coordinate-text (:id %))) %)
         (:run-presets config)))
@@ -1958,7 +2054,9 @@
                     (or (not (contains? services :read-session-frame))
                         (fn? (:read-session-frame services)))
                     (or (not (contains? services :step-session-frame!))
-                        (fn? (:step-session-frame! services))))
+                        (fn? (:step-session-frame! services)))
+                    (or (not (contains? services :evaluate-form!))
+                        (fn? (:evaluate-form! services))))
        (throw (config-error :invalid-services (set (keys services)))))
      (fn [request]
        (let [method (:request-method request)
@@ -1992,6 +2090,10 @@
            (and (= :post method) (= "/api/run" uri))
            (execute-run-request
             config services document-active? active-replay request)
+
+           (and (= :post method) (= "/api/eval" uri))
+           (execute-eval-request
+            config services document-active? request)
 
            (and (= :post method) (= "/api/render" uri))
            (execute-document-request
@@ -2070,6 +2172,19 @@
                  :read-session-frame
                  (fn [cursor]
                    (viewer-session/read-frame sim-session cursor)))))
+
+(defn start-eval-session!
+  "Starts Ripple with one explicitly trusted EvalSession attached.
+
+  This is an opt-in arbitrary-code execution surface protected by the normal
+  loopback capability token. The browser can submit only the closed v1 form
+  request; the attached closure delegates once to the supplied EvalSession and
+  returns its bounded JSON-safe projection. Ordinary `start!` does not install
+  this service and `/api/eval` remains unavailable."
+  [config eval-session]
+  (start! config
+          (assoc (default-services config)
+                 :evaluate-form! (viewer-eval/service eval-session))))
 
 (defn start-remote-session!
   "Starts Ripple with one separately running loopback Session attached read-only.
@@ -2176,28 +2291,42 @@
 (defn -main
   "Starts a loopback viewer from one trusted EDN config file.
 
-  Usage: JOLT_SIM_VIEWER_TOKEN=<32+ chars> jolt -M:viewer CONFIG.edn
+  Usage: JOLT_SIM_VIEWER_TOKEN=<32+ chars> jolt -M:viewer [--eval] CONFIG.edn
 
   The token is deliberately supplied through the environment rather than the
-  config file. Port 0 selects an ephemeral loopback port. The primordial
+  config file. `--eval` explicitly installs one trusted persistent EvalSession;
+  without it the arbitrary-code endpoint is absent. Port 0 selects an
+  ephemeral loopback port. The primordial
   thread owns SIGINT. On POSIX, server workers inherit its blocked signal mask;
   on Windows, the host uses console-interrupt delivery. In both cases,
   `park-until-interrupt` handles Ctrl+C, runs the registered server shutdown,
   and exits cleanly. Programmatic callers continue to use `start!`/`stop!`."
   [& args]
-  (when-not (= 1 (count args))
-    (throw (config-error :wrong-argument-count {:args (vec args)})))
-  (let [config (validate-config! (read-main-config (first args)))]
+  (let [[eval? config-path]
+        (cond
+          (= 1 (count args)) [false (first args)]
+          (and (= 2 (count args)) (= "--eval" (first args)))
+          [true (second args)]
+          :else
+          (throw (config-error :wrong-arguments {:args (vec args)})))
+        config (validate-config! (read-main-config config-path))]
     ;; On POSIX, block before the listener, accept loop, and handler executor
     ;; start so every worker inherits the blocked SIGINT mask. On Windows this
     ;; host operation is intentionally a no-op and the primordial thread owns
     ;; console-interrupt delivery instead. This prevents Ctrl+C from landing in
     ;; a worker's foreign wait or interrupting a mutex-backed promise deref.
     (jolt.host/block-sigint)
-    (let [server (start! config)
+    (let [attached-eval-session (when eval? (eval-session/start))
+          server (if attached-eval-session
+                   (start-eval-session! config attached-eval-session)
+                   (start! config))
           stopped? (atom false)
           stop-once! (fn []
                        (when (compare-and-set! stopped? false true)
+                         ;; stop-server is bounded by jolt-tcp. Do not call
+                         ;; EvalSession/close! here: arbitrary user code may
+                         ;; hold its lock forever. The command-line session is
+                         ;; process-owned and process exit reclaims it.
                          (stop! server)))]
       (try
         (jolt.host/add-shutdown-hook stop-once!)

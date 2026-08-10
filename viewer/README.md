@@ -1,11 +1,18 @@
 # Ripple
 
-Ripple is the offline jolt-sim document viewer. This optional dependency root
+Ripple is the jolt-sim investigation and REPL workbench. Its offline document
+viewer remains the default, non-evaluating mode. This optional dependency root
 serves a small loopback-only web UI over the existing trace, Case/Outcome, and
 read-only official Maelstrom-run reporters, a safe experiment-plan inspector,
 and the fresh-process replay
 helper. It does not implement another
 scheduler, controller, monitor, evidence schema, or worker protocol.
+
+With the explicit command-line `--eval` flag, Ripple also attaches one
+persistent `jolt.sim.eval-session` and exposes a small Jolt REPL pane. This is
+an adapter over the same UI-neutral, datafy/nav/tap-friendly session API that a
+terminal, Glimmer client, or agent can use; the browser is not the evaluator.
+Without `--eval`, the arbitrary-code route is absent.
 
 The browser keeps the selected EDN file locally until **Inspect** or **Replay
 once** is pressed. Every request requires a startup capability token. The
@@ -73,6 +80,25 @@ cd viewer
 JOLT_SIM_VIEWER_TOKEN='replace-with-at-least-32-random-characters' \
   /absolute/path/to/sim/jolt -M:viewer /absolute/path/to/viewer-config.edn
 ```
+
+To opt into the persistent Jolt REPL, add `--eval` before the config path:
+
+```sh
+cd viewer
+JOLT_SIM_VIEWER_TOKEN='replace-with-at-least-32-random-characters' \
+  /absolute/path/to/sim/jolt -M:viewer --eval \
+  /absolute/path/to/viewer-config.edn
+```
+
+The browser submits exactly one opaque form string per request and never
+selects a namespace, history policy, function, or runtime option. Successful
+forms and evaluated exceptions both return a committed sequence receipt;
+printed values and output are bounded display text. Ripple never retries an
+evaluation automatically when the transport or receipt is ambiguous. The
+capability token grants arbitrary code execution in the Ripple process, so
+keep it private even though the listener is loopback-only.
+
+[![Ripple persistent Jolt REPL session](docs/ripple-persistent-eval-session.png)](docs/ripple-persistent-eval-session.png)
 
 Port `0` selects an ephemeral loopback port and the startup message prints the
 actual URL. A fixed port such as `8788` is more convenient for repeated use.

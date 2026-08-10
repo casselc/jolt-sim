@@ -7,12 +7,14 @@
             [jolt.http.body :as http-body]
             [jolt.sim.activity :as activity]
             [jolt.sim.case-outcome :as case-outcome]
+            [jolt.sim.eval-session :as eval-session]
             [jolt.sim.kernel :as kernel]
             [jolt.sim.maelstrom.official-run :as official-run]
             [jolt.sim.presentation :as presentation]
             [jolt.sim.session :as session]
             [jolt.sim.trace :as trace]
             [jolt.sim.viewer :as viewer]
+            [jolt.sim.viewer.eval :as viewer-eval]
             [jolt.sim.viewer.experiment :as viewer-experiment]
             [jolt.sim.viewer.remote-session :as remote-session]
             [jolt.sim.session-view :as viewer-session]
@@ -518,6 +520,12 @@
     (is (string/includes? (:body script)
                           "requestRun: () => request(\"/api/replay\")"))
     (is (string/includes? (:body script) "fetch(\"/api/run\""))
+    (is (string/includes? (:body shell) "id=\"eval-form\""))
+    (is (string/includes? (:body shell) "id=\"eval-transcript\""))
+    (is (string/includes? (:body script) "fetch(\"/api/eval\""))
+    (is (string/includes? (:body script) "validEvalResponse"))
+    (is (string/includes? (:body script)
+                          "outcome unknown and Ripple will not retry"))
     (is (= "no-store" (get-in shell [:headers "Cache-Control"])))
     (is (string/includes?
          (get-in shell [:headers "Content-Security-Policy"])
@@ -1186,6 +1194,247 @@
     (is (= 404 (:status response)))
     (is (false? @body-read?))))
 
+(deftest eval-route-is-opt-in-closed-and-delegates-exactly-once
+  (let [calls (atom [])
+        handler
+        (viewer/make-handler
+         (config)
+         (assoc (services (atom []) (atom []) nil)
+                :evaluate-form!
+                (fn [form]
+                  (swap! calls conj form)
+                  {"version" 1 "sequence" "7" "events" []})))
+        response (handler (json-post-request "/api/eval"
+                                             {"version" 1
+                                              "form" "(+ 20 22)"}))]
+    (is (= 200 (:status response)))
+    (is (= ["(+ 20 22)"] @calls))
+    (is (= {"version" 1 "sequence" "7" "events" []}
+           (json/read-str (:body response))))))
+
+(deftest eval-route-rejections-never-read-or-evaluate-untrusted-input
+  (let [calls (atom 0)
+        base-services (assoc (services (atom []) (atom []) nil)
+                             :evaluate-form! (fn [_] (swap! calls inc)))
+        handler (viewer/make-handler (config) base-services)
+        no-service (viewer/make-handler (config)
+                                        (services (atom []) (atom []) nil))
+        body-read? (atom false)
+        unavailable
+        (no-service
+         {:request-method :post
+          :uri "/api/eval"
+          :headers {"content-type" "application/json"
+                    "x-jolt-sim-capability" token}
+          :body (reify http-body/RequestBody
+                  (body-recv [_]
+                    (reset! body-read? true)
+                    (throw (ex-info "unavailable eval body was read" {})))
+                  (body-bytes [_]
+                    (reset! body-read? true)
+                    (throw (ex-info "unavailable eval body was read" {})))
+                  (body-string [_ _]
+                    (reset! body-read? true)
+                    (throw (ex-info "unavailable eval body was read" {}))))})
+        duplicate-json "{\"version\":1,\"form\":\"1\",\"form\":\"2\"}"
+        duplicate-request
+        {:request-method :post
+         :uri "/api/eval"
+         :headers {"content-type" "application/json"
+                   "x-jolt-sim-capability" token}
+         :body (body [(.getBytes duplicate-json "UTF-8")])}
+        responses
+        [unavailable
+         (handler (json-post-request "/api/eval"
+                                     {"version" 1 "form" "1"}
+                                     "wrong"))
+         (handler {:request-method :post
+                   :uri "/api/eval"
+                   :headers {"content-type" "text/plain"
+                             "x-jolt-sim-capability" token}
+                   :body (body [(.getBytes "1" "UTF-8")])})
+         (handler duplicate-request)
+         (handler (json-post-request "/api/eval" {"version" 2 "form" "1"}))
+         (handler (json-post-request "/api/eval" {"version" 1 "form" 1}))
+         (handler (json-post-request "/api/eval"
+                                     {"version" 1 "form" "1" "extra" true}))
+         (handler {:request-method :post
+                   :uri "/api/eval"
+                   :headers {"content-type" "application/json"
+                             "content-length" "65537"
+                             "x-jolt-sim-capability" token}
+                   :body (body [])})]]
+    (is (= [404 403 415 400 400 400 400 413] (mapv :status responses)))
+    (is (false? @body-read?))
+    (is (zero? @calls))))
+
+(deftest real-eval-session-persists-repl-state-through-the-thin-adapter
+  (let [session (eval-session/start)
+        handler
+        (viewer/make-handler
+         (config)
+         (assoc (services (atom []) (atom []) nil)
+                :evaluate-form! (viewer-eval/service session)))
+        evaluate
+        (fn [form]
+          (json/read-str
+           (:body
+            (handler (json-post-request "/api/eval"
+                                        {"version" 1 "form" form})))))]
+    (try
+      (let [defined (evaluate "(def ripple-answer 42)")
+            recalled (evaluate "[ripple-answer *1]")
+            failed (evaluate "(throw (ex-info \"ripple-boom\" {:ui true}))")]
+        (is (= "0" (get defined "sequence")))
+        (is (= "user" (get-in recalled ["namespace" "after"])))
+        ;; Vars are deliberately opaque at the HTTP boundary: projecting their
+        ;; host printer could invoke arbitrary or unbounded printing after the
+        ;; evaluation has already committed.
+        (is (= "[42 \"#<class clojure.lang.Var>\"]"
+               (get-in recalled ["events" 0 "printedValue"])))
+        (is (true? (get-in failed ["events" 0 "exception"])))
+        (is (= "2" (get failed "sequence"))))
+      (finally
+        (eval-session/close! session)))))
+
+(deftest committed-evaluation-is-never-reclassified-as-a-size-failure
+  (let [handler
+        (viewer/make-handler
+         (assoc (config) :max-document-bytes 1)
+         (assoc (services (atom []) (atom []) nil)
+                :evaluate-form!
+                (fn [_]
+                  {"version" 1
+                   "sequence" "0"
+                   "namespace" {"before" "user" "after" "user"}
+                   "events" []})))
+        response (handler (json-post-request "/api/eval"
+                                             {"version" 1 "form" "42"}))]
+    (is (= 200 (:status response)))
+    (is (= "0" (get (json/read-str (:body response)) "sequence")))))
+
+(deftest eval-wire-bounds-opaque-values-and-uses-display-truthfully
+  (let [wire
+        (viewer-eval/evaluation-wire
+         {:sequence 9
+          :namespace {:before "user" :after "user"}
+          :events [{:tag :out :val (apply str (repeat 5000 "x"))}
+                   {:tag :ret :val (range) :ns "user" :ms 1}]})
+        output (first (get wire "events"))
+        terminal (second (get wire "events"))]
+    (is (= #{"tag" "text" "truncated"} (set (keys output))))
+    (is (= 4096 (count (get output "text"))))
+    (is (true? (get output "truncated")))
+    (is (= #{"tag" "printedValue" "truncated" "printFailed"
+             "exception" "namespace" "namespaceTruncated" "elapsedMs"}
+           (set (keys terminal))))
+    (is (string? (get terminal "printedValue")))
+    (is (< (count (get terminal "printedValue")) 4096))
+    (is (true? (get terminal "truncated")))
+    (is (false? (get terminal "printFailed")))))
+
+(deftest eval-wire-never-realizes-a-blocking-lazy-result-after-commit
+  (let [release (promise)
+        blocking (lazy-seq @release)
+        projected
+        (future
+          (viewer-eval/evaluation-wire
+           {:sequence 10
+            :namespace {:before "user" :after "user"}
+            :events [{:tag :ret :val blocking :ns "user" :ms 1}]}))]
+    (try
+      (let [wire (deref projected 1000 ::timeout)
+            terminal (first (get wire "events"))]
+        (is (not= ::timeout wire))
+        (is (string/includes? (get terminal "printedValue") "LazySeq"))
+        (is (true? (get terminal "truncated"))))
+      (finally
+        (deliver release nil)))))
+
+(deftest eval-wire-bounds-large-scalars-and-envelope-namespaces
+  (let [large (apply str (repeat 100000 "x"))
+        wire
+        (viewer-eval/evaluation-wire
+         {:sequence 11
+          :namespace {:before large :after large}
+          :events [{:tag :ret :val large :ns large :ms 1}]})
+        terminal (first (get wire "events"))]
+    (is (= 1024 (count (get-in wire ["namespace" "before"]))))
+    (is (true? (get-in wire ["namespace" "beforeTruncated"])))
+    (is (= 1024 (count (get-in wire ["namespace" "after"]))))
+    (is (true? (get-in wire ["namespace" "afterTruncated"])))
+    (is (= 1024 (count (get terminal "namespace"))))
+    (is (true? (get terminal "namespaceTruncated")))
+    (is (< (count (get terminal "printedValue")) 2048))
+    (is (true? (get terminal "truncated")))))
+
+(deftest eval-wire-never-prints-an-exact-ratio-after-commit
+  (let [huge-integer (reduce * (repeat 2000 10))
+        huge-ratio (/ huge-integer 3)
+        terminal
+        (first
+         (get
+          (viewer-eval/evaluation-wire
+           {:sequence 12
+            :namespace {:before "user" :after "user"}
+            :events [{:tag :ret :val huge-ratio :ns "user" :ms 1}]})
+          "events"))]
+    (is (string/starts-with? (get terminal "printedValue")
+                             "\"#<number "))
+    (is (< (count (get terminal "printedValue")) 256))
+    (is (true? (get terminal "truncated")))))
+
+(deftest closed-eval-session-is-a-definite-conflict-not-a-second-evaluation
+  (let [session (eval-session/start)
+        _ (eval-session/close! session)
+        handler
+        (viewer/make-handler
+         (config)
+         (assoc (services (atom []) (atom []) nil)
+                :evaluate-form! (viewer-eval/service session)))
+        response (handler (json-post-request "/api/eval"
+                                             {"version" 1 "form" "42"}))]
+    (is (= 409 (:status response)))
+    (is (= :eval-session-closed
+           (:error (edn/read-string (:body response)))))))
+
+(deftest eval-shares-the-body-consuming-admission-lease
+  (let [handler* (atom nil)
+        busy-response* (atom nil)
+        busy-body-read? (atom false)
+        handler
+        (viewer/make-handler
+         (config)
+         (assoc
+          (services (atom []) (atom []) nil)
+          :evaluate-form!
+          (fn [_]
+            (reset!
+             busy-response*
+             (@handler*
+              {:request-method :post
+               :uri "/api/render"
+               :headers {"content-type" "application/edn"
+                         "x-jolt-sim-capability" token
+                         "x-jolt-sim-document-kind" "case-outcome"}
+               :body (reify http-body/RequestBody
+                       (body-recv [_]
+                         (reset! busy-body-read? true)
+                         (throw (ex-info "busy body was read" {})))
+                       (body-bytes [_]
+                         (reset! busy-body-read? true)
+                         (throw (ex-info "busy body was read" {})))
+                       (body-string [_ _]
+                         (reset! busy-body-read? true)
+                         (throw (ex-info "busy body was read" {}))))}))
+            {"version" 1 "sequence" "0" "events" []})))]
+    (reset! handler* handler)
+    (is (= 200 (:status
+                (handler (json-post-request "/api/eval"
+                                            {"version" 1 "form" "42"})))))
+    (is (= 429 (:status @busy-response*)))
+    (is (false? @busy-body-read?))))
+
 (deftest unexpected-service-errors-propagate-to-the-http-error-boundary
   (let [error (ex-info "renderer defect" {:type ::renderer-defect})
         handler (viewer/make-handler
@@ -1304,6 +1553,55 @@
          (is (= [:block-sigint :start :add-shutdown-hook :park :stop]
                 @events)
              "SIGINT must be blocked before workers start and shutdown once")))))
+
+(deftest command-line-eval-flag-explicitly-owns-one-eval-session
+  (let [stopped (promise)
+        fake-server {:port 8788}
+        fake-session (Object.)
+        events (atom [])
+        shutdown-hook (atom nil)
+        read-config-var (resolve 'jolt.sim.viewer/read-main-config)
+        start-eval-viewer-var (resolve 'jolt.sim.viewer/start-eval-session!)
+        stop-var (resolve 'jolt.sim.viewer/stop!)
+        eval-start-var (resolve 'jolt.sim.eval-session/start)
+        eval-close-var (resolve 'jolt.sim.eval-session/close!)
+        block-var (resolve 'jolt.host/block-sigint)
+        add-hook-var (resolve 'jolt.host/add-shutdown-hook)
+        park-var (resolve 'jolt.host/park-until-interrupt)]
+    (with-redefs-fn
+      {read-config-var (fn [path]
+                         (is (= "/tmp/ripple-eval-config.edn" path))
+                         (config))
+       eval-start-var (fn []
+                        (swap! events conj :eval-start)
+                        fake-session)
+       start-eval-viewer-var
+       (fn [validated session]
+         (is (= (viewer/validate-config! (config)) validated))
+         (is (identical? fake-session session))
+         (swap! events conj :start-eval-viewer)
+         fake-server)
+       stop-var (fn [server]
+                  (is (= fake-server server))
+                  (swap! events conj :stop)
+                  (deliver stopped :stopped))
+       eval-close-var (fn [_]
+                        (throw (ex-info "SIGINT must not wait for eval lock" {})))
+       block-var (fn [] (swap! events conj :block-sigint))
+       add-hook-var (fn [hook]
+                      (swap! events conj :add-shutdown-hook)
+                      (reset! shutdown-hook hook))
+       park-var (fn []
+                  (swap! events conj :park)
+                  (@shutdown-hook)
+                  @stopped)}
+      #(let [main-result
+             (future
+               (viewer/-main "--eval" "/tmp/ripple-eval-config.edn"))]
+         (is (= :stopped (deref main-result 1000 ::timeout)))
+         (is (= [:block-sigint :eval-start :start-eval-viewer
+                 :add-shutdown-hook :park :stop]
+                @events))))))
 
 ;; Real-artifact tests. The gate runs from the viewer directory (CI: cd
 ;; viewer && jolt -M:test), so the checked-in report examples resolve one
