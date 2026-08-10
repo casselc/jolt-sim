@@ -31,11 +31,8 @@
 (defn- absolute-path [value]
   (fs/normalize (fs/absolutize (fs/path value))))
 
-(defn- same-file-or-path? [left right]
-  (or (= left right)
-      (and (fs/exists? left)
-           (fs/exists? right)
-           (fs/same-file? left right))))
+(defn- same-path? [left right]
+  (= left right))
 
 (defn- publication-claim [output]
   (fs/path (fs/parent output)
@@ -121,8 +118,12 @@
   (let [staging-path (absolute-path staging-path)
         artifacts-path (absolute-path artifacts-path)
         output (absolute-path output-path)]
-    (when (or (same-file-or-path? output staging-path)
-              (same-file-or-path? output artifacts-path))
+    ;; Exact normalized aliases get the more specific diagnosis. Every other
+    ;; existing output (including a symlink or hardlink to an input) is then
+    ;; rejected without consulting host inode layout or touching evidence. A
+    ;; nonexistent output cannot already alias either existing input file.
+    (when (or (same-path? output staging-path)
+              (same-path? output artifacts-path))
       (fail! invalid-arguments :output-aliases-input))
     (when (fs/exists? output)
       (fail! invalid-arguments :output-exists))
