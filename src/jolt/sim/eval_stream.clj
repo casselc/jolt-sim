@@ -1,6 +1,6 @@
 (ns jolt.sim.eval-stream
   "Socket-free, UI-neutral, prepl-compatible-subset adapter over the public
-  jolt.eval API (casselc/jolt commit d040d502).
+  jolt.eval API.
 
   This namespace is deliberately narrow. It does not own a socket, a REPL
   loop, tap lifecycle, stdin, multiform reading, request IDs, interruption,
