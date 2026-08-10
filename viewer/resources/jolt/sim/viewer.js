@@ -22,6 +22,10 @@
   const activityPageStatus = document.getElementById("activity-page-status");
   const activityRecovery = document.getElementById("activity-recovery");
   const outcome = document.getElementById("outcome");
+  const evalForm = document.getElementById("eval-form");
+  const evalSubmit = document.getElementById("eval-submit");
+  const evalStatus = document.getElementById("eval-status");
+  const evalTranscript = document.getElementById("eval-transcript");
   const sessionRefresh = document.getElementById("session-refresh");
   const sessionReset = document.getElementById("session-reset");
   const sessionStatus = document.getElementById("session-status");
@@ -63,6 +67,10 @@
     canonicalUnsignedDecimal(value) ||
     (typeof value === "string" && /^-[1-9][0-9]*$/.test(value));
 
+  const boundedString = (value, maximumCharacters) =>
+    typeof value === "string" &&
+    Array.from(value).length <= maximumCharacters;
+
   const validSessionInstanceId = (value) =>
     typeof value === "string" && value.length >= 16 && value.length <= 128 &&
     /^[A-Za-z0-9._~-]+$/.test(value);
@@ -78,6 +86,38 @@
   const namespacedIdentifier = (value) =>
     typeof value === "string" &&
     /^[^\s/:]+(?:\.[^\s/:]+)*\/[^\s/]+$/.test(value);
+
+  const validEvalEvent = (event) => {
+    if (!event || typeof event !== "object" || Array.isArray(event)) return false;
+    if (event.tag === "out" || event.tag === "err") {
+      return exactKeys(event, ["tag", "text", "truncated"]) &&
+        boundedString(event.text, 4096) &&
+        typeof event.truncated === "boolean";
+    }
+    return event.tag === "ret" &&
+      exactKeys(event, ["tag", "printedValue", "truncated", "printFailed",
+        "exception", "namespace", "namespaceTruncated", "elapsedMs"]) &&
+      boundedString(event.printedValue, 4096) &&
+      typeof event.truncated === "boolean" &&
+      typeof event.printFailed === "boolean" &&
+      typeof event.exception === "boolean" &&
+      boundedString(event.namespace, 1024) &&
+      typeof event.namespaceTruncated === "boolean" &&
+      Number.isInteger(event.elapsedMs);
+  };
+
+  const validEvalResponse = (value) =>
+    exactKeys(value, ["version", "sequence", "namespace", "events"]) &&
+    value.version === 1 && canonicalUnsignedDecimal(value.sequence) &&
+    exactKeys(value.namespace,
+      ["before", "beforeTruncated", "after", "afterTruncated"]) &&
+    boundedString(value.namespace.before, 1024) &&
+    boundedString(value.namespace.after, 1024) &&
+    typeof value.namespace.beforeTruncated === "boolean" &&
+    typeof value.namespace.afterTruncated === "boolean" &&
+    Array.isArray(value.events) && value.events.length >= 1 &&
+    value.events.length <= 3 && value.events.every(validEvalEvent) &&
+    value.events[value.events.length - 1].tag === "ret";
 
   const validRunRegime = (regime) =>
     exactKeys(regime, ["id", "label", "summary", "scope"]) &&
@@ -649,6 +689,9 @@
     file.disabled = busy;
     kind.disabled = busy;
     capability.disabled = busy;
+    evalForm.disabled = busy;
+    evalSubmit.disabled = busy || capability.value.length === 0 ||
+      evalForm.value.trim().length === 0;
     inspect.disabled = busy || !ready;
     replay.disabled = busy || !ready || kind.value !== "case-outcome";
     loadRunPresets.disabled = busy || capability.value.length === 0;
@@ -880,6 +923,98 @@
 
   capability.addEventListener("input", updateButtons);
   kind.addEventListener("change", updateButtons);
+  evalForm.addEventListener("input", updateButtons);
+
+  const appendEvalEntry = (form, receipt) => {
+    const item = document.createElement("li");
+    item.className = "eval-entry";
+    const header = document.createElement("header");
+    const coordinate = document.createElement("strong");
+    coordinate.textContent = `#${receipt.sequence} ${receipt.namespace.after}`;
+    const timing = document.createElement("span");
+    const terminal = receipt.events[receipt.events.length - 1];
+    timing.className = "muted";
+    timing.textContent = `${terminal.elapsedMs} ms`;
+    header.appendChild(coordinate);
+    header.appendChild(timing);
+    item.appendChild(header);
+    const source = document.createElement("pre");
+    source.textContent = form;
+    source.setAttribute("aria-label", "Evaluated form");
+    item.appendChild(source);
+    receipt.events.forEach((event) => {
+      const output = document.createElement("pre");
+      output.dataset.evalTag = event.tag;
+      output.textContent = event.tag === "ret" ? event.printedValue : event.text;
+      if (event.truncated) output.textContent += "\n… bounded by Ripple";
+      if (event.printFailed) output.textContent += "\n… value could not be printed";
+      if (event.exception) output.setAttribute("aria-label", "Evaluation exception");
+      item.appendChild(output);
+    });
+    evalTranscript.appendChild(item);
+    while (evalTranscript.children.length > 100) {
+      evalTranscript.removeChild(evalTranscript.firstElementChild);
+    }
+    item.scrollIntoView({behavior: "smooth", block: "nearest"});
+  };
+
+  const evaluateOnce = async () => {
+    if (busy || capability.value.length === 0 ||
+        evalForm.value.trim().length === 0) return;
+    const form = evalForm.value;
+    busy = true;
+    updateButtons();
+    evalStatus.textContent = "Evaluating one form exactly once...";
+    try {
+      let response;
+      try {
+        response = await fetch("/api/eval", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "X-Jolt-Sim-Capability": capability.value
+          },
+          body: JSON.stringify({version: 1, form}),
+          cache: "no-store",
+          credentials: "omit"
+        });
+      } catch (networkError) {
+        evalStatus.textContent =
+          `Evaluation transport failed; outcome unknown and Ripple will not retry. (${networkError.message})`;
+        return;
+      }
+      const body = await response.json().catch(() => null);
+      if (!response.ok) {
+        const definite = response.status >= 400 && response.status < 500;
+        evalStatus.textContent = definite
+          ? `Evaluation rejected before execution (${response.status}).`
+          : `Evaluation failed without a recognizable receipt (${response.status}); outcome unknown and Ripple will not retry.`;
+        return;
+      }
+      if (!validEvalResponse(body)) {
+        evalStatus.textContent =
+          "Evaluation returned an invalid receipt; outcome unknown and Ripple will not retry.";
+        return;
+      }
+      appendEvalEntry(form, body);
+      const terminal = body.events[body.events.length - 1];
+      evalStatus.textContent = terminal.exception
+        ? `Evaluation #${body.sequence} completed with an exception in ${body.namespace.after}.`
+        : `Evaluation #${body.sequence} completed in ${body.namespace.after}.`;
+    } finally {
+      busy = false;
+      updateButtons();
+    }
+  };
+
+  evalSubmit.addEventListener("click", evaluateOnce);
+  evalForm.addEventListener("keydown", (event) => {
+    if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+      event.preventDefault();
+      evaluateOnce();
+    }
+  });
 
   const clearSessionClientState = (forgetInstance,
                                    preserveStepStatus = false) => {

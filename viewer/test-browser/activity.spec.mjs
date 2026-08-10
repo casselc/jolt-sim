@@ -123,6 +123,45 @@ async function loadAndReplay(page) {
   );
 }
 
+test("uses Ripple as a persistent Jolt REPL without automatic retries", async ({page}, testInfo) => {
+  await page.goto("/");
+  await page.locator("#capability").fill(capabilityToken);
+  const form = page.getByTestId("eval-form");
+  const submit = page.getByTestId("eval-submit");
+
+  await form.fill("(def ripple-browser-answer 42)");
+  await expect(submit).toBeEnabled();
+  await submit.click();
+  await expect(page.getByTestId("eval-status")).toContainText(
+    "Evaluation #0 completed in user."
+  );
+
+  await form.fill("[ripple-browser-answer *1]");
+  await submit.click();
+  await expect(page.getByTestId("eval-status")).toContainText(
+    "Evaluation #1 completed in user."
+  );
+  const entries = page.locator(".eval-entry");
+  await expect(entries).toHaveCount(2);
+  await expect(entries.nth(1)).toContainText(
+    "[42 \"#<class clojure.lang.Var>\"]"
+  );
+  await expect(entries.nth(1)).toContainText("bounded by Ripple");
+
+  await form.fill("(throw (ex-info \"browser-boom\" {:ripple true}))");
+  await submit.click();
+  await expect(page.getByTestId("eval-status")).toContainText(
+    "Evaluation #2 completed with an exception in user."
+  );
+  await expect(entries).toHaveCount(3);
+  await expect(entries.nth(2).locator('[aria-label="Evaluation exception"]'))
+    .toContainText("browser-boom");
+  await page.screenshot({
+    path: testInfo.outputPath("ripple-persistent-eval-session.png"),
+    fullPage: true
+  });
+});
+
 test("inspects retained official Maelstrom evidence without replay", async ({page}) => {
   await page.goto("/");
   await page.locator("#kind").selectOption("official-maelstrom-run");

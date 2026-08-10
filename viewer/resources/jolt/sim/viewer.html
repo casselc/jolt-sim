@@ -12,7 +12,7 @@
     h1 { margin: 0; font-size: 1.35rem; }
     .controls { display: grid; gap: .8rem; grid-template-columns: minmax(9rem, auto) minmax(15rem, 1fr) auto auto; align-items: end; }
     label { display: grid; gap: .3rem; font-size: .9rem; }
-    input, select, button { font: inherit; padding: .45rem .6rem; }
+    input, select, textarea, button { font: inherit; padding: .45rem .6rem; }
     button { cursor: pointer; }
     button:disabled { cursor: not-allowed; opacity: .55; }
     #status { min-height: 1.5rem; margin: .8rem 0; white-space: pre-wrap; }
@@ -24,6 +24,11 @@
     #session-choices button { width: 100%; text-align: left; }
     #session-step-retry-row { margin: .5rem 0 0; }
     #activity-panel { border: 1px solid #8886; border-radius: .3rem; padding: .7rem .9rem; }
+    #eval-form { width: min(100%, 70rem); min-height: 7rem; box-sizing: border-box; font-family: ui-monospace, monospace; }
+    #eval-transcript { list-style: none; margin: .7rem 0; padding: 0; display: grid; gap: .55rem; }
+    .eval-entry { border-left: .3rem solid #678; background: #8881; padding: .55rem .7rem; }
+    .eval-entry header { border: 0; padding: 0; display: flex; justify-content: space-between; gap: 1rem; }
+    .eval-entry pre { margin: .4rem 0 0; max-height: 14rem; }
     #activity-page-controls { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; }
     #activity-events { list-style: none; margin: .8rem 0 0; padding: 0; display: grid; gap: .65rem; }
     .activity-event { border-left: .3rem solid #678; background: #8881; padding: .55rem .7rem; }
@@ -39,7 +44,7 @@
 <body>
   <header>
     <h1>Ripple</h1>
-    <p class="muted">Offline jolt-sim document viewer. The document stays in this browser until you explicitly inspect or replay it.</p>
+    <p class="muted">Jolt simulation and REPL workbench. Offline documents stay in this browser until you explicitly inspect or replay them.</p>
   </header>
   <main>
     <div class="controls">
@@ -64,6 +69,17 @@
       </div>
     </div>
     <div id="status" role="status" aria-live="polite"></div>
+    <section id="eval-panel" aria-labelledby="eval-heading">
+      <h2 id="eval-heading">Jolt REPL</h2>
+      <p class="muted">Opt-in trusted evaluation session. This is arbitrary code execution in the Ripple process, protected by the loopback capability token. Each submitted form runs at most once; Ripple never retries an ambiguous request automatically.</p>
+      <label for="eval-form">Form</label>
+      <textarea id="eval-form" data-testid="eval-form" spellcheck="false" placeholder="(+ 20 22)"></textarea>
+      <div>
+        <button id="eval-submit" data-testid="eval-submit" type="button" disabled>Evaluate once</button>
+        <span id="eval-status" data-testid="eval-status" role="status" aria-live="polite">Enter a capability and form. The server may not have evaluation enabled.</span>
+      </div>
+      <ol id="eval-transcript" data-testid="eval-transcript"></ol>
+    </section>
     <section aria-labelledby="run-preset-heading">
       <h2 id="run-preset-heading">Runnable examples</h2>
       <p class="muted">The server owns each example's scenario, regime inputs,

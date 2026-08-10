@@ -8,8 +8,10 @@
   (:require [jolt.example.outbox.regimes :as outbox-regimes]
             [jolt.fs :as fs]
             [jolt.sim.activity :as activity]
+            [jolt.sim.eval-session :as eval-session]
             [jolt.sim.report :as report]
             [jolt.sim.viewer :as viewer]
+            [jolt.sim.viewer.eval :as viewer-eval]
             [jolt.sim.viewer.experiment :as viewer-experiment]))
 
 (def ^:private capability-token
@@ -237,11 +239,12 @@
       :retain-completed-artifacts? true
       :activity-journal? true}}))
 
-(defn- services [outcome]
+(defn- services [outcome eval-session]
   {:render-trace report/trace->html
    :render-case-outcome report/case-outcome->html
    :replay-document (fn [_document _runtime] outcome)
-   :run-case (fn [_runtime] outcome)})
+   :run-case (fn [_runtime] outcome)
+   :evaluate-form! (viewer-eval/service eval-session)})
 
 (defn -main [& args]
   (when (seq args)
@@ -249,12 +252,16 @@
                     {:type ::unexpected-arguments
                      :arguments (vec args)})))
   (let [port (required-port)
-        outcome (retained-outcome!)]
+        outcome (retained-outcome!)
+        eval-session (eval-session/start)]
     (jolt.host/block-sigint)
-    (let [server (viewer/start! (config port) (services outcome))
+    (let [server (viewer/start! (config port) (services outcome eval-session))
           stopped? (atom false)
           stop-once! (fn []
                        (when (compare-and-set! stopped? false true)
+                         ;; This fixture's EvalSession is process-owned. Never
+                         ;; wait for its lock during SIGINT: a browser form may
+                         ;; deliberately be nonterminating.
                          (viewer/stop! server)))]
       (try
         (jolt.host/add-shutdown-hook stop-once!)
