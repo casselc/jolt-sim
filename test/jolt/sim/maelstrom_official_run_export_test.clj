@@ -74,38 +74,112 @@
   (let [dir (str (fs/create-temp-dir
                   {:prefix "jolt-sim-official-run-export-test-"}))
         staging-path (str (fs/path dir "staging.edn"))
+        malformed-staging-path (str (fs/path dir "malformed-staging.edn"))
         artifacts-path (str (fs/path dir "artifacts.edn"))
         output-path (str (fs/path dir "official-run.edn"))
+        claim-path (str (fs/path dir ".official-run.edn.publish-claim"))
         valid-staging (staging 1 [(operation 0)])]
     (spit staging-path (str (pr-str valid-staging) "\n"))
+    (spit malformed-staging-path "{:not :staging}\n")
     (spit artifacts-path (str (pr-str artifacts) "\n"))
-    (spit output-path "sentinel")
-    (let [failure (thrown-data
-                   #(export/export! staging-path
+    ;; Invalid staging cannot create the previously absent final document.
+    (is (= export/invalid-staging
+           (:type (thrown-data
+                   #(export/export! malformed-staging-path
                                     artifacts-path
-                                    output-path))]
-      ;; The first attempt is valid, so it replaces the sentinel with one
-      ;; validated canonical document.
-      (is (nil? failure)))
+                                    output-path)))))
+    (is (false? (fs/exists? output-path)))
+    (is (false? (fs/exists? claim-path)))
+    (export/export! staging-path artifacts-path output-path)
     (let [encoded (slurp output-path)
           valid? (try
                    (official-run/read-edn encoded)
                    true
                    (catch :default _ false))]
       (is valid?))
-    ;; A malformed retry must not touch the already-published document.
-    (let [before (slurp output-path)]
-      (spit staging-path "{:not :staging}\n")
-      (is (= export/invalid-staging
-             (:type (thrown-data
-                     #(export/export! staging-path
-                                      artifacts-path
-                                      output-path)))))
-      (let [unchanged? (= before (slurp output-path))]
-        (is unchanged?)
-        (if unchanged?
-          (fs/delete-tree dir)
-          (println (str "retained failed exporter test directory: " dir)))))))
+    (is (fs/directory? claim-path))
+    ;; Even if the final evidence is moved elsewhere, this coordinate remains
+    ;; consumed and cannot silently acquire a different document.
+    (fs/delete output-path)
+    (is (= :publication-claimed
+           (:reason (thrown-data #(export/export! staging-path artifacts-path
+                                                   output-path)))))
+    (is (false? (fs/exists? output-path)))
+    (fs/delete-tree dir)))
+
+(deftest existing-output-evidence-is-never-replaced
+  (let [dir (str (fs/create-temp-dir
+                  {:prefix "jolt-sim-official-run-existing-test-"}))
+        staging-path (str (fs/path dir "staging.edn"))
+        artifacts-path (str (fs/path dir "artifacts.edn"))
+        output-path (str (fs/path dir "official-run.edn"))
+        claim-path (str (fs/path dir ".official-run.edn.publish-claim"))]
+    (spit staging-path (str (pr-str (staging 1 [(operation 0)])) "\n"))
+    (spit artifacts-path (str (pr-str artifacts) "\n"))
+    (spit output-path "prior evidence")
+    (is (= :output-exists
+           (:reason (thrown-data #(export/export! staging-path artifacts-path
+                                                   output-path)))))
+    (is (= "prior evidence" (slurp output-path)))
+    (is (false? (fs/exists? claim-path)))
+    (fs/delete-tree dir)))
+
+(deftest an-existing-publication-claim-fails-closed
+  (let [dir (str (fs/create-temp-dir
+                  {:prefix "jolt-sim-official-run-claimed-test-"}))
+        staging-path (str (fs/path dir "staging.edn"))
+        artifacts-path (str (fs/path dir "artifacts.edn"))
+        output-path (str (fs/path dir "official-run.edn"))
+        claim-path (str (fs/path dir ".official-run.edn.publish-claim"))]
+    (spit staging-path (str (pr-str (staging 1 [(operation 0)])) "\n"))
+    (spit artifacts-path (str (pr-str artifacts) "\n"))
+    (fs/create-dir claim-path)
+    (spit (str (fs/path claim-path "official-run.edn.partial")) "retained")
+    (is (= :publication-claimed
+           (:reason (thrown-data #(export/export! staging-path artifacts-path
+                                                   output-path)))))
+    (is (false? (fs/exists? output-path)))
+    (is (= "retained"
+           (slurp (str (fs/path claim-path "official-run.edn.partial")))))
+    (fs/delete-tree dir)))
+
+(deftest concurrent-exporters-admit-exactly-one-writer
+  (let [dir (str (fs/create-temp-dir
+                  {:prefix "jolt-sim-official-run-race-test-"}))
+        staging-path (str (fs/path dir "staging.edn"))
+        artifacts-path (str (fs/path dir "artifacts.edn"))
+        output-path (str (fs/path dir "official-run.edn"))
+        ready-a (promise)
+        ready-b (promise)
+        release (promise)
+        attempt (fn [ready]
+                  (deliver ready true)
+                  @release
+                  (try
+                    (export/export! staging-path artifacts-path output-path)
+                    :published
+                    (catch :default error
+                      (:reason (ex-data error)))))
+        _ (spit staging-path
+                (str (pr-str (staging 1 [(operation 0)])) "\n"))
+        _ (spit artifacts-path (str (pr-str artifacts) "\n"))
+        writer-a (future (attempt ready-a))
+        writer-b (future (attempt ready-b))]
+    @ready-a
+    @ready-b
+    (deliver release true)
+    (let [outcomes [@writer-a @writer-b]
+          losers (remove #{:published} outcomes)]
+      (is (= 1 (count (filter #{:published} outcomes))))
+      ;; A loser observed either the completed publication at the cheap
+      ;; precheck or the already-owned atomic claim. Both are fail-closed.
+      (is (= 1 (count losers)))
+      (is (contains? #{:output-exists :publication-claimed}
+                     (first losers))))
+    (is (some? (official-run/read-edn (slurp output-path))))
+    (is (fs/directory?
+         (str (fs/path dir ".official-run.edn.publish-claim"))))
+    (fs/delete-tree dir)))
 
 (deftest output-may-not-alias-forensic-inputs
   (let [dir (str (fs/create-temp-dir

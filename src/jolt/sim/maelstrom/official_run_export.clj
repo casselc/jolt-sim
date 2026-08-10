@@ -29,13 +29,32 @@
   (and (map? value) (= expected-keys (set (keys value)))))
 
 (defn- absolute-path [value]
-  (fs/absolutize (fs/path value)))
+  (fs/normalize (fs/absolutize (fs/path value))))
 
 (defn- same-file-or-path? [left right]
   (or (= left right)
       (and (fs/exists? left)
            (fs/exists? right)
            (fs/same-file? left right))))
+
+(defn- publication-claim [output]
+  (fs/path (fs/parent output)
+           (str "." (fs/file-name output) ".publish-claim")))
+
+(defn- acquire-publication! [output]
+  (let [claim (publication-claim output)]
+    (try
+      ;; create-dir is the single atomic claim operation.  The directory is
+      ;; deliberately retained: after success it prevents reuse of the
+      ;; forensic output coordinate; after process failure it retains any
+      ;; partial that reached the live filesystem. This is not a power-loss
+      ;; durability claim; the protocol does not fsync files or directories.
+      (fs/create-dir claim)
+      claim
+      (catch :default error
+        (if (fs/exists? claim)
+          (fail! invalid-arguments :publication-claimed)
+          (throw error))))))
 
 (defn- read-exact-edn [path]
   (let [text (slurp path)]
@@ -86,10 +105,18 @@
 
 (defn export!
   "Reads staging and artifact descriptor EDN, validates the complete document,
-  then atomically publishes its canonical EDN to output-path. No output write
-  is attempted before official-run/document and official-run/canonical-edn
-  both succeed. A crash before the final same-directory rename can leave a
-  complete temporary file for diagnosis, but never a partial output-path."
+  then publishes its canonical EDN once to a previously absent output-path.
+  No output write is attempted before official-run/document and
+  official-run/canonical-edn both succeed. A process failure after claim
+  acquisition and before the final same-filesystem rename leaves the retained
+  publication claim and may leave its partial document for diagnosis, but
+  never a partial output-path. This is not a host-crash, power-loss, or
+  filesystem-durability guarantee.
+
+  Exporters participating in this protocol cannot race or reuse an output
+  coordinate: an atomic claim directory admits exactly one writer and is never
+  removed. Existing output evidence is rejected before the claim and checked
+  again by its sole owner before publication."
   [staging-path artifacts-path output-path]
   (let [staging-path (absolute-path staging-path)
         artifacts-path (absolute-path artifacts-path)
@@ -97,17 +124,24 @@
     (when (or (same-file-or-path? output staging-path)
               (same-file-or-path? output artifacts-path))
       (fail! invalid-arguments :output-aliases-input))
+    (when (fs/exists? output)
+      (fail! invalid-arguments :output-exists))
     (let [staging (read-exact-edn (str staging-path))
-        artifacts (read-exact-edn (str artifacts-path))
-        result (document staging artifacts)
-        encoded (official-run/canonical-edn result)
-        temporary (fs/create-temp-file
-                   {:dir (fs/parent output)
-                    :prefix ".official-run-"
-                    :suffix ".tmp"})]
-      (spit (str temporary) (str encoded "\n"))
-      (fs/move temporary output
-               {:replace-existing true :atomic-move true})
+          artifacts (read-exact-edn (str artifacts-path))
+          result (document staging artifacts)
+          encoded (official-run/canonical-edn result)
+          claim (acquire-publication! output)
+          partial (fs/path claim "official-run.edn.partial")]
+      ;; All fallible document work precedes the irreversible claim. Once the
+      ;; claim exists, every failure is intentionally retained and fail-closed.
+      (when (fs/exists? output)
+        (fail! invalid-arguments :output-exists-after-claim))
+      (spit (str partial) (str encoded "\n"))
+      (when-not (= result (official-run/read-edn (slurp (str partial))))
+        (fail! invalid-staging :partial-verification-failed))
+      (when (fs/exists? output)
+        (fail! invalid-arguments :output-exists-after-write))
+      (fs/move partial output)
       result)))
 
 (defn -main [& args]
