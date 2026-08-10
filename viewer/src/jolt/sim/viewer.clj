@@ -7,12 +7,14 @@
   monitor, evidence store, or second replay implementation.
 
   Every browser request must declare its document kind explicitly
-  (`:trace`, `:case-outcome`, or `:experiment-plan`) through the
+  (`:trace`, `:case-outcome`, `:experiment-plan`, or
+  `:official-maelstrom-run`) through the
   `X-Jolt-Sim-Document-Kind`
   header; the server never infers or guesses a schema from the uploaded
   bytes. Trace documents render through `jolt.sim.report/trace->html`;
-  experiment-plan documents render only their safe inert projection. Neither
-  kind is replayable. Case/Outcome documents render through
+  experiment-plan documents render only their safe inert projection. Retained
+  official Maelstrom runs render through the shared static report. None of
+  these three kinds is replayable. Case/Outcome documents render through
   `jolt.sim.report/case-outcome->html` and keep the existing replay path.
 
   Browser requests carry only one retained document. Trusted
@@ -33,6 +35,7 @@
             [jolt.http.server :as http]
             [jolt.sim.activity-view :as activity-view]
             [jolt.sim.case-outcome :as case-outcome]
+            [jolt.sim.maelstrom.official-run :as official-run]
             [jolt.sim.future-schedule :as future-schedule]
             [jolt.sim.presentation :as presentation]
             [jolt.sim.process-explorer :as process-explorer]
@@ -49,6 +52,8 @@
 (def unknown-document-kind ::unknown-document-kind)
 (def trace-not-replayable ::trace-not-replayable)
 (def experiment-plan-not-replayable ::experiment-plan-not-replayable)
+(def official-maelstrom-run-not-replayable
+  ::official-maelstrom-run-not-replayable)
 (def invalid-session-cursor ::invalid-session-cursor)
 (def invalid-session-step ::invalid-session-step)
 (def invalid-activity-cursor ::invalid-activity-cursor)
@@ -1717,6 +1722,7 @@
       "trace" :trace
       "case-outcome" :case-outcome
       "experiment-plan" :experiment-plan
+      "official-maelstrom-run" :official-maelstrom-run
       (throw (ex-info "viewer request has an unknown document kind"
                       {:type unknown-document-kind :kind normalized})))))
 
@@ -1728,7 +1734,8 @@
   (case kind
     :trace (trace/read-edn text)
     :case-outcome (case-outcome/read-edn text)
-    :experiment-plan (experiment-viewer/read-edn text)))
+    :experiment-plan (experiment-viewer/read-edn text)
+    :official-maelstrom-run (official-run/read-edn text)))
 
 (defn- request-document [config request kind]
   (let [bytes (bounded-body-bytes request (:max-document-bytes config))]
@@ -1751,7 +1758,8 @@
 
       (or (= case-outcome/invalid-document type)
           (= trace/invalid-document type)
-          (= experiment-viewer/invalid-document type))
+          (= experiment-viewer/invalid-document type)
+          (= official-run/invalid-document type))
       (error-response 400 :invalid-document
                       (select-keys data [:reason]))
 
@@ -1768,6 +1776,10 @@
 
       (= experiment-plan-not-replayable type)
       (error-response 400 :experiment-plan-not-replayable
+                      (select-keys data [:kind]))
+
+      (= official-maelstrom-run-not-replayable type)
+      (error-response 400 :official-maelstrom-run-not-replayable
                       (select-keys data [:kind]))
 
       (= ::scenario-not-allowed type)
@@ -1986,9 +1998,12 @@
             config document-active? request
             (fn [kind document]
               (response 200 "text/html; charset=utf-8"
-                        (if (= :experiment-plan kind)
+                        (case kind
+                          :experiment-plan
                           (experiment-viewer/document->html
                            document (:presentation-registry config))
+                          :official-maelstrom-run
+                          (report/official-run->html document)
                           ((render-service services kind) document)))))
 
            (and (= :post method) (= "/api/replay" uri))
@@ -2001,8 +2016,10 @@
                 (throw
                  (ex-info
                   "viewer replay accepts only Case/Outcome documents"
-                  {:type (if (= :experiment-plan kind)
-                           experiment-plan-not-replayable
+                  {:type (case kind
+                           :experiment-plan experiment-plan-not-replayable
+                           :official-maelstrom-run
+                           official-maelstrom-run-not-replayable
                            trace-not-replayable)
                    :kind kind})))
               (allowed-replay! config document)

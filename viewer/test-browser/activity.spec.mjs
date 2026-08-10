@@ -4,6 +4,9 @@ import {fileURLToPath} from "node:url";
 
 const testDir = path.dirname(fileURLToPath(import.meta.url));
 const fixture = path.join(testDir, "fixtures", "activity-case-outcome.edn");
+const officialRunFixture = path.join(
+  testDir, "fixtures", "official-maelstrom-run.edn"
+);
 const capabilityToken = "ripple-browser-test-capability-0123456789abcdef";
 const semanticKind = "jolt.sim.kind/browser-test-activity";
 const outboxPresetId = "jolt.sim.preset/outbox-cancel-before-ack-v1";
@@ -119,6 +122,26 @@ async function loadAndReplay(page) {
     "Showing events 0–31 of 40."
   );
 }
+
+test("inspects retained official Maelstrom evidence without replay", async ({page}) => {
+  await page.goto("/");
+  await page.locator("#kind").selectOption("official-maelstrom-run");
+  await page.locator("#case-file").setInputFiles(officialRunFixture);
+  await page.locator("#capability").fill(capabilityToken);
+  await expect(page.locator("#inspect")).toBeEnabled();
+  await expect(page.locator("#replay")).toBeDisabled();
+  await page.locator("#inspect").click();
+  await expect(page.locator("#status")).toHaveText(
+    "Validated report rendered."
+  );
+  const report = page.frameLocator("#report");
+  await expect(report.locator("h1")).toHaveText(
+    "jolt-sim official Maelstrom run report"
+  );
+  await expect(report.locator("body")).toContainText(":echo");
+  await expect(report.locator('[data-kind="jolt.sim.kind/maelstrom-operation"]'))
+    .toHaveCount(2);
+});
 
 test("runs one trusted canonical application preset and renders its topology", async ({page}, testInfo) => {
   let releaseRun;

@@ -21,9 +21,14 @@
                        whole-application result sections, and the ordered
                        monitor decisions to data.
     case-outcome->html validate + view model + render in one call.
+    official-run->view-model / official-run->html
+                       read-only retained official Maelstrom evidence, built
+                       solely from its bounded public read-page projection.
     -main              ordinary-use entry point: jolt -M:trace-report
                        INPUT.edn [OUTPUT.html] or jolt -M:case-report
-                       INPUT.edn [OUTPUT.html]. The default path reads exactly
+                       INPUT.edn [OUTPUT.html], or
+                       jolt -M:official-run-report INPUT.edn [OUTPUT.html].
+                       The default path reads exactly
                        one trace document via jolt.sim.trace/read-edn; a
                        leading --case-outcome selector (supplied by the
                        :case-report alias) reads exactly one Case/Outcome
@@ -50,10 +55,12 @@
   rendered inside an explicit Selmer escaping scope, so hostile strings stay
   inert even when some other library has changed Selmer's process-wide
   default."
-  (:require [clojure.java.io :as io]
+  (:require [clojure.datafy :as datafy]
+            [clojure.java.io :as io]
             [clojure.string :as string]
             [jolt.fs :as fs]
             [jolt.sim.case-outcome :as case-outcome]
+            [jolt.sim.maelstrom.official-run :as official-run]
             [jolt.sim.presentation :as presentation]
             [jolt.sim.report.outbox :as outbox]
             [jolt.sim.report-template :refer [embedded-html]]
@@ -69,6 +76,10 @@
 (def case-outcome-view-model-version
   "Version of the Case/Outcome view-model shape this namespace emits."
   2)
+
+(def official-run-view-model-version
+  "Version of the official Maelstrom run view-model shape."
+  1)
 
 (def invalid-monitor-result
   "Type value for a malformed supplied monitor decision."
@@ -535,6 +546,67 @@
   [doc]
   (render-case-outcome-report (case-outcome->view-model doc)))
 
+(defn- official-run-pages
+  "Reads the complete bounded capture through the validate-once public source."
+  [doc]
+  (let [source (official-run/source doc)]
+    (loop [page (datafy/datafy source) header nil operations []]
+      (let [cursor (:cursor page)
+          next-cursor (:next-cursor page)
+          operations (into operations (:operations page))]
+        (when (and (:remaining? page) (<= next-cursor cursor))
+          (throw (ex-info "Official-run paging made no progress"
+                          {:type official-run/invalid-cursor :cursor cursor})))
+        (if (:remaining? page)
+          (recur (datafy/nav source :next-page (:next-page page))
+                 (or header (:header page))
+                 operations)
+          {:page page
+           :header (or header (:header page))
+           :operations operations})))))
+
+(defn official-run->view-model
+  "Builds a deterministic static-report model exclusively from read-page."
+  [doc]
+  (let [{:keys [page header operations]} (official-run-pages doc)
+        {:keys [run outcome history artifacts]} header]
+    {:view-model-version official-run-view-model-version
+     :document-version (:version page)
+     :profile-name (str (:profile run))
+     :workload-name (str (:workload run))
+     :parameters-edn (trace/canonical-edn (:parameters run))
+     :status-name (name (:status outcome))
+     :exit-edn (trace/canonical-edn (:exit outcome))
+     :official-valid-edn (trace/canonical-edn (:official-valid? outcome))
+     :workload-valid-edn (trace/canonical-edn (:workload-valid? outcome))
+     :checks-edn (trace/canonical-edn (:checks outcome))
+     :stats-edn (trace/canonical-edn (:stats outcome))
+     :total-count (:total-count history)
+     :captured-count (:captured-count history)
+     :truncated? (:truncated? history)
+     :history-artifact (:artifact history)
+     :artifacts (mapv #(assoc % :role-text (str (:role %))) artifacts)
+     :artifact-count (count artifacts)
+     :operations
+     (mapv (fn [operation]
+             (assoc operation
+                    :type-name (name (:type operation))
+                    :function-name (str (:f operation))
+                    :process-edn (trace/canonical-edn (:process operation))
+                    :value-edn (trace/canonical-edn (:value operation))
+                    :raw-edn (trace/canonical-edn (:raw operation))))
+           operations)}))
+
+(def ^:private official-run-template
+  (embedded-template "jolt/sim/official_maelstrom_run.html"))
+
+(defn official-run->html
+  "Validates and renders one retained official Maelstrom run read-only."
+  [doc]
+  (strip-render-line-end-whitespace
+   (selmer-util/with-escaping
+     (selmer/render official-run-template (official-run->view-model doc)))))
+
 (defn- absolute-path [path]
   (.getAbsolutePath (io/file path)))
 
@@ -565,10 +637,12 @@
   guesses which schema an input file uses."
   "--case-outcome")
 
+(def official-run-selector "--official-maelstrom-run")
+
 (defn- parse-arguments
   "Splits `args` into an explicit report selector and the remaining
-  input/output arguments. A leading `--case-outcome` selects the Case/Outcome
-  renderer; any other leading `--` option is rejected as an unknown selector
+  input/output arguments. Explicit selectors choose Case/Outcome or retained
+  official Maelstrom evidence; any other leading `--` option is rejected
   rather than being guessed at. Without a selector the default trace path is
   used, preserving `jolt -M:trace-report` behavior."
   [args]
@@ -576,7 +650,8 @@
     (if (and (string? selector)
              (string/starts-with? selector "--"))
       (do
-        (when-not (= case-outcome-selector selector)
+        (when-not (contains? #{case-outcome-selector official-run-selector}
+                             selector)
           (throw
            (ex-info
             "Unknown report selector"
@@ -591,6 +666,7 @@
 
   Usage: jolt -M:trace-report INPUT.edn [OUTPUT.html]
          jolt -M:case-report INPUT.edn [OUTPUT.html]
+         jolt -M:official-run-report INPUT.edn [OUTPUT.html]
 
   The default path reads exactly one trace document through
   `jolt.sim.trace/read-edn` (which validates the complete document
@@ -605,9 +681,11 @@
   [& args]
   (let [[selector args] (parse-arguments args)
         case-outcome? (= case-outcome-selector selector)
-        usage (if case-outcome?
-                "Usage: jolt -M:case-report INPUT.edn [OUTPUT.html]"
-                "Usage: jolt -M:trace-report INPUT.edn [OUTPUT.html]")
+        official-run? (= official-run-selector selector)
+        usage (cond
+                case-outcome? "Usage: jolt -M:case-report INPUT.edn [OUTPUT.html]"
+                official-run? "Usage: jolt -M:official-run-report INPUT.edn [OUTPUT.html]"
+                :else "Usage: jolt -M:trace-report INPUT.edn [OUTPUT.html]")
         [input output]
         (case (count args)
           1 [(first args) (default-output-path (first args))]
@@ -619,8 +697,12 @@
              :reason :wrong-argument-count
              :args (vec args)})))]
     (ensure-distinct-paths! input output)
-    (let [read-doc (if case-outcome? case-outcome/read-edn trace/read-edn)
-          render (if case-outcome? case-outcome->html trace->html)
+    (let [read-doc (cond case-outcome? case-outcome/read-edn
+                         official-run? official-run/read-edn
+                         :else trace/read-edn)
+          render (cond case-outcome? case-outcome->html
+                       official-run? official-run->html
+                       :else trace->html)
           doc (read-doc (slurp input))
           html (render doc)]
       (spit output html)

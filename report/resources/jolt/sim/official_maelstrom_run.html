@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>jolt-sim official Maelstrom run report</title>
+<style>
+:root{--bg:#f6f7f9;--panel:#fff;--ink:#1c2733;--muted:#5b6b7b;--line:#d8dee6;--code:#eef1f5;--pass:#1e7d3c;--fail:#b3261e}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 system-ui,sans-serif}header,main{padding:1.25rem 1.5rem}header{background:var(--panel);border-bottom:1px solid var(--line)}header h1{margin:0 0 .25rem;font-size:1.35rem}header p{margin:0;color:var(--muted)}main{max-width:1200px;margin:auto}section{margin-bottom:1.5rem}h2{font-size:1.05rem;border-bottom:1px solid var(--line);padding-bottom:.3rem}.cards{display:flex;flex-wrap:wrap;gap:.75rem}.card,details,pre{background:var(--panel);border:1px solid var(--line);border-radius:6px}.card{padding:.65rem .9rem;min-width:9rem}.label{display:block;color:var(--muted);font-size:.75rem;text-transform:uppercase}.value{font-size:1.05rem;font-weight:600}table{width:100%;border-collapse:collapse;background:var(--panel)}th,td{border:1px solid var(--line);padding:.4rem .55rem;text-align:left;vertical-align:top}th{background:var(--code)}code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}pre{padding:.7rem;white-space:pre-wrap;overflow-wrap:anywhere}.num{text-align:right;font-variant-numeric:tabular-nums}.status-passed{color:var(--pass)}.status-failed,.status-error,.status-timeout{color:var(--fail)}details summary{cursor:pointer;padding:.45rem .6rem}details pre{border:0;border-top:1px solid var(--line);border-radius:0;margin:0}
+</style>
+</head>
+<body>
+<header><h1>jolt-sim official Maelstrom run report</h1><p><code>{{profile-name}}</code> · <code>{{workload-name}}</code> · <strong class="status-{{status-name}}">{{status-name}}</strong></p></header>
+<main>
+<section class="cards"><div class="card"><span class="label">Document</span><span class="value">v{{document-version}}</span></div><div class="card"><span class="label">Exit</span><span class="value">{{exit-edn}}</span></div><div class="card"><span class="label">Official valid</span><span class="value">{{official-valid-edn}}</span></div><div class="card"><span class="label">Workload valid</span><span class="value">{{workload-valid-edn}}</span></div><div class="card"><span class="label">History</span><span class="value">{{captured-count}} / {{total-count}}</span></div></section>
+<section><h2>Run parameters</h2><pre>{{parameters-edn}}</pre></section>
+<section><h2>Checks and statistics</h2><table><tbody><tr><th>Checks</th><td><code>{{checks-edn}}</code></td></tr><tr><th>Statistics</th><td><code>{{stats-edn}}</code></td></tr></tbody></table></section>
+<section><h2>Retained history</h2><p>Artifact <code>{{history-artifact}}</code>{% if truncated? %}; the captured projection is truncated{% endif %}.</p><table><thead><tr><th>#</th><th>Type</th><th>Function</th><th>Process</th><th>Time</th><th>Value</th><th>Raw</th></tr></thead><tbody>{% for operation in operations %}<tr data-kind="jolt.sim.kind/maelstrom-operation"><td class="num">{{operation.index}}</td><td>{{operation.type-name}}</td><td><code>{{operation.function-name}}</code></td><td><code>{{operation.process-edn}}</code></td><td class="num">{{operation.time}}</td><td><code>{{operation.value-edn}}</code></td><td><details><summary>EDN</summary><pre>{{operation.raw-edn}}</pre></details></td></tr>{% endfor %}</tbody></table></section>
+<section><h2>Artifacts ({{artifact-count}})</h2><table><thead><tr><th>Name</th><th>Role</th><th>Bytes</th><th>SHA-256</th></tr></thead><tbody>{% for artifact in artifacts %}<tr><td><code>{{artifact.name}}</code></td><td>{{artifact.role-text}}</td><td class="num">{{artifact.bytes}}</td><td><code>{{artifact.sha256}}</code></td></tr>{% endfor %}</tbody></table></section>
+</main>
+</body>
+</html>
