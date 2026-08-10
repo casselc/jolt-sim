@@ -3039,6 +3039,125 @@
       (reset! read? true)
       "")))
 
+;; --- Evaluation/document-inspection-only workbench ---
+;;
+;; Omitting both `:allowed-scenarios` and `:runtime-config` selects an explicit
+;; eval-only mode: rendering and an injected `:evaluate-form!` service keep
+;; working, while the replay/run routes fail closed as unavailable before any
+;; body read or service call. The two keys are an all-or-nothing pair, and a
+;; nonempty run catalog is rejected without them.
+
+(defn- eval-only-config []
+  (dissoc (config) :allowed-scenarios :runtime-config))
+
+(deftest eval-only-config-is-valid-and-renders-and-evaluates
+  (let [cfg (eval-only-config)
+        validated (viewer/validate-config! cfg)]
+    (is (not (contains? validated :allowed-scenarios)))
+    (is (not (contains? validated :runtime-config)))
+    (is (= [] (:run-presets validated)))
+    (let [render-calls (atom [])
+          eval-calls (atom [])
+          handler
+          (viewer/make-handler
+           cfg
+           (assoc (services render-calls (atom []) nil)
+                  :evaluate-form!
+                  (fn [form]
+                    (swap! eval-calls conj form)
+                    {"version" 1 "sequence" "0" "events" []})))
+          rendered (handler (request "/api/render"
+                                     (case-outcome/canonical-edn (document))))
+          evaluated (handler (json-post-request "/api/eval"
+                                                {"version" 1 "form" "(+ 1 2)"}))]
+      (is (= 200 (:status rendered)))
+      (is (= 200 (:status evaluated)))
+      (is (= [[:case-outcome (document)]] @render-calls))
+      (is (= ["(+ 1 2)"] @eval-calls)))))
+
+(deftest replay-config-keys-are-an-all-or-nothing-pair
+  (doseq [mutation [#(dissoc % :runtime-config)
+                    #(dissoc % :allowed-scenarios)]]
+    (let [data (try
+                 (viewer/validate-config! (mutation (config)))
+                 nil
+                 (catch :default error (ex-data error)))]
+      (is (= viewer/invalid-config (:type data)))
+      (is (= :replay-config-must-be-a-pair (:reason data))))))
+
+(deftest nonempty-run-presets-require-replay-config
+  (let [data (try
+               (viewer/validate-config!
+                (assoc (eval-only-config) :run-presets [(run-preset)]))
+               nil
+               (catch :default error (ex-data error)))]
+    (is (= viewer/invalid-config (:type data)))
+    (is (= :run-presets-require-replay-config (:reason data))))
+  (is (some? (viewer/validate-config! (eval-only-config))))
+  (doseq [invalid [nil {} '() (with-meta [] {:invalid true})]]
+    (let [data (try
+                 (viewer/validate-config!
+                  (assoc (eval-only-config) :run-presets invalid))
+                 nil
+                 (catch :default error (ex-data error)))]
+      (is (= viewer/invalid-config (:type data)))
+      (is (= :invalid-run-presets (:reason data))))))
+
+(deftest eval-only-mode-fails-closed-on-replay-and-run-routes
+  (let [render-calls (atom [])
+        replay-calls (atom [])
+        run-calls (atom 0)
+        eval-calls (atom 0)
+        body-read? (atom false)
+        handler
+        (viewer/make-handler
+         (eval-only-config)
+         (assoc (services render-calls replay-calls {:status :completed})
+                :run-case (fn [_] (swap! run-calls inc))
+                :evaluate-form! (fn [_] (swap! eval-calls inc))))
+        run-request
+        {:request-method :post
+         :uri "/api/run"
+         :headers {"content-type" "application/json"
+                   "x-jolt-sim-capability" token}
+         :body (recording-body body-read?)}
+        replay-request
+        (assoc (request "/api/replay"
+                        (case-outcome/canonical-edn (document)))
+               :body (recording-body body-read?))
+        unauthorized-run
+        (handler (assoc-in run-request
+                           [:headers "x-jolt-sim-capability"] "wrong"))
+        unauthorized-replay
+        (handler (assoc-in replay-request
+                           [:headers "x-jolt-sim-capability"] "wrong"))
+        unauthorized-progress
+        (handler (get-request "/api/replay-progress" "wrong"))
+        unauthorized-presets
+        (handler (get-request "/api/run-presets" "wrong"))
+        run (handler run-request)
+        replay (handler replay-request)
+        progress (handler (get-request "/api/replay-progress"))
+        presets (handler (get-request "/api/run-presets"))]
+    (is (= 403 (:status unauthorized-run)))
+    (is (= 403 (:status unauthorized-replay)))
+    (is (= 403 (:status unauthorized-progress)))
+    (is (= 403 (:status unauthorized-presets)))
+    (is (= 404 (:status run)))
+    (is (string/includes? (:body run) ":run-config-unavailable"))
+    (is (= 404 (:status replay)))
+    (is (string/includes? (:body replay) ":replay-unavailable"))
+    (is (= 404 (:status progress)))
+    (is (string/includes? (:body progress) ":replay-progress-unavailable"))
+    (is (= 404 (:status presets)))
+    (is (string/includes? (:body presets) ":run-presets-unavailable"))
+    (is (false? @body-read?)
+        "unavailable routes never read the request body")
+    (is (= [] @render-calls))
+    (is (= [] @replay-calls))
+    (is (zero? @run-calls))
+    (is (zero? @eval-calls))))
+
 (defn- steppable-services
   "Trusted services over a real Session, recording every stepper call."
   [s step-calls]

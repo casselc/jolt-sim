@@ -98,6 +98,23 @@ evaluation automatically when the transport or receipt is ambiguous. The
 capability token grants arbitrary code execution in the Ripple process, so
 keep it private even though the listener is loopback-only.
 
+### Evaluation/document-inspection-only workbench
+
+`:allowed-scenarios` and `:runtime-config` are an all-or-nothing replay pair.
+Supplying both enables the fresh-process replay/run workbench described below,
+exactly as before. Omitting **both** keys instead starts Ripple as an explicit
+evaluation/document-inspection-only workbench: rendering and an injected
+`:evaluate-form!` service keep working, while authorized `/api/run`,
+`/api/replay`, `/api/replay-progress`, and `/api/run-presets` fail closed as
+unavailable (`:run-config-unavailable`, `:replay-unavailable`,
+`:replay-progress-unavailable`, and `:run-presets-unavailable`) before any
+request body is read or any service is invoked. Unauthorized requests to those
+routes still answer `403`. Supplying only one of the two keys is rejected at
+startup, and a nonempty `:run-presets` catalog is rejected without the replay
+pair because every preset resolves to coordinates only a fresh worker can
+execute. This mode is for inspecting retained documents and driving the
+persistent Jolt REPL without granting any fresh-process execution capability.
+
 [![Ripple persistent Jolt REPL session](docs/ripple-persistent-eval-session.png)](docs/ripple-persistent-eval-session.png)
 
 Port `0` selects an ephemeral loopback port and the startup message prints the
