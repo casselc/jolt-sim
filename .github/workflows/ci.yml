@@ -15,8 +15,13 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  JOLT_CORE_SHA: d040d502505743f6631bc91b03f9e6fd251551bc
+  # Broadcast retries must be able to publish while Maelstrom leaves stdin idle.
+  # This pin includes the reviewed cooperative-stdin runtime fix; do not replace
+  # it with a jolt-sim-side transport workaround.
+  JOLT_CORE_SHA: dc0d11d7c1ad897adffaee7c084f42e5b15b142f
   CHEZ_RELEASE_TAG: chez-ci-10.4.1.1
+  MAELSTROM_RELEASE: v0.2.4
+  MAELSTROM_ARCHIVE_SHA256: 301ec71d6b12af0d765edb413f5cf5aa1046b5609bd4e31376a0b549548e5799
 
 jobs:
   sim-posix:
@@ -191,6 +196,60 @@ jobs:
         with:
           name: maelstrom-json-lines-${{ matrix.toolchain }}
           path: jolt-sim/target/maelstrom-json-lines-gates/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Install verified official Maelstrom release
+        id: maelstrom_install
+        if: always() && matrix.name == 'Linux x86_64'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y graphviz gnuplot
+          archive="$RUNNER_TEMP/maelstrom-${MAELSTROM_RELEASE}.tar.bz2"
+          curl -fsSL \
+            "https://github.com/jepsen-io/maelstrom/releases/download/${MAELSTROM_RELEASE}/maelstrom.tar.bz2" \
+            -o "$archive"
+          printf '%s  %s\n' "$MAELSTROM_ARCHIVE_SHA256" "$archive" | sha256sum -c -
+          tar -xjf "$archive" -C "$RUNNER_TEMP"
+          test -x "$RUNNER_TEMP/maelstrom/maelstrom"
+          test -f "$RUNNER_TEMP/maelstrom/lib/maelstrom.jar"
+          {
+            echo "MAELSTROM_BIN=$RUNNER_TEMP/maelstrom/maelstrom"
+            echo "MAELSTROM_JAR=$RUNNER_TEMP/maelstrom/lib/maelstrom.jar"
+          } >> "$GITHUB_ENV"
+
+      - name: Run official Maelstrom Echo and Broadcast gates
+        id: maelstrom_official_gate
+        if: always() && matrix.name == 'Linux x86_64'
+        continue-on-error: true
+        timeout-minutes: 15
+        shell: bash
+        env:
+          JOLT_AOT_CACHE: "0"
+        run: |
+          set -euo pipefail
+          export HOME="$RUNNER_TEMP/jolt-home"
+          export JOLT_CACHE_DIR="$RUNNER_TEMP/jolt-cache"
+          export TMPDIR="$RUNNER_TEMP/jolt-tmp"
+          mkdir -p "$HOME" "$JOLT_CACHE_DIR" "$TMPDIR"
+          sim="$GITHUB_WORKSPACE/jolt-core/target/sim/jolt"
+          repo="$GITHUB_WORKSPACE/jolt-sim"
+          export JOLT_SIM_GATE_PARENT="$repo/target/maelstrom-official-gates"
+          mkdir -p "$JOLT_SIM_GATE_PARENT"
+          cd "$repo"
+          JOLT_SIM_BIN="$sim" JOLT_SIM_PROJECT_DIR="$repo" \
+            script/run-maelstrom-official-e2e.sh
+
+      - name: Preserve official Maelstrom evidence
+        id: maelstrom_official_upload
+        if: always() && matrix.name == 'Linux x86_64'
+        continue-on-error: true
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: maelstrom-official-linux-x86_64
+          path: jolt-sim/target/maelstrom-official-gates/
           if-no-files-found: error
           retention-days: 14
 
@@ -519,6 +578,21 @@ jobs:
           fi
           if [[ "${{ steps.maelstrom_json_lines_upload.outcome }}" != "success" ]]; then
             echo "Maelstrom JSON-lines artifact upload outcome: ${{ steps.maelstrom_json_lines_upload.outcome }}" >&2
+            failed=1
+          fi
+          if [[ "${{ matrix.name }}" = "Linux x86_64" && \
+                "${{ steps.maelstrom_install.outcome }}" != "success" ]]; then
+            echo "official Maelstrom install outcome: ${{ steps.maelstrom_install.outcome }}" >&2
+            failed=1
+          fi
+          if [[ "${{ matrix.name }}" = "Linux x86_64" && \
+                "${{ steps.maelstrom_official_gate.outcome }}" != "success" ]]; then
+            echo "official Maelstrom gate outcome: ${{ steps.maelstrom_official_gate.outcome }}" >&2
+            failed=1
+          fi
+          if [[ "${{ matrix.name }}" = "Linux x86_64" && \
+                "${{ steps.maelstrom_official_upload.outcome }}" != "success" ]]; then
+            echo "official Maelstrom artifact upload outcome: ${{ steps.maelstrom_official_upload.outcome }}" >&2
             failed=1
           fi
           if [[ "${{ steps.outbox_gate.outcome }}" != "success" ]]; then
