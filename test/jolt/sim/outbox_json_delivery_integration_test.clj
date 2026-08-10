@@ -111,6 +111,22 @@
           (is (= :ack-mismatch
                  (get-in application [:delivery :error :reason]))))))))
 
+(deftest live-lifecycle-scenario-keeps-controller-ownership-closed
+  (let [scenario-var #'live-scenarios/exercise-live-lifecycle
+        input {:payload [] :ack-outcome :accepted}
+        caught
+        (try
+          (live-scenarios/exercise-live-lifecycle
+           {:ffi-mode :hybrid :ffi-handlers {}} input)
+          nil
+          (catch :default error error))]
+    (is (true? (:jolt.sim/activity-lifecycle-owned (meta scenario-var))))
+    (is (= :jolt.sim.fixtures.outbox-json-delivery-live-scenarios/invalid-input
+           (:type (ex-data caught))))
+    (is (= :overrides (:reason (ex-data caught))))
+    (is (= {:ffi-mode :hybrid :ffi-handlers {}}
+           (:input (ex-data caught))))))
+
 (deftest json-command-seam-rejects-untransmitted-fields
   (let [request-bytes-for (:request-bytes-for fixture/json-http-seam)
         command (assoc fixture/default-command :ignored true)

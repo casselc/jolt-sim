@@ -15,10 +15,12 @@
             [jolt.sim.handler-pack :as hp]
             [jolt.sim.net.posix-loopback :as posix]
             [jolt.sim.runtime :as rt]
-            [jolt.sim.sqlite :as sqlite]))
+            [jolt.sim.sqlite :as sqlite]
+            [jolt.sim.trace :as trace]))
 
 (def ^:private input-keys #{:payload :ack-outcome})
 (def ^:private ack-outcomes #{:accepted :hostile})
+(def ^:private override-keys #{:future-schedule})
 (def ^:private max-payload-octets 32)
 
 (defn- invalid-input [reason input]
@@ -51,38 +53,94 @@
        sort
        vec))
 
+(defn- throw-with-cleanup! [primary cleanup-errors]
+  (cond
+    (and primary (seq cleanup-errors))
+    (throw
+     (ex-info (or (ex-message primary) (str primary))
+              (assoc (or (ex-data primary) {})
+                     ::cleanup-errors cleanup-errors)
+              primary))
+
+    primary
+    (throw primary)
+
+    (seq cleanup-errors)
+    (throw
+     (ex-info "live lifecycle cleanup failed"
+              {:type ::cleanup-failed
+               ::cleanup-errors cleanup-errors}))
+
+    :else nil))
+
+(defn- stop-lifecycle [lifecycle]
+  (let [attempt! #(try {:value (live/stop! lifecycle)}
+                       (catch :default error {:error error}))
+        first-attempt (attempt!)
+        second-attempt (attempt!)
+        ;; A first cleanup failure leaves stop! explicitly retryable. If the
+        ;; second attempt becomes the owner, make one final idempotency check.
+        third-attempt (when (or (:error first-attempt)
+                                (true? (:value second-attempt)))
+                        (attempt!))
+        attempts (cond-> [first-attempt second-attempt]
+                   third-attempt (conj third-attempt))
+        values (mapv :value (filter #(contains? % :value) attempts))
+        stopped-outcome
+        (try {:value (live/snapshot! lifecycle)}
+             (catch :default error {:error error}))
+        cleanup-failures
+        (cond-> (mapv :error (filter :error attempts))
+          (:error stopped-outcome) (conj (:error stopped-outcome))
+          (or (not (some true? values))
+              (not= false (peek values))
+              (not= :stopped (get-in stopped-outcome [:value :status])))
+          (conj
+           (ex-info "live lifecycle did not quiesce"
+                    {:type ::cleanup-incomplete
+                     :stop-results values
+                     :status (get-in stopped-outcome [:value :status])})))
+        errors (mapv trace/normalize-error cleanup-failures)]
+    {:values values
+     :errors errors
+     :stopped (:value stopped-outcome)}))
+
 (defn- exercise-body [command ack-outcome]
   (let [lifecycle
         (live/start!
          (cond-> {:retained-evidence 8}
            (= :hostile ack-outcome) (assoc :reply-for hostile-ack)))]
-    (try
-      (let [initial (live/snapshot! lifecycle)
-            submission (live/submit-command! lifecycle command)
-            pending (live/snapshot! lifecycle)
-            delivery-outcome
-            (try
-              {:value (live/deliver-next! lifecycle)}
-              (catch :default error
-                {:error {:type (:type (ex-data error))
-                         :reason (:reason (ex-data error))}}))
-            resulting (live/snapshot! lifecycle)
-            stop-results [(live/stop! lifecycle) (live/stop! lifecycle)]
-            stopped (live/snapshot! lifecycle)]
-        {:initial initial
-         :submission submission
-         :pending pending
-         :delivery delivery-outcome
-         :resulting resulting
-         :stop-results stop-results
-         :stopped stopped})
-      (finally
-        ;; Idempotent cleanup also owns every failure path before controller
-        ;; restoration; no raw server thread may outlive this body.
-        (live/stop! lifecycle)))))
+    (let [body
+          (try
+            {:value
+             (let [initial (live/snapshot! lifecycle)
+                   submission (live/submit-command! lifecycle command)
+                   pending (live/snapshot! lifecycle)
+                   delivery-outcome
+                   (try
+                     {:value (live/deliver-next! lifecycle)}
+                     (catch :default error
+                       {:error {:type (:type (ex-data error))
+                                :reason (:reason (ex-data error))}}))
+                   resulting (live/snapshot! lifecycle)]
+               {:initial initial
+                :submission submission
+                :pending pending
+                :delivery delivery-outcome
+                :resulting resulting})}
+            (catch :default error {:error error}))
+          ;; Cleanup finishes inside the controller scope even when the body
+          ;; failed. Its bounded diagnostics augment rather than replace the
+          ;; first application/controller failure.
+          cleanup (stop-lifecycle lifecycle)]
+      (throw-with-cleanup! (:error body) (:errors cleanup))
+      (assoc (:value body)
+             :stop-results (:values cleanup)
+             :stopped (:stopped cleanup)))))
 
 (defn ^{:jolt.sim/scenario true
-        :jolt.sim/accepts-input true}
+        :jolt.sim/accepts-input true
+        :jolt.sim/activity-lifecycle-owned true}
   exercise-live-lifecycle
   "Runs one validated payload and acknowledgement outcome through the
    unchanged persistent lifecycle inside a fresh hermetic controller scope."
@@ -90,8 +148,9 @@
    (exercise-live-lifecycle {} input))
   ([overrides input]
    (validate-input! input)
-   (when-not (map? overrides)
-     (throw (invalid-input :overrides input)))
+   (when-not (and (map? overrides)
+                  (every? override-keys (keys overrides)))
+     (throw (invalid-input :overrides overrides)))
    (let [command (assoc fixture/default-command :payload (:payload input))
          mem (memory/world)
          sqlite-world
