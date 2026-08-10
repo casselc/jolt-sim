@@ -18,7 +18,7 @@ env:
   # Broadcast retries must be able to publish while Maelstrom leaves stdin idle.
   # This pin includes the reviewed cooperative-stdin runtime fix; do not replace
   # it with a jolt-sim-side transport workaround.
-  JOLT_CORE_SHA: dc0d11d7c1ad897adffaee7c084f42e5b15b142f
+  JOLT_CORE_SHA: 9f5e072c453bbfe90a8431946354c8528b4f8c50
   CHEZ_RELEASE_TAG: chez-ci-10.4.1.1
   MAELSTROM_RELEASE: v0.2.4
   MAELSTROM_ARCHIVE_SHA256: 301ec71d6b12af0d765edb413f5cf5aa1046b5609bd4e31376a0b549548e5799
