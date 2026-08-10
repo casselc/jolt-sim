@@ -44,6 +44,13 @@
      :git/sha "da271ca302487c2c5130a0450b4ad4c78d63e656"}}
    :main-opts ["-m" "jolt.maelstrom.broadcast-main"]}
 
+  ;; Converts the official JVM checker's bounded ordinary-EDN staging value
+  ;; plus shell-computed logical artifact descriptors into the validated,
+  ;; canonical official-run document. It never reads or rewrites raw Maelstrom
+  ;; history/result files.
+  :maelstrom-official-run-export
+  {:main-opts ["-m" "jolt.sim.maelstrom.official-run-export"]}
+
   ;; Verifier side of script/run-maelstrom-echo-e2e.sh. The shell runner owns
   ;; fresh process launch and retained artifacts; this alias independently
   ;; checks the resulting JSON-lines wire evidence.

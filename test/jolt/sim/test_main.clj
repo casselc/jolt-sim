@@ -29,6 +29,8 @@
             [jolt.sim.journal-writer-test]
             [jolt.sim.kernel-test]
             [jolt.sim.maelstrom-history-test]
+            [jolt.sim.maelstrom-official-run-export-test]
+            [jolt.sim.maelstrom-official-run-test]
             [jolt.sim.monitor-test]
             [jolt.sim.outbox-experiment-packs-test]
             [jolt.sim.pack-registry-test]
@@ -74,6 +76,8 @@
                         'jolt.sim.journal-writer-test
                         'jolt.sim.kernel-test
                         'jolt.sim.maelstrom-history-test
+                        'jolt.sim.maelstrom-official-run-export-test
+                        'jolt.sim.maelstrom-official-run-test
                         'jolt.sim.monitor-test
                         'jolt.sim.outbox-experiment-packs-test
                         'jolt.sim.pack-registry-test
