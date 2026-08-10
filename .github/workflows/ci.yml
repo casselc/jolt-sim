@@ -412,6 +412,9 @@ jobs:
           JOLT_SIM_VIEWER_ARTIFACT_DIR="$viewer_artifacts" \
           JOLT_SIM_VIEWER_DOCUMENT="$repo/report/examples/outbox-retry-case-outcome.edn" \
             "$sim" -M:e2e-test
+          cd "$repo/examples/outbox-workbench"
+          JOLT_SIM_OUTBOX_WORKBENCH_PROGRESS_FILE="$viewer_artifacts/outbox-workbench-progress.edn" \
+            "$sim" -M:eval-flow-test
 
       - name: Run Ripple remote Session process acceptance
         id: viewer_remote_gate
