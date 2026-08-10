@@ -12,6 +12,7 @@
             [jolt.net :as net]
             [jolt.sim.ffi-memory :as memory]
             [jolt.sim.fixtures.outbox-json-delivery :as fixture]
+            [jolt.sim.fixtures.outbox-json-delivery-live-scenarios :as live-scenarios]
             [jolt.sim.fixtures.outbox-sqlite-plans :as plans]
             [jolt.sim.handler-pack :as hp]
             [jolt.sim.net.posix-loopback :as posix]
@@ -81,6 +82,34 @@
    "entity-id" "entity-a"
    "version" 1
    "outbox-id" 1})
+
+(deftest persistent-live-lifecycle-runs-unchanged-under-hermetic-worlds
+  (doseq [[ack-outcome expected-status expected-plans]
+          [[:accepted :delivered 42]
+           [:hostile :pending 36]]]
+    (let [evidence
+          (live-scenarios/exercise-live-lifecycle
+           {:payload [0 127 128 255] :ack-outcome ack-outcome})
+          application (:application evidence)]
+      (testing (str "persistent lifecycle with " (name ack-outcome) " ack")
+        (is (= [:open :empty]
+               ((juxt :status :phase) (:initial application))))
+        (is (= 201 (get-in application [:submission :status])))
+        (is (= :pending
+               (get-in application [:pending :store-state :outbox 0 :status])))
+        (is (= expected-status
+               (get-in application [:resulting :store-state :outbox 0 :status])))
+        (is (= [true false] (:stop-results application)))
+        (is (= :stopped (get-in application [:stopped :status])))
+        (is (= expected-plans (get-in evidence [:sqlite :plan-index])))
+        (is (= expected-plans (get-in evidence [:sqlite :plan-count])))
+        (is (true? (get-in evidence [:routes :all-handled?])))
+        (is (= {:memory true :sqlite true :posix true} (:clean? evidence)))
+        (if (= :accepted ack-outcome)
+          (is (= :delivered
+                 (get-in application [:delivery :value :status])))
+          (is (= :ack-mismatch
+                 (get-in application [:delivery :error :reason]))))))))
 
 (deftest json-command-seam-rejects-untransmitted-fields
   (let [request-bytes-for (:request-bytes-for fixture/json-http-seam)
