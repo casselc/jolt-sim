@@ -1655,6 +1655,53 @@
     (is (not (string/includes? html "<script>")))
     (is (= html (report/value->html registry value)))))
 
+(deftest generic-value-topology-actions-render-as-inert-canonical-data
+  (let [node-command {:op :inspect :target "a<&"}
+        edge-command [:set-regime {:connection ["a" "b"] :regime :drop}]
+        value {:kind :example/network}
+        registry
+        {:example/network
+         {:kind :example.kind/topology
+          :present
+          (fn [_]
+            {:summary "Network" :fields []
+             :graph
+             {:directed? false
+              :nodes [{:id "a" :label "A" :status nil :fields []
+                       :actions
+                       [{:id "inspect" :label "Inspect <node>"
+                         :command node-command :enabled? true}]}
+                      {:id "b" :label "B" :status nil :fields []}]
+              :edges [{:id "a--b" :from "a" :to "b" :label "link"
+                       :status nil :fields []
+                       :actions
+                       [{:id "drop" :label "Drop </button><script>x</script>"
+                         :command edge-command :enabled? false}]}]}})}}
+        model (report/value->view-model registry value)
+        node-canonical (get-in model [:graph :nodes 0 :actions 0 :command])
+        edge-canonical (get-in model [:graph :edges 0 :actions 0 :command])
+        html (report/value->html registry value)]
+    (is (string/includes? html "Inspect &lt;node&gt;"))
+    (is (string/includes?
+         html "Drop &lt;/button&gt;&lt;script&gt;x&lt;/script&gt;"))
+    (is (= (trace/canonical-value node-command) node-canonical))
+    (is (= (trace/canonical-value edge-command) edge-canonical))
+    (is (string/includes?
+         html
+         "[:jolt.sim.value/map [[[:jolt.sim.value/keyword nil &quot;op&quot;] [:jolt.sim.value/keyword nil &quot;inspect&quot;]] [[:jolt.sim.value/keyword nil &quot;target&quot;] [:jolt.sim.value/string &quot;a&lt;&amp;&quot;]]]]"))
+    (is (string/includes?
+         html
+         "[:jolt.sim.value/vector [[:jolt.sim.value/keyword nil &quot;set-regime&quot;] [:jolt.sim.value/map [[[:jolt.sim.value/keyword nil &quot;connection&quot;] [:jolt.sim.value/vector [[:jolt.sim.value/string &quot;a&quot;] [:jolt.sim.value/string &quot;b&quot;]]]] [[:jolt.sim.value/keyword nil &quot;regime&quot;] [:jolt.sim.value/keyword nil &quot;drop&quot;]]]]]]"))
+    (is (= 2 (count (re-seq #"aria-label=\"Canonical command EDN\"" html))))
+    (is (= 2 (count (re-seq #"aria-label=\"Inert topology actions\"" html))))
+    (is (= 1 (count (re-seq #"aria-label=\"Action disabled\"" html))))
+    (is (string/includes? html "jolt-sim-value-action-disabled"))
+    (is (not (string/includes? html "<button")))
+    (is (not (string/includes? html "<form")))
+    (is (not (string/includes? html "<script>")))
+    (is (not (string/includes? html "href=")))
+    (is (= html (report/value->html registry value)))))
+
 (deftest committed-outbox-example-is-current-ack-gated-witness
   (let [doc
         (case-outcome/read-edn

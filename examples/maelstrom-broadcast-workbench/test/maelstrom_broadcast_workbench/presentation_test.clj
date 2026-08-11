@@ -8,6 +8,9 @@
    :status :running
    :input {:message 42 :regime :partition-heal}
    :topology {"n3" ["n2"] "n1" ["n2"] "n2" ["n3" "n1"]}
+   :connections {["n1" "n2"] :normal
+                 ["n2" "n3"] (if active? :drop :normal)}
+   :regime-revision 7
    :partition {:links [["n2" "n3"]] :active? active?}
    :nodes {"n3" {:messages [] :pending []}
            "n1" {:messages [42] :pending []}
@@ -29,6 +32,9 @@
        :value
        trace/restore-value))
 
+(defn- restored-actions [entity]
+  (mapv #(update % :command trace/restore-value) (:actions entity)))
+
 (deftest snapshot-projector-is-stable-and-carries-real-evidence
   (let [drop {:src "n2" :dest "n3" :body {:type "broadcast"}}
         model (presentation/present (snapshot true [drop]))
@@ -44,6 +50,43 @@
     (is (= 1 (restored-field (:fields (second edges))
                              "Dropped envelopes")))
     (is (= 1 (restored-field (:fields (second nodes)) "Pending")))
+    (is (= [] (:actions (first nodes))))
+    (is (= [{:id "step"
+             :label "Deliver next mailbox"
+             :command {:op :step :node-id "n2"}
+             :enabled? true}]
+           (restored-actions (second nodes))))
+    (is (= [] (:actions (nth nodes 2))))
+    (is (= [{:id "drop"
+             :label "Drop future deliveries"
+             :command {:op :set-connection-regime
+                       :connection ["n1" "n2"]
+                       :expected-revision 7
+                       :regime :drop}
+             :enabled? true}
+            {:id "restore"
+             :label "Restore deliveries"
+             :command {:op :set-connection-regime
+                       :connection ["n1" "n2"]
+                       :expected-revision 7
+                       :regime :normal}
+             :enabled? false}]
+           (restored-actions (first edges))))
+    (is (= [{:id "drop"
+             :label "Drop future deliveries"
+             :command {:op :set-connection-regime
+                       :connection ["n2" "n3"]
+                       :expected-revision 7
+                       :regime :drop}
+             :enabled? false}
+            {:id "restore"
+             :label "Restore deliveries"
+             :command {:op :set-connection-regime
+                       :connection ["n2" "n3"]
+                       :expected-revision 7
+                       :regime :normal}
+             :enabled? true}]
+           (restored-actions (second edges))))
     (is (= {:count 0 :tail []}
            (restored-field (:fields model) "Replies")))
     (is (= model (presentation/present (snapshot true [drop]))))))
@@ -73,12 +116,20 @@
       (is (= [:jolt.sim.status/idle
               :jolt.sim.status/idle
               :jolt.sim.status/idle]
-             (mapv :status (get-in created [:graph :nodes])))))
+             (mapv :status (get-in created [:graph :nodes]))))
+      (is (every? empty? (map :actions (get-in created [:graph :nodes]))))
+      (is (every? false?
+                  (mapcat #(map :enabled? (:actions %))
+                          (get-in created [:graph :edges])))))
     (let [stopped (presentation/present (assoc snapshot :status :stopped))]
       (is (= [:jolt.sim.status/stopped
               :jolt.sim.status/stopped
               :jolt.sim.status/stopped]
-             (mapv :status (get-in stopped [:graph :nodes])))))))
+             (mapv :status (get-in stopped [:graph :nodes]))))
+      (is (every? empty? (map :actions (get-in stopped [:graph :nodes]))))
+      (is (every? false?
+                  (mapcat #(map :enabled? (:actions %))
+                          (get-in stopped [:graph :edges])))))))
 
 (defn -main [& _]
   (let [result (run-tests 'maelstrom-broadcast-workbench.presentation-test)]

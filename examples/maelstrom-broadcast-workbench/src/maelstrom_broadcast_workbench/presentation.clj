@@ -56,6 +56,34 @@
     :else
     :jolt.sim.status/idle))
 
+(defn- node-actions [snapshot node-id]
+  (if (and (= :running (:status snapshot))
+           (pos? (get-in snapshot [:mailboxes node-id :count] 0)))
+    [{:id "step"
+      :label "Deliver next mailbox"
+      :command {:op :step :node-id node-id}
+      :enabled? true}]
+    []))
+
+(defn- edge-actions [snapshot connection]
+  (let [running? (= :running (:status snapshot))
+        revision (:regime-revision snapshot)
+        regime (get (:connections snapshot) connection)]
+    [{:id "drop"
+      :label "Drop future deliveries"
+      :command {:op :set-connection-regime
+                :connection connection
+                :expected-revision revision
+                :regime :drop}
+      :enabled? (and running? (= :normal regime))}
+     {:id "restore"
+      :label "Restore deliveries"
+      :command {:op :set-connection-regime
+                :connection connection
+                :expected-revision revision
+                :regime :normal}
+      :enabled? (and running? (= :drop regime))}]))
+
 (defn snapshot-projection
   "Projects one exact Broadcast snapshot into the generic bounded topology VM."
   [value]
@@ -77,6 +105,7 @@
               {:id node-id
                :label node-id
                :status (node-status snapshot node-id)
+               :actions (node-actions snapshot node-id)
                :fields
                [{:label "Mailbox count"
                  :value (get-in snapshot [:mailboxes node-id :count] 0)}
@@ -94,6 +123,7 @@
                :to right
                :label (str left " - " right)
                :status (edge-status snapshot link)
+               :actions (edge-actions snapshot link)
                :fields
                [{:label "Active partition"
                  :value (and (selected-link?

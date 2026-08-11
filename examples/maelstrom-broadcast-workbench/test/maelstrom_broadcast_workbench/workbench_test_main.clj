@@ -159,19 +159,47 @@
       (finally
         (client/close! connection)))))
 
-(defn- command-http! [port command sequences]
+(defn- retained-command-http!
+  [port label request-body expected-status sequences]
   (let [response (request-json! port "POST" "/api/retained-command"
-                                {"version" 1
-                                 "commandEdn" (pr-str command)})
+                                request-body)
         receipt-text (get-in response [:wire "receiptEdn"])
         receipt (when receipt-text (edn/read-string receipt-text))]
-    (check (str "HTTP command " (:op command) " is definite") 200
+    (check (str label " is definite") 200
            (:status response))
-    (check (str "HTTP command " (:op command) " completed") :completed
+    (check (str label " has the expected application outcome") expected-status
            (:status receipt))
     (when receipt
       (swap! sequences conj (:sequence receipt)))
     {:response response :receipt receipt}))
+
+(defn- command-http! [port command sequences]
+  (retained-command-http!
+   port (str "HTTP command " (:op command))
+   {"version" 1 "commandEdn" (pr-str command)}
+   :completed sequences))
+
+(defn- canonical-command-http!
+  ([port label action sequences]
+   (canonical-command-http! port label action :completed sequences))
+  ([port label action expected-status sequences]
+   (retained-command-http!
+    port label
+    {"version" 1
+     "commandCanonicalEdn" (get action "commandCanonicalEdn")}
+    expected-status sequences)))
+
+(defn- topology-action [response entity-key entity-id action-id]
+  (let [entities (get-in response [:wire "presentation" "graph" entity-key])
+        entity (some #(when (= entity-id (get % "id")) %) entities)
+        action (some #(when (= action-id (get % "id")) %)
+                     (get entity "actions"))]
+    (when-not action
+      (throw (ex-info "Ripple presentation omitted the requested topology action"
+                      {:entity-key entity-key
+                       :entity-id entity-id
+                       :action-id action-id})))
+    action))
 
 (defn- application-snapshot [receipt]
   (if (contains? (:value receipt) :snapshot)
@@ -179,18 +207,17 @@
     (:value receipt)))
 
 (defn- drain-ready! [port initial sequences]
-  (loop [snapshot initial steps 0]
+  (loop [snapshot initial steps 0 last-response nil]
     (when (> steps 100)
       (throw (ex-info "Broadcast workbench drain exceeded its step bound"
                       {:steps steps})))
     (if-let [node-id (first (:ready-mailboxes snapshot))]
-      (let [receipt (:receipt
-                     (command-http! port {:op :step :node-id node-id}
-                                    sequences))]
+      (let [{:keys [receipt response]}
+            (command-http! port {:op :step :node-id node-id} sequences)]
         (check "selected mailbox step delivered one envelope" true
                (get-in receipt [:value :result :delivered?]))
-        (recur (application-snapshot receipt) (inc steps)))
-      {:snapshot snapshot :steps steps})))
+        (recur (application-snapshot receipt) (inc steps) response))
+      {:snapshot snapshot :steps steps :response last-response})))
 
 (defn- node-messages [snapshot]
   (into {} (map (fn [[id state]] [id (:messages state)]) (:nodes snapshot))))
@@ -233,21 +260,47 @@
                (string/includes? (str (get-in frame [:wire "frameEdn"]))
                                  artifact-dir)))
 
-      (let [initial (:receipt (command-http! port {:op :inspect} sequences))
+      (let [{initial :receipt initial-response :response}
+            (command-http! port {:op :inspect} sequences)
             snapshot (:value initial)]
         (check "initial application waits at created boundary" :created
                (:status snapshot))
         (check "initial application has no ready mailbox" []
-               (:ready-mailboxes snapshot)))
+               (:ready-mailboxes snapshot))
+        (check "interactive example starts with both connections normal"
+               {["n1" "n2"] :normal ["n2" "n3"] :normal}
+               (:connections snapshot))
+        (check "connection actions are disabled before bootstrap" false
+               (get (topology-action initial-response "edges" "n2--n3" "drop")
+                    "enabled")))
 
-      (let [boot (:receipt (command-http! port {:op :bootstrap} sequences))
-            snapshot (application-snapshot boot)]
+      (let [{boot :receipt boot-response :response}
+            (command-http! port {:op :bootstrap} sequences)
+            snapshot (application-snapshot boot)
+            drop-action (topology-action boot-response "edges" "n2--n3" "drop")]
         (check "bootstrap enqueues all seven official openers" 7
                (get-in boot [:value :result :enqueued]))
         (check "bootstrap performs no hidden delivery"
                {"n1" 3 "n2" 2 "n3" 2}
                (into {} (map (fn [[id mailbox]] [id (:count mailbox)])
-                             (:mailboxes snapshot)))))
+                             (:mailboxes snapshot))))
+        (let [dropped (canonical-command-http!
+                       port "rendered n2--n3 drop action" drop-action sequences)
+              after-drop (application-snapshot (:receipt dropped))
+              stale (canonical-command-http!
+                     port "stale rendered drop action" drop-action :failed sequences)
+              inspected (:receipt (command-http! port {:op :inspect} sequences))]
+          (check "rendered action changes only n2--n3"
+                 {["n1" "n2"] :normal ["n2" "n3"] :drop}
+                 (:connections after-drop))
+          (check "accepted rendered action consumes one application revision" 1
+                 (:regime-revision after-drop))
+          (check "stale action reports application failure without terminating worker"
+                 :failed (get-in stale [:receipt :status]))
+          (check "stale rendered action cannot mutate connection state"
+                 (select-keys after-drop [:connections :regime-revision])
+                 (select-keys (:value inspected)
+                              [:connections :regime-revision]))))
 
       ;; Use Ripple's persistent evaluator for one command. The evaluated helper
       ;; delegates through retained-view to the exact handle attached to the
@@ -267,17 +320,20 @@
                (:status evaluation))
         (check "EvalSession stepped the selected real mailbox" "n2"
                (get-in result [:receipt :value :result :node-id]))
-        (check "EvalSession used retained command sequence two" 2
+        (check "EvalSession used the next shared retained command sequence" 5
                (get-in result [:receipt :sequence]))
         (swap! sequences conj (get-in result [:receipt :sequence]))
-        (check "retained panel observes the shared next sequence" "3"
+        (check "retained panel observes the shared next sequence" "6"
                (get-in after [:wire "coordinate" "nextSequence"]))
         (check "one n2 step consumed exactly one mailbox head" 1
                (get-in snapshot [:mailboxes "n2" :count]))
 
-        (let [{partitioned :snapshot partition-steps :steps}
+        (let [{partitioned :snapshot partition-steps :steps
+               partition-response :response}
               (drain-ready! port snapshot sequences)
-              pending (get-in partitioned [:nodes "n2" :pending 0])]
+              pending (get-in partitioned [:nodes "n2" :pending 0])
+              restore-action
+              (topology-action partition-response "edges" "n2--n3" "restore")]
           (check "explicit steps reached the partition boundary" true
                  (pos? partition-steps))
           (check "partition leaves n3 without the broadcast"
@@ -286,12 +342,15 @@
           (check "partition records one dropped n2-to-n3 envelope" 1
                  (get-in partitioned [:drops :dropped-total]))
 
-          (let [healed (:receipt (command-http! port {:op :heal} sequences))
-                healed-snapshot (application-snapshot healed)
+          (let [restored (:receipt
+                          (canonical-command-http!
+                           port "rendered n2--n3 restore action"
+                           restore-action sequences))
+                healed-snapshot (application-snapshot restored)
                 after-heal (drain-ready! port healed-snapshot sequences)]
-            (check "healing alone manufactures no delivery" 0
+            (check "restoring a connection alone manufactures no delivery" 0
                    (:steps after-heal))
-            (check "n3 remains empty after heal alone" []
+            (check "n3 remains empty after restore alone" []
                    (get-in after-heal [:snapshot :nodes "n3" :messages])))
 
           (let [retried (:receipt (command-http! port {:op :retry} sequences))
@@ -619,7 +678,7 @@
             (workbench/retained-config
              (required-environment "JOLT_SIM_BIN")
              (required-environment "JOLT_SIM_PROJECT_DIR")
-             {:message 42 :regime :partition-heal})})
+             {:message 42 :regime :healthy})})
           owned (run-owned! progress instance initial* reaped?*)
           outcome (:outcome owned)
           cleanup (:cleanup owned)]
