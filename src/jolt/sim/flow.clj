@@ -4,9 +4,11 @@
   `compile-workflow` accepts a canonical workflow manifest, a canonical cell
   specification registry, and a trusted, pure closed-over handler table.  The public
   surface deliberately follows Mycelium's accumulating-data model: each cell
-  names a cell spec, handlers receive `(ctx state data)` and return exactly
-  `{:state next-state :data output-delta}`. The compiler merges that delta into
-  the input before routing the accumulated data along workflow edges. Selected
+  names a cell spec, handlers receive `(ctx state data)` and return
+  `{:state next-state :data output-delta}` with an optional `:intents` vector.
+  The compiler merges that delta into the input before routing the accumulated
+  data along workflow edges. Declared intents are retained as deterministic
+  data for a later commit boundary; handlers never choose their IDs. Selected
   resources and alias parameters live in ctx rather than the canonical
   accumulating data map.
 
@@ -78,6 +80,9 @@
        (every? #(contains? value %) required)
        (every? allowed (keys value))))
 
+(defn- namespaced-keyword? [value]
+  (and (keyword? value) (some? (namespace value))))
+
 (defn- top-level-map-info! [spec-id direction form]
   (when-not (and (vector? form)
                  (= :map (first form))
@@ -100,7 +105,7 @@
 (defn- validate-cell-spec! [spec-id spec handlers resources]
   (when-not (keyword? spec-id)
     (invalid! "Cell specification IDs must be keywords" {:cell-spec spec-id}))
-  (when-not (closed-map? spec #{:handler :schema :requires}
+  (when-not (closed-map? spec #{:handler :schema :requires :emits}
                          #{:handler :schema})
     (invalid! "A cell specification has an invalid shape"
               {:cell-spec spec-id :value spec}))
@@ -126,7 +131,11 @@
                 {:cell-spec spec-id :requires required}))
     (when-let [missing (seq (remove #(contains? resources %) required))]
       (invalid! "A required workflow resource is missing"
-                {:cell-spec spec-id :missing (stable-ids missing)}))))
+                {:cell-spec spec-id :missing (stable-ids missing)})))
+  (let [emits (get spec :emits #{})]
+    (when-not (and (set? emits) (every? namespaced-keyword? emits))
+      (invalid! "Cell emitted intent kinds must be namespaced keywords"
+                {:cell-spec spec-id :emits emits}))))
 
 (defn- normalize-cell! [alias cell specs]
   (when-not (keyword? alias)
@@ -276,23 +285,74 @@
 (defn- cell-site [cell-id phase]
   {:ns 'jolt.sim.flow :cell cell-id :phase phase})
 
-(defn- invoke-cell [handler context state data cell-id spec-id
+(defn- invalid-handler-result! [message cell-id reason detail]
+  (throw (ex-info message
+                  (merge {:type ::invalid-handler-result
+                          :cell cell-id
+                          :reason reason}
+                         detail))))
+
+(defn- validate-intents! [cell-id emitted-kinds intents]
+  (when-not (vector? intents)
+    (invalid-handler-result! "Cell handler :intents must be a vector"
+                             cell-id :invalid-intents
+                             {}))
+  (mapv
+   (fn [ordinal intent]
+     (when-not (closed-map? intent #{:kind :payload} #{:kind :payload})
+       (invalid-handler-result! "Cell handler returned a malformed intent"
+                                cell-id :malformed-intent
+                                {:ordinal ordinal}))
+     (let [kind (:kind intent)]
+       (when-not (namespaced-keyword? kind)
+         (invalid-handler-result! "Cell intent kind must be a namespaced keyword"
+                                  cell-id :invalid-intent-kind
+                                  {:ordinal ordinal}))
+       (when-not (contains? emitted-kinds kind)
+         (invalid-handler-result! "Cell handler emitted an undeclared intent kind"
+                                  cell-id :undeclared-intent
+                                  {:ordinal ordinal :kind kind})))
+     ;; Validate the entire plain value, not only its payload, so metadata or a
+     ;; record cannot enter the durable world through the intent envelope.
+     (trace/canonical-value intent
+                            [:flow :cell cell-id :intents ordinal])
+     intent)
+   (range)
+   intents))
+
+(defn- append-effect-intents [world cell-id message-id intents]
+  (update world :effect-intents into
+          (mapv (fn [ordinal {:keys [kind payload]}]
+                  {:id [:jolt.sim.flow/intent cell-id message-id ordinal]
+                   :kind kind
+                   :payload payload
+                   :source {:cell cell-id
+                            :message-id message-id
+                            :ordinal ordinal}})
+                (range)
+                intents)))
+
+(defn- invoke-cell [handler context state data cell-id spec-id emitted-kinds
                     input-schema output-schema]
   (try
     (validate-data! cell-id spec-id :input input-schema data true)
     (let [result (handler context state data)]
       (when-not (and (map? result)
-                     (= #{:state :data} (set (keys result))))
-        (throw (ex-info "Cell handler returned an invalid shape"
-                        {:type ::invalid-handler-result
-                         :cell cell-id})))
+                     (or (= #{:state :data} (set (keys result)))
+                         (= #{:state :data :intents} (set (keys result)))))
+        (invalid-handler-result! "Cell handler returned an invalid shape"
+                                 cell-id :invalid-shape
+                                 {}))
       (trace/canonical-value (:state result)
                              [:flow :cell cell-id :state])
       (validate-data! cell-id spec-id :output output-schema (:data result)
                       false)
       (trace/canonical-value (:data result)
                              [:flow :cell cell-id :data])
-      {:ok? true :result result})
+      {:ok? true
+       :result (assoc result :intents
+                      (validate-intents! cell-id emitted-kinds
+                                         (get result :intents [])))})
     (catch :default error
       {:ok? false :error (trace/normalize-error error)})))
 
@@ -332,6 +392,7 @@
               invocation (invoke-cell (get handlers (:handler spec))
                                       context (:state task-state) data
                                       cell-id (:cell-spec task-state)
+                                      (get spec :emits #{})
                                       input-schema output-schema)]
           (if-not (:ok? invocation)
             (-> (kernel/step-fail (:error invocation))
@@ -341,6 +402,7 @@
             (let [handler-result (:result invocation)
                   next-cell-state (:state handler-result)
                   output-delta (:data handler-result)
+                  intents (:intents handler-result)
                   accumulated (merge data output-delta)
                   _ (trace/canonical-value accumulated
                                            [:flow :cell cell-id :accumulated])
@@ -355,7 +417,8 @@
                     (kernel/with-world
                      (assoc-in world [:cell-status cell-id] :failed))
                     (kernel/at-site (cell-site cell-id :route)))
-                (let [next-world (:world routed)
+                (let [next-world (append-effect-intents
+                                  (:world routed) cell-id (:id msg) intents)
                   next-world (assoc-in next-world [:cell-state cell-id]
                                        next-cell-state)
                   exhausted? (inputs-closed? next-world cell-id
@@ -580,6 +643,7 @@
                    :links links
                    :entries entries
                    :next-message-id (count initial-messages)
+                   :effect-intents []
                    :events []
                    :cell-state (zipmap cell-ids (repeat nil))
                    :cell-status

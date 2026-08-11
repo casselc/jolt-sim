@@ -339,3 +339,133 @@
     (is (= :failed
            (get-in projection [:world :cell-status :producer])))
     (is (= [] (get-in projection [:world :events])))))
+
+(def intent-kind :outbox/deliver)
+
+(defn- one-cell-intent-config [handler emits]
+  (flow/compile-workflow
+   {:cells {:producer :producer}
+    :edges []
+    :start :producer
+    :input {:n 4}
+    :resources {}}
+   {:producer {:handler :producer
+               :schema {:input data-schema :output data-schema}
+               :emits emits}}
+   {:producer handler}))
+
+(deftest effect-intents-are-pure-deterministic-and-exactly-replayable
+  (let [handler (fn [_ state data]
+                  {:state (inc (or state 0))
+                   :data data
+                   :intents [{:kind intent-kind
+                              :payload {:attempt 1 :body "first"}}
+                             {:kind intent-kind
+                              :payload {:attempt 2 :body "second"}}]})
+        config (one-cell-intent-config handler #{intent-kind})
+        s (session/start config)
+        before (session/snapshot s)
+        preview-a (first (session/branches s))
+        preview-b (first (session/branches s))
+        preview-intents (get-in (restored-projection preview-a)
+                                [:world :effect-intents])
+        run-result (kernel/run (one-cell-intent-config handler #{intent-kind}))
+        replayed (kernel/replay (one-cell-intent-config handler #{intent-kind})
+                                (:trace run-result))]
+    (is (= before (session/snapshot s))
+        "branch previews leave the live cursor unchanged")
+    (is (= (:projection preview-a) (:projection preview-b))
+        "repeated preview is deterministic")
+    (is (= [{:id [:jolt.sim.flow/intent :producer 0 0]
+             :kind intent-kind
+             :payload {:attempt 1 :body "first"}
+             :source {:cell :producer :message-id 0 :ordinal 0}}
+            {:id [:jolt.sim.flow/intent :producer 0 1]
+             :kind intent-kind
+             :payload {:attempt 2 :body "second"}
+             :source {:cell :producer :message-id 0 :ordinal 1}}]
+           preview-intents))
+    (let [committed (step-action! s [:run 0])
+          committed-intents
+          (get-in (restored-projection committed) [:world :effect-intents])]
+      (is (= preview-intents committed-intents)))
+    (is (= (:effect-intents (:world run-result))
+           (:effect-intents (:world replayed))))
+    (is (= (:trace run-result) (:trace replayed)))))
+
+(deftest invalid-intents-fail-coherently-without-consuming-input
+  (let [cases
+        [{:label "the intents collection must be a vector"
+          :emits #{intent-kind}
+          :intents {:kind intent-kind :payload {:n 1}}
+          :expected-type :jolt.sim.flow/invalid-handler-result
+          :expected-reason :invalid-intents}
+         {:label "each intent has an exact closed shape"
+          :emits #{intent-kind}
+          :intents [{:kind intent-kind :payload {:n 1} :id :chosen-by-handler}]
+          :expected-type :jolt.sim.flow/invalid-handler-result
+          :expected-reason :malformed-intent}
+         {:label "the selected spec must declare the kind"
+          :emits #{}
+          :intents [{:kind intent-kind :payload {:n 1}}]
+          :expected-type :jolt.sim.flow/invalid-handler-result
+          :expected-reason :undeclared-intent}
+         {:label "an invalid kind cannot leak a host value into task error data"
+          :emits #{intent-kind}
+          :intents [{:kind (fn [] :not-a-keyword) :payload {:n 1}}]
+          :expected-type :jolt.sim.flow/invalid-handler-result
+          :expected-reason :invalid-intent-kind}
+         {:label "intent payloads stay in the canonical value domain"
+          :emits #{intent-kind}
+          :intents [{:kind intent-kind :payload (fn [] :host-effect)}]
+          :expected-type :jolt.sim.trace/unsupported-value}]]
+    (doseq [{:keys [label emits intents expected-type expected-reason]} cases]
+      (testing label
+        (let [handler (fn [_ state data]
+                        {:state state :data data :intents intents})
+              s (session/start (one-cell-intent-config handler emits))
+              before (restored-projection (session/snapshot s))
+              after (step-action! s [:run 0])
+              projection (restored-projection after)
+              error-data (get-in projection [:tasks 0 :error :data])]
+          (is (= :failed (:status after)))
+          (is (= :failed (get-in projection [:tasks 0 :status])))
+          (is (= :failed
+                 (get-in projection [:world :cell-status :producer])))
+          (is (= expected-type (:type error-data)))
+          (when expected-reason
+            (is (= expected-reason (:reason error-data))))
+          (is (= (get-in before [:world :entries])
+                 (get-in projection [:world :entries])))
+          (is (= [] (get-in projection [:world :effect-intents])))
+          (is (= [] (get-in projection [:world :events]))))))))
+
+(deftest routing-failure-does-not-commit-an-intent-or-consume-its-message
+  (let [intent-handlers
+        (assoc handlers :increment
+               (fn [ctx state data]
+                 {:state (inc (or state 0))
+                  :data (update data :n + (get-in ctx [:resources :amount]))
+                  :intents [{:kind intent-kind :payload {:n (:n data)}}]}))
+        intent-specs (assoc-in cell-specs [:increment :emits] #{intent-kind})
+        s (session/start
+           (flow/compile-workflow (workflow 1 :reject)
+                                  intent-specs intent-handlers))
+        before (restored-projection (session/snapshot s))
+        after (step-action! s [:run 1])
+        projection (restored-projection after)]
+    (is (= :failed (:status after)))
+    (is (= :failed (get-in projection [:tasks 1 :status])))
+    (is (= :failed (get-in projection [:world :cell-status :producer])))
+    (is (= (get-in before [:world :entries])
+           (get-in projection [:world :entries])))
+    (is (= [] (get-in projection [:world :effect-intents])))
+    (is (= [] (get-in projection [:world :events])))))
+
+(deftest handlers-without-intents-preserve-the-v1-contract
+  (let [result (kernel/run
+                (flow/compile-workflow (workflow 2) cell-specs handlers))]
+    (is (= :completed (:status result)))
+    (is (= [] (get-in result [:world :effect-intents])))
+    (is (= {:consumer 2 :producer 2}
+           (get-in result [:world :cell-state])))))
