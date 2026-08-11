@@ -519,6 +519,8 @@ jobs:
         continue-on-error: true
         timeout-minutes: 10
         shell: bash
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/ms-playwright
         run: |
           set -euo pipefail
           cd "$GITHUB_WORKSPACE/jolt-sim/viewer"
@@ -536,6 +538,7 @@ jobs:
         shell: bash
         env:
           JOLT_AOT_CACHE: "0"
+          PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/ms-playwright
         run: |
           set -euo pipefail
           export HOME="$RUNNER_TEMP/jolt-home"
@@ -557,6 +560,7 @@ jobs:
         shell: bash
         env:
           JOLT_AOT_CACHE: "0"
+          PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/ms-playwright
         run: |
           set -euo pipefail
           export HOME="$RUNNER_TEMP/jolt-home"
