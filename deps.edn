@@ -125,6 +125,13 @@
   {:extra-paths ["test"]
    :main-opts ["-m" "jolt.sim.workbench-session-test-main"]}
 
+  ;; UI-neutral one-active-command-cell owner. The focused gate uses pure
+  ;; flow compilers and scripted worker closures; it starts no child process,
+  ;; browser, native I/O, or nested worker.
+  :command-cell-session-test
+  {:extra-paths ["test"]
+   :main-opts ["-m" "jolt.sim.command-cell-session-test-main"]}
+
   ;; Focused parent/child retained-process protocol gate. It uses only local
   ;; source and an in-process worker fixture; the real outbox worker remains a
   ;; separate integration alias because it carries the full ecosystem graph.
