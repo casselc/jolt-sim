@@ -417,6 +417,10 @@ jobs:
             "$sim" -M:eval-flow-test
           JOLT_SIM_OUTBOX_LIVE_PROGRESS_FILE="$viewer_artifacts/outbox-live-lifecycle-progress.edn" \
             "$sim" -M:live-lifecycle-test
+          JOLT_SIM_BIN="$sim" \
+          JOLT_SIM_PROJECT_DIR="$repo" \
+          JOLT_SIM_RETAINED_WORKBENCH_PROGRESS_FILE="$viewer_artifacts/retained-workbench-progress.edn" \
+            "$sim" -M:retained-workbench-test
 
       - name: Run Ripple remote Session process acceptance
         id: viewer_remote_gate
