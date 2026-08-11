@@ -35,6 +35,19 @@ test("shares one real Outbox flow between Ripple and its Jolt REPL",
       .toContainText("Committed");
     await expect(page.locator("#session-effect"))
       .toContainText(":status :pending");
+    await page.getByTestId("workbench-refresh").click();
+    const recordedStep = page.locator('article[data-item-id="simulation-step"]');
+    await expect(recordedStep).toBeVisible();
+    await expect(recordedStep.getByTestId("workbench-presentation"))
+      .toContainText("Raw value");
+    const sourceBefore = await recordedStep.locator("pre").textContent();
+    await recordedStep.getByTestId("workbench-kind")
+      .selectOption("example.outbox/effect-result");
+    await expect(recordedStep.getByTestId("workbench-presentation"))
+      .toContainText("Outbox flow result");
+    await expect(recordedStep.getByTestId("workbench-presentation"))
+      .toContainText("pending");
+    await expect(recordedStep.locator("pre")).toHaveText(sourceBefore);
     await page.screenshot({
       path: testInfo.outputPath("ripple-real-outbox-pending.png"),
       fullPage: true

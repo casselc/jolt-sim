@@ -301,7 +301,9 @@ JOLT_SIM_PROJECT_DIR='/absolute/path/to/jolt-sim-worktree' \
   npx playwright test --config=playwright.outbox-flow.config.mjs
 ```
 
-The current generic raw-EDN fallback is deliberately visible in these
-artifacts. Domain presenters and user-selected or persisted Kindly-compatible
-view kinds belong to the shared workbench item model, not to Outbox-specific
-HTML or JavaScript.
+The gate also refreshes the generic workbench items, selects the app-owned
+`example.outbox/effect-result` kind for the exact submitted step, and proves
+that its immutable source EDN does not change. The committed screenshot is
+`../../viewer/docs/ripple-workbench-items-outbox.png`. Outbox contributes only
+the trusted presenter function; item storage, kind selection, rendering, and
+HTTP controls remain generic Ripple/workbench behavior.

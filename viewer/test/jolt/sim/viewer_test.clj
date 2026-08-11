@@ -20,6 +20,8 @@
             [jolt.sim.viewer.experiment :as viewer-experiment]
             [jolt.sim.viewer.remote-session :as remote-session]
             [jolt.sim.session-view :as viewer-session]
+            [jolt.sim.workbench :as workbench]
+            [jolt.sim.workbench-session :as workbench-session]
             [teensyp.client :as client]))
 
 (def token "0123456789abcdef0123456789abcdef")
@@ -5368,6 +5370,7 @@
   (let [bridge (Object.)
         handle (Object.)
         eval (Object.)
+        workbench (workbench-session/start)
         captured (atom nil)]
     (with-redefs [viewer/start!
                   (fn [_ services]
@@ -5379,13 +5382,261 @@
               (config)
               {:flow-effect-bridge bridge
                :retained-process handle
-               :eval-session eval})))
+               :eval-session eval
+               :workbench-session workbench})))
       (is (every? #(fn? (get @captured %))
                   [:read-session-frame :step-session-frame!
                    :reconcile-session-effect! :reconcile-session-step
                    :close-session! :read-retained-frame :command-retained!
                    :reconcile-retained! :terminate-retained!
-                   :evaluate-form!])))))
+                   :evaluate-form! :read-workbench-frame
+                   :set-workbench-item-kind!])))))
+
+(deftest start-workbench-captures-definite-service-results-advisorially
+  (let [eval (Object.)
+        items (workbench-session/start)
+        captured (atom nil)]
+    (with-redefs [viewer/start!
+                  (fn [_ services]
+                    (reset! captured services)
+                    :server)
+                  viewer-eval/service
+                  (fn [actual]
+                    (is (identical? eval actual))
+                    (fn [form] {"version" 1 "form" form}))]
+      (is (= :server
+             (viewer/start-workbench!
+              (config)
+              {:eval-session eval :workbench-session items})))
+      (is (= {"version" 1 "form" "(+ 20 22)"}
+             ((:evaluate-form! @captured) "(+ 20 22)")))
+      (is (= {"version" 1 "form" "(+ 40 2)"}
+             ((:evaluate-form! @captured) "(+ 40 2)")))
+      (let [frame (workbench-session/frame items)
+            item (first (:items frame))]
+        (is (= 2 (:item-count frame)))
+        (is (= 1 (:current-item-count frame)))
+        (is (= {:item-id "evaluation" :source-revision 1}
+               (:coordinate item)))
+        (is (= :jolt.sim.result/evaluation (:schema-id item)))
+        (is (string/includes? (:source-edn item) "(+ 40 2)"))))
+
+    ;; The service acknowledgment is already definite before capture. A
+    ;; storage failure is reported only through tap and cannot rewrite it.
+    (with-redefs [viewer/start! (fn [_ services]
+                                 (reset! captured services)
+                                 :server)
+                  viewer-eval/service (fn [_] (fn [form] {"form" form}))
+                  workbench-session/append-item!
+                  (fn [& _] (throw (ex-info "capture unavailable" {})))]
+      (viewer/start-workbench!
+       (config) {:eval-session eval :workbench-session items})
+      (is (= {"form" "still-definite"}
+             ((:evaluate-form! @captured) "still-definite"))))))
+
+(deftest start-workbench-continues-capture-revisions-from-restored-document
+  (let [document
+        (workbench/append-item
+         (workbench/empty-document)
+         {:id "evaluation" :source-revision 7 :value {"form" "prior"}
+          :schema-id :jolt.sim.result/evaluation :suggested-kind nil
+          :provenance
+          {:producer :jolt.sim.viewer/service-result
+           :coordinate {:service :evaluate-form! :ordinal 7}}})
+        items (workbench-session/start {:document document})
+        captured (atom nil)]
+    (with-redefs [viewer/start! (fn [_ services]
+                                 (reset! captured services)
+                                 :server)
+                  viewer-eval/service
+                  (fn [_] (fn [form] {"version" 1 "form" form}))]
+      (is (= :server
+             (viewer/start-workbench!
+              (config) {:eval-session (Object.)
+                        :workbench-session items})))
+      (is (= {"version" 1 "form" "next"}
+             ((:evaluate-form! @captured) "next")))
+      (let [frame (workbench-session/frame items)]
+        (is (= 2 (:item-count frame)))
+        (is (= {:item-id "evaluation" :source-revision 8}
+               (get-in frame [:items 0 :coordinate])))))))
+
+(defn- test-workbench-session []
+  (let [session
+        (workbench-session/start
+         {:kind-registry
+          {:kind/count
+           {:present (fn [value]
+                       {:summary "Counted values"
+                        :fields [{:label "Count" :value (count value)}]})}}})]
+    (workbench-session/append-item!
+     session
+     {:id "orders" :source-revision 0 :value [1 2 3]
+      :schema-id :example/orders :suggested-kind nil
+      :provenance {:producer :test/viewer
+                   :coordinate {:fixture :orders}}})
+    session))
+
+(defn- workbench-http-services [session calls]
+  (merge
+   (services (atom []) (atom []) {:status :completed})
+   {:read-workbench-frame
+    (fn []
+      (swap! calls conj :read)
+      (workbench-session/frame session))
+    :set-workbench-item-kind!
+    (fn [command]
+      (swap! calls conj [:set command])
+      (workbench-session/set-item-kind!
+       session
+       (assoc command :provenance
+              {:producer :test/viewer
+               :coordinate {:request :kind-change}})))}))
+
+(deftest generic-workbench-frame-and-kind-selection-round-trip
+  (let [session (test-workbench-session)
+        calls (atom [])
+        handler (viewer/make-handler
+                 (config) (workbench-http-services session calls))
+        initial (handler (get-request "/api/workbench-frame"))
+        initial-wire (json/read-str (:body initial))
+        fingerprint (get-in initial-wire ["items" 0 "sourceFingerprint"])
+        command {"version" 1
+                 "itemId" "orders"
+                 "sourceRevision" "0"
+                 "sourceFingerprint" fingerprint
+                 "kind" "kind/count"}
+        changed (handler
+                 (json-post-request "/api/workbench-item-kind" command))
+        changed-wire (json/read-str (:body changed))
+        refreshed (handler (get-request "/api/workbench-frame"))
+        refreshed-wire (json/read-str (:body refreshed))]
+    (is (= 200 (:status initial)))
+    (is (= "1" (get initial-wire "revision")))
+    (is (= ["jolt.sim.kind/raw-value" "kind/count"]
+           (get initial-wire "availableKinds")))
+    (is (= "orders" (get-in initial-wire ["items" 0 "itemId"])))
+    (is (= "jolt.sim.kind/raw-value"
+           (get-in initial-wire ["items" 0 "selection" "kind"])))
+    (is (= 200 (:status changed)))
+    (is (= "committed" (get changed-wire "status")))
+    (is (= "2" (get changed-wire "revision")))
+    (is (= "kind/count"
+           (get-in refreshed-wire ["items" 0 "selection" "kind"])))
+    (is (= "Counted values"
+           (get-in refreshed-wire ["items" 0 "presentation" "summary"])))
+    (is (= "3"
+           (get-in refreshed-wire
+                   ["items" 0 "presentation" "fields" 0 "valueEdn"])))
+    (is (= [:read :read]
+           (filter keyword? @calls)))
+    (is (= 1 (count (filter vector? @calls))))))
+
+(deftest workbench-frame-keeps-source-visible-when-a-renderer-is-missing
+  (let [session (workbench-session/start)
+        _ (workbench-session/append-item!
+           session
+           {:id "missing-renderer" :source-revision 0 :value {:answer 42}
+            :schema-id nil :suggested-kind nil
+            :provenance {:producer :test/viewer
+                         :coordinate {:fixture :missing-renderer}}})
+        stored (workbench/item (workbench-session/document session)
+                               "missing-renderer" 0)
+        _ (workbench-session/set-item-kind!
+           session
+           {:item-id "missing-renderer" :source-revision 0
+            :source-fingerprint (:source-fingerprint stored)
+            :kind :kind/not-installed
+            :provenance {:producer :test/viewer
+                         :coordinate {:user :missing-renderer}}})
+        handler (viewer/make-handler
+                 (config) (workbench-http-services session (atom [])))
+        response (handler (get-request "/api/workbench-frame"))
+        wire (json/read-str (:body response))]
+    (is (= 200 (:status response)))
+    (is (nil? (get-in wire ["items" 0 "presentation"])))
+    (is (= "unknown-kind"
+           (get-in wire ["items" 0 "presentationError" "reason"])))
+    (is (string/includes? (get-in wire ["items" 0 "sourceEdn"])
+                          ":answer"))))
+
+(deftest workbench-kind-wire-is-lossless-at-the-128-character-boundary
+  (let [kind-text (str (apply str (repeat 126 "k")) "/x")
+        overbound-text (str (apply str (repeat 127 "k")) "/x")
+        kind (keyword kind-text)
+        session
+        (workbench-session/start
+         {:kind-registry
+          {kind {:present (fn [value]
+                            {:summary "Bounded kind"
+                             :fields [{:label "Value" :value value}]})}}})
+        _ (workbench-session/append-item!
+           session
+           {:id "bounded-kind" :source-revision 0 :value 42
+            :schema-id nil :suggested-kind nil
+            :provenance {:producer :test/viewer
+                         :coordinate {:fixture :bounded-kind}}})
+        calls (atom [])
+        handler (viewer/make-handler
+                 (config) (workbench-http-services session calls))
+        initial-wire (json/read-str
+                      (:body (handler (get-request "/api/workbench-frame"))))
+        fingerprint (get-in initial-wire ["items" 0 "sourceFingerprint"])
+        base {"version" 1 "itemId" "bounded-kind"
+              "sourceRevision" "0" "sourceFingerprint" fingerprint}
+        accepted (handler
+                  (json-post-request "/api/workbench-item-kind"
+                                     (assoc base "kind" kind-text)))
+        refreshed (json/read-str
+                   (:body (handler (get-request "/api/workbench-frame"))))
+        rejected (handler
+                  (json-post-request "/api/workbench-item-kind"
+                                     (assoc base "kind" overbound-text)))]
+    (is (= 128 (count kind-text)))
+    (is (= kind-text (last (get initial-wire "availableKinds"))))
+    (is (= 200 (:status accepted)))
+    (is (= kind-text
+           (get-in refreshed ["items" 0 "selection" "kind"])))
+    (is (= 400 (:status rejected)))
+    (is (= 1 (count (filter vector? @calls))))))
+
+(deftest workbench-kind-command-fails-closed-before-mutation
+  (let [session (test-workbench-session)
+        calls (atom [])
+        handler (viewer/make-handler
+                 (config) (workbench-http-services session calls))
+        initial-wire (json/read-str
+                      (:body (handler (get-request "/api/workbench-frame"))))
+        fingerprint (get-in initial-wire ["items" 0 "sourceFingerprint"])
+        base {"version" 1 "itemId" "orders" "sourceRevision" "0"
+              "sourceFingerprint" fingerprint "kind" "kind/count"}
+        unauthorized
+        (handler (json-post-request "/api/workbench-item-kind" base "wrong"))
+        malformed
+        (handler (json-post-request "/api/workbench-item-kind"
+                                    (assoc base "extra" true)))
+        stale
+        (handler
+         (json-post-request
+          "/api/workbench-item-kind"
+          (assoc-in base ["sourceFingerprint" "crc32c"] "0")))]
+    (is (= 403 (:status unauthorized)))
+    (is (= 400 (:status malformed)))
+    (is (= 409 (:status stale)))
+    (is (= 1 (:revision (workbench-session/snapshot session))))
+    ;; Authorization and wire-shape failures stop before delegation. The
+    ;; source-bound stale check belongs to the authoritative WorkbenchSession,
+    ;; so exactly that request reaches the service and fails without a commit.
+    (is (= 1 (count (filter vector? @calls))))))
+
+(deftest workbench-services-are-all-or-nothing
+  (let [base (services (atom []) (atom []) {:status :completed})
+        data
+        (caught-data
+         #(viewer/make-handler
+           (config) (assoc base :read-workbench-frame (fn [] {}))))]
+    (is (= :jolt.sim.viewer/invalid-config (:type data)))
+    (is (= :workbench-services-must-be-all-or-nothing (:reason data)))))
 
 (deftest start-workbench-rejects-ambiguous-capability-shapes
   (doseq [[capabilities reason]

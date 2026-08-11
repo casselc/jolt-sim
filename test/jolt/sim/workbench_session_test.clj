@@ -104,6 +104,34 @@
       (is (= ["a" "b"]
              (mapv #(get-in % [:coordinate :item-id]) (:items frame)))))))
 
+(deftest presentation-never-holds-the-mutation-lock
+  (let [entered (promise)
+        release (promise)
+        s (session/start
+           {:kind-registry
+            {:kind/blocked
+             {:present (fn [value]
+                         (deliver entered true)
+                         @release
+                         {:summary "Released"
+                          :fields [{:label "Value" :value value}]})}}})]
+    (session/append-item!
+     s (assoc (item "blocked" 0 {:answer 42})
+              :suggested-kind :kind/blocked))
+    (let [rendering (future (session/frame s))]
+      (is (= true (deref entered 1000 ::timeout)))
+      ;; Rendering is advisory. A trusted presenter that blocks must not hold
+      ;; the session's mutation lock or delay an unrelated definite append.
+      (is (= 2
+             (:revision
+              (deref (future (session/append-item!
+                              s (item "other" 0 {:answer 43})))
+                     1000 ::timeout))))
+      (deliver release true)
+      (is (= "Released"
+             (get-in (deref rendering 1000 ::timeout)
+                     [:items 0 :presentation :summary]))))))
+
 (deftest invalid-config-and-stale-mutators-fail-closed
   (is (= :unknown-config-keys
          (:reason (caught-data #(session/start {:extra true})))))

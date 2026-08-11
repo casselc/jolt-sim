@@ -105,7 +105,7 @@
          vec)))
 
 (defn- frame-state [state]
-  (let [{:keys [document kind-registry visible-items]} @state
+  (let [{:keys [document kind-registry visible-items]} state
         snapshot (workbench/snapshot document)
         current (current-items-in-journal-order document snapshot)
         overflow (max 0 (- (count current) visible-items))
@@ -123,7 +123,7 @@
      :overrides (:overrides snapshot)}))
 
 (defn- snapshot-state [state]
-  (let [{:keys [document kind-registry visible-items]} @state
+  (let [{:keys [document kind-registry visible-items]} state
         current (workbench/snapshot document)]
     {:kind :jolt.sim.kind/workbench-session
      :revision (:revision current)
@@ -195,8 +195,8 @@
   (when-not (exact-keys? token #{:revision :count})
     (reject! :invalid-navigation-token
              (when (map? token) (set (keys token)))))
-  (locking lock
-    (let [snapshot (snapshot-state state)]
+  (let [captured (locking lock @state)
+        snapshot (snapshot-state captured)]
       (when-not (= (:revision token) (:revision snapshot))
         (reject! :stale-navigation
                  {:expected (:revision token)
@@ -205,7 +205,11 @@
         (reject! :invalid-navigation-count
                  {:expected (:count token)
                   :actual (:current-item-count snapshot)}))
-      (:items (frame-state state)))))
+      ;; Render trusted presentations from the immutable captured document
+      ;; after releasing the mutation lock. A slow or blocked presenter must
+      ;; not delay an unrelated append or turn its already-definite producer
+      ;; operation into an ambiguous acknowledgment.
+      (:items (frame-state captured))))
 
 (defn start
   "Starts one live workbench session from optional persistent state.
@@ -225,8 +229,11 @@
        clojure.lang.IFn
        (invoke [_ operation argument]
          (cond
-           (identical? operation snapshot-operation) (snapshot-state state)
-           (identical? operation frame-operation) (locking lock (frame-state state))
+           (identical? operation snapshot-operation) (snapshot-state @state)
+           ;; The atom dereference is one coherent immutable state capture.
+           ;; Presentation is advisory and intentionally runs outside the
+           ;; mutation lock.
+           (identical? operation frame-operation) (frame-state @state)
            (identical? operation document-operation) (:document @state)
            (identical? operation append-item-operation)
            (commit! state lock :item/append

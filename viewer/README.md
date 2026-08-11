@@ -125,6 +125,27 @@ persistent Jolt REPL without granting any fresh-process execution capability.
 
 [![Ripple persistent Jolt REPL session](docs/ripple-persistent-eval-session.png)](docs/ripple-persistent-eval-session.png)
 
+### Live workbench items
+
+An embedded application can attach one `jolt.sim.workbench-session` to
+`start-workbench!`. Ripple then shows values recorded by the shared REPL,
+simulation, evaluator, and retained-worker services. Each card keeps immutable
+canonical source EDN and a source fingerprint. Its presentation selector
+changes only an exact source revision.
+
+Libraries and applications supply trusted renderer functions in the session's
+programmatic kind registry. Saved documents and browser requests contain only
+namespaced kind identifiers. They cannot install code. The same session frame
+and document are ordinary data for REPL, `datafy`/`nav`, `tap>`, static reports,
+or another UI.
+
+[![Ripple showing a real Outbox simulation result with an app-provided presentation kind](docs/ripple-workbench-items-outbox.png)](docs/ripple-workbench-items-outbox.png)
+
+This image comes from the no-mock Playwright scenario. That run also retains a
+full browser video, trace, both pending and delivered screenshots, and the
+retained worker command/receipt journal under
+`target/ripple-playwright/outbox-flow/`.
+
 Port `0` selects an ephemeral loopback port and the startup message prints the
 actual URL. A fixed port such as `8788` is more convenient for repeated use.
 Press Ctrl+C in the foreground viewer process to stop the listener and handler

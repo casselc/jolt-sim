@@ -51,7 +51,9 @@
             [jolt.sim.viewer.experiment :as experiment-viewer]
             [jolt.sim.viewer.eval :as viewer-eval]
             [jolt.sim.viewer.remote-session :as remote-session]
-            [jolt.sim.session-view :as viewer-session]))
+            [jolt.sim.session-view :as viewer-session]
+            [jolt.sim.workbench :as workbench]
+            [jolt.sim.workbench-session :as workbench-session]))
 
 (def invalid-config ::invalid-config)
 (def request-too-large ::request-too-large)
@@ -95,7 +97,8 @@
     :read-session-frame :step-session-frame! :run-case :evaluate-form!
     :reconcile-session-effect! :reconcile-session-step :close-session!
     :read-retained-frame :command-retained! :reconcile-retained!
-    :terminate-retained!})
+    :terminate-retained! :read-workbench-frame
+    :set-workbench-item-kind!})
 
 (def ^:private flow-effect-service-keys
   #{:read-session-frame :step-session-frame! :reconcile-session-effect!
@@ -104,6 +107,9 @@
 (def ^:private retained-service-keys
   #{:read-retained-frame :command-retained! :reconcile-retained!
     :terminate-retained!})
+
+(def ^:private workbench-service-keys
+  #{:read-workbench-frame :set-workbench-item-kind!})
 
 (def ^:private default-max-document-bytes (* 1024 1024))
 (def ^:private maximum-max-document-bytes (* 16 1024 1024))
@@ -121,6 +127,7 @@
 (def ^:private eval-command-body-limit 65536)
 (def ^:private retained-command-body-limit 65536)
 (def ^:private retained-control-body-limit 4096)
+(def ^:private workbench-command-body-limit 4096)
 (def ^:private maximum-run-regimes 32)
 (def ^:private maximum-run-regime-label-length 128)
 (def ^:private maximum-run-regime-summary-length 512)
@@ -1966,6 +1973,307 @@
    "graph" (presentation-graph-wire (:graph model))
    "sourceEdn" (:source-edn model)})
 
+;; ---- generic evolving workbench items --------------------------------------
+
+(def ^:private workbench-frame-keys
+  #{:version :kind :revision :available-kinds :item-count
+    :current-item-count :omitted-item-count :journal-count :items
+    :rules :overrides})
+(def ^:private workbench-item-keys
+  #{:coordinate :source-kind :schema-id :source-fingerprint :provenance
+    :selection :presentation :presentation-error :source-edn})
+(def ^:private workbench-coordinate-keys #{:item-id :source-revision})
+(def ^:private workbench-fingerprint-keys #{:algorithm :bytes :crc32c})
+(def ^:private workbench-presentation-error-keys #{:type :reason})
+(def ^:private workbench-selection-keysets
+  [#{:kind :source} #{:kind :source :rule-id}])
+(def ^:private workbench-command-keys
+  #{"version" "itemId" "sourceRevision" "sourceFingerprint" "kind"})
+(def ^:private workbench-fingerprint-wire-keys
+  #{"algorithm" "bytes" "crc32c"})
+(def ^:private maximum-workbench-kind-text 128)
+(def ^:private maximum-workbench-kinds 256)
+(def ^:private maximum-workbench-frame-items 1024)
+
+(defn- bounded-workbench-keyword? [value]
+  (and (keyword? value)
+       (namespace value)
+       (let [text (str (namespace value) "/" (name value))]
+         (<= 3 (count text) maximum-workbench-kind-text))))
+
+(defn- workbench-keyword-text [value]
+  (when value
+    (when-not (bounded-workbench-keyword? value)
+      (throw (ex-info "workbench keyword cannot be represented losslessly"
+                      {:type ::invalid-workbench-frame})))
+    (str (namespace value) "/" (name value))))
+
+(defn- bounded-workbench-tag? [value]
+  (and (keyword? value)
+       (let [text (if-let [ns (namespace value)]
+                    (str ns "/" (name value))
+                    (name value))]
+         (<= 1 (count text) maximum-workbench-kind-text))))
+
+(defn- workbench-tag-text [value]
+  (when value
+    (when-not (bounded-workbench-tag? value)
+      (throw (ex-info "workbench tag cannot be represented losslessly"
+                      {:type ::invalid-workbench-frame})))
+    (if-let [ns (namespace value)]
+      (str ns "/" (name value))
+      (name value))))
+
+(defn- exact-keyset? [value expected]
+  (and (map? value)
+       (= (count value) (count expected))
+       (every? #(contains? value %) expected)))
+
+(defn- checked-workbench-frame [frame]
+  (when-not
+   (and (exact-keyset? frame workbench-frame-keys)
+        (= 1 (:version frame))
+        (= :jolt.sim.kind/workbench-frame (:kind frame))
+        (every? #(and (integer? %) (<= 0 % Long/MAX_VALUE))
+                [(:revision frame) (:item-count frame)
+                 (:current-item-count frame) (:omitted-item-count frame)
+                 (:journal-count frame)])
+        (= (:current-item-count frame)
+           (+ (:omitted-item-count frame) (count (:items frame))))
+        (vector? (:available-kinds frame))
+        (<= (count (:available-kinds frame)) maximum-workbench-kinds)
+        (= (:available-kinds frame) (vec (sort (:available-kinds frame))))
+        (every? bounded-workbench-keyword? (:available-kinds frame))
+        (vector? (:items frame))
+        (<= (count (:items frame)) maximum-workbench-frame-items)
+        (every?
+         (fn [item]
+           (and
+            (exact-keyset? item workbench-item-keys)
+            (exact-keyset? (:coordinate item) workbench-coordinate-keys)
+            (string? (get-in item [:coordinate :item-id]))
+            (wire-long? (get-in item [:coordinate :source-revision]))
+            (<= 0 (get-in item [:coordinate :source-revision]))
+            (or (nil? (:source-kind item))
+                (bounded-workbench-keyword? (:source-kind item)))
+            (or (nil? (:schema-id item))
+                (bounded-workbench-keyword? (:schema-id item)))
+            (exact-keyset? (:source-fingerprint item)
+                           workbench-fingerprint-keys)
+            (= :jolt.sim.fingerprint/crc32c-v1
+               (get-in item [:source-fingerprint :algorithm]))
+            (every? #(and (integer? %) (<= 0 % Long/MAX_VALUE))
+                    [(get-in item [:source-fingerprint :bytes])
+                     (get-in item [:source-fingerprint :crc32c])])
+            (some #(exact-keyset? (:selection item) %)
+                  workbench-selection-keysets)
+            (bounded-workbench-keyword? (get-in item [:selection :kind]))
+            (keyword? (get-in item [:selection :source]))
+            (or (and (map? (:presentation item))
+                     (nil? (:presentation-error item)))
+                (and (nil? (:presentation item))
+                     (exact-keyset? (:presentation-error item)
+                                    workbench-presentation-error-keys)
+                     (bounded-workbench-keyword?
+                      (get-in item [:presentation-error :type]))
+                     (bounded-workbench-tag?
+                      (get-in item [:presentation-error :reason]))))
+            (string? (:source-edn item))))
+         (:items frame))
+        (vector? (:rules frame))
+        (vector? (:overrides frame)))
+    (throw (ex-info "trusted workbench reader returned an invalid frame"
+                    {:type ::invalid-workbench-frame})))
+  (trace/canonical-value frame [:viewer :workbench-frame])
+  frame)
+
+(defn- workbench-fingerprint-wire [fingerprint]
+  {"algorithm" "jolt.sim.fingerprint/crc32c-v1"
+   "bytes" (str (:bytes fingerprint))
+   "crc32c" (str (:crc32c fingerprint))})
+
+(defn- workbench-selection-wire [selection]
+  {"kind" (workbench-keyword-text (:kind selection))
+   "source" (name (:source selection))
+   "ruleId" (:rule-id selection)})
+
+(defn- workbench-item-wire [item]
+  {"itemId" (get-in item [:coordinate :item-id])
+   "sourceRevision" (str (get-in item [:coordinate :source-revision]))
+   "sourceKind" (workbench-keyword-text (:source-kind item))
+   "schemaId" (workbench-keyword-text (:schema-id item))
+   "sourceFingerprint" (workbench-fingerprint-wire
+                         (:source-fingerprint item))
+   "selection" (workbench-selection-wire (:selection item))
+   "presentation" (when-let [model (:presentation item)]
+                    (presentation-wire model))
+   "presentationError"
+   (when-let [error (:presentation-error item)]
+     {"type" (workbench-keyword-text (:type error))
+      "reason" (workbench-tag-text (:reason error))})
+   "sourceEdn" (:source-edn item)})
+
+(defn- workbench-frame-wire [frame]
+  (checked-workbench-frame frame)
+  {"version" 1
+   "status" "ok"
+   "revision" (str (:revision frame))
+   "availableKinds" (mapv workbench-keyword-text (:available-kinds frame))
+   "itemCount" (str (:item-count frame))
+   "currentItemCount" (str (:current-item-count frame))
+   "omittedItemCount" (str (:omitted-item-count frame))
+   "journalCount" (str (:journal-count frame))
+   "items" (mapv workbench-item-wire (:items frame))})
+
+(defn- workbench-frame-response [config services]
+  (let [wire (workbench-frame-wire ((:read-workbench-frame services)))
+        body (json/write-str wire)
+        bytes (alength (.getBytes body "UTF-8"))]
+    (if (> bytes (:max-document-bytes config))
+      (error-response 413 :workbench-frame-too-large
+                      {:bytes bytes :maximum (:max-document-bytes config)})
+      (response 200 "application/json; charset=utf-8" body))))
+
+(defn- workbench-unsigned-long! [text reason]
+  (when-not (and (canonical-unsigned-decimal? text)
+                 (<= (count text) maximum-session-cursor-digits))
+    (throw (ex-info "workbench coordinate is not canonical unsigned decimal"
+                    {:type ::invalid-workbench-command :reason reason})))
+  (let [value (parse-long text)]
+    (when-not (and (integer? value) (<= 0 value Long/MAX_VALUE))
+      (throw (ex-info "workbench coordinate is outside the wire range"
+                      {:type ::invalid-workbench-command :reason reason})))
+    value))
+
+(defn- workbench-command! [request]
+  (let [bytes (bounded-body-bytes request workbench-command-body-limit)
+        seen (atom #{})
+        value
+        (try
+          (json/read-str
+           (trim-json-whitespace (String. bytes "UTF-8"))
+           :extra-data-fn json/on-extra-throw
+           :value-fn
+           (fn [key entry]
+             (when (contains? @seen key)
+               (throw (ex-info "workbench command repeats an object key"
+                               {:type ::invalid-workbench-command
+                                :reason :duplicate-key})))
+             (swap! seen conj key)
+             entry))
+          (catch :default error
+            (if (= ::invalid-workbench-command (:type (ex-data error)))
+              (throw error)
+              (throw (ex-info "workbench command is malformed JSON"
+                              {:type ::invalid-workbench-command
+                               :reason :malformed-json})))))]
+    (when-not (exact-keyset? value workbench-command-keys)
+      (throw (ex-info "workbench command has unexpected keys"
+                      {:type ::invalid-workbench-command
+                       :reason :unexpected-keys})))
+    (when-not (= 1 (get value "version"))
+      (throw (ex-info "workbench command version is unsupported"
+                      {:type ::invalid-workbench-command
+                       :reason :unsupported-version})))
+    (let [item-id (get value "itemId")
+          fingerprint (get value "sourceFingerprint")
+          kind (get value "kind")]
+      (when-not (and (string? item-id) (<= 1 (count item-id) 128))
+        (throw (ex-info "workbench item ID is invalid"
+                        {:type ::invalid-workbench-command
+                         :reason :invalid-item-id})))
+      (when-not (exact-keyset? fingerprint workbench-fingerprint-wire-keys)
+        (throw (ex-info "workbench fingerprint shape is invalid"
+                        {:type ::invalid-workbench-command
+                         :reason :invalid-fingerprint})))
+      (when-not (= "jolt.sim.fingerprint/crc32c-v1"
+                   (get fingerprint "algorithm"))
+        (throw (ex-info "workbench fingerprint algorithm is invalid"
+                        {:type ::invalid-workbench-command
+                         :reason :invalid-fingerprint})))
+      (when-not (and (wire-run-id? kind)
+                     (<= (count kind) maximum-workbench-kind-text))
+        (throw (ex-info "workbench presentation kind is invalid"
+                        {:type ::invalid-workbench-command
+                         :reason :invalid-kind})))
+      {:item-id item-id
+       :source-revision
+       (workbench-unsigned-long! (get value "sourceRevision")
+                                 :invalid-source-revision)
+       :source-fingerprint
+       {:algorithm :jolt.sim.fingerprint/crc32c-v1
+        :bytes (workbench-unsigned-long! (get fingerprint "bytes")
+                                         :invalid-fingerprint)
+        :crc32c (workbench-unsigned-long! (get fingerprint "crc32c")
+                                          :invalid-fingerprint)}
+       :kind (keyword kind)})))
+
+(defn- execute-workbench-frame-request
+  [config services workbench-active? request]
+  (cond
+    (not (authorized? config request))
+    (error-response 403 :forbidden nil)
+
+    (not (fn? (:read-workbench-frame services)))
+    (error-response 404 :workbench-unavailable nil)
+
+    (not (compare-and-set! workbench-active? false true))
+    (error-response 429 :workbench-busy nil)
+
+    :else
+    (try
+      (workbench-frame-response config services)
+      (finally (reset! workbench-active? false)))))
+
+(defn- execute-workbench-kind-request
+  [config services workbench-active? request]
+  (cond
+    (not (authorized? config request))
+    (error-response 403 :forbidden nil)
+
+    (not (fn? (:set-workbench-item-kind! services)))
+    (error-response 404 :workbench-unavailable nil)
+
+    (not (json-content-type? request))
+    (error-response 415 :expected-application-json nil)
+
+    (not (compare-and-set! workbench-active? false true))
+    (error-response 429 :workbench-busy nil)
+
+    :else
+    (try
+      (let [command (workbench-command! request)
+            change ((:set-workbench-item-kind! services) command)]
+        (when-not (and (exact-keyset? change #{:kind :operation :revision})
+                       (= :jolt.sim.kind/workbench-change (:kind change))
+                       (= :override/set (:operation change))
+                       (wire-long? (:revision change))
+                       (<= 0 (:revision change)))
+          (throw (ex-info "trusted workbench writer returned an invalid receipt"
+                          {:type ::invalid-workbench-change})))
+        ;; The small acknowledgment is definite after commit. A fresh GET owns
+        ;; presentation rendering and response-size failure independently.
+        (json-response 200
+                       {"version" 1 "status" "committed"
+                        "revision" (str (:revision change))}))
+      (catch :default error
+        (let [data (ex-data error)]
+          (cond
+            (= request-too-large (:type data))
+            (error-response 413 :request-too-large
+                            (select-keys data [:limit :actual]))
+
+            (= ::invalid-workbench-command (:type data))
+            (error-response 400 :invalid-workbench-command
+                            (select-keys data [:reason]))
+
+            (= :jolt.sim.workbench/rejected-command (:type data))
+            (error-response 409 :workbench-command-rejected
+                            (select-keys data [:reason]))
+
+            :else (throw error))))
+      (finally (reset! workbench-active? false)))))
+
 (defn- presentation-outcome [config result]
   (if (and (= :completed (:status result))
            (contains? config :value-presentation-registry))
@@ -2941,6 +3249,7 @@
           document-active? (atom false)
           session-active? (atom false)
           retained-active? (atom false)
+          workbench-active? (atom false)
           active-replay (atom (initial-replay-state))
           activity-registry
           (presentation/activity-registry
@@ -2952,6 +3261,11 @@
                          retained-service-keys)]
        (when (and (seq present) (not= retained-service-keys present))
          (throw (config-error :retained-services-must-be-all-or-nothing
+                              present))))
+     (let [present (into #{} (filter #(contains? services %))
+                         workbench-service-keys)]
+       (when (and (seq present) (not= workbench-service-keys present))
+         (throw (config-error :workbench-services-must-be-all-or-nothing
                               present))))
      (let [control-keys
            #{:reconcile-session-effect! :reconcile-session-step
@@ -2983,7 +3297,10 @@
                         (fn? (:evaluate-form! services)))
                     (every? #(or (not (contains? services %))
                                  (fn? (get services %)))
-                            retained-service-keys))
+                            retained-service-keys)
+                    (every? #(or (not (contains? services %))
+                                 (fn? (get services %)))
+                            workbench-service-keys))
        (throw (config-error :invalid-services (set (keys services)))))
      (fn [request]
        (let [method (:request-method request)
@@ -3017,6 +3334,10 @@
            (and (= :get method) (= "/api/retained-frame" uri))
            (execute-retained-frame-request
             config services retained-active? request)
+
+           (and (= :get method) (= "/api/workbench-frame" uri))
+           (execute-workbench-frame-request
+            config services workbench-active? request)
 
            (and (= :post method) (= "/api/session-step" uri))
            (execute-session-step-request
@@ -3056,6 +3377,10 @@
             config services retained-active? request
             :terminate-retained! :terminate
             #(retained-control-request! request))
+
+           (and (= :post method) (= "/api/workbench-item-kind" uri))
+           (execute-workbench-kind-request
+            config services workbench-active? request)
 
            (and (= :post method) (= "/api/run" uri))
            (if (replay-enabled? config)
@@ -3188,6 +3513,26 @@
    :terminate-retained!
    (fn [] (retained-view/terminate-frame! handle))})
 
+(defn- workbench-services
+  "Returns the two trusted closures for one caller-owned WorkbenchSession.
+
+  Browser commands can only set one exact source-bound output kind. The
+  server supplies provenance; uploaded JSON cannot install a renderer, rule,
+  predicate, or executable value."
+  [session]
+  {:read-workbench-frame
+   (fn [] (workbench-session/frame session))
+   :set-workbench-item-kind!
+   (fn [command]
+     (workbench-session/set-item-kind!
+      session
+      (assoc command :provenance
+             {:producer :jolt.sim.viewer/browser
+              :coordinate
+              {:operation :override/set
+               :item-id (:item-id command)
+               :source-revision (:source-revision command)}})))})
+
 (defn start-retained-process!
   "Starts Ripple with one already-started trusted retained process attached.
 
@@ -3312,17 +3657,93 @@
           (flow-effect-services bridge))))
 
 (def ^:private workbench-capability-keys
-  #{:flow-effect-bridge :retained-process :eval-session})
+  #{:flow-effect-bridge :retained-process :eval-session :workbench-session})
+
+(def ^:private workbench-captured-services
+  {:evaluate-form! ["evaluation" :jolt.sim.result/evaluation]
+   :step-session-frame! ["simulation-step" :jolt.sim.result/simulation-step]
+   :reconcile-session-effect!
+   ["effect-reconciliation" :jolt.sim.result/effect-reconciliation]
+   :reconcile-session-step
+   ["step-reconciliation" :jolt.sim.result/step-reconciliation]
+   :close-session! ["simulation-close" :jolt.sim.result/simulation-close]
+   :command-retained! ["worker-command" :jolt.sim.result/worker-command]
+   :reconcile-retained!
+   ["worker-reconciliation" :jolt.sim.result/worker-reconciliation]
+   :terminate-retained! ["worker-termination" :jolt.sim.result/worker-termination]})
+
+(defn- captured-service-ordinals [session]
+  (let [latest
+        (into {}
+              (map (juxt :id :source-revision))
+              (:current-items
+               (workbench/snapshot (workbench-session/document session))))]
+    (into {}
+          (keep (fn [[service-key [item-id _]]]
+                  (when-let [revision (get latest item-id)]
+                    [service-key revision])))
+          workbench-captured-services)))
+
+(defn- capture-workbench-results
+  "Wraps successful live-operation receipts with advisory item capture.
+
+  The underlying service is still invoked exactly once. Capture runs only
+  after it returns and cannot turn a definite external result into an HTTP
+  ambiguity or failure. Each service owns one stable item ID whose source
+  revision advances monotonically; the append-only document retains prior
+  values while the current frame shows the latest one."
+  [services session]
+  (let [ordinals (atom (captured-service-ordinals session))]
+    (reduce-kv
+     (fn [result service-key [item-id schema-id]]
+       (if-let [service (get result service-key)]
+         (assoc
+          result service-key
+          (fn [& args]
+            (let [value (apply service args)
+                  ordinal (get (swap! ordinals update service-key
+                                      (fnil inc -1))
+                               service-key)]
+              (try
+                (workbench-session/append-item!
+                 session
+                 {:id item-id
+                  :source-revision ordinal
+                  :value value
+                  :schema-id schema-id
+                  :suggested-kind nil
+                  :provenance
+                  {:producer :jolt.sim.viewer/service-result
+                   :coordinate {:service service-key :ordinal ordinal}}})
+                (catch :default error
+                  ;; Evidence capture is secondary to the already-definite
+                  ;; operation. A failed tap is likewise observational.
+                  (try
+                    (tap> {:event :jolt.sim.workbench/capture-failed
+                           :service service-key
+                           :ordinal ordinal
+                           :error (trace/normalize-error error)})
+                    (catch :default _ nil))))
+              value)))
+         result))
+     services
+     workbench-captured-services)))
 
 (defn start-workbench!
   "Starts one generic Ripple workbench from caller-owned live capabilities.
 
   `capabilities` is an exact programmatic map. It may contain a flow/effect
-  bridge, a retained process, an EvalSession, or any combination of the three.
+  bridge, a retained process, an EvalSession, a WorkbenchSession, or any
+  combination of the four.
   Ripple composes only their existing UI-neutral services; it does not create,
   close, retry, reconcile, or otherwise own any supplied capability. Document
   render/replay/run services remain available from the ordinary viewer config,
   so applications do not need a new launcher API for each capability mix.
+
+  When a WorkbenchSession is present, successful results from the other live
+  services are appended after those operations return. This evidence capture
+  is advisory: it never retries an operation and a capture failure cannot
+  replace or obscure its already-definite result.
 
   Application and library semantics belong in presenter registries and the
   supplied capabilities, never in this composer or browser-selected code."
@@ -3354,7 +3775,15 @@
 
           (contains? capabilities :eval-session)
           (assoc :evaluate-form!
-                 (viewer-eval/service (:eval-session capabilities))))]
+                 (viewer-eval/service (:eval-session capabilities)))
+
+          (contains? capabilities :workbench-session)
+          (merge (workbench-services
+                  (:workbench-session capabilities))))
+        services
+        (if-let [session (:workbench-session capabilities)]
+          (capture-workbench-results services session)
+          services)]
     (start! config services)))
 
 (defn stop!
