@@ -7,11 +7,12 @@
   Ripple's retained panel and these helpers share exactly one serialized
   retained-process handle."
   (:require [clojure.edn :as edn]
-            [jolt.fs :as fs]
             [jolt.sim.eval-session :as eval-session]
+            [jolt.sim.flow-effect-session :as effect-session]
             [jolt.sim.retained-process :as retained]
             [jolt.sim.retained-view :as retained-view]
             [jolt.sim.viewer :as viewer]
+            [maelstrom-broadcast-workbench.flow-retained :as flow-retained]
             [maelstrom-broadcast-workbench.presentation :as value-presentation]))
 
 (def default-config-path "config/ripple.edn")
@@ -91,21 +92,7 @@
 (defn retained-config
   "Builds the exact root-worker configuration for one Broadcast input."
   [jolt-bin project-dir input]
-  (let [temp-dir (or (System/getenv "JOLT_SIM_RETAINED_ARTIFACT_DIR")
-                     (or (System/getenv "TMPDIR") "/tmp"))]
-    ;; A dedicated Playwright/CI artifact root may not exist yet. Create only
-    ;; this explicit parent before retained-process atomically allocates its
-    ;; unique child directory; never clean or reuse an earlier run.
-    (fs/create-dirs temp-dir)
-    {:worker-command [jolt-bin "-M:maelstrom-broadcast-retained-worker"]
-     :adapter 'jolt.sim.fixtures.broadcast-retained/run!
-     :input input
-     :dir project-dir
-     :temp-dir temp-dir
-     :extra-env {"JOLT_AOT_CACHE" "0"}
-     :startup-timeout-ms 60000
-     :command-timeout-ms 60000
-     :kill-grace-ms 1000}))
+  (flow-retained/retained-config jolt-bin project-dir input))
 
 (defn- active-workbench []
   (let [active @active-workbench*]
@@ -123,6 +110,20 @@
   "Publishes one exact retained command and returns its definitive generic view."
   [command]
   (retained-view/command-frame! (:worker (active-workbench)) command))
+
+(defn command-session
+  "Creates one pure previewable command cell attached to the active worker.
+
+  Creating or previewing the returned capability publishes nothing. Call
+  jolt.sim.flow-effect-session/branches and step! with the exact advertised
+  branch to commit the command. Ripple's retained panel and this capability
+  still share the same serialized worker coordinate."
+  [command]
+  (effect-session/attach!
+   {:sim (flow-retained/command-flow command)
+    :worker (effect-session/retained-worker-service
+             (:worker (active-workbench)))
+    :effect-kind flow-retained/effect-kind}))
 
 (defn inspect! [] (command! {:op :inspect}))
 (defn bootstrap! [] (command! {:op :bootstrap}))
