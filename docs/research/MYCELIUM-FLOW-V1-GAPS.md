@@ -64,3 +64,7 @@ one workflow invocation as the server.
 
 That later layer, not this workflow compiler, owns process lifecycle operations
 such as start, pause, drain, resume, and stop.
+
+The non-binding project-local direction, open decisions, and evidence required
+before expanding this surface are tracked in
+[Project-local Mycelium vision and decision register](MYCELIUM-PROJECT-VISION.md).
