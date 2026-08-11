@@ -89,6 +89,18 @@
   {:extra-paths ["test"]
    :main-opts ["-m" "jolt.sim.flow-effect-view-test-main"]}
 
+  ;; Fast in-process stateful model over the actual flow/effect bridge and
+  ;; UI-neutral view. A scripted retained-worker seam supplies definite and
+  ;; uncertain transport outcomes; no child, native I/O, or application stack
+  ;; is launched per generated case.
+  :flow-effect-stateful-hegel-test
+  {:extra-paths ["test"]
+   :extra-deps
+   {io.github.chucklehead-dev/jolt-hegel
+    {:git/url "https://github.com/chucklehead-dev/jolt-hegel.git"
+     :git/sha "ffe523023437862c7e474dc216346426318754c6"}}
+   :main-opts ["-m" "jolt.sim.flow-effect-stateful-hegel-test-main"]}
+
   ;; Focused persistent evaluation-session gate. This uses the socket-free
   ;; evaluator and ordinary source paths; it does not start Ripple or a server.
   :eval-session-test
