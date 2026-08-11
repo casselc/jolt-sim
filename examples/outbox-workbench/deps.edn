@@ -72,4 +72,12 @@
 
   :retained-workbench-test
   {:extra-paths ["test"]
-   :main-opts ["-m" "outbox-workbench.retained-workbench-test-main"]}}}
+   :main-opts ["-m" "outbox-workbench.retained-workbench-test-main"]}
+
+  ;; Focused fresh-process gate for one bounded real outbox flow/effect
+  ;; vertical: a minimal jolt.sim.flow command flow published through
+  ;; jolt.sim.flow-effect-session to the retained outbox worker, plus the
+  ;; ordinary receipt-continuation flow.
+  :flow-retained-test
+  {:extra-paths ["test"]
+   :main-opts ["-m" "outbox-workbench.flow-retained-test-main"]}}}
