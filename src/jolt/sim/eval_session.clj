@@ -174,14 +174,13 @@
                   next-sequence] :as before} @state]
       (when closed?
         (throw (session-error :closed {})))
-      (binding [*ns* namespace
-                *1 one
+      (binding [*1 one
                 *2 two
                 *3 three
                 *e error]
         (let [events (atom [])
               form (:form request)
-              ns-before (str (ns-name *ns*))
+              ns-before (str (ns-name namespace))
               terminal
               (eval-stream/evaluate!
                {:form form
