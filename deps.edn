@@ -143,6 +143,18 @@
    :main-opts
    ["-m" "jolt.sim.command-cell-adapter-conformance-test-main"]}
 
+  ;; Process-free launcher composition contract. All worker, viewer, and
+  ;; lifecycle boundaries are replaced by deterministic seams.
+  :command-cell-launcher-lifecycle-test
+  {:extra-paths ["test"
+                 "examples/maelstrom-broadcast-workbench/src"
+                 "examples/outbox-workbench/src"]
+   :extra-deps
+   {io.github.casselc/outbox-workbench
+    {:local/root "examples/outbox-workbench"}}
+   :main-opts
+   ["-m" "jolt.sim.command-cell-launcher-lifecycle-test-main"]}
+
   ;; Focused parent/child retained-process protocol gate. It uses only local
   ;; source and an in-process worker fixture; the real outbox worker remains a
   ;; separate integration alias because it carries the full ecosystem graph.

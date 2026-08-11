@@ -3,6 +3,7 @@
             [clojure.datafy :as datafy]
             [clojure.test :refer [deftest is testing]]
             [jolt.sim.command-cell-session :as command-session]
+            [jolt.sim.command-cell-view :as command-view]
             [jolt.sim.flow :as flow]
             [jolt.sim.trace :as trace]
             [jolt.sim.workbench :as workbench]
@@ -358,6 +359,42 @@
     (is (= 0 @projector-calls))
     (is (= :prepared
            (:status (prepare session 2 :test/deliver {:op :deliver}))))))
+
+(deftest ui-neutral-command-cell-frames-expose-only-canonical-data
+  (let [worker (scripted-worker [(completed 0 {:answer 7})])
+        {:keys [session]} (start-session worker)
+        catalog (command-view/catalog-frame session)
+        initial (command-view/read-frame session)
+        prepared
+        (command-view/prepare-frame!
+         session {:revision 0 :cell-id :test/submit
+                  :input {:op :submit :value 7}})
+        previewed (command-view/read-frame session)]
+    (is (= :catalog-frame (:jolt.sim.command-cell-view/type catalog)))
+    (is (= [:test/deliver :test/submit]
+           (mapv :id (:cells catalog))))
+    (is (= [] (:branches initial)))
+    (is (= :prepared (:status prepared)))
+    (is (= 1 (count (:branches previewed))))
+    (is (not-any? fn? (tree-seq coll? seq [catalog initial prepared previewed])))
+    (is (= 0 (:command-calls @(:state worker))))))
+
+(deftest command-cell-view-keeps-a-definite-result-when-refresh-fails
+  (let [worker (scripted-worker [(completed 0 {:answer 7})])
+        {:keys [session]} (start-session worker)
+        _ (prepare session 0 :test/submit {:op :submit :value 7})
+        coordinate (get-in (command-session/branches session) [0 :coordinate])
+        result
+        (with-redefs [command-view/read-frame
+                      (fn [_]
+                        (throw (ex-info "simulated concurrent refresh failure"
+                                        {:type :test/refresh-failed})))]
+          (command-view/step-frame! session coordinate))]
+    (is (true? (get-in result [:result :committed?])))
+    (is (= :ready (:status result)))
+    (is (nil? (:frame result)))
+    (is (= :post-operation-frame (get-in result [:frame-error :phase])))
+    (is (= 1 (:command-calls @(:state worker))))))
 
 (deftest failed-capture-and-tap-cannot-obscure-definite-outcomes
   (let [worker (scripted-worker [(completed 0 {:answer 7})])

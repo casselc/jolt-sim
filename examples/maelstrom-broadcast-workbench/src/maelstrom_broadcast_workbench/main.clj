@@ -7,11 +7,13 @@
   Ripple's retained panel and these helpers share exactly one serialized
   retained-process handle."
   (:require [clojure.edn :as edn]
+            [jolt.sim.command-cell-session :as command-cell-session]
             [jolt.sim.eval-session :as eval-session]
             [jolt.sim.flow-effect-session :as effect-session]
             [jolt.sim.retained-process :as retained]
             [jolt.sim.retained-view :as retained-view]
             [jolt.sim.viewer :as viewer]
+            [jolt.sim.workbench-session :as workbench-session]
             [maelstrom-broadcast-workbench.flow-retained :as flow-retained]
             [maelstrom-broadcast-workbench.presentation :as value-presentation]))
 
@@ -22,6 +24,9 @@
 ;; EvalSession and an attached REPL address the same caller-owned handle.
 (defonce ^:private active-workbench* (atom nil))
 (def ^:private end-of-config (Object.))
+
+(defn- fresh-evidence-stream-id []
+  (str "broadcast-live-" (System/currentTimeMillis) "-" (System/nanoTime)))
 
 (defn- required-environment [name]
   (let [value (System/getenv name)]
@@ -105,6 +110,11 @@
   "Returns the generic, browser-safe retained supervisor frame."
   []
   (retained-view/read-frame (:worker (active-workbench))))
+
+(defn active-command-cells
+  "Returns the same UI-neutral CommandCellSession attached to Ripple."
+  []
+  (:command-cell-session (active-workbench)))
 
 (defn command!
   "Publishes one exact retained command and returns its definitive generic view."
@@ -214,19 +224,33 @@
                     {:type ::workbench-already-active})))
   (let [worker* (volatile! nil)
         session* (volatile! nil)
+        command-cells* (volatile! nil)
         server* (volatile! nil)]
     (try
       (let [worker (retained/start! retained-config)
             _ (vreset! worker* worker)
             session (eval-session/start)
             _ (vreset! session* session)
-            partial {:worker worker :session session}
+            items (workbench-session/start)
+            command-cells
+            (flow-retained/start-command-cell-session
+             {:worker (effect-session/retained-worker-service worker)
+              :workbench items
+              :evidence-stream-id (fresh-evidence-stream-id)})
+            _ (vreset! command-cells* command-cells)
+            partial {:worker worker :session session
+                     :workbench-session items
+                     :command-cell-session command-cells}
             _ (reset! active-workbench* partial)
-            server (viewer/start-retained-eval-session!
-                    (assoc viewer-config
-                           :value-presentation-registry
-                           value-presentation/value-registry)
-                    worker session)
+            server
+            (viewer/start-workbench!
+             (assoc viewer-config
+                    :value-presentation-registry
+                    value-presentation/value-registry)
+             {:retained-process worker
+              :eval-session session
+              :workbench-session items
+              :command-cell-session command-cells})
             _ (vreset! server* server)
             workbench (assoc partial
                              :server server
@@ -259,6 +283,13 @@
               (catch :default error
                 (swap! cleanup-errors conj
                        {:phase :eval-close :message (ex-message error)}))))
+          (when-let [command-cells @command-cells*]
+            (try
+              (command-cell-session/close! command-cells)
+              (catch :default error
+                (swap! cleanup-errors conj
+                       {:phase :command-cell-close
+                        :message (ex-message error)}))))
           (when-let [worker @worker*]
             (try
               (let [result (stop-child! worker)]
@@ -287,7 +318,8 @@
   The operation is idempotent. EvalSession closure is intentionally omitted:
   arbitrary evaluated code may own its lock forever, and this command-line
   session is reclaimed at process exit."
-  [{:keys [server worker stopping? stop-result] :as workbench}]
+  [{:keys [server worker command-cell-session stopping? stop-result]
+    :as workbench}]
   (if (compare-and-set! stopping? false true)
     (let [viewer-error
           (try
@@ -296,6 +328,12 @@
             (catch :default error
               {:phase :viewer-stop :message (ex-message error)}))
           _ (compare-and-set! active-workbench* workbench nil)
+          command-cell-error
+          (try
+            (command-cell-session/close! command-cell-session)
+            nil
+            (catch :default error
+              {:phase :command-cell-close :message (ex-message error)}))
           child
           (try
             (stop-child! worker)
@@ -307,6 +345,8 @@
                :errors [{:phase :worker-stop
                          :message (ex-message error)}]}))
           result (cond-> {:child child}
+                   command-cell-error
+                   (assoc :command-cell-error command-cell-error)
                    viewer-error (assoc :viewer-error viewer-error))]
       (deliver stop-result result)
       result)
