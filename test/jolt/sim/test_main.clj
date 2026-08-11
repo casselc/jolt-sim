@@ -53,7 +53,8 @@
             [jolt.sim.session-test]
             [jolt.sim.session-view-test]
             [jolt.sim.sqlite-test]
-            [jolt.sim.workbench-test]))
+            [jolt.sim.workbench-test]
+            [jolt.sim.workbench-session-test]))
 
 (defn -main [& _]
   (let [result
@@ -110,7 +111,8 @@
                         'jolt.sim.session-test
                         'jolt.sim.session-view-test
                         'jolt.sim.sqlite-test
-                        'jolt.sim.workbench-test)
+                        'jolt.sim.workbench-test
+                        'jolt.sim.workbench-session-test)
         failures (+ (:fail result) (:error result))]
     (println (str (:test result) " tests, "
                   (:pass result) " assertions passed"))

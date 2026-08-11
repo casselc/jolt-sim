@@ -119,6 +119,12 @@
   {:extra-paths ["test"]
    :main-opts ["-m" "jolt.sim.presentation-test-main"]}
 
+  ;; Serialized, REPL/datafy-friendly owner for one persistent workbench
+  ;; document and one trusted presentation-kind registry.
+  :workbench-session-test
+  {:extra-paths ["test"]
+   :main-opts ["-m" "jolt.sim.workbench-session-test-main"]}
+
   ;; Focused parent/child retained-process protocol gate. It uses only local
   ;; source and an in-process worker fixture; the real outbox worker remains a
   ;; separate integration alias because it carries the full ecosystem graph.
