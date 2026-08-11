@@ -81,10 +81,15 @@ test("controls the real retained Broadcast worker from Ripple and its shared REP
     expect(stopped).toContain(":sequence 5");
     expect(stopped).toContain(":owner? true");
     expect(stopped).toContain(":status :stopped");
-    await expect.poll(async () => {
-      await page.getByTestId("retained-refresh").click();
-      return page.getByTestId("retained-status").textContent();
-    }).toContain("Worker is exited");
+    await expect(async () => {
+      await Promise.all([
+        page.waitForResponse((response) =>
+          response.url().endsWith("/api/retained-frame")),
+        page.getByTestId("retained-refresh").click()
+      ]);
+      await expect(page.getByTestId("retained-status"))
+        .toContainText("Worker is exited", {timeout: 1000});
+    }).toPass({timeout: 20000});
     await expect(page.getByTestId("retained-send")).toBeDisabled();
 
     await page.screenshot({
