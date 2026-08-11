@@ -517,6 +517,12 @@ jobs:
           mkdir -p "$artifacts/retained-workers"
           cd "$repo/examples/maelstrom-broadcast-workbench"
           "$sim" -M:presentation-test
+          "$sim" -M:flow-contract-test
+          JOLT_SIM_BIN="$sim" \
+          JOLT_SIM_PROJECT_DIR="$repo" \
+          JOLT_SIM_RETAINED_ARTIFACT_DIR="$artifacts/retained-workers" \
+          JOLT_SIM_BROADCAST_FLOW_PROGRESS_FILE="$artifacts/flow-progress.edn" \
+            "$sim" -M:flow-effect-test
           JOLT_SIM_BIN="$sim" \
           JOLT_SIM_PROJECT_DIR="$repo" \
           JOLT_SIM_RETAINED_ARTIFACT_DIR="$artifacts/retained-workers" \

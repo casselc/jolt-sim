@@ -118,8 +118,12 @@ test("controls the real retained Broadcast worker from Ripple and its shared REP
     )).not.toHaveText("0");
 
     await page.getByTestId("eval-form").fill(
-      "(do (require '[maelstrom-broadcast-workbench.main :as wb] :reload) " +
-      "(wb/step! \"n2\"))"
+      "(do " +
+      "(require '[maelstrom-broadcast-workbench.main :as wb] :reload) " +
+      "(require '[jolt.sim.flow-effect-session :as effect] :reload) " +
+      "(let [session (wb/command-session {:op :step :node-id \"n2\"}) " +
+      "branch (:branch (first (effect/branches session)))] " +
+      "(effect/step! session branch)))"
     );
     await page.getByTestId("eval-submit").click();
     await expect(page.getByTestId("eval-status"))

@@ -18,4 +18,12 @@
 
   :presentation-test
   {:extra-paths ["test"]
-   :main-opts ["-m" "maelstrom-broadcast-workbench.presentation-test"]}}}
+   :main-opts ["-m" "maelstrom-broadcast-workbench.presentation-test"]}
+
+  :flow-contract-test
+  {:extra-paths ["test"]
+   :main-opts ["-m" "maelstrom-broadcast-workbench.flow-retained-test"]}
+
+  :flow-effect-test
+  {:extra-paths ["test"]
+   :main-opts ["-m" "maelstrom-broadcast-workbench.flow-effect-test-main"]}}}

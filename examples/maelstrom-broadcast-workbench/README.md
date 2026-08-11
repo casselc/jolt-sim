@@ -124,6 +124,22 @@ These UI-neutral helpers delegate only through `jolt.sim.retained-view`:
 (wb/present (get-in (wb/inspect!) [:receipt :value]))
 ```
 
+The same worker can be controlled through a project-local Mycelium-shaped
+command cell. Creating and previewing this capability performs no application
+operation:
+
+```clojure
+(require '[jolt.sim.flow-effect-session :as effect] :reload)
+(def command-cell (wb/command-session {:op :bootstrap}))
+(def branch (:branch (first (effect/branches command-cell))))
+(effect/step! command-cell branch)
+```
+
+The exact branch commit authorizes one retained command. The real Broadcast
+worker still owns mailboxes, connection regimes, retry, and lifecycle. A stale
+branch cannot publish a second command; an uncertain publication must be
+reconciled instead of resent.
+
 `present` is pure and returns the same bounded ordinary map/vector topology
 model used by Ripple and static reports, including inert canonical action
 descriptors. Static reports display those descriptors but never execute them.
@@ -181,6 +197,11 @@ JOLT_SIM_PROJECT_DIR='/absolute/path/to/this/jolt-sim-checkout' \
 ```
 
 Outputs are under `target/ripple-playwright/broadcast-retained`.
+
+`:flow-contract-test` checks the project-local command and receipt contracts
+without starting a worker. `:flow-effect-test` runs the partition,
+stale-revision, restore, real-retry, convergence, read, and clean-stop story
+through commit-gated cells against one fresh retained application.
 
 ## Boundaries
 
