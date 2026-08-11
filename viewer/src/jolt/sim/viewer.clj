@@ -3280,6 +3280,23 @@
                  (fn [branch cursor]
                    (viewer-session/step-frame! sim-session branch cursor)))))
 
+(defn- flow-effect-services [bridge]
+  {:read-session-frame
+   (fn [cursor]
+     (flow-effect-view/read-frame bridge cursor))
+   :step-session-frame!
+   (fn [branch cursor]
+     (flow-effect-view/step-frame! bridge branch cursor))
+   :reconcile-session-effect!
+   (fn [cursor]
+     (flow-effect-view/reconcile-effect-frame! bridge cursor))
+   :reconcile-session-step
+   (fn [branch cursor]
+     (flow-effect-view/reconcile-step-frame bridge branch cursor))
+   :close-session!
+   (fn [cursor]
+     (flow-effect-view/close-frame! bridge cursor))})
+
 (defn start-flow-effect-session!
   "Starts Ripple with one caller-owned opaque flow/effect bridge attached.
 
@@ -3291,22 +3308,54 @@
   [config bridge]
   (start!
    config
-   (assoc (dissoc (default-services config) :run-case)
-          :read-session-frame
-          (fn [cursor]
-            (flow-effect-view/read-frame bridge cursor))
-          :step-session-frame!
-          (fn [branch cursor]
-            (flow-effect-view/step-frame! bridge branch cursor))
-          :reconcile-session-effect!
-          (fn [cursor]
-            (flow-effect-view/reconcile-effect-frame! bridge cursor))
-          :reconcile-session-step
-          (fn [branch cursor]
-            (flow-effect-view/reconcile-step-frame bridge branch cursor))
-          :close-session!
-          (fn [cursor]
-            (flow-effect-view/close-frame! bridge cursor)))))
+   (merge (dissoc (default-services config) :run-case)
+          (flow-effect-services bridge))))
+
+(def ^:private workbench-capability-keys
+  #{:flow-effect-bridge :retained-process :eval-session})
+
+(defn start-workbench!
+  "Starts one generic Ripple workbench from caller-owned live capabilities.
+
+  `capabilities` is an exact programmatic map. It may contain a flow/effect
+  bridge, a retained process, an EvalSession, or any combination of the three.
+  Ripple composes only their existing UI-neutral services; it does not create,
+  close, retry, reconcile, or otherwise own any supplied capability. Document
+  render/replay/run services remain available from the ordinary viewer config,
+  so applications do not need a new launcher API for each capability mix.
+
+  Application and library semantics belong in presenter registries and the
+  supplied capabilities, never in this composer or browser-selected code."
+  [config capabilities]
+  (when-not (map? capabilities)
+    (throw (config-error :invalid-workbench-capabilities
+                         {:reason :not-a-map})))
+  (let [unknown (into #{} (remove workbench-capability-keys)
+                      (keys capabilities))]
+    (when (seq unknown)
+      (throw (config-error :invalid-workbench-capabilities
+                           {:reason :unknown-keys :keys unknown}))))
+  (when (empty? capabilities)
+    (throw (config-error :invalid-workbench-capabilities
+                         {:reason :empty})))
+  (let [nil-keys (into #{} (comp (filter (fn [[_ value]] (nil? value)))
+                                      (map first))
+                       capabilities)]
+    (when (seq nil-keys)
+      (throw (config-error :invalid-workbench-capabilities
+                           {:reason :nil-values :keys nil-keys}))))
+  (let [services
+        (cond-> (default-services config)
+          (contains? capabilities :flow-effect-bridge)
+          (merge (flow-effect-services (:flow-effect-bridge capabilities)))
+
+          (contains? capabilities :retained-process)
+          (merge (retained-services (:retained-process capabilities)))
+
+          (contains? capabilities :eval-session)
+          (assoc :evaluate-form!
+                 (viewer-eval/service (:eval-session capabilities))))]
+    (start! config services)))
 
 (defn stop!
   "Stops a viewer returned by `start!`."
