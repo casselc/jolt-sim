@@ -243,9 +243,12 @@ Session control protocol; and a canonical out-of-band Ripple-in-Ripple e2e
 scenario. This follows the ordinary HTTP/SQLite/TCP application workflow and
 must not displace it with debugger protocol scaffolding. The socket-free
 `jolt.sim.eval-stream/evaluate!` subset now emits data-oriented `:out`, `:err`,
-and terminal `:ret` events over the shared Jolt evaluation engine. It does not
-yet provide a socket/prepl transport, tap lifecycle, remote Session attachment,
-browser live evaluation, or Ripple-in-Ripple debugging.
+and terminal `:ret` events over the shared Jolt evaluation engine. Ripple now
+provides live EvalSession evaluation and revision-scoped remote Session/effect
+control, and the outbox and retained Broadcast workbenches prove that the
+browser and ordinary evaluated forms can address the same live application
+coordinate. It does not yet provide a socket/prepl transport, explicit tap
+lifecycle management, or Ripple-in-Ripple debugging.
 
 The next stacked slice, draft PR `casselc/jolt-sim#29`, keeps that application
 body unchanged and runs every case in a fresh sim-enabled process. Hegel owns
