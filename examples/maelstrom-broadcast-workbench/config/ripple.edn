@@ -1,0 +1,5 @@
+;; The capability token is intentionally supplied only through
+;; JOLT_SIM_VIEWER_TOKEN. JOLT_SIM_VIEWER_PORT may override this fixed local
+;; port for an isolated integration or browser-test process.
+{:viewer {:port 8788}
+ :input {:message 42 :regime :partition-heal}}

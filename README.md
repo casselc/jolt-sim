@@ -154,11 +154,20 @@ and its closed [example configuration](viewer/example-config.edn).
 
 The [canonical outbox workbench](examples/outbox-workbench/) composes that
 same unchanged HTTP/SQLite/TCP/bencode application with Ripple's persistent
-Jolt evaluation session. It provides an eval-only browser REPL for running and
-inspecting a real delivery, plus a fresh-process gate that drives the complete
-flow through Ripple's loopback `/api/eval` boundary. The application is still
-one-shot and post-run inspectable; live mid-flight pause and perturbation need
-the later app-owned lifecycle rather than a second implementation here.
+Jolt evaluation session. In addition to its one-shot evaluation witness, its
+live lifecycle keeps the real HTTP server, SQLite connection, TCP receiver, and
+delivery component open while Ripple and the REPL share revision-scoped flow
+control. The fresh-process gates exercise both `/api/eval` and interactive
+submit/deliver boundaries without replacing the application implementation.
+
+The [Maelstrom Broadcast workbench](examples/maelstrom-broadcast-workbench/)
+attaches Ripple and the same persistent REPL model to one retained three-node
+cluster. A human may inspect the live cluster, bootstrap it, deliver one
+selected mailbox message, partition and heal a link, invoke the application's
+existing retry operation, read converged values, reconcile an uncertain
+receipt without resending, and stop the child cleanly. Browser and REPL
+commands address one serialized retained worker; the real Playwright gate
+retains its screenshot, video, trace, and complete command/receipt journal.
 
 ### Executed scenario coverage
 
