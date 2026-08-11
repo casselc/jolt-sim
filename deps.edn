@@ -117,6 +117,22 @@
   :retained-outbox-test
   {:main-opts ["-m" "jolt.sim.retained-outbox-test-main"]}
 
+  ;; Interactive control of the actual three-node Broadcast application over
+  ;; the existing memory transport. The direct gate proves lifecycle/step
+  ;; semantics without a child; the retained gate proves the same adapter and
+  ;; command vocabulary across the fresh worker protocol.
+  :maelstrom-broadcast-live-test
+  {:extra-paths ["test"]
+   :main-opts ["-m" "jolt.maelstrom.broadcast-live-test-main"]}
+
+  :maelstrom-broadcast-retained-worker
+  {:extra-paths ["test"]
+   :main-opts ["-m" "jolt.sim.retained-worker"]}
+
+  :maelstrom-broadcast-retained-test
+  {:extra-paths ["test"]
+   :main-opts ["-m" "jolt.sim.retained-broadcast-test-main"]}
+
   ;; Process-isolated because the asserted failure deliberately retains the
   ;; installed controllers and poisons the single adapter session.
   :runtime-poison-test
