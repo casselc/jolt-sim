@@ -21,6 +21,7 @@
 (def invalid-registry ::invalid-registry)
 (def invalid-presentation ::invalid-presentation)
 (def invalid-value-registry ::invalid-value-registry)
+(def invalid-kind-registry ::invalid-kind-registry)
 (def invalid-value-presentation ::invalid-value-presentation)
 
 (def ^:private transition-ops
@@ -318,6 +319,7 @@
 ;; ---- arbitrary canonical value presentation ---------------------------------
 
 (def ^:private value-entry-keys #{:kind :present})
+(def ^:private kind-entry-keys #{:present})
 (def ^:private value-projection-keys #{:summary :fields})
 (def ^:private topology-projection-keys #{:summary :fields :graph})
 (def ^:private value-field-keys #{:label :value})
@@ -359,6 +361,55 @@
                   {:type invalid-value-presentation
                    :reason reason
                    :detail detail})))
+
+(defn- kind-registry-error! [reason detail]
+  (throw (ex-info "Invalid jolt-sim presentation-kind registry"
+                  {:type invalid-kind-registry
+                   :reason reason
+                   :detail detail})))
+
+(defn validate-kind-registry!
+  "Validates an immutable trusted renderer registry keyed by output kind.
+
+  Each exact entry is `{:present fn}`. Unlike a value registry, this registry
+  does not advise from a source kind or choose an output kind. A caller has
+  already selected the key, for example through a persisted workbench rule.
+  No registry is loaded from EDN and no var is resolved by name."
+  [value]
+  (when-not (map? value)
+    (kind-registry-error! :not-a-map (str (class value))))
+  (doseq [[kind entry] value]
+    (when-not (and (namespaced-keyword? kind)
+                   (<= (count (keyword-text kind))
+                       maximum-value-kind-length))
+      (kind-registry-error! :invalid-kind kind))
+    (when-not (and (map? entry)
+                   (= kind-entry-keys (set (keys entry))))
+      (kind-registry-error! :invalid-entry-shape kind))
+    (when-not (fn? (:present entry))
+      (kind-registry-error! :invalid-presenter kind)))
+  value)
+
+(defn kind-registry
+  "Composes explicit presentation-kind registries; later entries win."
+  [& registries]
+  (reduce (fn [result candidate]
+            (if (nil? candidate)
+              result
+              (merge result (validate-kind-registry! candidate))))
+          {}
+          registries))
+
+(defn available-kinds
+  "Returns the stable sorted kinds a trusted registry can render.
+
+  Raw canonical EDN is always available even though it needs no executable
+  registry entry."
+  [registry]
+  (validate-kind-registry! registry)
+  (->> (conj (set (keys registry)) :jolt.sim.kind/raw-value)
+       sort
+       vec))
 
 (defn validate-value-registry!
   "Validates an immutable trusted-code registry keyed by exact value kind.
@@ -569,17 +620,13 @@
               "Raw canonical value")
    :fields []})
 
-(defn- present-value* [registry value]
-  (let [source-canonical (trace/canonical-value value [:value-presentation :source])
-        source (trace/restore-value source-canonical)
+(defn- present-canonical-as* [source-canonical output-kind presenter]
+  (let [source (trace/restore-value source-canonical)
         source-edn (trace/canonical-edn source)
         source-kind (source-kind source)
-        entry (get registry source-kind)
-        output-kind (if entry (:kind entry) :jolt.sim.kind/raw-value)
         projection
         (try
-          ((if entry (:present entry) (fn [_] (raw-value-projection source-kind)))
-           source)
+          (presenter source)
           (catch :default error
             (throw (ex-info "Value presentation function failed"
                             {:type invalid-value-presentation
@@ -609,6 +656,22 @@
                                     :maximum maximum-value-presentation-bytes}))
       result)))
 
+(defn- present-value-as* [value output-kind presenter]
+  (present-canonical-as*
+   (trace/canonical-value value [:value-presentation :source])
+   output-kind
+   presenter))
+
+(defn- present-value* [registry value]
+  (let [source-canonical
+        (trace/canonical-value value [:value-presentation :source])
+        kind (source-kind (trace/restore-value source-canonical))
+        entry (get registry kind)]
+    (present-canonical-as*
+     source-canonical
+     (if entry (:kind entry) :jolt.sim.kind/raw-value)
+     (if entry (:present entry) (fn [_] (raw-value-projection kind))))))
+
 (defn value-presenter
   "Validates one registry and returns a pure projector for arbitrary values."
   [registry]
@@ -622,6 +685,24 @@
   and malformed/overbound outputs fail closed without modifying the source."
   [registry value]
   ((value-presenter registry) value))
+
+(defn present-as-kind
+  "Presents one arbitrary value through an explicitly selected output kind.
+
+  `registry` is trusted executable configuration keyed by presentation kind.
+  The raw canonical kind is built in. Every other kind must have an exact
+  registry entry; unknown persisted kinds fail closed while callers retain the
+  immutable source value for raw fallback or later registry installation."
+  [registry kind value]
+  (validate-kind-registry! registry)
+  (when-not (namespaced-keyword? kind)
+    (kind-registry-error! :invalid-kind kind))
+  (if (= :jolt.sim.kind/raw-value kind)
+    (present-value-as*
+     value kind (fn [source] (raw-value-projection (source-kind source))))
+    (if-let [entry (get registry kind)]
+      (present-value-as* value kind (:present entry))
+      (kind-registry-error! :unknown-kind kind))))
 
 ;; ---- activity event presentation ---------------------------------------------
 

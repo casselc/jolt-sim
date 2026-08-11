@@ -13,6 +13,7 @@
   a separate storage concern."
   (:require [clojure.edn :as edn]
             [jolt.sim.journal :as journal]
+            [jolt.sim.presentation :as presentation]
             [jolt.sim.trace :as trace]))
 
 (def invalid-document :jolt.sim.workbench/invalid-document)
@@ -502,6 +503,26 @@
         (if-let [kind (:suggested-kind item)]
           {:kind kind :source :producer-default}
           {:kind raw-kind :source :raw})))))
+
+(defn present-item
+  "Presents one stored item through its resolved persisted presentation kind.
+
+  `kind-registry` is trusted executable configuration supplied by the caller.
+  The returned value keeps the exact immutable item coordinate, the selection
+  provenance, and the ordinary data-only presentation model. A missing custom
+  renderer fails closed without changing the document or hiding its source."
+  [document kind-registry item-id source-revision]
+  (let [stored (item document item-id source-revision)]
+    (when-not stored
+      (reject! :unknown-item {:item-id item-id
+                              :source-revision source-revision}))
+    (let [selection (resolve-kind document item-id source-revision)]
+      {:coordinate {:item-id item-id :source-revision source-revision}
+       :source-fingerprint (:source-fingerprint stored)
+       :selection selection
+       :presentation
+       (presentation/present-as-kind
+        kind-registry (:kind selection) (trace/restore-value (:value stored)))})))
 
 (defn canonical-edn
   "Returns the validated, byte-stable persistent document representation."

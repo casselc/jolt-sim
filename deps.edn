@@ -113,6 +113,12 @@
   {:extra-paths ["test"]
    :main-opts ["-m" "jolt.sim.workbench-test-main"]}
 
+  ;; Shared data-only event/value presentation contracts, including explicit
+  ;; output-kind registries. No evaluator, viewer server, or browser is loaded.
+  :presentation-test
+  {:extra-paths ["test"]
+   :main-opts ["-m" "jolt.sim.presentation-test-main"]}
+
   ;; Focused parent/child retained-process protocol gate. It uses only local
   ;; source and an in-process worker fixture; the real outbox worker remains a
   ;; separate integration alias because it carries the full ecosystem graph.

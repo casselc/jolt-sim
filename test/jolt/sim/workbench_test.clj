@@ -1,5 +1,6 @@
 (ns jolt.sim.workbench-test
   (:require [clojure.test :refer [deftest is testing]]
+            [jolt.sim.presentation :as presentation]
             [jolt.sim.trace :as trace]
             [jolt.sim.workbench :as workbench]))
 
@@ -109,6 +110,37 @@
            (workbench/resolve-kind raw "raw" 0)))
     (is (= {:kind :kind/table :source :producer-default}
            (workbench/resolve-kind suggested "suggested" 0)))))
+
+(deftest persisted-selection-drives-a-kind-keyed-presenter
+  (let [d1 (workbench/append-item
+            (workbench/empty-document)
+            (item-input "orders" 0
+                        [{:id 1 :total 10} {:id 2 :total 20}]
+                        :shop/orders nil))
+        d2 (workbench/put-domain-rule
+            d1 (rule-input "order-table" {:schema-id :shop/orders}
+                           :kind/table 10))
+        rendered
+        (workbench/present-item
+         d2
+         {:kind/table
+          {:present (fn [value]
+                      {:summary "Orders"
+                       :fields [{:label "Count" :value (count value)}]})}}
+         "orders" 0)]
+    (is (= {:item-id "orders" :source-revision 0}
+           (:coordinate rendered)))
+    (is (= {:kind :kind/table :source :domain-rule
+            :rule-id "order-table"}
+           (:selection rendered)))
+    (is (= :kind/table (get-in rendered [:presentation :kind])))
+    (is (= "Orders" (get-in rendered [:presentation :summary])))
+    (is (= 2 (-> rendered :presentation :fields first :value
+                 trace/restore-value)))
+    (is (= presentation/invalid-kind-registry
+           (:type (caught-data
+                   #(workbench/present-item d2 {} "orders" 0)))))
+    (is (= d2 (workbench/read-edn (workbench/canonical-edn d2))))))
 
 (deftest stale-overrides-and-unknown-removals-fail-before-journal-change
   (let [d1 (workbench/append-item

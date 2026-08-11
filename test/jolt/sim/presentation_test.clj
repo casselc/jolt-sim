@@ -216,6 +216,46 @@
     (is (= (trace/canonical-edn {:payload {:kind :acme/widget}})
            (:source-edn nested)))))
 
+(deftest explicit-kind-registry-renders-a-user-selected-view
+  (let [registry
+        (presentation/kind-registry
+         nil
+         {:kind/table
+          {:present
+           (fn [value]
+             {:summary "Selected table"
+              :fields [{:label "Rows" :value (count value)}]})}}
+         {:kind/custom
+          {:present (fn [_] {:summary "Custom" :fields []})}})
+        source [{:id 1} {:id 2}]
+        table (presentation/present-as-kind registry :kind/table source)
+        raw (presentation/present-as-kind registry
+                                          :jolt.sim.kind/raw-value source)]
+    (is (= [:jolt.sim.kind/raw-value :kind/custom :kind/table]
+           (presentation/available-kinds registry)))
+    (is (= :kind/table (:kind table)))
+    (is (= "Selected table" (:summary table)))
+    (is (= 2 (restored-field table "Rows")))
+    (is (nil? (:source-kind table)))
+    (is (= :jolt.sim.kind/raw-value (:kind raw)))
+    (is (= (trace/canonical-edn source) (:source-edn raw)))
+    (let [data (caught-data
+                #(presentation/present-as-kind registry :kind/missing source))]
+      (is (= presentation/invalid-kind-registry (:type data)))
+      (is (= :unknown-kind (:reason data))))))
+
+(deftest presentation-kind-registries-are-closed-and-trusted-only
+  (doseq [[registry reason]
+          [[{:plain {:present identity}} :invalid-kind]
+           [{:kind/x {:present identity :extra true}} :invalid-entry-shape]
+           [{:kind/x {:present nil}} :invalid-presenter]]]
+    (let [data (caught-data #(presentation/validate-kind-registry! registry))]
+      (is (= presentation/invalid-kind-registry (:type data)))
+      (is (= reason (:reason data)))))
+  (is (= {:kind/x {:present identity}}
+         (presentation/validate-kind-registry!
+          {:kind/x {:present identity}}))))
+
 (deftest value-presenter-snapshots-source-and-output
   (let [bytes (byte-array [(byte 1) (byte 2)])
         seen (atom nil)

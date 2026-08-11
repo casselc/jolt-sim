@@ -96,6 +96,13 @@ domain rules. `canonical-edn` and strict `read-edn` provide a portable save and
 restore boundary; crash-safe file replacement remains a separate storage
 adapter rather than hidden browser behavior.
 
+Presentation selection and presentation execution are separate contracts. A
+persisted rule selects a namespaced output kind. Trusted project or library
+code supplies an immutable registry keyed by that output kind. This lets an
+item acquire a table, tree, topology, or custom view after production without
+changing its domain tag. Unknown saved kinds fail closed and leave canonical
+source EDN available; uploaded workspace EDN cannot install executable code.
+
 One source value can have several valid presentations. The selection order is:
 
 1. an exact user override for one source coordinate or subtree;
