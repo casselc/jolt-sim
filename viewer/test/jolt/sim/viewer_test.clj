@@ -4634,6 +4634,102 @@
     (is (nil? (get wire "presentationError")))
     (is (= payload (:value (edn/read-string (get wire "receiptEdn")))))))
 
+(deftest retained-topology-actions-serialize-as-inert-canonical-data
+  (let [command {:op :inspect :target "a"
+                 :payload (byte-array [0 255])}
+        payload {:kind :example/network}
+        registry
+        {:example/network
+         {:kind :example.kind/topology
+          :present
+          (fn [_]
+            {:summary "Example network"
+             :fields []
+             :graph
+             {:directed? true
+              :nodes [{:id "a" :label "A" :status :example.status/ready
+                       :fields []
+                       :actions [{:id "inspect"
+                                  :label "Inspect"
+                                  :command command
+                                  :enabled? true}
+                                 {:id "stop"
+                                  :label "Stop"
+                                  :command [:stop "a"]
+                                  :enabled? false}]}
+                      {:id "b" :label "B" :status nil :fields []}]
+              :edges [{:id "a--b" :from "a" :to "b" :label "link"
+                       :status nil :fields []
+                       :actions [{:id "partition"
+                                  :label "Partition"
+                                  :command {:op :partition :link ["a" "b"]}
+                                  :enabled? true}]}]}})}}
+        calls (atom [])
+        svc (assoc (retained-services calls)
+                   :command-retained! (fn [command]
+                                        (swap! calls conj [:command command])
+                                        (retained-result :completed payload)))
+        handler (viewer/make-handler
+                 (assoc (config) :value-presentation-registry registry) svc)
+        response (handler
+                  (json-post-request "/api/retained-command"
+                                     {"version" 1 "commandEdn" ":inspect"}))
+        wire (json/read-str (:body response))
+        node-actions (get-in wire ["presentation" "graph" "nodes" 0 "actions"])
+        edge-actions (get-in wire ["presentation" "graph" "edges" 0 "actions"])]
+    (is (= 200 (:status response)))
+    (is (= ["inspect" "stop"] (mapv #(get % "id") node-actions)))
+    (is (= ["Inspect" "Stop"] (mapv #(get % "label") node-actions)))
+    (is (= [true false] (mapv #(get % "enabled") node-actions)))
+    (is (= ["commandCanonicalEdn" "enabled" "id" "label"]
+           (sort (keys (first node-actions))))
+        "the wire descriptor is exactly the closed four-key action shape")
+    (is (= []
+           (get-in wire ["presentation" "graph" "nodes" 1 "actions"]))
+        "an entity without actions serializes an explicitly empty vector")
+    (let [restored
+          (trace/restore-value
+           (edn/read-string
+            (get (first node-actions) "commandCanonicalEdn")))]
+      (is (= (dissoc command :payload) (dissoc restored :payload)))
+      (is (= [0 -1] (vec (:payload restored)))
+          "the canonical action wire retains byte-array identity and contents"))
+    (is (= {:op :partition :link ["a" "b"]}
+           (trace/restore-value
+            (edn/read-string
+             (get (first edge-actions) "commandCanonicalEdn")))))
+    (is (nil? (get wire "presentationError")))
+    (is (= payload (:value (edn/read-string (get wire "receiptEdn")))))
+    (testing "the emitted command EDN round-trips through the unchanged
+              retained-command endpoint as exactly the declared data"
+      (let [echoed (handler
+                    (json-post-request
+                     "/api/retained-command"
+                     {"version" 1
+                      "commandCanonicalEdn"
+                      (get (first node-actions) "commandCanonicalEdn")}))]
+        (is (= 200 (:status echoed)))
+        (is (= [:command :inspect] (first @calls)))
+        (let [[tag delegated] (second @calls)]
+          (is (= :command tag))
+          (is (= (dissoc command :payload) (dissoc delegated :payload)))
+          (is (= [0 -1] (vec (:payload delegated)))
+              "the canonical request restores a fresh byte array before exact delegation"))))))
+
+(deftest retained-canonical-command-request-fails-closed
+  (let [calls (atom [])
+        handler (viewer/make-handler (config) (retained-services calls))]
+    (doseq [body [{"version" 1
+                   "commandEdn" ":inspect"
+                   "commandCanonicalEdn" "[:jolt.sim.value/keyword nil \"inspect\"]"}
+                  {"version" 1
+                   "commandCanonicalEdn" "[:not-a-canonical/tag 1]"}]]
+      (let [response (handler (json-post-request "/api/retained-command" body))]
+        (is (= 400 (:status response)))
+        (is (= :invalid-retained-command
+               (:error (edn/read-string (:body response)))))))
+    (is (empty? @calls) "invalid canonical requests never reach the service")))
+
 (deftest retained-presentation-failure-preserves-the-committed-receipt
   (let [payload {:kind :example/broken :value 42}
         registry

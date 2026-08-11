@@ -1612,8 +1612,9 @@
 
 ;; ---- retained interactive process attachment --------------------------------
 
-(def ^:private retained-command-request-keys
-  #{"version" "commandEdn"})
+(def ^:private retained-command-request-keysets
+  [#{"version" "commandEdn"}
+   #{"version" "commandCanonicalEdn"}])
 (def ^:private retained-control-request-keys #{"version"})
 (def ^:private retained-frame-keys
   #{:jolt.sim.retained-view/type :kind :protocol :instance-id :status
@@ -1782,10 +1783,14 @@
               (throw (ex-info "retained request is not exactly one JSON value"
                               {:type invalid-retained-command
                                :reason :malformed-json})))))]
-    (when-not (and (map? value) (= expected-keys (set (keys value))))
+    (let [actual-keys (when (map? value) (set (keys value)))
+          accepted? (if (vector? expected-keys)
+                      (some #(= % actual-keys) expected-keys)
+                      (= expected-keys actual-keys))]
+      (when-not (and (map? value) accepted?)
       (throw (ex-info "retained request keys are not the closed set"
                       {:type invalid-retained-command
-                       :reason :unexpected-keys})))
+                       :reason :unexpected-keys}))))
     (when-not (and (integer? (get value "version"))
                    (= 1 (get value "version")))
       (throw (ex-info "retained request version is unsupported"
@@ -1822,8 +1827,21 @@
   (let [value (parse-retained-json!
                request
                retained-command-body-limit
-               retained-command-request-keys)]
-    (parse-retained-command-edn! (get value "commandEdn"))))
+               retained-command-request-keysets)]
+    (if (contains? value "commandEdn")
+      (parse-retained-command-edn! (get value "commandEdn"))
+      (let [canonical-form
+            (parse-retained-command-edn!
+             (get value "commandCanonicalEdn"))]
+        ;; The ordinary EDN parser above deliberately returns ordinary values.
+        ;; A canonical action request instead carries the exact readable
+        ;; projection produced by trace/canonical-value; validate that closed
+        ;; tagged domain and restore a fresh command before delegation.
+        (when-not (trace/canonical-form? canonical-form)
+          (throw (ex-info "retained canonical command is malformed"
+                          {:type invalid-retained-command
+                           :reason :invalid-canonical-command})))
+        (trace/restore-value canonical-form)))))
 
 (defn- retained-control-request! [request]
   (parse-retained-json! request retained-control-body-limit
@@ -1906,24 +1924,37 @@
 (defn- presentation-status-wire [status]
   (when status (retained-keyword-text status)))
 
+(defn- presentation-action-wire
+  "Serializes one inert action descriptor as exact bounded data. The command
+  crosses only as its canonical EDN string; the server attaches no meaning to
+  it and never evaluates it. A browser can only echo the unchanged string
+  back through the existing retained-command contract."
+  [{:keys [id label command enabled?]}]
+  {"id" id
+   "label" label
+   "commandCanonicalEdn" (trace/canonical-edn command)
+   "enabled" (boolean enabled?)})
+
 (defn- presentation-graph-wire [graph]
   (when graph
     {"directed" (:directed? graph)
      "nodes"
-     (mapv (fn [{:keys [id label status fields]}]
+     (mapv (fn [{:keys [id label status fields actions]}]
              {"id" id
               "label" label
               "status" (presentation-status-wire status)
-              "fields" (mapv presentation-field-wire fields)})
+              "fields" (mapv presentation-field-wire fields)
+              "actions" (mapv presentation-action-wire actions)})
            (:nodes graph))
      "edges"
-     (mapv (fn [{:keys [id from to label status fields]}]
+     (mapv (fn [{:keys [id from to label status fields actions]}]
              {"id" id
               "from" from
               "to" to
               "label" label
               "status" (presentation-status-wire status)
-              "fields" (mapv presentation-field-wire fields)})
+              "fields" (mapv presentation-field-wire fields)
+              "actions" (mapv presentation-action-wire actions)})
            (:edges graph))}))
 
 (defn- presentation-wire [model]
