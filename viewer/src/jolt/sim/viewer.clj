@@ -39,6 +39,7 @@
             [jolt.sim.activity-view :as activity-view]
             [jolt.sim.case-outcome :as case-outcome]
             [jolt.sim.eval-session :as eval-session]
+            [jolt.sim.flow-effect-view :as flow-effect-view]
             [jolt.sim.maelstrom.official-run :as official-run]
             [jolt.sim.future-schedule :as future-schedule]
             [jolt.sim.presentation :as presentation]
@@ -91,8 +92,13 @@
 (def ^:private service-keys
   #{:render-trace :render-case-outcome :replay-document
     :read-session-frame :step-session-frame! :run-case :evaluate-form!
+    :reconcile-session-effect! :reconcile-session-step :close-session!
     :read-retained-frame :command-retained! :reconcile-retained!
     :terminate-retained!})
+
+(def ^:private flow-effect-service-keys
+  #{:read-session-frame :step-session-frame! :reconcile-session-effect!
+    :reconcile-session-step :close-session!})
 
 (def ^:private retained-service-keys
   #{:read-retained-frame :command-retained! :reconcile-retained!
@@ -109,6 +115,7 @@
 (def ^:private progress-log-byte-limit 65536)
 (def ^:private maximum-session-cursor-digits 19)
 (def ^:private session-step-body-limit 4096)
+(def ^:private session-control-body-limit 4096)
 (def ^:private run-command-body-limit 4096)
 (def ^:private eval-command-body-limit 65536)
 (def ^:private retained-command-body-limit 65536)
@@ -1022,6 +1029,14 @@
       (error-response 409 :session-frame-incoherent
                       (select-keys data [:attempts :max-attempts]))
 
+      :jolt.sim.flow-effect-view/invalid-cursor
+      (error-response 400 :invalid-session-cursor
+                      (select-keys data [:reason :cursor :journal-count]))
+
+      :jolt.sim.flow-effect-view/coherence-failed
+      (error-response 409 :session-frame-incoherent
+                      (select-keys data [:attempts :max-attempts]))
+
       ::invalid-session-cursor
       (error-response 400 :invalid-session-cursor
                       (select-keys data [:reason]))
@@ -1083,6 +1098,62 @@
      "value" (str value)
      "label" (str (name kind) " " value)}))
 
+(def ^:private flow-effect-statuses
+  #{:ready :uncertain :failed :closed})
+
+(defn- flow-effect-attachment? [services]
+  (= flow-effect-service-keys
+     (into #{} (filter #(contains? services %)) flow-effect-service-keys)))
+
+(defn- flow-effect-coordinate-wire [services effect]
+  (let [commands (:commands effect)
+        ownership (:ownership effect)
+        worker (:worker effect)
+        uncertain-sequence (:uncertain-sequence worker)
+        status (:status effect)
+        closed? (:closed? effect)]
+    (when-not
+     (and (map? effect)
+          (= #{:status :closed? :ownership :effects :worker :commands}
+             (set (keys effect)))
+          (contains? flow-effect-statuses status)
+          (boolean? closed?)
+          (= closed? (= :closed status))
+          (= {:worker :borrowed} ownership)
+          (map? (:effects effect))
+          (map? worker)
+          (contains? worker :status)
+          (or (nil? uncertain-sequence)
+              (and (wire-long? uncertain-sequence)
+                   (not (neg? uncertain-sequence))))
+          (= #{:step? :reconcile-effect? :reconcile-step? :close?}
+             (set (keys commands)))
+          (every? boolean? (vals commands))
+          (= (:step? commands) (and (= :ready status) (not closed?)))
+          (= (:close? commands) (not closed?))
+          (true? (:reconcile-step? commands))
+          (= (:reconcile-effect? commands)
+             (and (= :uncertain status)
+                  (not closed?)
+                  (some? (get-in effect [:effects :pending]))))
+          (if (= :uncertain status)
+            (some? uncertain-sequence)
+            (or (= :closed status)
+                (nil? uncertain-sequence))))
+      (throw (ex-info "trusted flow/effect adapter returned invalid coordinates"
+                      {:type invalid-session-frame})))
+    {"status" (name status)
+     "closed" closed?
+     "workerOwnership" "borrowed"
+     "stepEnabled" (and (:step? commands)
+                         (fn? (:step-session-frame! services)))
+     "reconcileEnabled" (and (:reconcile-effect? commands)
+                              (fn? (:reconcile-session-effect! services)))
+     "closeEnabled" (and (:close? commands)
+                          (fn? (:close-session! services)))
+     "uncertainSequence" (when uncertain-sequence
+                            (str uncertain-sequence))}))
+
 (defn- session-frame-wire [services frame body]
   (let [revision (:revision frame)
         next-cursor (get-in frame [:journal :next-cursor])
@@ -1094,12 +1165,22 @@
                    (vector? branches))
       (throw (ex-info "trusted session reader returned invalid coordinates"
                       {:type invalid-session-frame})))
-    {"version" 1
-     "revision" (str revision)
-     "nextCursor" (str next-cursor)
-     "stepEnabled" (fn? (:step-session-frame! services))
-     "frameEdn" body
-     "choices" (mapv #(session-choice-wire revision %) branches)}))
+    (let [base
+          {"version" 1
+           "revision" (str revision)
+           "nextCursor" (str next-cursor)
+           "stepEnabled" (fn? (:step-session-frame! services))
+           "frameEdn" body
+           "choices" (mapv #(session-choice-wire revision %) branches)}]
+      (if (flow-effect-attachment? services)
+        (let [effect (:flow-effect frame)
+              coordinate (flow-effect-coordinate-wire services effect)]
+          (assoc base
+                 "version" 2
+                 "stepEnabled" (get coordinate "stepEnabled")
+                 "effect" coordinate
+                 "effectEdn" (trace/canonical-edn effect)))
+        base))))
 
 (defn- session-frame-response [config services request]
   (if-let [read-frame (:read-session-frame services)]
@@ -2148,6 +2229,10 @@
       (error-response 400 :invalid-session-cursor
                       (select-keys data [:reason :cursor :journal-count]))
 
+      (= :jolt.sim.flow-effect-view/invalid-cursor type)
+      (error-response 400 :invalid-session-cursor
+                      (select-keys data [:reason :cursor :journal-count]))
+
       ;; The action was well-formed and revision-current but is not enabled at
       ;; the current machine state (for example a disabled run target, a
       ;; non-earliest timer, or a terminal machine). Only the kernel's fixed
@@ -2156,6 +2241,9 @@
       (error-response 409 :session-step-rejected
                       (when (keyword? (:reason data))
                         (select-keys data [:reason])))
+
+      (= :jolt.sim.flow-effect-session/rejected type)
+      (error-response 409 :session-step-rejected nil)
 
       (= :jolt.sim.viewer.remote-session/source-restarted type)
       (error-response 409 :session-source-restarted nil)
@@ -2176,22 +2264,53 @@
      "kind" (name kind)
      "value" (str value)}))
 
-(defn- session-step-wire [branch receipt]
-  (merge
-   {"version" 1
-    "outcome" (name (:status receipt))
-    "committed" (boolean (:committed? receipt))
-    "receiptEdn" (trace/canonical-edn receipt)}
-   (branch-wire-coordinate branch)))
+(defn- session-step-wire [services branch receipt result]
+  (let [base
+        (merge
+         {"version" 1
+          "outcome" (name (:status receipt))
+          "committed" (boolean (:committed? receipt))
+          "receiptEdn" (trace/canonical-edn receipt)}
+         (branch-wire-coordinate branch))]
+    (if (flow-effect-attachment? services)
+      (let [effect (:flow-effect result)]
+        (assoc base
+               "version" 2
+               "effect" (flow-effect-coordinate-wire services effect)
+               "effectEdn" (trace/canonical-edn effect)
+               "truncated" false))
+      base)))
 
-(defn- session-step-response [services request]
+(defn- bounded-definite-flow-response
+  "Returns a complete v2 acknowledgment when it fits, otherwise the same
+  definite closed coordinates with large EDN fields omitted.  A committed
+  step, reconciliation, or close must never become a retry-looking 413 after
+  its operation has happened."
+  [config status wire nullable-fields]
+  (let [[body size] (retained-json-bytes wire)]
+    (if (<= size (:max-document-bytes config))
+      (response status "application/json; charset=utf-8" body)
+      (json-response
+       status
+       (reduce #(assoc %1 %2 nil)
+               (assoc wire "truncated" true)
+               nullable-fields)))))
+
+(defn- session-step-response [config services request]
   (try
     (let [[branch cursor] (session-step-command! request)
           result ((:step-session-frame! services) branch cursor)
           receipt (session-step-receipt branch result)]
       (if (json-accept? request)
-        (json-response (if (:committed? receipt) 200 409)
-                       (session-step-wire branch receipt))
+        (let [status (if (:committed? receipt) 200 409)
+              wire (session-step-wire services branch receipt result)]
+          (if (= 2 (get wire "version"))
+            ;; Both committed and stale coordinates are definite.  Preserve
+            ;; their exact acknowledgment even when the full effect record is
+            ;; larger than the configured document limit.
+            (bounded-definite-flow-response
+             config status wire ["receiptEdn" "effectEdn"])
+            (json-response status wire)))
         (response (if (:committed? receipt) 200 409)
                   "application/edn; charset=utf-8"
                   (trace/canonical-edn receipt))))
@@ -2242,7 +2361,194 @@
          (if-not (compare-and-set! document-active? false true)
            (negotiated-session-error-response request 429 :viewer-busy nil)
            (try
-             (session-step-response services request)
+             (session-step-response config services request)
+             (finally
+               (reset! document-active? false))))
+         (finally
+           (reset! session-active? false)))))))
+
+(def ^:private session-control-request-keys #{"version"})
+
+(defn- session-control-command!
+  "Consumes exactly the closed JSON object `{version: 1}`."
+  [request]
+  (let [bytes (bounded-body-bytes request session-control-body-limit)
+        seen-keys (atom #{})
+        value
+        (try
+          (json/read-str
+           (trim-json-whitespace (String. bytes "UTF-8"))
+           :extra-data-fn json/on-extra-throw
+           :value-fn
+           (fn [key entry-value]
+             (when (contains? @seen-keys key)
+               (throw
+                (ex-info "viewer session control repeats an object key"
+                         {:type invalid-session-step
+                          :reason :duplicate-key})))
+             (swap! seen-keys conj key)
+             entry-value))
+          (catch :default error
+            (if (= invalid-session-step (:type (ex-data error)))
+              (throw error)
+              (throw
+               (ex-info "viewer session control is not exactly one JSON value"
+                        {:type invalid-session-step
+                         :reason :malformed-json})))))]
+    (when-not (and (map? value)
+                   (= session-control-request-keys (set (keys value))))
+      (throw
+       (ex-info "viewer session control keys are not the closed set"
+                {:type invalid-session-step :reason :unexpected-keys})))
+    (when-not (and (integer? (get value "version"))
+                   (= 1 (get value "version")))
+      (throw
+       (ex-info "viewer session control version is unsupported"
+                {:type invalid-session-step :reason :unsupported-version})))
+    true))
+
+(defn- flow-effect-frame! [services frame cursor]
+  (bounded-session-frame frame cursor)
+  (let [effect (:flow-effect frame)]
+    ;; Projection performs the complete closed validation. The returned value
+    ;; is intentionally ignored here; callers reconstruct it for their wire.
+    (flow-effect-coordinate-wire services effect)
+    effect))
+
+(defn- flow-effect-result-effect! [services operation result cursor]
+  (let [frame (:frame result)
+        frame-error (:frame-error result)]
+    (if (map? frame)
+      (do
+        (when (some? frame-error) (invalid-step-result!))
+        (flow-effect-frame! services frame cursor))
+      (let [phase (case operation
+                    :effect-reconcile :post-effect-reconcile
+                    :close :post-close
+                    nil)
+            effect (:flow-effect result)]
+        (when-not (and phase
+                       (nil? frame)
+                       (valid-frame-error? frame-error phase)
+                       (map? effect))
+          (invalid-step-result!))
+        ;; This coordinate was captured with the authoritative bridge result,
+        ;; before the failed optional refresh.
+        (flow-effect-coordinate-wire services effect)
+        effect))))
+
+(defn- flow-effect-result-wire [services operation branch cursor result]
+  (let [effect (flow-effect-result-effect!
+                services operation result cursor)
+        coordinate (flow-effect-coordinate-wire services effect)
+        base {"version" 2
+              "operation" (name operation)
+              "effect" coordinate
+              "effectEdn" (trace/canonical-edn effect)
+              "truncated" false}]
+    (case operation
+      :effect-reconcile
+      (do
+        (when-not (and (= :effect-reconcile-result
+                          (:jolt.sim.flow-effect-view/type result))
+                       (= :reconcile-effect (:operation result))
+                       (true? (:flow-committed? result))
+                       (contains? #{:settled :uncertain :failed}
+                                  (:status result)))
+          (invalid-step-result!))
+        (assoc base
+               "outcome" (name (:status result))
+               "flowCommitted" true))
+
+      :step-reconcile
+      (let [status (:status result)
+            submitted (:submitted result)]
+        (when-not (and (= :step-reconcile-result
+                          (:jolt.sim.flow-effect-view/type result))
+                       (= :reconcile-step (:operation result))
+                       (contains? #{:missing :committed :different} status)
+                       (= branch submitted)
+                       (= (:committed? result) (= :committed status)))
+          (invalid-step-result!))
+        (merge base
+               {"outcome" (name status)
+                "committed" (= :committed status)}
+               (branch-wire-coordinate branch)))
+
+      :close
+      (do
+        (when-not (and (= :close-result
+                          (:jolt.sim.flow-effect-view/type result))
+                       (= :close (:operation result))
+                       (= :closed (:status result))
+                       (= {:ownership :borrowed :operation :none}
+                          (:worker result))
+                       (= "closed" (get coordinate "status"))
+                       (true? (get coordinate "closed")))
+          (invalid-step-result!))
+        (assoc base "outcome" "closed" "closed" true)))))
+
+(defn- session-control-response
+  [config services service-key operation request]
+  (try
+    (let [[branch cursor]
+          (if (= :step-reconcile operation)
+            (session-step-command! request)
+            (do
+              (session-control-command! request)
+              [nil (session-cursor! request)]))
+          result (if branch
+                   ((get services service-key) branch cursor)
+                   ((get services service-key) cursor))
+          wire (flow-effect-result-wire
+                services operation branch cursor result)]
+      (if (json-accept? request)
+        (bounded-definite-flow-response config 200 wire ["effectEdn"])
+        (response 200 "application/edn; charset=utf-8"
+                  (trace/canonical-edn result))))
+    (catch :default error
+      (let [type (:type (ex-data error))]
+        (if (= :jolt.sim.flow-effect-session/rejected type)
+          (negotiated-session-error-response
+           request 409 :session-control-rejected nil)
+          (if-let [expected (session-step-error-response error)]
+            (if (json-accept? request)
+              (let [body (edn/read-string (:body expected))]
+                (negotiated-session-error-response
+                 request (:status expected) (:error body) (:detail body)))
+              expected)
+            (negotiated-session-error-response
+             request 500 :session-control-error nil)))))))
+
+(defn- execute-session-control-request
+  [config services session-active? document-active? request
+   service-key operation unavailable-reason]
+  (if-not (authorized? config request)
+    (negotiated-session-error-response request 403 :forbidden nil)
+    (with-session-instance-header
+     config
+     (cond
+       (not (session-instance-matches? config request))
+       (negotiated-session-error-response
+        request 409 :session-instance-mismatch nil)
+
+       (not (fn? (get services service-key)))
+       (negotiated-session-error-response request 404 unavailable-reason nil)
+
+       (not (json-content-type? request))
+       (negotiated-session-error-response
+        request 415 :expected-application-json nil)
+
+       (not (compare-and-set! session-active? false true))
+       (negotiated-session-error-response request 429 :session-step-busy nil)
+
+       :else
+       (try
+         (if-not (compare-and-set! document-active? false true)
+           (negotiated-session-error-response request 429 :viewer-busy nil)
+           (try
+             (session-control-response
+              config services service-key operation request)
              (finally
                (reset! document-active? false))))
          (finally
@@ -2532,6 +2838,17 @@
        (when (and (seq present) (not= retained-service-keys present))
          (throw (config-error :retained-services-must-be-all-or-nothing
                               present))))
+     (let [control-keys
+           #{:reconcile-session-effect! :reconcile-session-step
+             :close-session!}
+           present-controls
+           (into #{} (filter #(contains? services %)) control-keys)]
+       (when (and (seq present-controls)
+                  (not= flow-effect-service-keys
+                        (into #{} (filter #(contains? services %))
+                              flow-effect-service-keys)))
+         (throw (config-error :flow-effect-services-must-be-all-or-nothing
+                              present-controls))))
      (when-not (and (fn? (:render-trace services))
                     (fn? (:render-case-outcome services))
                     (fn? (:replay-document services))
@@ -2541,6 +2858,12 @@
                         (fn? (:read-session-frame services)))
                     (or (not (contains? services :step-session-frame!))
                         (fn? (:step-session-frame! services)))
+                    (or (not (contains? services :reconcile-session-effect!))
+                        (fn? (:reconcile-session-effect! services)))
+                    (or (not (contains? services :reconcile-session-step))
+                        (fn? (:reconcile-session-step services)))
+                    (or (not (contains? services :close-session!))
+                        (fn? (:close-session! services)))
                     (or (not (contains? services :evaluate-form!))
                         (fn? (:evaluate-form! services)))
                     (every? #(or (not (contains? services %))
@@ -2583,6 +2906,23 @@
            (and (= :post method) (= "/api/session-step" uri))
            (execute-session-step-request
             config services session-active? document-active? request)
+
+           (and (= :post method) (= "/api/session-effect-reconcile" uri))
+           (execute-session-control-request
+            config services session-active? document-active? request
+            :reconcile-session-effect! :effect-reconcile
+            :session-effect-reconcile-unavailable)
+
+           (and (= :post method) (= "/api/session-step-reconcile" uri))
+           (execute-session-control-request
+            config services session-active? document-active? request
+            :reconcile-session-step :step-reconcile
+            :session-step-reconcile-unavailable)
+
+           (and (= :post method) (= "/api/session-close" uri))
+           (execute-session-control-request
+            config services session-active? document-active? request
+            :close-session! :close :session-close-unavailable)
 
            (and (= :post method) (= "/api/retained-command" uri))
            (execute-retained-post-request
@@ -2824,6 +3164,34 @@
                  :step-session-frame!
                  (fn [branch cursor]
                    (viewer-session/step-frame! sim-session branch cursor)))))
+
+(defn start-flow-effect-session!
+  "Starts Ripple with one caller-owned opaque flow/effect bridge attached.
+
+  Only the five UI-neutral closures from `jolt.sim.flow-effect-view` cross the
+  viewer seam: coherent read, exact step, exact effect reconciliation,
+  read-only exact step reconciliation, and bridge-admission close. The browser
+  never receives the bridge or borrowed worker handle. Stopping Ripple does
+  not close the bridge, reconcile an effect, or terminate the worker."
+  [config bridge]
+  (start!
+   config
+   (assoc (dissoc (default-services config) :run-case)
+          :read-session-frame
+          (fn [cursor]
+            (flow-effect-view/read-frame bridge cursor))
+          :step-session-frame!
+          (fn [branch cursor]
+            (flow-effect-view/step-frame! bridge branch cursor))
+          :reconcile-session-effect!
+          (fn [cursor]
+            (flow-effect-view/reconcile-effect-frame! bridge cursor))
+          :reconcile-session-step
+          (fn [branch cursor]
+            (flow-effect-view/reconcile-step-frame bridge branch cursor))
+          :close-session!
+          (fn [cursor]
+            (flow-effect-view/close-frame! bridge cursor)))))
 
 (defn stop!
   "Stops a viewer returned by `start!`."

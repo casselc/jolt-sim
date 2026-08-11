@@ -131,6 +131,8 @@
       <p class="muted">Inspection-only canonical state, enabled choices, successor previews, and journal tail from a trusted REPL/embedded session. Refresh evaluates the session's deterministic, effect-free cooperative step callback to preview successors. Frames may contain application data; keep the loopback capability token private. When the server identifies its session instance, Ripple pins every choice to that producer and discards stale coordinates after a restart. Reset clears the local producer identity, cursor, frame, choices, any pending retry, and status text; it does not affect the trusted session.</p>
       <button id="session-refresh" type="button" disabled>Refresh session</button>
       <button id="session-reset" type="button">Reset session</button>
+      <button id="session-effect-reconcile" type="button" disabled>Reconcile uncertain effect</button>
+      <button id="session-close" type="button" disabled>Close flow admission</button>
       <span id="session-status" role="status" aria-live="polite">No session frame requested.</span>
       <fieldset id="session-choices-panel">
         <legend>Branch choices</legend>
@@ -143,6 +145,8 @@
         </div>
         <span id="session-step-status" role="status" aria-live="polite">No branch choice sent.</span>
       </fieldset>
+      <h3>Flow effect state</h3>
+      <pre id="session-effect">No flow/effect attachment detected.</pre>
       <pre id="session-frame">No session frame requested.</pre>
     </section>
     <!-- Reports remain script-disabled. allow-same-origin lets this trusted

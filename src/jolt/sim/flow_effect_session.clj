@@ -377,7 +377,16 @@
                            (assoc :status :failed :pending nil :remaining [])
                            (update :records replace-record (:id pending)
                                    failed))))))))
-      (select-keys (summary* @state) [:status :effects :worker]))))
+      ;; Return the exact effect captured while this bridge operation held its
+      ;; lock.  A caller must not infer the reconciled target from a snapshot
+      ;; taken before this operation: another REPL/UI caller may have settled
+      ;; that effect and advanced the bridge to a later uncertain effect in
+      ;; between the two calls.
+      (assoc (select-keys (summary* @state) [:status :effects :worker])
+             :target {:id (:id pending)
+                      :intent-id (:intent-id pending)
+                      :sequence (get-in pending
+                                        [:worker :uncertain-sequence])}))))
 
 (defn reconcile!
   "Reconciles only the exact retained sequence already marked uncertain. It

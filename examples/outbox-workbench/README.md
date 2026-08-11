@@ -224,3 +224,58 @@ JOLT_SIM_RETAINED_WORKBENCH_PROGRESS_FILE='/tmp/retained-workbench-progress.edn'
   /home/chuck/ai-src/tools/jolt-with-chez-10.4.1 \
   /absolute/path/to/eval-capable-jolt -M:retained-workbench-test
 ```
+
+## Interactive flow/effect outbox
+
+`:flow-ripple` attaches Ripple directly to one pure finite flow whose two
+branches emit the ordinary retained commands in order. The first choice sends
+the unchanged `{:op :submit ...}` payload; the next sends unchanged
+`{:op :deliver}`. `jolt.sim.flow-effect-session` publishes each intent only
+after its exact revision-scoped branch commits. The real retained worker still
+owns HTTP, SQLite, TCP, bencode, acknowledgements, and application lifecycle.
+
+Launch it from this directory with the sim-enabled child image and repository
+root explicitly selected:
+
+```sh
+cd examples/outbox-workbench
+JOLT_SIM_VIEWER_TOKEN='replace-with-at-least-32-random-characters' \
+JOLT_SIM_BIN='/absolute/path/to/sim-enabled-jolt' \
+JOLT_SIM_PROJECT_DIR='/absolute/path/to/jolt-sim-worktree' \
+  /home/chuck/ai-src/tools/jolt-with-chez-10.4.1 \
+  /absolute/path/to/jolt -M:flow-ripple
+```
+
+Open the printed URL, enter the token, and use **Refresh session**. Choosing
+`run 0` at revision 0 performs the real HTTP submit and leaves the durable row
+`:pending`. Refresh exposes the next exact branch at revision 1; choosing it
+performs real TCP/bencode delivery and leaves the row `:delivered`. The Flow
+effect state pane shows the shared commit/effect ledger and enables exact
+reconciliation instead of resending when publication is uncertain.
+
+The same capability is UI-neutral. A trusted REPL or embedded caller can keep
+the lifecycle returned by `outbox-workbench.flow-ripple-main/start!`, inspect
+`(:bridge app)` through `datafy`, `jolt.sim.flow-effect-session/snapshot`, or
+`branches`, and choose the next exact branch with `step!`. Ripple and that REPL
+operate on the same opaque bridge, so revisions and effect records cannot
+diverge. `stop-ripple!` stops only the HTTP UI and deliberately leaves the
+bridge and worker usable. `shutdown!` is the explicit application-owned path:
+it closes bridge admission, stops Ripple, gracefully commands the worker to
+stop, and reaps it, with bounded forced termination only as fallback.
+
+The focused fresh-process smoke drives submit through Ripple's real loopback
+HTTP API, stops Ripple alone, drives deliver directly through that same bridge,
+and verifies HTTP 201, pending then delivered SQLite state, one receiver
+request, two bridge commits, completed terminal evidence, exit 0, and reap:
+
+```sh
+cd examples/outbox-workbench
+JOLT_SIM_BIN='/absolute/path/to/sim-enabled-jolt' \
+JOLT_SIM_PROJECT_DIR='/absolute/path/to/jolt-sim-worktree' \
+JOLT_SIM_PROGRESS_FILE='/tmp/flow-ripple-progress.edn' \
+  /home/chuck/ai-src/tools/jolt-with-chez-10.4.1 \
+  /absolute/path/to/jolt -M:flow-ripple-test
+```
+
+The progress file and the retained worker's printed artifact directory are
+never removed on failure or timeout.

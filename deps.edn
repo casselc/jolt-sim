@@ -83,6 +83,12 @@
   {:extra-paths ["test"]
    :main-opts ["-m" "jolt.sim.flow-effect-session-test-main"]}
 
+  ;; UI-neutral read/step/reconcile frames over the flow/effect bridge. The
+  ;; focused gate uses scripted worker closures and starts no child process.
+  :flow-effect-view-test
+  {:extra-paths ["test"]
+   :main-opts ["-m" "jolt.sim.flow-effect-view-test-main"]}
+
   ;; Focused persistent evaluation-session gate. This uses the socket-free
   ;; evaluator and ordinary source paths; it does not start Ripple or a server.
   :eval-session-test
