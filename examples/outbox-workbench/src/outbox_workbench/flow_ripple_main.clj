@@ -18,6 +18,7 @@
             [jolt.sim.retained-process :as retained]
             [jolt.sim.trace :as trace]
             [jolt.sim.viewer :as viewer]
+            [jolt.sim.workbench-session :as workbench-session]
             [outbox-workbench.flow-retained :as flow-retained]))
 
 (def default-config-path "config/ripple-eval.edn")
@@ -35,6 +36,42 @@
     (:bridge workbench)
     (throw (ex-info "No foreground Outbox flow workbench is active"
                     {:type ::not-running}))))
+
+(defn active-items
+  "Returns the generic WorkbenchSession shared by Ripple and this REPL.
+
+  `datafy`, `nav`, `frame`, and `canonical-edn` remain ordinary UI-neutral
+  data operations. Applications may append additional values explicitly; the
+  generic Ripple composer also records definite evaluation, simulation, and
+  retained-worker results after they complete."
+  []
+  (if-let [workbench @active-workbench*]
+    (:workbench-session workbench)
+    (throw (ex-info "No foreground Outbox flow workbench is active"
+                    {:type ::not-running}))))
+
+(defn- effect-result-presentation [value]
+  (let [records (get-in value [:flow-effect :effects :records])
+        latest (when (seq records) (peek records))]
+    {:summary "Outbox flow result"
+     :fields [{:label "Effect records" :value (count records)}
+              {:label "Effect status"
+               :value (get-in value [:flow-effect :status])}
+              {:label "Latest receipt"
+               :value (get-in latest [:receipt :status])}
+              {:label "Operation status" :value (:status value)}
+              {:label "Outbox row"
+               :value (get-in latest
+                              [:receipt :value :snapshot :store-state
+                               :outbox 0 :status])}]}))
+
+(def workbench-kind-registry
+  "Trusted app-owned renderer offered to the generic WorkbenchSession.
+
+  Only its namespaced kind is persisted. The function remains process-local
+  and neither the browser nor exported EDN can install or select executable
+  code."
+  {:example.outbox/effect-result {:present effect-result-presentation}})
 
 (defn- required-environment [name]
   (let [value (System/getenv name)]
@@ -161,16 +198,20 @@
             _ (vreset! startup-phase* :eval-session-start)
             eval-session (eval-session/start)
             _ (vreset! eval-session* eval-session)
+            items (workbench-session/start
+                   {:kind-registry workbench-kind-registry})
             _ (vreset! startup-phase* :viewer-start)
             server (viewer/start-workbench!
                     viewer-config
                     {:flow-effect-bridge bridge
                      :retained-process worker
-                     :eval-session eval-session})
+                     :eval-session eval-session
+                     :workbench-session items})
             _ (vreset! server* server)]
         {:worker worker
          :bridge bridge
          :eval-session eval-session
+         :workbench-session items
          :server server
          :viewer-stopped? (atom false)
          :stopping? (atom false)

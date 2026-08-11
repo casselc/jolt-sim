@@ -48,6 +48,11 @@
     .retained-presentation-fields dd { margin: 0; font-family: ui-monospace, monospace; overflow-wrap: anywhere; }
     .retained-topology-details { margin-top: .6rem; }
     .retained-topology-details details { margin: .25rem 0; }
+    #workbench-items { display: grid; gap: .75rem; margin-top: .7rem; }
+    .workbench-item { border: 1px solid #8886; border-radius: .3rem; padding: .7rem .9rem; }
+    .workbench-item > header { border: 0; padding: 0; display: flex; gap: .7rem; align-items: center; flex-wrap: wrap; }
+    .workbench-item > header h3 { margin: 0 auto 0 0; }
+    .workbench-item-meta { font-family: ui-monospace, monospace; font-size: .85rem; opacity: .8; }
     @media (max-width: 700px) { .controls { grid-template-columns: 1fr; } }
   </style>
 </head>
@@ -79,6 +84,13 @@
       </div>
     </div>
     <div id="status" role="status" aria-live="polite"></div>
+    <section id="workbench-panel" aria-labelledby="workbench-heading">
+      <h2 id="workbench-heading">Workbench items</h2>
+      <p class="muted">Values recorded by the attached session. Source EDN is immutable evidence. A presentation choice changes only how one exact source revision is shown; it does not change or evaluate the value.</p>
+      <button id="workbench-refresh" data-testid="workbench-refresh" type="button" disabled>Refresh items</button>
+      <span id="workbench-status" data-testid="workbench-status" role="status" aria-live="polite">Enter the session capability. The server may not have a workbench session attached.</span>
+      <div id="workbench-items" data-testid="workbench-items"></div>
+    </section>
     <section id="eval-panel" aria-labelledby="eval-heading">
       <h2 id="eval-heading">Jolt REPL</h2>
       <p class="muted">Opt-in trusted evaluation session. This is arbitrary code execution in the Ripple process, protected by the loopback capability token. Each submitted form runs at most once; Ripple never retries an ambiguous request automatically.</p>

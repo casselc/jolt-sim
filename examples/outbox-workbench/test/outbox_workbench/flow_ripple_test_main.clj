@@ -182,7 +182,40 @@
         (check "submit leaves one durable pending row" :pending
                (get-in submit [:snapshot :store-state :outbox 0 :status]))
         (check "submit has no receiver delivery" 0
-               (get-in submit [:snapshot :receiver-requests :count])))
+               (get-in submit [:snapshot :receiver-requests :count]))
+
+        (let [items (request-json! port "GET" "/api/workbench-frame" nil nil)
+              item (get-in items [:wire "items" 0])
+              source-before (get item "sourceEdn")
+              change
+              (request-json!
+               port "POST" "/api/workbench-item-kind"
+               {"version" 1
+                "itemId" (get item "itemId")
+                "sourceRevision" (get item "sourceRevision")
+                "sourceFingerprint" (get item "sourceFingerprint")
+                "kind" "example.outbox/effect-result"}
+               nil)
+              refreshed
+              (request-json! port "GET" "/api/workbench-frame" nil nil)]
+          (check "definite flow result becomes a generic workbench item"
+                 [200 "simulation-step" "0"]
+                 [(:status items) (get item "itemId")
+                  (get item "sourceRevision")])
+          (check "app renderer is offered as inert kind data"
+                 true
+                 (boolean (some #{"example.outbox/effect-result"}
+                                (get-in items [:wire "availableKinds"]))))
+          (check "source-bound kind override commits definitively"
+                 [200 "committed"]
+                 [(:status change) (get-in change [:wire "status"])])
+          (check "custom app presentation renders through generic frame"
+                 "Outbox flow result"
+                 (get-in refreshed
+                         [:wire "items" 0 "presentation" "summary"]))
+          (check "presentation overlay preserves immutable source EDN"
+                 source-before
+                 (get-in refreshed [:wire "items" 0 "sourceEdn"]))))
 
       ;; Stopping the UI server is deliberately not application shutdown.
       (flow-ripple/stop-ripple! workbench)

@@ -35,6 +35,9 @@
   const retainedFrame = document.getElementById("retained-frame");
   const retainedReceipt = document.getElementById("retained-receipt");
   const retainedPresentation = document.getElementById("retained-presentation");
+  const workbenchRefresh = document.getElementById("workbench-refresh");
+  const workbenchStatus = document.getElementById("workbench-status");
+  const workbenchItems = document.getElementById("workbench-items");
   const sessionRefresh = document.getElementById("session-refresh");
   const sessionReset = document.getElementById("session-reset");
   const sessionStatus = document.getElementById("session-status");
@@ -78,6 +81,8 @@
   let retainedCoordinateKnown = false;
   let retainedWorkerStatus = null;
   let retainedNextSequence = null;
+  let workbenchBusy = false;
+  let workbenchAvailableKinds = [];
   // Buttons rendered from the current value presentation's inert action
   // descriptors: [{button, enabled}]. Rebuilt on every presentation render so
   // a later result can never leave a stale descriptor clickable.
@@ -213,6 +218,61 @@
   const validPresentationError = (value) =>
     value === null || (exactKeys(value, ["reason"]) &&
       boundedString(value.reason, 128) && value.reason.length > 0);
+
+  const validWorkbenchFingerprint = (value) =>
+    exactKeys(value, ["algorithm", "bytes", "crc32c"]) &&
+    value.algorithm === "jolt.sim.fingerprint/crc32c-v1" &&
+    canonicalUnsignedDecimal(value.bytes) &&
+    canonicalUnsignedDecimal(value.crc32c);
+
+  const validWorkbenchSelection = (value) =>
+    exactKeys(value, ["kind", "source", "ruleId"]) &&
+    boundedString(value.kind, 128) && namespacedIdentifier(value.kind) &&
+    ["exact-override", "domain-rule", "producer-default", "raw"]
+      .includes(value.source) &&
+    (value.ruleId === null || boundedString(value.ruleId, 128));
+
+  const validWorkbenchPresentationError = (value) =>
+    value === null || (exactKeys(value, ["type", "reason"]) &&
+      boundedString(value.type, 128) && namespacedIdentifier(value.type) &&
+      boundedString(value.reason, 128) && value.reason.length > 0);
+
+  const validWorkbenchItem = (value) =>
+    exactKeys(value,
+      ["itemId", "sourceRevision", "sourceKind", "schemaId",
+        "sourceFingerprint", "selection", "presentation",
+        "presentationError", "sourceEdn"]) &&
+    boundedString(value.itemId, 128) && value.itemId.length > 0 &&
+    canonicalUnsignedDecimal(value.sourceRevision) &&
+    validPresentationStatus(value.sourceKind) &&
+    validPresentationStatus(value.schemaId) &&
+    validWorkbenchFingerprint(value.sourceFingerprint) &&
+    validWorkbenchSelection(value.selection) &&
+    (value.presentation === null || validValuePresentation(value.presentation)) &&
+    validWorkbenchPresentationError(value.presentationError) &&
+    (value.presentation === null || value.presentationError === null) &&
+    boundedString(value.sourceEdn, 256 * 1024);
+
+  const validWorkbenchFrame = (value) => {
+    if (!exactKeys(value,
+      ["version", "status", "revision", "availableKinds", "itemCount",
+        "currentItemCount", "omittedItemCount", "journalCount", "items"]) ||
+        value.version !== 1 || value.status !== "ok" ||
+        !canonicalUnsignedDecimal(value.revision) ||
+        !canonicalUnsignedDecimal(value.itemCount) ||
+        !canonicalUnsignedDecimal(value.currentItemCount) ||
+        !canonicalUnsignedDecimal(value.omittedItemCount) ||
+        !canonicalUnsignedDecimal(value.journalCount) ||
+        !Array.isArray(value.availableKinds) ||
+        value.availableKinds.length > 256 ||
+        !value.availableKinds.every((entry) =>
+          boundedString(entry, 128) && namespacedIdentifier(entry)) ||
+        new Set(value.availableKinds).size !== value.availableKinds.length ||
+        !Array.isArray(value.items) || value.items.length > 1024 ||
+        !value.items.every(validWorkbenchItem)) return false;
+    return BigInt(value.currentItemCount) ===
+      BigInt(value.omittedItemCount) + BigInt(value.items.length);
+  };
 
   const validRetainedOutcomeResponse = (value) => {
     if (!exactKeys(value,
@@ -356,7 +416,7 @@
     parent.appendChild(group);
   };
 
-  const appendTopologyDetails = (parent, graph) => {
+  const appendTopologyDetails = (parent, graph, interactiveActions = true) => {
     if (!graph) return;
     const container = document.createElement("div");
     container.className = "retained-topology-details";
@@ -369,12 +429,36 @@
         `(${entity.id})${entity.status ? ` — ${entity.status}` : ""}`;
       details.appendChild(summary);
       appendPresentationFields(details, entity.fields);
-      appendTopologyActions(details, entity);
+      if (interactiveActions) appendTopologyActions(details, entity);
       container.appendChild(details);
     };
     graph.nodes.forEach((node) => appendEntity(node, "node"));
     graph.edges.forEach((edge) => appendEntity(edge, "edge"));
     parent.appendChild(container);
+  };
+
+  const renderPresentationInto = (parent, model,
+                                  {interactiveActions = false,
+                                   includeSource = true} = {}) => {
+    clearChildren(parent);
+    if (!model) {
+      return;
+    }
+    const heading = document.createElement("h3");
+    heading.textContent = model.summary;
+    parent.appendChild(heading);
+    appendPresentationFields(parent, model.fields);
+    renderPresentationGraph(parent, model.graph);
+    appendTopologyDetails(parent, model.graph, interactiveActions);
+    if (includeSource) {
+      const details = document.createElement("details");
+      const summary = document.createElement("summary");
+      summary.textContent = "Canonical source EDN";
+      const source = document.createElement("pre");
+      source.textContent = model.sourceEdn;
+      details.append(summary, source);
+      parent.appendChild(details);
+    }
   };
 
   const renderValuePresentation = (model, error) => {
@@ -387,19 +471,8 @@
     }
     retainedPresentation.hidden = false;
     delete retainedPresentation.dataset.error;
-    const heading = document.createElement("h3");
-    heading.textContent = model.summary;
-    retainedPresentation.appendChild(heading);
-    appendPresentationFields(retainedPresentation, model.fields);
-    renderPresentationGraph(retainedPresentation, model.graph);
-    appendTopologyDetails(retainedPresentation, model.graph);
-    const details = document.createElement("details");
-    const summary = document.createElement("summary");
-    summary.textContent = "Canonical source EDN";
-    const source = document.createElement("pre");
-    source.textContent = model.sourceEdn;
-    details.append(summary, source);
-    retainedPresentation.appendChild(details);
+    renderPresentationInto(retainedPresentation, model,
+      {interactiveActions: true, includeSource: true});
   };
 
   const validRetainedTerminateResponse = (value) => {
@@ -1069,7 +1142,7 @@
                   capability.value.length > 0;
     file.disabled = busy;
     kind.disabled = busy;
-    capability.disabled = busy || retainedBusy;
+    capability.disabled = busy || retainedBusy || workbenchBusy;
     evalForm.disabled = busy;
     evalSubmit.disabled = busy || capability.value.length === 0 ||
       evalForm.value.trim().length === 0;
@@ -1098,6 +1171,7 @@
       capability.value.length === 0;
     retainedTerminate.disabled = retainedBusy || capability.value.length === 0 ||
       (retainedCoordinateKnown && retainedWorkerStatus === "terminated");
+    workbenchRefresh.disabled = workbenchBusy || capability.value.length === 0;
     // Descriptor buttons obey exactly the retained command surface's
     // ready/busy/uncertain/terminal disablement, plus their own declared
     // enabled flag. They never outlive the presentation that carried them.
@@ -1964,6 +2038,197 @@
     "/api/retained-terminate", {version: 1}, "Termination"
   ));
   retainedCommand.addEventListener("input", updateButtons);
+
+  const workbenchHeaders = (content = false) => {
+    const headers = {
+      "Accept": "application/json",
+      "X-Jolt-Sim-Capability": capability.value
+    };
+    if (content) headers["Content-Type"] = "application/json";
+    return headers;
+  };
+
+  const renderWorkbenchItem = (item) => {
+    const article = document.createElement("article");
+    article.className = "workbench-item";
+    article.dataset.itemId = item.itemId;
+    article.dataset.sourceRevision = item.sourceRevision;
+    const header = document.createElement("header");
+    const heading = document.createElement("h3");
+    heading.textContent = item.itemId;
+    const meta = document.createElement("span");
+    meta.className = "workbench-item-meta";
+    meta.textContent =
+      `source revision ${item.sourceRevision}` +
+      `${item.sourceKind ? ` · ${item.sourceKind}` : ""}` +
+      `${item.schemaId ? ` · ${item.schemaId}` : ""}`;
+    const label = document.createElement("label");
+    label.textContent = "Presentation";
+    const select = document.createElement("select");
+    select.dataset.testid = "workbench-kind";
+    select.dataset.itemId = item.itemId;
+    for (const availableKind of workbenchAvailableKinds) {
+      const option = document.createElement("option");
+      option.value = availableKind;
+      option.textContent = availableKind;
+      option.selected = availableKind === item.selection.kind;
+      select.appendChild(option);
+    }
+    select.addEventListener("change", async () => {
+      if (workbenchBusy) return;
+      const requestedKind = select.value;
+      workbenchBusy = true;
+      updateButtons();
+      workbenchStatus.textContent =
+        `Saving ${requestedKind} for ${item.itemId} at source revision ${item.sourceRevision}...`;
+      let committedRevision = null;
+      try {
+        const response = await fetch("/api/workbench-item-kind", {
+          method: "POST",
+          headers: workbenchHeaders(true),
+          body: JSON.stringify({
+            version: 1,
+            itemId: item.itemId,
+            sourceRevision: item.sourceRevision,
+            sourceFingerprint: item.sourceFingerprint,
+            kind: requestedKind
+          }),
+          cache: "no-store",
+          credentials: "omit"
+        });
+        const text = await response.text();
+        let result = null;
+        try { result = JSON.parse(text); } catch (_) { /* EDN error response */ }
+        if (!response.ok) {
+          const error = new Error(`${response.status} ${text}`);
+          error.workbenchDefinitelyRejected =
+            response.status >= 400 && response.status < 500;
+          throw error;
+        }
+        if (!exactKeys(result, ["version", "status", "revision"]) ||
+            result.version !== 1 || result.status !== "committed" ||
+            !canonicalUnsignedDecimal(result.revision)) {
+          throw new Error(`${response.status} unrecognized acknowledgment: ${text}`);
+        }
+        committedRevision = result.revision;
+        workbenchStatus.textContent =
+          `Saved ${requestedKind} for ${item.itemId}; refreshing authoritative items...`;
+      } catch (error) {
+        select.value = item.selection.kind;
+        workbenchBusy = false;
+        updateButtons();
+        if (error.workbenchDefinitelyRejected) {
+          workbenchStatus.textContent =
+            `Presentation change was definitely rejected before commit: ${error.message}`;
+          return;
+        }
+        workbenchStatus.textContent =
+          `Presentation change outcome is unknown: ${error.message}. ` +
+          "Reading authoritative state; do not retry automatically.";
+        await refreshWorkbenchFrame({
+          readingMessage:
+            "Presentation change outcome is unknown; reading authoritative state...",
+          successMessage: (frame) => {
+            const current = frame.items.find((entry) =>
+              entry.itemId === item.itemId &&
+              entry.sourceRevision === item.sourceRevision);
+            const selected = current ? current.selection.kind : "not visible";
+            return `Presentation change outcome was unknown. Authoritative ` +
+              `workbench revision ${frame.revision} now selects ${selected}; ` +
+              "do not retry automatically.";
+          },
+          failureMessage: (refreshError) =>
+            `Presentation change outcome remains unknown and authoritative ` +
+            `refresh failed: ${refreshError.message}. Do not retry automatically.`
+        });
+        return;
+      }
+      workbenchBusy = false;
+      updateButtons();
+      await refreshWorkbenchFrame({
+        readingMessage:
+          `Presentation change committed at workbench revision ${committedRevision}; ` +
+          "refreshing authoritative items...",
+        successMessage: (frame) =>
+          `Saved ${requestedKind} at workbench revision ${committedRevision}. ` +
+          `Loaded ${frame.items.length} of ${frame.currentItemCount} current items ` +
+          `at workbench revision ${frame.revision}.`,
+        failureMessage: (refreshError) =>
+          `Presentation change committed at workbench revision ${committedRevision}, ` +
+          `but authoritative refresh failed: ${refreshError.message}. The commit is definite.`
+      });
+    });
+    label.appendChild(select);
+    header.append(heading, meta, label);
+    article.appendChild(header);
+    const presentation = document.createElement("section");
+    presentation.dataset.testid = "workbench-presentation";
+    if (item.presentation) {
+      renderPresentationInto(presentation, item.presentation,
+        {interactiveActions: false, includeSource: false});
+    } else {
+      const unavailable = document.createElement("p");
+      unavailable.className = "muted";
+      unavailable.textContent = item.presentationError
+        ? `Presentation unavailable: ${item.presentationError.reason}`
+        : "No presentation available.";
+      presentation.appendChild(unavailable);
+    }
+    article.appendChild(presentation);
+    const sourceDetails = document.createElement("details");
+    const sourceSummary = document.createElement("summary");
+    sourceSummary.textContent = "Immutable source EDN";
+    const source = document.createElement("pre");
+    source.textContent = item.sourceEdn;
+    sourceDetails.append(sourceSummary, source);
+    article.appendChild(sourceDetails);
+    return article;
+  };
+
+  async function refreshWorkbenchFrame(options = {}) {
+    if (workbenchBusy) return;
+    workbenchBusy = true;
+    updateButtons();
+    workbenchStatus.textContent =
+      options.readingMessage || "Reading workbench items...";
+    try {
+      const response = await fetch("/api/workbench-frame", {
+        method: "GET",
+        headers: workbenchHeaders(false),
+        cache: "no-store",
+        credentials: "omit"
+      });
+      const frame = await response.json().catch(() => null);
+      if (!response.ok || !validWorkbenchFrame(frame)) {
+        throw new Error(
+          `${response.status} ${frame ? JSON.stringify(frame) : "unparseable response"}`
+        );
+      }
+      workbenchAvailableKinds = frame.availableKinds;
+      clearChildren(workbenchItems);
+      frame.items.forEach((item) => workbenchItems.appendChild(renderWorkbenchItem(item)));
+      if (frame.items.length === 0) {
+        const empty = document.createElement("p");
+        empty.className = "muted";
+        empty.textContent = "No current workbench items.";
+        workbenchItems.appendChild(empty);
+      }
+      workbenchStatus.textContent = options.successMessage
+        ? options.successMessage(frame)
+        : `Loaded ${frame.items.length} of ${frame.currentItemCount} current items at workbench revision ${frame.revision}.`;
+      return {ok: true, frame};
+    } catch (error) {
+      workbenchStatus.textContent = options.failureMessage
+        ? options.failureMessage(error)
+        : `Workbench refresh failed: ${error.message}`;
+      return {ok: false, error};
+    } finally {
+      workbenchBusy = false;
+      updateButtons();
+    }
+  }
+
+  workbenchRefresh.addEventListener("click", () => refreshWorkbenchFrame());
 
   inspect.addEventListener("click", async () => {
     if (busy) return;

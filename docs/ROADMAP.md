@@ -424,6 +424,57 @@ inspection, injection, and richer source coordinates. It is a possible home for
 long-lived experimental Jolt features, not a prerequisite for the application
 milestones above.
 
+### Cross-client Ripple backlog — native Glimmer UI
+
+Ripple must not become a web-only product. Add a native GTK client with
+[`glimmer`](https://github.com/yogthos/glimmer) after the shared workbench item,
+presentation, and command contracts are stable enough to support a second
+consumer. The GTK client is a peer of the browser client, not a new simulator
+or an application-specific facade.
+
+The first useful native slice must consume the same UI-neutral data and
+operations as the browser:
+
+- open an offline trace, Case/Outcome, or saved workbench document;
+- attach to a live workbench and reconnect without losing its journal cursor;
+- list and inspect immutable workbench items;
+- render the shared raw, fields, activity, and topology presentation models;
+- select and persist a trusted presentation kind without changing source data;
+- evaluate forms through the same persistent EvalSession;
+- preview, commit, step, and reconcile simulation/effect branches; and
+- show definite rejection, definite commit, and outcome-unknown transport
+  states without automatic retry.
+
+The browser and GTK clients do not need pixel-identical layouts. They must have
+semantic parity for the common contracts, coordinates, commands, and evidence.
+New domain renderers remain ordinary data-to-view-model functions registered by
+the application or library. Neither client may gain Broadcast-, Outbox-, or
+other scenario-specific interpretation.
+
+The native client should follow the useful separation demonstrated by
+[`yogthos/veriframe` at `037e14ec`](https://github.com/yogthos/veriframe/tree/037e14ec7d4351cf4f15132638f76355c190bfe9):
+
+- keep the headless runtime authoritative and make the GUI a strict client;
+- fold append-only events into a pure, toolkit-free view model;
+- test journal folding, layout, transforms, hit testing, reconnect/backoff, and
+  form/request validation without loading GTK;
+- keep only native widget and drawing operations behind Glimmer/GTK;
+- treat an absent server, malformed response, and disconnect as renderable
+  values rather than window-killing exceptions; and
+- apply interventions only at an explicit safe execution boundary.
+
+Veriframe's fixed proof-branch graph and command vocabulary are not reusable
+Ripple architecture. Ripple keeps its open persisted-kind registry and generic
+workbench items. Its native graph view consumes the same closed topology view
+model as the browser and static reports.
+
+Native acceptance evidence should include pure model tests, an HTTP/client
+contract suite against the same server used by the browser, a bounded GTK smoke
+test, and retained screenshots or video for at least one real Outbox or
+Broadcast workbench. Playwright remains the browser gate; the native lane needs
+its own deterministic input/capture harness instead of pretending Playwright
+tests GTK.
+
 ### Phase 8 — release readiness
 
 Before calling `jolt-sim` complete or making a first public release:

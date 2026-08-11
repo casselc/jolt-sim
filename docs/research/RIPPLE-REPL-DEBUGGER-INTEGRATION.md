@@ -89,6 +89,20 @@ evidence. Each item keeps a stable source coordinate, canonical source value,
 source digest, and provenance. Application examples may seed or exercise this
 stream, but they do not define new browser architecture.
 
+The first UI-neutral persistence slice implements this as a closed v1
+workbench document with an authoritative append-only journal. It retains
+immutable items, provenance, exact item overrides, and source-kind or schema-ID
+domain rules. `canonical-edn` and strict `read-edn` provide a portable save and
+restore boundary; crash-safe file replacement remains a separate storage
+adapter rather than hidden browser behavior.
+
+Presentation selection and presentation execution are separate contracts. A
+persisted rule selects a namespaced output kind. Trusted project or library
+code supplies an immutable registry keyed by that output kind. This lets an
+item acquire a table, tree, topology, or custom view after production without
+changing its domain tag. Unknown saved kinds fail closed and leave canonical
+source EDN available; uploaded workspace EDN cannot install executable code.
+
 One source value can have several valid presentations. The selection order is:
 
 1. an exact user override for one source coordinate or subtree;
@@ -102,8 +116,11 @@ receipt, or proof evidence. Ripple retains the selected kind, renderer output,
 and renderer failure separately so a misleading or broken renderer cannot hide
 the original value.
 
-Exact overrides are bound to a source coordinate and digest. They become stale
-when that item changes. Persisted domain rules are intentionally broader and
+Exact overrides are bound to an immutable source coordinate and a stable
+source fingerprint. The current fingerprint is CRC32C plus canonical byte
+length for indexing and stale UI checks, not a cryptographic identity; the
+exact coordinate and retained canonical source remain authoritative. Overrides
+become stale when the item changes. Persisted domain rules are intentionally broader and
 match only closed data selectors such as source kind, event tag, a top-level
 discriminator, schema ID, or item path. A trusted project may register richer
 matching code under a stable ID; persisted workspace data refers to that ID and
