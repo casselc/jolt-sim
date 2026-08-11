@@ -115,6 +115,89 @@
       (finally
         (live/stop! application)))))
 
+(deftest connection-regimes-are-independent-revisioned-and-future-send-only
+  (let [application (live/start! {:message 42 :regime :healthy})]
+    (try
+      (let [created (live/snapshot! application)]
+        (is (= {["n1" "n2"] :normal ["n2" "n3"] :normal}
+               (:connections created)))
+        (is (= 0 (:regime-revision created))))
+      (live/bootstrap! application)
+      ;; Deliver init/topology to each node, then let n1 handle the Broadcast.
+      ;; Its n1--n2 envelope is now already in the real memory transport.
+      (doseq [node-id ["n1" "n2" "n3" "n1" "n2" "n3" "n1"]]
+        (is (true? (:delivered? (live/step! application node-id)))))
+      (let [changed (live/set-connection-regime!
+                     application ["n2" "n1"] 0 :drop)
+            after-change (live/snapshot! application)]
+        (is (= {:operation :set-connection-regime
+                :connection ["n1" "n2"]
+                :previous-regime :normal
+                :regime :drop
+                :previous-revision 0
+                :regime-revision 1}
+               changed))
+        (is (= {["n1" "n2"] :drop ["n2" "n3"] :normal}
+               (:connections after-change)))
+        (is (= 1 (:regime-revision after-change)))
+        (testing "an accepted same-regime command consumes one revision"
+          (is (= 2
+                 (:regime-revision
+                  (live/set-connection-regime!
+                   application ["n1" "n2"] 1 :drop)))))
+        (testing "a stale command is definitive and leaves exact state intact"
+          (let [before (live/snapshot! application)
+                error (ex-data-of
+                       #(live/set-connection-regime!
+                         application ["n2" "n3"] 1 :drop))
+                after (live/snapshot! application)]
+            (is (= :jolt.maelstrom.fixtures.broadcast-scenario/stale-regime-revision
+                   (:type error)))
+            (is (= 1 (:expected-revision error)))
+            (is (= 2 (:actual-revision error)))
+            (is (= before after))))
+        (testing "a future wrong revision is equally definitive"
+          (let [before (live/snapshot! application)
+                error (ex-data-of
+                       #(live/set-connection-regime!
+                         application ["n2" "n3"] 9 :drop))]
+            (is (= :jolt.maelstrom.fixtures.broadcast-scenario/stale-regime-revision
+                   (:type error)))
+            (is (= 9 (:expected-revision error)))
+            (is (= before (live/snapshot! application))))))
+      ;; The already-enqueued n1--n2 envelope still reaches n2, while the
+      ;; independent normal n2--n3 link carries the same real Broadcast to n3.
+      (is (true? (:delivered? (live/step! application "n2"))))
+      (is (true? (:delivered? (live/step! application "n3"))))
+      (is (true? (:delivered? (live/step! application "n2"))))
+      (let [snapshot (live/snapshot! application)]
+        (is (= {"n1" [42] "n2" [42] "n3" [42]}
+               (node-messages snapshot)))
+        (is (= 1 (get-in snapshot [:drops :dropped-total])))
+        (is (= "broadcast_ok"
+               (get-in snapshot [:drops :records 0 :body :type]))))
+      (testing "a future retry crosses the gate and is dropped"
+        (live/retry! application)
+        (let [snapshot (live/snapshot! application)]
+          (is (= 2 (get-in snapshot [:drops :dropped-total])))
+          (is (= ["n1" "n2"]
+                 ((juxt :src :dest)
+                  (get-in snapshot [:drops :records 1]))))
+          (is (= "broadcast"
+                 (get-in snapshot [:drops :records 1 :body :type])))))
+      (testing "restoring a link replays nothing until the real retry runs"
+        (is (= 3
+               (:regime-revision
+                (live/set-connection-regime!
+                 application ["n1" "n2"] 2 :normal))))
+        (is (= 0 (drain-ready! application)))
+        (live/retry! application)
+        (is (pos? (drain-ready! application)))
+        (is (= [] (get-in (live/snapshot! application)
+                           [:nodes "n1" :pending]))))
+      (finally
+        (live/stop! application)))))
+
 (deftest exact-input-phase-and-command-boundaries-fail-closed
   (doseq [[input reason]
           [[nil :input-not-a-map]
@@ -130,6 +213,14 @@
            (:reason (ex-data-of #(live/bootstrap! application)))))
     (is (= :invalid-node-id
            (:reason (ex-data-of #(live/step! application "c1")))))
+    (is (= :jolt.maelstrom.fixtures.broadcast-scenario/invalid-connection
+           (:type (ex-data-of
+                   #(live/set-connection-regime!
+                     application ["n1" "n3"] 0 :drop)))))
+    (is (= :jolt.maelstrom.fixtures.broadcast-scenario/invalid-regime
+           (:type (ex-data-of
+                   #(live/set-connection-regime!
+                     application ["n1" "n2"] 0 :delay)))))
     (is (= :healthy-regime-has-no-partition
            (:reason (ex-data-of #(live/heal! application)))))
     (live/read! application)

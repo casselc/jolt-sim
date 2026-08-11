@@ -127,6 +127,21 @@
 (defn inspect! [] (command! {:op :inspect}))
 (defn bootstrap! [] (command! {:op :bootstrap}))
 (defn step! [node-id] (command! {:op :step :node-id node-id}))
+(defn set-connection-regime!
+  "Sets one undirected connection regime at the caller-observed revision."
+  [connection expected-revision regime]
+  (command! {:op :set-connection-regime
+             :connection connection
+             :expected-revision expected-revision
+             :regime regime}))
+(defn drop-connection!
+  "Convenience REPL command for dropping future sends on one connection."
+  [connection expected-revision]
+  (set-connection-regime! connection expected-revision :drop))
+(defn restore-connection!
+  "Convenience REPL command for restoring future sends on one connection."
+  [connection expected-revision]
+  (set-connection-regime! connection expected-revision :normal))
 (defn heal! [] (command! {:op :heal}))
 (defn retry! [] (command! {:op :retry}))
 (defn read! [] (command! {:op :read}))

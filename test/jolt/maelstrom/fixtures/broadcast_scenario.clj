@@ -17,14 +17,14 @@
   the history checker, never manufactures a Case/Outcome, and issues no
   verdict of its own -- judging the observations is the test's job.
 
-  A tiny scenario-local link gate wraps each node's transport send fn. While
-  active, it silently drops every node-to-node envelope whose {src dest} pair
-  matches a selected undirected link and records bounded immutable drop
-  evidence (a capped vector of {:src :dest :body} records plus an uncapped
-  total count). Client-bound and client-originated envelopes are never
-  gated. Clearing the partition flips one atom flag; nothing is replayed,
-  reordered, or rewritten, so a retained application retry obligation is the
-  only path back to delivery.
+  A tiny scenario-local link gate wraps each node's transport send fn. Its
+  closed canonical connection map selects :normal or :drop independently for
+  each topology edge and records bounded immutable drop evidence (a capped
+  vector of {:src :dest :body} records plus an uncapped total count).
+  Client-bound and client-originated envelopes are never gated. Changing a
+  regime affects future sends only; nothing is replayed, reordered, or
+  rewritten, so a retained application retry obligation is the only path back
+  to delivery.
 
   jolt.sim.activity/emit! records small bounded semantic milestones. Healthy
   runs emit cluster-ready, post-retry-state-observed, and read-observed. Partitioned
@@ -45,6 +45,10 @@
 (def line-topology
   "The fixed official topology body value for the n1 -- n2 -- n3 line."
   {"n1" ["n2"] "n2" ["n1" "n3"] "n3" ["n2"]})
+
+(def line-connections
+  "The closed canonical undirected connection ids in the fixed topology."
+  [["n1" "n2"] ["n2" "n3"]])
 
 (def client-id
   "The one official client endpoint id."
@@ -95,14 +99,19 @@
   (and (contains? node-id-set (:src envelope))
        (contains? node-id-set (:dest envelope))))
 
-(defn- selected-link?
-  "True when [src dest] matches one of the selected undirected links in
-  either direction."
-  [links src dest]
-  (boolean (some (fn [[a b]]
-                   (or (and (= a src) (= b dest))
-                       (and (= a dest) (= b src))))
-                 links)))
+(defn canonical-connection
+  "Returns the canonical undirected id for a two-endpoint connection value."
+  [[left right]]
+  (if (pos? (compare left right)) [right left] [left right]))
+
+(defn- initial-connections [partition-links]
+  (let [dropped (set (map canonical-connection partition-links))]
+    (into (sorted-map)
+          (map (fn [connection]
+                 [connection (if (contains? dropped connection)
+                               :drop
+                               :normal)]))
+          line-connections)))
 
 (defn- record-drop!
   "Records bounded immutable drop evidence: each dropped envelope contributes
@@ -130,19 +139,81 @@
   unchanged."
   [send! gate]
   (fn [envelope]
-    (let [{:keys [active? links]} @gate]
-      (if (and active?
-               (node-to-node? envelope)
-               (selected-link? links (:src envelope) (:dest envelope)))
+    (let [{:keys [connections]} @gate
+          connection (canonical-connection [(:src envelope) (:dest envelope)])]
+      (if (and (node-to-node? envelope)
+               (= :drop (get connections connection)))
         (record-drop! gate envelope)
         (send! envelope)))))
+
+(defn connection-regime-snapshot
+  "Returns one coherent immutable observation of regimes, revision, and drops."
+  [gate]
+  (let [state @gate]
+    (select-keys state
+                 [:connections :regime-revision :records :dropped-total])))
+
+(defn connection-regimes
+  "Returns the closed canonical per-connection regime map."
+  [gate]
+  (:connections (connection-regime-snapshot gate)))
+
+(defn regime-revision
+  "Returns the monotonic connection-regime revision."
+  [gate]
+  (:regime-revision (connection-regime-snapshot gate)))
+
+(defn set-connection-regime!
+  "Atomically changes one known connection's regime at an exact revision.
+
+  Rejected revisions and malformed/unknown values leave the gate byte-for-byte
+  structurally unchanged. Accepted changes affect future sends only and never
+  replay envelopes already recorded as dropped."
+  [gate connection expected-revision regime]
+  (when-not (and (vector? connection)
+                 (= 2 (count connection))
+                 (every? string? connection))
+    (fail! ::invalid-connection "connection must be a two-endpoint vector"
+           {:connection connection}))
+  (let [connection (canonical-connection connection)]
+    (when-not (contains? (set line-connections) connection)
+      (fail! ::invalid-connection "connection is not in the closed topology"
+             {:connection connection :allowed line-connections}))
+    (when-not (contains? #{:normal :drop} regime)
+      (fail! ::invalid-regime "connection regime must be :normal or :drop"
+             {:regime regime :allowed #{:normal :drop}}))
+    (when-not (and (integer? expected-revision) (<= 0 expected-revision))
+      (fail! ::invalid-regime-revision
+             "expected regime revision must be a non-negative integer"
+             {:expected-revision expected-revision}))
+    (loop []
+      (let [before @gate
+            actual (:regime-revision before)]
+        (when-not (= expected-revision actual)
+          (fail! ::stale-regime-revision
+                 "connection regime revision does not match"
+                 {:connection connection
+                  :expected-revision expected-revision
+                  :actual-revision actual}))
+        (let [previous (get-in before [:connections connection])
+              after (-> before
+                        (assoc-in [:connections connection] regime)
+                        (assoc :regime-revision (inc actual)))]
+          (if (compare-and-set! gate before after)
+            {:operation :set-connection-regime
+             :connection connection
+             :previous-regime previous
+             :regime regime
+             :previous-revision actual
+             :regime-revision (inc actual)}
+            (recur)))))))
 
 (defn drop-evidence
   "Returns the gate's immutable drop evidence as
   {:records [{:src :dest :body} ...] :dropped-total n}. Never exposes the
   gate atom itself."
   [gate]
-  (let [current @gate]
+  (let [current (connection-regime-snapshot gate)]
     {:records (:records current)
      :dropped-total (:dropped-total current)}))
 
@@ -150,7 +221,14 @@
   "Heals every gated link. Envelopes already dropped stay dropped; later
   sends pass through. Returns nil."
   [gate]
-  (swap! gate assoc :active? false)
+  (swap! gate
+         (fn [state]
+           (-> state
+               (assoc :connections
+                      (into (sorted-map)
+                            (map (fn [connection] [connection :normal]))
+                            line-connections))
+               (update :regime-revision inc))))
   nil)
 
 ;; ---- cluster construction and driving ----------------------------------------
@@ -164,8 +242,8 @@
   drop-evidence and clear-partition!."
   [partition-links]
   (let [transport (memory/create-transport)
-        gate (atom {:active? (boolean (seq partition-links))
-                    :links partition-links
+        gate (atom {:connections (initial-connections partition-links)
+                    :regime-revision 0
                     :records []
                     :dropped-total 0})
         apps (into {} (map (fn [id] [id (broadcast/create-broadcast)])

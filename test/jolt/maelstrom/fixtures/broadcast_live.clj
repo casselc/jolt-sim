@@ -87,24 +87,33 @@
   (let [live (checked-live live)
         {:keys [transport apps gate]} (::world live)
         lifecycle @(::lifecycle live)
+        gate-snapshot (scenario/connection-regime-snapshot gate)
         transport-snapshot (memory/snapshot transport)
         queues (:queues transport-snapshot)
         client-replies (vec (get queues scenario/client-id []))
         mailboxes (mailbox-summary queues)
-        history (:history transport-snapshot)]
+        history (:history transport-snapshot)
+        dropped-connections
+        (->> (:connections gate-snapshot)
+             (keep (fn [[connection regime]]
+                     (when (= :drop regime) connection)))
+             vec)]
     {:kind :jolt.sim/maelstrom-broadcast-live
      :status (:phase lifecycle)
      :input (::input live)
      :topology scenario/line-topology
-     :partition {:links (get regime-links (get-in live [::input :regime]))
-                 :active? (:partition-active? lifecycle)}
+     :connections (:connections gate-snapshot)
+     :regime-revision (:regime-revision gate-snapshot)
+     ;; Compatibility view for the original partition/heal workbench story.
+     :partition {:links dropped-connections
+                 :active? (boolean (seq dropped-connections))}
      :nodes (application-snapshots apps)
      :ready-mailboxes
      (filterv #(pos? (get-in mailboxes [% :count])) scenario/cluster-ids)
      :mailboxes mailboxes
      :client-replies {:count (count client-replies)
                       :tail (tail client-replies max-client-replies)}
-     :drops (scenario/drop-evidence gate)
+     :drops (select-keys gate-snapshot [:records :dropped-total])
      :transport {:history-count (count history)
                  :history-tail (tail history max-history-events)}
      :control (select-keys lifecycle
@@ -124,7 +133,6 @@
      ::input input
      ::world (scenario/build-world links)
      ::lifecycle (atom {:phase :created
-                        :partition-active? (boolean (seq links))
                         :bootstrap-count 0
                         :step-count 0
                         :retry-count 0
@@ -173,15 +181,26 @@
   "Clears the fixed n2--n3 partition. Dropped messages stay dropped."
   [live]
   (require-phase! live :heal #{:running})
-  (let [lifecycle @(::lifecycle live)
+  (let [gate (get-in live [::world :gate])
         regime (get-in live [::input :regime])]
     (when-not (= :partition-heal regime)
       (fail! :healthy-regime-has-no-partition {:regime regime}))
-    (when-not (:partition-active? lifecycle)
+    (when-not (= :drop (get (scenario/connection-regimes gate)
+                            ["n2" "n3"]))
       (fail! :partition-not-active {}))
-    (scenario/clear-partition! (get-in live [::world :gate]))
-    (swap! (::lifecycle live) assoc :partition-active? false)
+    (scenario/set-connection-regime!
+     gate ["n2" "n3"] (scenario/regime-revision gate) :normal)
     {:operation :heal :links (get regime-links regime)}))
+
+(defn set-connection-regime!
+  "Changes one real transport connection for future sends only.
+
+  The expected revision is checked atomically with the update. A mismatch is a
+  definitive application failure and performs no mutation."
+  [live connection expected-revision regime]
+  (require-phase! live :set-connection-regime #{:running})
+  (scenario/set-connection-regime!
+   (get-in live [::world :gate]) connection expected-revision regime))
 
 (defn retry!
   "Invokes each real Broadcast application's retry-pending! once, in stable

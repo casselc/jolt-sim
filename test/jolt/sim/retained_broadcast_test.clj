@@ -144,3 +144,47 @@
       (finally
         (when (get-in (retained/snapshot handle) [:child :alive?])
           (retained/terminate! handle))))))
+
+(deftest retained-worker-receipts-carry-exact-connection-regime-results
+  (let [handle (retained/start!
+                (retained-config {:message 5 :regime :healthy}))]
+    (println "retained Broadcast connection-regime artifacts:"
+             (get-in (retained/snapshot handle) [:artifact :dir]))
+    (flush)
+    (try
+      (completed! handle {:op :bootstrap})
+      (let [receipt (completed! handle
+                                {:op :set-connection-regime
+                                 :connection ["n3" "n2"]
+                                 :expected-revision 0
+                                 :regime :drop})]
+        (is (= :set-connection-regime
+               (get-in receipt [:value :operation])))
+        (is (= {:operation :set-connection-regime
+                :connection ["n2" "n3"]
+                :previous-regime :normal
+                :regime :drop
+                :previous-revision 0
+                :regime-revision 1}
+               (get-in receipt [:value :result])))
+        (is (= {["n1" "n2"] :normal ["n2" "n3"] :drop}
+               (get-in receipt [:value :snapshot :connections])))
+        (is (= 1 (get-in receipt [:value :snapshot :regime-revision]))))
+      (testing "stale application rejection preserves state and worker readiness"
+        (let [before (inspect! handle)
+              failed (retained/command!
+                      handle {:op :set-connection-regime
+                              :connection ["n1" "n2"]
+                              :expected-revision 0
+                              :regime :drop})
+              after (inspect! handle)]
+          (is (= :failed (:status failed)))
+          (is (= :jolt.maelstrom.fixtures.broadcast-scenario/stale-regime-revision
+                 (get-in failed [:error :type])))
+          (is (= before after))
+          (is (= :ready (:status (retained/snapshot handle))))))
+      (completed! handle {:op :stop})
+      (assert-clean-terminal! handle)
+      (finally
+        (when (get-in (retained/snapshot handle) [:child :alive?])
+          (retained/terminate! handle))))))
