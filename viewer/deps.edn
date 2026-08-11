@@ -8,17 +8,16 @@
   {:git/url "https://github.com/casselc/jolt-http.git"
    :git/sha "96bd0fc93f1a2c77128d06f74802dd2a4631c0d4"}
 
-  ;; Override jolt-http's older transitive transport pins with the same
-  ;; Jolt-0.5.20-compatible pair exercised by the canonical application
-  ;; aliases in the repository root. The older jolt-tcp coordinate calls the
-  ;; removed jolt.host/monotonic-nanos var; this pin uses jolt.host/mono-nanos.
+  ;; Override jolt-http's older transitive transport pins with the reviewed
+  ;; Jolt v0.7.1-compatible pair exercised by the canonical application aliases
+  ;; in the repository root.
   io.github.casselc/jolt-tcp
   {:git/url "https://github.com/casselc/jolt-tcp.git"
    :git/sha "0ceaa900bfca11933d35831d7697c7e2c5b22f04"}
 
   io.github.casselc/jolt-net
   {:git/url "https://github.com/casselc/jolt-net.git"
-   :git/sha "699b908ffb4eb79ad35055cdc20866bb504e6932"}
+   :git/sha "f335b8d5f26722233fd82af5e8c0e800397851c9"}
 
   ;; JSON wire encoding for /api/replay-progress. data.json loads
   ;; DateTimeFormatter support when its namespace initializes, so the current
