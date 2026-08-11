@@ -214,6 +214,29 @@
       (finally
         (retain-artifacts! dir)))))
 
+(deftest prepublication-failure-carries-no-reconcilable-coordinate
+  (let [{:keys [dir paths]} (test-paths)
+        handle (test-handle dir paths)
+        publish-var (private-var "publish-command!")
+        alive-var (private-var "child-alive?")]
+    (try
+      (with-redefs-fn
+        {alive-var (fn [_] true)
+         publish-var (fn [_ _ _]
+                       (throw (ex-info "publication refused" {})))}
+        (fn []
+          (let [failed (ex-data-of
+                        #(retained/command! handle {:op :inspect} 5))]
+            (is (= :publication-failed (:reason failed)))
+            (is (= :failed (:status failed)))
+            (is (= 0 (:sequence failed)))
+            (is (nil? (:uncertain-sequence failed))))
+          (let [nothing (ex-data-of #(retained/reconcile! handle 5))]
+            (is (= :nothing-to-reconcile (:reason nothing)))
+            (is (nil? (:uncertain-sequence nothing))))))
+      (finally
+        (retain-artifacts! dir)))))
+
 (deftest post-publication-timeout-is-ambiguous-until-exact-reconciliation
   (let [{:keys [dir paths]} (test-paths)
         handle (test-handle dir paths)
@@ -231,7 +254,8 @@
                    (:type timed-out)))
             (is (= :receipt-deadline (:reason timed-out)))
             (is (= :uncertain (:status timed-out)))
-            (is (= 0 (:sequence timed-out))))
+            (is (= 0 (:sequence timed-out)))
+            (is (= 0 (:uncertain-sequence timed-out))))
           (let [rejected
                 (ex-data-of
                  #(retained/command! handle {:op :inspect} 7))]
@@ -283,6 +307,7 @@
             (is (= :jolt.sim.retained-process/transport-error (:type data)))
             (is (= :child-exited (:reason data)))
             (is (= 23 (:exit data)))
+            (is (= 0 (:uncertain-sequence data)))
             (is (not= :failed (:status data))))
           (let [snap (retained/snapshot handle)]
             (is (= :exited (:status snap)))

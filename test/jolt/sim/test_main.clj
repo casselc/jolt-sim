@@ -42,6 +42,7 @@
             [jolt.sim.repl-test]
             [jolt.sim.replay-test]
             [jolt.sim.retained-process-test]
+            [jolt.sim.retained-view-test]
             [jolt.sim.retained-worker-test]
             [jolt.sim.runtime-test]
             [jolt.sim.schema-test]
@@ -93,6 +94,7 @@
                         'jolt.sim.repl-test
                         'jolt.sim.replay-test
                         'jolt.sim.retained-process-test
+                        'jolt.sim.retained-view-test
                         'jolt.sim.retained-worker-test
                         'jolt.sim.runtime-test
                         'jolt.sim.schema-test

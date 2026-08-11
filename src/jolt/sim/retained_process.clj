@@ -63,6 +63,7 @@
    (merge {:type ::transport-error
            :reason reason
            :status (:status state)
+           :uncertain-sequence (:uncertain-sequence state)
            :artifact-dir (:artifact-dir state)}
           data)))
 
