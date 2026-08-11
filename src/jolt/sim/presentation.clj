@@ -325,6 +325,16 @@
 (def ^:private graph-node-keys #{:id :label :status :fields})
 (def ^:private graph-edge-keys
   #{:id :from :to :label :status :fields})
+;; A node or edge may additionally declare an `:actions` vector of inert
+;; command descriptors. Each action is exactly
+;; `{:id string :label string :command canonical-value :enabled? boolean}`:
+;; trusted presenters state what an attached application can be asked to do,
+;; but the descriptor is data only. Presentation, server serialization, and
+;; generic renderers never evaluate `:command`; it can only be echoed back,
+;; unchanged, through an explicit user-initiated command channel.
+(def ^:private graph-action-keys #{:id :label :command :enabled?})
+(def ^:private graph-node-action-keys (conj graph-node-keys :actions))
+(def ^:private graph-edge-action-keys (conj graph-edge-keys :actions))
 (def ^:private maximum-value-summary-length 512)
 (def ^:private maximum-value-label-length 128)
 (def ^:private maximum-value-kind-length 128)
@@ -332,6 +342,10 @@
 (def ^:private maximum-value-fields 64)
 (def ^:private maximum-graph-nodes 256)
 (def ^:private maximum-graph-edges 1024)
+(def ^:private maximum-graph-actions 16)
+;; Commands are inert data echoed through bounded command envelopes, so their
+;; canonical EDN representation is itself bounded.
+(def ^:private maximum-action-command-edn-length 4096)
 (def ^:private maximum-value-presentation-bytes (* 256 1024))
 
 (defn- value-registry-error! [reason detail]
@@ -423,8 +437,55 @@
     (value-presentation-error! :invalid-graph-id path))
   value)
 
+(defn- canonical-action
+  "Validates one inert action descriptor and stores its command in canonical
+  form. The command is never evaluated here; canonicalization only snapshots
+  mutable leaves and excludes functions, handles, metadata, and other opaque
+  values, exactly like field values."
+  [path action]
+  (when-not (exact-plain-map? action graph-action-keys)
+    (value-presentation-error! :invalid-action-shape path))
+  (when-not (and (bounded-string? (:id action) maximum-graph-id-length)
+                 (pos? (count (:id action))))
+    (value-presentation-error! :invalid-action-id path))
+  (when-not (and (bounded-string? (:label action) maximum-value-label-length)
+                 (pos? (count (:label action))))
+    (value-presentation-error! :invalid-action-label path))
+  (when-not (boolean? (:enabled? action))
+    (value-presentation-error! :invalid-action-enabled-flag path))
+  (let [command (trace/canonical-value (:command action) (conj path :command))
+        ;; Bound the exact tagged representation sent on the viewer wire, not
+        ;; the usually smaller ordinary EDN obtained by restoring it.
+        edn (trace/canonical-edn command)]
+    (when (> (count edn) maximum-action-command-edn-length)
+      (value-presentation-error! :invalid-action-command path))
+    {:id (:id action)
+     :label (:label action)
+     :command command
+     :enabled? (:enabled? action)}))
+
+(defn- canonical-actions
+  "Validates one entity's optional action vector. Action IDs are sorted and
+  unique within the entity, so the canonical presentation is deterministic."
+  [path actions]
+  (when-not (and (vector? actions)
+                 (nil? (meta actions))
+                 (<= (count actions) maximum-graph-actions))
+    (value-presentation-error! :invalid-actions path))
+  (let [result (mapv (fn [ordinal action]
+                       (canonical-action (conj path ordinal) action))
+                     (range)
+                     actions)
+        ids (mapv :id result)]
+    (when-not (= ids (vec (sort ids)))
+      (value-presentation-error! :unstable-action-order path))
+    (when-not (= (count ids) (count (set ids)))
+      (value-presentation-error! :duplicate-action-id path))
+    result))
+
 (defn- canonical-node [node]
-  (when-not (exact-plain-map? node graph-node-keys)
+  (when-not (or (exact-plain-map? node graph-node-keys)
+                (exact-plain-map? node graph-node-action-keys))
     (value-presentation-error! :invalid-node-shape nil))
   (validate-graph-id! [:graph :node :id] (:id node))
   (when-not (bounded-string? (:label node) maximum-value-label-length)
@@ -435,10 +496,17 @@
    :label (:label node)
    :status (:status node)
    :fields (canonical-fields [:graph :node (:id node) :fields]
-                             (:fields node))})
+                             (:fields node))
+   ;; The canonical shape is uniform: an entity that declares no actions
+   ;; presents an explicitly empty vector.
+   :actions (if (contains? node :actions)
+              (canonical-actions [:graph :node (:id node) :actions]
+                                 (:actions node))
+              [])})
 
 (defn- canonical-edge [edge]
-  (when-not (exact-plain-map? edge graph-edge-keys)
+  (when-not (or (exact-plain-map? edge graph-edge-keys)
+                (exact-plain-map? edge graph-edge-action-keys))
     (value-presentation-error! :invalid-edge-shape nil))
   (doseq [key [:id :from :to]]
     (validate-graph-id! [:graph :edge key] (get edge key)))
@@ -452,7 +520,11 @@
    :label (:label edge)
    :status (:status edge)
    :fields (canonical-fields [:graph :edge (:id edge) :fields]
-                             (:fields edge))})
+                             (:fields edge))
+   :actions (if (contains? edge :actions)
+              (canonical-actions [:graph :edge (:id edge) :actions]
+                                 (:actions edge))
+              [])})
 
 (defn- canonical-graph [graph]
   (when-not (exact-plain-map? graph graph-keys)

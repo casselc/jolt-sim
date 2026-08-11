@@ -12,6 +12,8 @@
   {:inspect #{:op}
    :bootstrap #{:op}
    :step #{:op :node-id}
+   :set-connection-regime
+   #{:op :connection :expected-revision :regime}
    :heal #{:op}
    :retry #{:op}
    :read #{:op}
@@ -45,7 +47,8 @@
            :snapshot (live/snapshot! application)}})
 
 (defn- dispatch [application command]
-  (let [{:keys [op node-id]} (checked-command command)]
+  (let [{:keys [op node-id connection expected-revision regime]}
+        (checked-command command)]
     (case op
       :inspect
       {:terminal? false :value (live/snapshot! application)}
@@ -55,6 +58,12 @@
 
       :step
       (continued op (live/step! application node-id) application)
+
+      :set-connection-regime
+      (continued op
+                 (live/set-connection-regime!
+                  application connection expected-revision regime)
+                 application)
 
       :heal
       (continued op (live/heal! application) application)

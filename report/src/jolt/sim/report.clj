@@ -108,6 +108,29 @@
          (apply str (map value-field-html fields))
          "</dl>")))
 
+(defn- value-action-html [{:keys [label command enabled?]}]
+  (str "<li class=\"jolt-sim-value-action"
+       (when-not enabled? " jolt-sim-value-action-disabled")
+       "\"><span class=\"jolt-sim-value-action-label\">"
+       (escaped-html label) "</span>"
+       (when-not enabled?
+         (str " <span class=\"jolt-sim-value-action-state\""
+              " aria-label=\"Action disabled\">Disabled</span>"))
+       "<pre class=\"jolt-sim-value-action-command\""
+       " aria-label=\"Canonical command EDN\"><code>"
+       ;; Keep the exact canonical command representation used by the shared
+       ;; presentation model. Static reports describe the command as inert
+       ;; forensic data; they never restore, interpret, or execute it.
+       (escaped-html (trace/canonical-edn command))
+       "</code></pre></li>"))
+
+(defn- value-actions-html [actions]
+  (when (seq actions)
+    (str "<section class=\"jolt-sim-value-actions\""
+         " aria-label=\"Inert topology actions\"><h4>Actions</h4><ul>"
+         (apply str (map value-action-html actions))
+         "</ul></section>")))
+
 (defn- value-topology-svg [graph]
   (when (and graph (seq (:nodes graph)))
     (let [nodes (:nodes graph)
@@ -155,24 +178,28 @@
   (when graph
     (str
      (apply str
-            (map (fn [{:keys [id label fields]}]
+            (map (fn [{:keys [id label fields actions]}]
                    (str "<details><summary>Node " (escaped-html label)
                         " <code>" (escaped-html id) "</code></summary>"
-                        (value-fields-html fields) "</details>"))
+                        (value-fields-html fields)
+                        (value-actions-html actions)
+                        "</details>"))
                  (:nodes graph)))
      (apply str
-            (map (fn [{:keys [id label fields]}]
+            (map (fn [{:keys [id label fields actions]}]
                    (str "<details><summary>Edge " (escaped-html label)
                         " <code>" (escaped-html id) "</code></summary>"
-                        (value-fields-html fields) "</details>"))
+                        (value-fields-html fields)
+                        (value-actions-html actions)
+                        "</details>"))
                  (:edges graph))))))
 
 (defn value->html
   "Renders one value through the same bounded model consumed by Ripple.
 
   The result is a self-contained inert fragment: escaped SVG, bounded details,
-  and canonical source EDN. It contains no script or application-specific
-  renderer logic."
+  inert action descriptions, and canonical source EDN. It contains no script,
+  executable action controls, or application-specific renderer logic."
   [registry value]
   (let [{:keys [summary fields graph source-edn] :as model}
         (value->view-model registry value)]

@@ -248,6 +248,211 @@ test("keeps a definite receipt when a REPL caller advances the fresh frame", asy
   }
 });
 
+test("renders inert topology action descriptors through the retained command path", async ({page}, testInfo) => {
+  const commandCalls = [];
+  const presentation = {
+    version: 1,
+    kind: "example.kind/topology",
+    sourceKind: "example/network",
+    summary: "Example network",
+    fields: [],
+    graph: {
+      directed: true,
+      nodes: [
+        {id: "a", label: "A", status: "example.status/ready", fields: [],
+         actions: [
+           {id: "inspect", label: "Inspect node A",
+            commandCanonicalEdn: "[:jolt.sim.value/map [[[:jolt.sim.value/keyword nil \"op\"] [:jolt.sim.value/keyword nil \"inspect\"]] [[:jolt.sim.value/keyword nil \"target\"] [:jolt.sim.value/string \"a\"]]]]", enabled: true},
+           {id: "stop", label: "Stop node A",
+            commandCanonicalEdn: "[:jolt.sim.value/vector [[:jolt.sim.value/keyword nil \"stop\"] [:jolt.sim.value/string \"a\"]]]", enabled: false}
+         ]},
+        {id: "b", label: "B", status: null, fields: [], actions: []}
+      ],
+      edges: [
+        {id: "a--b", from: "a", to: "b", label: "link", status: null,
+         fields: [],
+         actions: [
+           {id: "partition", label: "Partition link",
+            commandCanonicalEdn: "[:jolt.sim.value/map [[[:jolt.sim.value/keyword nil \"link\"] [:jolt.sim.value/vector [[:jolt.sim.value/string \"a\"] [:jolt.sim.value/string \"b\"]]]] [[:jolt.sim.value/keyword nil \"op\"] [:jolt.sim.value/keyword nil \"partition\"]]]]", enabled: true}
+         ]}
+      ]
+    },
+    sourceEdn: "{:kind :example/network}"
+  };
+  const completed = (sequence, nextSequence) => ({
+    version: 1,
+    outcome: "completed",
+    committed: true,
+    sequence,
+    coordinate: coordinate("ready", nextSequence),
+    receiptEdn: `{:status :completed :sequence ${sequence} :value :ok}`,
+    frameEdn: `{:status :ready :next-sequence ${nextSequence}}`,
+    frameError: null,
+    presentation,
+    presentationError: null,
+    truncated: false
+  });
+
+  await page.route("**/api/retained-command", async (route) => {
+    const body = route.request().postDataJSON();
+    commandCalls.push(body);
+    if (body.commandEdn === "{:op :topology}") {
+      await route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify(completed("4", "5"))
+      });
+      return;
+    }
+    if (body.commandCanonicalEdn === presentation.graph.nodes[0].actions[0].commandCanonicalEdn) {
+      await route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify(completed("5", "6"))
+      });
+      return;
+    }
+    if (body.commandCanonicalEdn === presentation.graph.edges[0].actions[0].commandCanonicalEdn) {
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({
+          version: 1,
+          outcome: "transport-error",
+          error: "retained-transport-error",
+          reason: "receipt-deadline",
+          status: "uncertain",
+          sequence: "6",
+          uncertainSequence: "6"
+        })
+      });
+      return;
+    }
+    throw new Error(`unexpected retained command: ${JSON.stringify(body)}`);
+  });
+
+  await page.goto("/");
+  await page.locator("#capability").fill(capabilityToken);
+  await page.getByTestId("retained-command").fill("{:op :topology}");
+  await page.getByTestId("retained-send").click();
+  await expect(page.getByTestId("retained-status"))
+    .toContainText("acknowledged with outcome completed");
+  await expect(page.getByTestId("retained-presentation")).toBeVisible();
+
+  // Buttons render generically from the descriptors: no route, handler, or
+  // label is known to Ripple beyond the closed action shape.
+  const nodeA = page.locator('[data-node-detail-id="a"]');
+  const nodeB = page.locator('[data-node-detail-id="b"]');
+  const edge = page.locator('[data-edge-detail-id="a--b"]');
+  await expect(nodeA.getByTestId("retained-topology-action")).toHaveCount(2);
+  await expect(nodeB.getByTestId("retained-topology-action")).toHaveCount(0);
+  await expect(edge.getByTestId("retained-topology-action")).toHaveCount(1);
+  const inspectAction = nodeA.locator('[data-action-id="inspect"]');
+  const stopAction = nodeA.locator('[data-action-id="stop"]');
+  const partitionAction = edge.locator('[data-action-id="partition"]');
+  await expect(inspectAction).toHaveText("Inspect node A");
+  await expect(inspectAction).toBeEnabled();
+  await expect(stopAction).toBeDisabled();
+  await expect(partitionAction).toBeEnabled();
+
+  // An enabled descriptor echoes its exact server-issued command EDN once
+  // through the existing retained-command path.
+  await nodeA.locator("summary").click();
+  await inspectAction.click();
+  await expect(page.getByTestId("retained-status"))
+    .toContainText("acknowledged with outcome completed");
+  expect(commandCalls).toEqual([
+    {version: 1, commandEdn: "{:op :topology}"},
+    {version: 1, commandCanonicalEdn: presentation.graph.nodes[0].actions[0].commandCanonicalEdn}
+  ]);
+  await expect(nodeA.locator('[data-action-id="inspect"]')).toBeEnabled();
+
+  // Descriptor buttons obey the retained surface's uncertain disablement:
+  // after an ambiguous transport outcome no action can be resent implicitly.
+  await edge.locator("summary").click();
+  await partitionAction.click();
+  await expect(page.getByTestId("retained-status"))
+    .toContainText("uncertain transport outcome at sequence 6");
+  expect(commandCalls).toHaveLength(3);
+  await expect(nodeA.locator('[data-action-id="inspect"]')).toBeDisabled();
+  await expect(edge.locator('[data-action-id="partition"]')).toBeDisabled();
+  await expect(page.getByTestId("retained-send")).toBeDisabled();
+  await expect(page.getByTestId("retained-reconcile")).toBeEnabled();
+
+  await page.screenshot({
+    path: testInfo.outputPath("ripple-topology-actions.png"),
+    fullPage: true
+  });
+});
+
+test("disables topology actions when a shared REPL advances the retained coordinate", async ({page}) => {
+  let commandCalls = 0;
+  const commandCanonicalEdn =
+    "[:jolt.sim.value/map [[[:jolt.sim.value/keyword nil \"op\"] [:jolt.sim.value/keyword nil \"inspect\"]]]]";
+  await page.route("**/api/retained-command", async (route) => {
+    commandCalls += 1;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        version: 1,
+        outcome: "completed",
+        committed: true,
+        sequence: "4",
+        coordinate: coordinate("ready", "5"),
+        receiptEdn: "{:status :completed :sequence 4 :value :ok}",
+        frameEdn: "{:status :ready :next-sequence 5}",
+        frameError: null,
+        presentation: {
+          version: 1,
+          kind: "example.kind/topology",
+          sourceKind: "example/network",
+          summary: "Example network",
+          fields: [],
+          graph: {
+            directed: false,
+            nodes: [{
+              id: "a", label: "A", status: null, fields: [],
+              actions: [{id: "inspect", label: "Inspect",
+                         commandCanonicalEdn, enabled: true}]
+            }],
+            edges: []
+          },
+          sourceEdn: "{:kind :example/network}"
+        },
+        presentationError: null,
+        truncated: false
+      })
+    });
+  });
+  await page.route("**/api/retained-frame", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        version: 1,
+        status: "ok",
+        coordinate: coordinate("ready", "6"),
+        frameEdn: "{:status :ready :next-sequence 6}"
+      })
+    });
+  });
+
+  await page.goto("/");
+  await page.locator("#capability").fill(capabilityToken);
+  await page.getByTestId("retained-command").fill(":topology");
+  await page.getByTestId("retained-send").click();
+  const action = page.locator('[data-action-id="inspect"]');
+  await expect(action).toBeEnabled();
+
+  // This frame represents a command issued from the persistent REPL. The old
+  // presentation remains inspectable, but its action is no longer admitted.
+  await page.getByTestId("retained-refresh").click();
+  await expect(page.getByTestId("retained-status"))
+    .toContainText("next command sequence is 6");
+  await expect(action).toBeDisabled();
+  await action.click({force: true});
+  expect(commandCalls).toBe(1);
+});
+
 test("rejects incompatible retained acknowledgments and blocks resend", async ({page}) => {
   const base = {
     version: 1,

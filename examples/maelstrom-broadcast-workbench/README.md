@@ -6,9 +6,10 @@ running retained three-node Broadcast cluster. The child uses the unchanged
 the existing memory transport. The workbench adds no application, transport,
 scheduler, retry, or fault behavior.
 
-The default configuration starts with message `42` and the `n2`--`n3` link
-partitioned. Change `:regime` to `:healthy` for an unpartitioned run. The only
-accepted inputs are exact maps of this shape:
+The default configuration starts with message `42` and both links connected.
+The retained application also accepts the older `:partition-heal` startup
+fixture for regression tests. The only accepted inputs are exact maps of this
+shape:
 
 ```clojure
 {:message <integer> :regime :healthy|:partition-heal}
@@ -41,33 +42,52 @@ allocates a retained artifact directory, child, EvalSession, or server.
 Open the printed URL, enter the capability token, and use the existing
 **Attached retained worker** panel. **Refresh worker** reads only the generic
 supervisor coordinate. Send `{:op :inspect}` to receive the current bounded
-application snapshot.
+application snapshot. Ripple renders that snapshot as a three-node topology;
+ready nodes have a **Deliver next mailbox** action and each connection has an
+enabled **Drop future deliveries** or **Restore deliveries** action.
 
-## Manual partition, heal, and retry
+These captures come from the no-mock Playwright acceptance against a real
+retained Jolt worker:
 
-Start with:
+![Ripple Broadcast topology](docs/ripple-broadcast-topology.png)
+
+![Partitioned connection details and restore action](docs/ripple-broadcast-edge-actions.png)
+
+## Interactive connection regime and retry
+
+Start with `{:op :inspect}` and `{:op :bootstrap}`. Bootstrap moves the
+application into its running phase and enqueues the seven official openers, but
+does not deliver one. Then use the `n2--n3` edge's **Drop future deliveries**
+action before stepping a mailbox. The equivalent raw command is
+revision-scoped:
 
 ```clojure
-{:op :inspect}
-{:op :bootstrap}
+{:op :set-connection-regime
+ :connection ["n2" "n3"]
+ :expected-revision 0
+ :regime :drop}
 ```
 
-Bootstrap enqueues the seven official init/topology/broadcast openers but does
-not deliver one. Inspect `:ready-mailboxes`, select exactly one node, and send:
+Ripple submits the exact canonical command embedded by the application-owned
+presenter. Reusing that rendered action after the revision changes is a
+definite application failure and cannot mutate the connection state.
+
+Inspect `:ready-mailboxes`, select exactly one node, and send:
 
 ```clojure
 {:op :step :node-id "n1"}
 ```
 
-Repeat with the first ready mailbox until none remain. In the default regime,
+Repeat with the first ready mailbox until none remain. With `n2`--`n3` dropped,
 the snapshot then shows message `42` at `n1` and `n2`, an empty `n3`, one
 dropped `n2`-to-`n3` envelope, and the unchanged Broadcast application's pending
 retry identity.
 
-Continue explicitly:
+Use the current `n2`--`n3` edge's **Restore deliveries** action. Restoring a
+connection only changes future delivery policy; it does not replay the dropped
+envelope. Continue explicitly:
 
 ```clojure
-{:op :heal}   ; removes the gate; the dropped envelope stays dropped
 {:op :retry}  ; real retry-pending! reuses the application's identity
 ```
 
@@ -95,7 +115,9 @@ These UI-neutral helpers delegate only through `jolt.sim.retained-view`:
 (wb/inspect!)
 (wb/bootstrap!)
 (wb/step! "n2")
-(wb/heal!)
+(-> (wb/inspect!) :receipt :value :connections)
+(wb/set-connection-regime! ["n2" "n3"] 0 :drop)
+(wb/set-connection-regime! ["n2" "n3"] 1 :normal)
 (wb/retry!)
 (wb/read!)
 (wb/stop-worker!)
@@ -103,9 +125,11 @@ These UI-neutral helpers delegate only through `jolt.sim.retained-view`:
 ```
 
 `present` is pure and returns the same bounded ordinary map/vector topology
-model used by Ripple and static reports. It is suitable for `datafy`, default
-`nav`, or an explicit `tap>`; it never taps automatically. Broadcast snapshot
-semantics remain in the example's immutable value registry, not in Ripple.
+model used by Ripple and static reports, including inert canonical action
+descriptors. Static reports display those descriptors but never execute them.
+The model is suitable for `datafy`, default `nav`, or an explicit `tap>`; it
+never taps automatically. Broadcast snapshot and command semantics remain in
+the example's immutable value registry, not in Ripple.
 
 A command issued in this REPL consumes the next retained sequence; refreshing
 the retained panel observes that exact new coordinate. The retained handle's
@@ -122,9 +146,9 @@ deleted by this workbench.
 
 ## Gates
 
-The real loopback integration drives the full partition/heal/retry/read story,
-with one mailbox step sent through the EvalSession and every other action sent
-through Ripple's retained HTTP service:
+The real loopback integration drives the full drop/stale-action/restore/retry/
+read story, with one mailbox step sent through the EvalSession and every other
+action sent through Ripple's retained HTTP service:
 
 ```sh
 JOLT_SIM_BIN='/absolute/path/to/jolt-capable-of-running-the-worker' \
@@ -164,9 +188,9 @@ Outputs are under `target/ripple-playwright/broadcast-retained`.
   transport, not the official Maelstrom JSON-lines process or real OS network.
 - It provides operator-selected single-mailbox delivery, not automatic schedule
   exploration, adversarial scheduling, rewind, or a second retry engine.
-- The first vertical intentionally uses canonical EDN snapshots. A specialized
-  topology Kind/SVG is presentation follow-up, not required for truthful
-  control or inspection.
+- The topology and its action descriptors are a generic bounded presentation
+  model. Broadcast-specific extraction and commands remain application-owned;
+  Ripple contains no Broadcast vocabulary.
 - The live lifecycle and retained adapter currently reside under the repository
   test root. This in-repository example uses the explicit root worker alias; it
   does not claim those fixture namespaces are a released library API.

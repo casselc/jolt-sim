@@ -77,6 +77,11 @@
   let retainedTerminationUnknown = false;
   let retainedCoordinateKnown = false;
   let retainedWorkerStatus = null;
+  let retainedNextSequence = null;
+  // Buttons rendered from the current value presentation's inert action
+  // descriptors: [{button, enabled}]. Rebuilt on every presentation render so
+  // a later result can never leave a stale descriptor clickable.
+  let topologyActionButtons = [];
 
   const canonicalUnsignedDecimal = (value) =>
     typeof value === "string" && /^(0|[1-9][0-9]*)$/.test(value);
@@ -138,6 +143,30 @@
   const validPresentationStatus = (value) =>
     value === null || (boundedString(value, 128) && namespacedIdentifier(value));
 
+  // One inert action descriptor. The command is opaque bounded data: Ripple
+  // never parses it and can only echo the exact server-issued EDN string back
+  // through the existing retained-command request.
+  const validPresentationAction = (value) =>
+    exactKeys(value, ["id", "label", "commandCanonicalEdn", "enabled"]) &&
+    boundedString(value.id, 128) && value.id.length > 0 &&
+    boundedString(value.label, 128) &&
+    boundedString(value.commandCanonicalEdn, 4096) &&
+    value.commandCanonicalEdn.length > 0 &&
+    typeof value.enabled === "boolean";
+
+  const validPresentationActions = (value) => {
+    if (!Array.isArray(value) || value.length > 16) return false;
+    const ids = new Set();
+    for (const action of value) {
+      if (!validPresentationAction(action) || action.label.length === 0 ||
+          ids.has(action.id)) {
+        return false;
+      }
+      ids.add(action.id);
+    }
+    return true;
+  };
+
   const validPresentationGraph = (value) => {
     if (value === null) return true;
     if (!exactKeys(value, ["directed", "nodes", "edges"]) ||
@@ -146,24 +175,26 @@
         !Array.isArray(value.edges) || value.edges.length > 1024) return false;
     const ids = new Set();
     for (const node of value.nodes) {
-      if (!exactKeys(node, ["id", "label", "status", "fields"]) ||
+      if (!exactKeys(node, ["id", "label", "status", "fields", "actions"]) ||
           !boundedString(node.id, 128) || node.id.length === 0 ||
           !boundedString(node.label, 128) ||
           !validPresentationStatus(node.status) ||
           !Array.isArray(node.fields) || node.fields.length > 64 ||
-          !node.fields.every(validPresentationField) || ids.has(node.id)) return false;
+          !node.fields.every(validPresentationField) ||
+          !validPresentationActions(node.actions) || ids.has(node.id)) return false;
       ids.add(node.id);
     }
     const edgeIds = new Set();
     for (const edge of value.edges) {
       if (!exactKeys(edge,
-        ["id", "from", "to", "label", "status", "fields"]) ||
+        ["id", "from", "to", "label", "status", "fields", "actions"]) ||
           !boundedString(edge.id, 128) || edge.id.length === 0 ||
           !ids.has(edge.from) || !ids.has(edge.to) ||
           !boundedString(edge.label, 128) ||
           !validPresentationStatus(edge.status) ||
           !Array.isArray(edge.fields) || edge.fields.length > 64 ||
-          !edge.fields.every(validPresentationField) || edgeIds.has(edge.id)) return false;
+          !edge.fields.every(validPresentationField) ||
+          !validPresentationActions(edge.actions) || edgeIds.has(edge.id)) return false;
       edgeIds.add(edge.id);
     }
     return true;
@@ -299,6 +330,32 @@
     parent.appendChild(svg);
   };
 
+  const appendTopologyActions = (parent, entity) => {
+    if (entity.actions.length === 0) return;
+    const group = document.createElement("div");
+    group.className = "retained-topology-actions";
+    for (const action of entity.actions) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = action.label;
+      button.dataset.testid = "retained-topology-action";
+      button.dataset.actionId = action.id;
+      // The descriptor is inert data: a click echoes the exact server-issued
+      // command EDN through the existing single-flight, never-automatically-
+      // retried retained-command path. Ripple never constructs, rewrites, or
+      // interprets the command.
+      button.addEventListener("click", () => retainedControl(
+        "/api/retained-command",
+        {version: 1, commandCanonicalEdn: action.commandCanonicalEdn},
+        "Retained command"
+      ));
+      topologyActionButtons.push({button, enabled: action.enabled,
+                                  nextSequence: retainedNextSequence});
+      group.appendChild(button);
+    }
+    parent.appendChild(group);
+  };
+
   const appendTopologyDetails = (parent, graph) => {
     if (!graph) return;
     const container = document.createElement("div");
@@ -312,6 +369,7 @@
         `(${entity.id})${entity.status ? ` — ${entity.status}` : ""}`;
       details.appendChild(summary);
       appendPresentationFields(details, entity.fields);
+      appendTopologyActions(details, entity);
       container.appendChild(details);
     };
     graph.nodes.forEach((node) => appendEntity(node, "node"));
@@ -321,6 +379,7 @@
 
   const renderValuePresentation = (model, error) => {
     clearChildren(retainedPresentation);
+    topologyActionButtons = [];
     if (!model) {
       retainedPresentation.hidden = true;
       if (error) retainedPresentation.dataset.error = error.reason;
@@ -1039,6 +1098,16 @@
       capability.value.length === 0;
     retainedTerminate.disabled = retainedBusy || capability.value.length === 0 ||
       (retainedCoordinateKnown && retainedWorkerStatus === "terminated");
+    // Descriptor buttons obey exactly the retained command surface's
+    // ready/busy/uncertain/terminal disablement, plus their own declared
+    // enabled flag. They never outlive the presentation that carried them.
+    for (const actionButton of topologyActionButtons) {
+      actionButton.button.disabled = retainedBusy || retainedUncertain ||
+        retainedTerminationUnknown || capability.value.length === 0 ||
+        !actionButton.enabled ||
+        actionButton.nextSequence !== retainedNextSequence ||
+        (retainedCoordinateKnown && retainedWorkerStatus !== "ready");
+    }
     syncSessionChoiceUI();
   };
 
@@ -1763,6 +1832,7 @@
     retainedTerminationUnknown = false;
     retainedCoordinateKnown = true;
     retainedWorkerStatus = coordinate.status;
+    retainedNextSequence = coordinate.nextSequence;
   };
 
   const refreshRetainedFrame = async ({preserveStatus = false} = {}) => {

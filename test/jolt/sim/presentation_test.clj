@@ -364,3 +364,170 @@
                             {:label (str "Field " index) :value index})
                           (range 65))})}}
                {:kind :acme/value})))))))
+
+(def ^:private topology-action-registry
+  {:acme/network
+   {:kind :acme.kind/topology
+    :present
+    (fn [_]
+      {:summary "network"
+       :fields []
+       :graph
+       {:directed? true
+        :nodes [{:id "a" :label "A" :status nil :fields []
+                 :actions [{:id "inspect"
+                            :label "Inspect"
+                            :command {:op :inspect :target "a"}
+                            :enabled? true}
+                           {:id "stop"
+                            :label "Stop"
+                            :command [:stop "a"]
+                            :enabled? false}]}
+                {:id "b" :label "B" :status nil :fields []}]
+        :edges [{:id "a--b" :from "a" :to "b" :label "link"
+                 :status nil :fields []
+                 :actions [{:id "partition"
+                            :label "Partition"
+                            :command {:op :partition :link ["a" "b"]}
+                            :enabled? true}]}]}})}})
+
+(deftest topology-actions-are-closed-canonical-and-deterministic
+  (let [model (presentation/present-value
+               topology-action-registry {:kind :acme/network})
+        actions (get-in model [:graph :nodes 0 :actions])]
+    (is (= :acme.kind/topology (:kind model)))
+    (is (= ["inspect" "stop"] (mapv :id actions)))
+    (is (= ["Inspect" "Stop"] (mapv :label actions)))
+    (is (= [true false] (mapv :enabled? actions)))
+    (is (= [{:op :inspect :target "a"} [:stop "a"]]
+           (mapv #(trace/restore-value (:command %)) actions))
+        "commands are stored as inert canonical data that restores exactly")
+    (is (= []
+           (get-in model [:graph :nodes 1 :actions]))
+        "an entity without an :actions key presents an explicitly empty vector")
+    (is (= ["partition"]
+           (mapv :id (get-in model [:graph :edges 0 :actions])))
+        "edges carry the same closed action descriptor shape as nodes")
+    (is (= model
+           (presentation/present-value
+            topology-action-registry {:kind :acme/network}))
+        "action presentation is deterministic")))
+
+(deftest topology-action-commands-are-snapshotted-like-field-values
+  (let [bytes (byte-array [(byte 1) (byte 2)])
+        registry
+        {:acme/network
+         {:kind :acme.kind/topology
+          :present
+          (fn [_]
+            {:summary "network" :fields []
+             :graph
+             {:directed? false
+              :nodes [{:id "a" :label "A" :status nil :fields []
+                       :actions [{:id "send"
+                                  :label "Send"
+                                  :command {:payload bytes}
+                                  :enabled? true}]}]
+              :edges []}})}}
+        model (presentation/present-value registry {:kind :acme/network})]
+    (aset-byte bytes 0 (byte 9))
+    (is (= [1 2]
+           (vec (:payload
+                 (trace/restore-value
+                  (get-in model [:graph :nodes 0 :actions 0 :command])))))
+        "the stored command is a snapshot, not a live mutable reference")))
+
+(deftest malformed-topology-actions-fail-closed
+  (let [data-for
+        (fn [mutate]
+          (caught-data
+           #(presentation/present-value
+             {:acme/network
+              {:kind :acme.kind/topology
+               :present
+               (fn [_]
+                 {:summary "network" :fields []
+                  :graph
+                  {:directed? false
+                   :nodes [(mutate {:id "a" :label "A" :status nil
+                                    :fields []})]
+                   :edges []}})}}
+             {:kind :acme/network})))
+        action (fn []
+                 {:id "go" :label "Go" :command {:op :go} :enabled? true})
+        with-actions (fn [actions]
+                       (fn [node] (assoc node :actions actions)))]
+    (doseq [[mutate reason]
+            [;; The descriptor key set is exactly
+             ;; #{:id :label :command :enabled?}.
+             [(with-actions [(assoc (action) :title "boom")])
+              :invalid-action-shape]
+             [(with-actions [(dissoc (action) :command)])
+              :invalid-action-shape]
+             [(with-actions [{:id "" :label "Go" :command {} :enabled? true}])
+              :invalid-action-id]
+             [(with-actions [{:id "go" :label 42 :command {} :enabled? true}])
+              :invalid-action-label]
+             [(with-actions [{:id "go" :label "" :command {} :enabled? true}])
+              :invalid-action-label]
+             [(with-actions [{:id "go" :label "Go" :command {} :enabled? "y"}])
+              :invalid-action-enabled-flag]
+             ;; A command must be canonicalizable data: functions, metadata,
+             ;; and other opaque leaves are rejected, never deferred.
+             [(with-actions [{:id "go" :label "Go"
+                              :command {:f (fn [_] 1)} :enabled? true}])
+              :unsupported-type]
+             [(with-actions [(with-meta (action) {:x 1})])
+              :invalid-action-shape]
+             ;; The actions vector itself is bounded and metadata-free.
+             [(with-actions (with-meta [(action)] {:x 1}))
+              :invalid-actions]
+             [(with-actions (list (action)))
+              :invalid-actions]
+             [(with-actions (mapv (fn [index]
+                                    {:id (str "a" index) :label "Go"
+                                     :command {} :enabled? true})
+                                  (range 17)))
+              :invalid-actions]
+             ;; Action IDs are sorted and unique within one entity.
+             [(with-actions [{:id "b" :label "B" :command {} :enabled? true}
+                             {:id "a" :label "A" :command {} :enabled? true}])
+              :unstable-action-order]
+             [(with-actions [{:id "a" :label "A" :command {} :enabled? true}
+                             {:id "a" :label "A2" :command {} :enabled? false}])
+              :duplicate-action-id]
+             ;; The command's canonical EDN is bounded.
+             [(with-actions [{:id "go" :label "Go"
+                              :command {:payload (apply str (repeat 5000 \x))}
+                              :enabled? true}])
+              :invalid-action-command]
+             ;; The actual wire is the tagged canonical form. A collection of
+             ;; compact ordinary entries can fit in ordinary EDN while its
+             ;; unambiguous canonical encoding exceeds the wire bound.
+             [(with-actions
+               [{:id "go" :label "Go"
+                 :command (into {}
+                                (map (fn [index]
+                                       [(keyword (str "k" index)) index])
+                                     (range 80)))
+                 :enabled? true}])
+              :invalid-action-command]
+             ;; A present-but-nil :actions is not the same as an omitted key.
+             [(with-actions nil) :invalid-actions]]]
+      (is (= reason (:reason (data-for mutate)))
+          (str "mutation must fail closed with " reason))))
+  (let [data (caught-data
+              #(presentation/present-value
+                {:acme/network
+                 {:kind :acme.kind/topology
+                  :present
+                  (fn [_]
+                    {:summary "network" :fields []
+                     :graph
+                     {:directed? false
+                      :nodes [{:id "a" :label "A" :status nil :fields []}]
+                      :edges [{:id "e" :from "a" :to "a" :label "e"
+                               :status nil :fields [] :actions :bad}]}})}}
+                {:kind :acme/network}))]
+    (is (= :invalid-actions (:reason data))
+        "edge action vectors are validated exactly like node action vectors")))
