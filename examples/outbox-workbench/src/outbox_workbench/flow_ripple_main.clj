@@ -11,14 +11,30 @@
   first closes bridge admission, then stops Ripple and gracefully stops and
   reaps the worker, using forced termination only as a bounded fallback."
   (:require [clojure.edn :as edn]
+            [jolt.sim.eval-session :as eval-session]
             [jolt.sim.fixtures.outbox-delivery :as outbox]
             [jolt.sim.flow :as flow]
             [jolt.sim.flow-effect-session :as effect-session]
             [jolt.sim.retained-process :as retained]
+            [jolt.sim.trace :as trace]
             [jolt.sim.viewer :as viewer]
             [outbox-workbench.flow-retained :as flow-retained]))
 
 (def default-config-path "config/ripple-eval.edn")
+
+(defonce ^:private active-workbench* (atom nil))
+(def ^:private end-of-config (Object.))
+
+(defn active-bridge
+  "Returns the exact flow/effect bridge owned by the foreground workbench.
+
+  This trusted REPL seam and Ripple address the same revision/effect ledger.
+  It is unavailable for programmatic `start!` lifecycles and outside `-main`."
+  []
+  (if-let [workbench @active-workbench*]
+    (:bridge workbench)
+    (throw (ex-info "No foreground Outbox flow workbench is active"
+                    {:type ::not-running}))))
 
 (defn- required-environment [name]
   (let [value (System/getenv name)]
@@ -27,8 +43,32 @@
                       {:type ::missing-environment :name name})))
     value))
 
+(defn parse-config-edn
+  "Reads exactly one EDN form before any worker or server allocation."
+  [text path]
+  (try
+    (let [reader (__string-reader text)
+          [value _] (read+string reader false end-of-config)
+          [trailing _] (read+string reader false end-of-config)]
+      (when (identical? value end-of-config)
+        (throw (ex-info "Outbox workbench config is empty"
+                        {:type ::invalid-viewer-config
+                         :reason :empty-document :path path})))
+      (when-not (identical? trailing end-of-config)
+        (throw (ex-info "Outbox workbench config has a trailing EDN form"
+                        {:type ::invalid-viewer-config
+                         :reason :trailing-document :path path})))
+      (edn/read-string text))
+    (catch :default error
+      (if (= ::invalid-viewer-config (:type (ex-data error)))
+        (throw error)
+        (throw (ex-info "Outbox workbench config is not exactly one EDN form"
+                        {:type ::invalid-viewer-config
+                         :reason :malformed-edn :path path}
+                        error))))))
+
 (defn- read-viewer-config [path]
-  (let [config (edn/read-string (slurp path))]
+  (let [config (parse-config-edn (slurp path) path)]
     (when-not (map? config)
       (throw (ex-info "Ripple config must be an EDN map"
                       {:type ::invalid-viewer-config :path path})))
@@ -48,6 +88,7 @@
   schema and handler. The first exact branch emits `submit-command`; the next
   exact branch emits `{:op :deliver}` on the same Session and effect ledger."
   [submit-command]
+  (flow-retained/validate-command! submit-command)
   (flow/compile-workflow
    {:cells {:outbox :emit-command}
     :edges []
@@ -105,19 +146,31 @@
   (let [sim (interactive-flow submit-command)
         worker* (volatile! nil)
         bridge* (volatile! nil)
-        server* (volatile! nil)]
+        eval-session* (volatile! nil)
+        server* (volatile! nil)
+        startup-phase* (volatile! :retained-start)]
     (try
       (let [worker (retained/start! retained-config)
             _ (vreset! worker* worker)
+            _ (vreset! startup-phase* :bridge-attach)
             bridge (effect-session/attach!
                     {:sim sim
                      :worker (effect-session/retained-worker-service worker)
                      :effect-kind :example.outbox/command})
             _ (vreset! bridge* bridge)
-            server (viewer/start-flow-effect-session! viewer-config bridge)
+            _ (vreset! startup-phase* :eval-session-start)
+            eval-session (eval-session/start)
+            _ (vreset! eval-session* eval-session)
+            _ (vreset! startup-phase* :viewer-start)
+            server (viewer/start-workbench!
+                    viewer-config
+                    {:flow-effect-bridge bridge
+                     :retained-process worker
+                     :eval-session eval-session})
             _ (vreset! server* server)]
         {:worker worker
          :bridge bridge
+         :eval-session eval-session
          :server server
          :viewer-stopped? (atom false)
          :stopping? (atom false)
@@ -143,6 +196,12 @@
               (catch :default error
                 (swap! cleanup-errors conj
                        {:phase :bridge-close :message (ex-message error)}))))
+          (when-let [session @eval-session*]
+            (try
+              (eval-session/close! session)
+              (catch :default error
+                (swap! cleanup-errors conj
+                       {:phase :eval-close :message (ex-message error)}))))
           (when-let [worker @worker*]
             (try
               (let [result (stop-worker! worker)]
@@ -163,7 +222,10 @@
           ;; discoverable before `start!` has returned a lifecycle handle.
           (throw (ex-info (or (ex-message primary)
                               "flow Ripple startup failed")
-                          (cond-> (or (ex-data primary) {})
+                          (cond-> (assoc (or (ex-data primary) {})
+                                         ::startup-phase @startup-phase*
+                                         ::startup-error
+                                         (trace/normalize-error primary))
                             worker-before-cleanup
                             (assoc ::worker-before-cleanup worker-before-cleanup)
 
@@ -189,7 +251,10 @@
   "Closes bridge admission, stops Ripple, and gracefully stops/reaps worker.
 
   The operation is idempotent. Closing the bridge never terminates its
-  borrowed worker; this launcher performs the worker transition afterward."
+  borrowed worker; this launcher performs the worker transition afterward.
+  EvalSession closure is intentionally omitted because an arbitrary evaluation
+  may own its lock forever; this command-line-owned session is reclaimed when
+  its process exits."
   [{:keys [bridge worker stopping? stop-result] :as workbench}]
   (if (compare-and-set! stopping? false true)
     (let [bridge-error
@@ -236,6 +301,9 @@
                                   :command outbox/default-command}})
         shutdown-once! #(shutdown! workbench)]
     (try
+      (when-not (compare-and-set! active-workbench* nil workbench)
+        (throw (ex-info "An Outbox flow workbench is already active"
+                        {:type ::already-running})))
       (jolt.host/add-shutdown-hook shutdown-once!)
       (println (str "Ripple flow/effect outbox: http://127.0.0.1:"
                     (get-in workbench [:server :port])))
@@ -245,4 +313,6 @@
       (flush)
       (jolt.host/park-until-interrupt)
       (finally
+        (when (identical? workbench @active-workbench*)
+          (reset! active-workbench* nil))
         (shutdown-once!)))))

@@ -80,6 +80,60 @@ attachment needs a capability-protected adapter over the same closed frame and
 receipt schemas; it must not serialize the Session implementation or accept a
 browser-selected function.
 
+## Evolving workbench values and presentation overlays
+
+Ripple is one generic workbench, not a collection of application dashboards.
+A live session may accumulate loaded documents, evaluation results, tap values,
+session frames, receipts, topology projections, monitor verdicts, and retained
+evidence. Each item keeps a stable source coordinate, canonical source value,
+source digest, and provenance. Application examples may seed or exercise this
+stream, but they do not define new browser architecture.
+
+One source value can have several valid presentations. The selection order is:
+
+1. an exact user override for one source coordinate or subtree;
+2. a persisted domain-to-kind rule;
+3. a producer or library default kind;
+4. automatic advice from registered schemas or predicates; and
+5. raw canonical EDN.
+
+An override changes presentation only. It never edits the source value, trace,
+receipt, or proof evidence. Ripple retains the selected kind, renderer output,
+and renderer failure separately so a misleading or broken renderer cannot hide
+the original value.
+
+Exact overrides are bound to a source coordinate and digest. They become stale
+when that item changes. Persisted domain rules are intentionally broader and
+match only closed data selectors such as source kind, event tag, a top-level
+discriminator, schema ID, or item path. A trusted project may register richer
+matching code under a stable ID; persisted workspace data refers to that ID and
+fails closed when it is unavailable. Uploaded EDN never supplies executable
+predicates or renderers.
+
+Presentation changes form a revisioned, append-only workspace journal. A user
+can undo a choice, keep it for the current session, or save it in a workspace
+document. A future UI can consume the same item, registry, selection, and
+journal contracts; this mechanism is not coupled to Ripple's HTML.
+
+The intended interaction follows Portal's useful distinction between a value,
+its applicable viewers, and the current viewer. It also retains the useful part
+of notebook-style per-result kind selection without embedding a fixed kind list
+or application vocabulary in the UI. Well-known Kindly-compatible kinds are a
+shared vocabulary; libraries may add data-only presentation models and trusted
+renderers through the programmatic registry.
+
+Open decisions that require real usage evidence:
+
+- whether exact subtree coordinates should use `datafy`/`nav` paths, durable
+  item-local IDs, or both;
+- which closed selector subset is sufficient for persisted domain rules;
+- whether workspace journals remain local files or gain an optional retained
+  process writer;
+- which Kindly kinds are implemented natively versus delegated to an adapter;
+  and
+- whether interactive viewer choice belongs in the first item-stream slice or
+  follows a read-only item history.
+
 ## Ripple in Ripple
 
 "Ripple in Ripple" is a canonical end-to-end acceptance scenario, not a

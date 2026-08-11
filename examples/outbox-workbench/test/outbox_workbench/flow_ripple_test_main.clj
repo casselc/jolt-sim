@@ -40,6 +40,12 @@
 (defn- append-progress! [path record]
   (spit path (str (pr-str record) "\n") :append true))
 
+(defn- task-error [error]
+  ;; Jolt futures wrap task failures once. Do not recursively traverse causes:
+  ;; a retained host exception may expose an opaque native cause sentinel.
+  (let [cause (ex-cause error)]
+    (if (and cause (not (identical? cause error))) cause error)))
+
 (defn- check [label expected actual]
   (if (= expected actual)
     (println (str "ok   " label))
@@ -223,7 +229,8 @@
     (let [task (future (run-scenario progress))
           outcome (try
                     {:result (deref task watchdog-timeout-ms ::timeout)}
-                    (catch :default error {:error error}))]
+                    (catch :default error
+                      {:error (task-error error)}))]
       (cond
         (:error outcome)
         (do

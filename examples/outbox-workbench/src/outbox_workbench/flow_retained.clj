@@ -56,11 +56,35 @@
    [:payload [:vector :int]]])
 
 (def command-schema
-  "The closed boundary for one retained outbox command. :command is optional
-  because {:op :deliver} carries no command payload."
+  "The closed structural boundary for one retained outbox command.
+
+  Malli's inspectable flow subset cannot express keys conditional on :op, so
+  `validate-command!` supplies the dependent-key invariant: :submit requires
+  exactly :op/:command and :deliver requires exactly :op."
   [:map {:closed true}
    [:op [:enum :submit :deliver]]
    [:command {:optional true} outbox-command-schema]])
+
+(def ^:private command-keys
+  {:submit #{:op :command}
+   :deliver #{:op}})
+
+(defn validate-command!
+  "Returns an exact outbox command or throws before an intent can exist.
+
+  This is the operation-dependent part of the declared command contract. It
+  complements `command-schema`; it does not contact or inspect a worker."
+  [command]
+  (let [operation (:op command)
+        expected (get command-keys operation)
+        actual (when (map? command) (set (keys command)))]
+    (when-not (and expected (= expected actual))
+      (throw (ex-info "Outbox flow command has an invalid operation shape"
+                      {:type ::invalid-command
+                       :operation operation
+                       :expected-keys expected
+                       :actual-keys actual})))
+    command))
 
 (def command-specs
   {:emit-command
@@ -71,15 +95,17 @@
 (def command-handlers
   {:emit-command
    (fn [_ state data]
-     {:state (inc (or state 0))
-      :data data
-      :intents [{:kind :example.outbox/command
-                 :payload data}]})})
+     (let [command (validate-command! data)]
+       {:state (inc (or state 0))
+        :data command
+        :intents [{:kind :example.outbox/command
+                   :payload command}]}))})
 
 (defn command-flow
   "Compiles a minimal finite flow that emits exactly one :example.outbox/command
   intent whose payload is `command`, passed unchanged to the retained adapter."
   [command]
+  (validate-command! command)
   (flow/compile-workflow
    {:cells {:emit :emit-command}
     :edges []

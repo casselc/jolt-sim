@@ -1,0 +1,3 @@
+;; Dedicated no-mock Playwright port. The capability token remains an
+;; environment-only secret and never enters this checked-in data file.
+{:port 8794}

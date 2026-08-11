@@ -5364,6 +5364,43 @@
                 [:step-reconcile branch 0] [:close 0]]
                @calls))))))
 
+(deftest start-workbench-composes-ui-neutral-capabilities
+  (let [bridge (Object.)
+        handle (Object.)
+        eval (Object.)
+        captured (atom nil)]
+    (with-redefs [viewer/start!
+                  (fn [_ services]
+                    (reset! captured services)
+                    :server)
+                  viewer-eval/service (fn [_] (fn [_] :evaluated))]
+      (is (= :server
+             (viewer/start-workbench!
+              (config)
+              {:flow-effect-bridge bridge
+               :retained-process handle
+               :eval-session eval})))
+      (is (every? #(fn? (get @captured %))
+                  [:read-session-frame :step-session-frame!
+                   :reconcile-session-effect! :reconcile-session-step
+                   :close-session! :read-retained-frame :command-retained!
+                   :reconcile-retained! :terminate-retained!
+                   :evaluate-form!])))))
+
+(deftest start-workbench-rejects-ambiguous-capability-shapes
+  (doseq [[capabilities reason]
+          [[nil :not-a-map]
+           [{} :empty]
+           [{:eval-session nil} :nil-values]
+           [{:application :opaque} :unknown-keys]]]
+    (let [error (try
+                  (viewer/start-workbench! (config) capabilities)
+                  nil
+                  (catch :default error error))]
+      (is (= :jolt.sim.viewer/invalid-config (:type (ex-data error))))
+      (is (= :invalid-workbench-capabilities (:reason (ex-data error))))
+      (is (= reason (get-in (ex-data error) [:detail :reason]))))))
+
 (deftest stopping-viewer-does-not-close-a-flow-effect-bridge
   (let [stops (atom [])
         bridge-calls (atom 0)]
