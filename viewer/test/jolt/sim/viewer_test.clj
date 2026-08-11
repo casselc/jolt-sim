@@ -1371,6 +1371,9 @@
     (try
       (let [defined (evaluate "(def ripple-answer 42)")
             recalled (evaluate "[ripple-answer *1]")
+            switched (evaluate "(ns jolt.sim.viewer-eval-target)")
+            namespaced-defined (evaluate "(def namespaced-ripple-answer 43)")
+            namespaced-recalled (evaluate "[namespaced-ripple-answer *1]")
             failed (evaluate "(throw (ex-info \"ripple-boom\" {:ui true}))")]
         (is (= "0" (get defined "sequence")))
         (is (= "user" (get-in recalled ["namespace" "after"])))
@@ -1379,8 +1382,14 @@
         ;; evaluation has already committed.
         (is (= "[42 \"#<class clojure.lang.Var>\"]"
                (get-in recalled ["events" 0 "printedValue"])))
+        (is (= "jolt.sim.viewer-eval-target"
+               (get-in switched ["namespace" "after"])))
+        (is (= "jolt.sim.viewer-eval-target"
+               (get-in namespaced-defined ["namespace" "after"])))
+        (is (= "[43 \"#<class clojure.lang.Var>\"]"
+               (get-in namespaced-recalled ["events" 0 "printedValue"])))
         (is (true? (get-in failed ["events" 0 "exception"])))
-        (is (= "2" (get failed "sequence"))))
+        (is (= "5" (get failed "sequence"))))
       (finally
         (eval-session/close! session)))))
 
