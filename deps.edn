@@ -224,7 +224,7 @@
    :extra-deps
    {io.github.casselc/jolt-net
     {:git/url "https://github.com/casselc/jolt-net.git"
-     :git/sha "699b908ffb4eb79ad35055cdc20866bb504e6932"}}
+     :git/sha "f335b8d5f26722233fd82af5e8c0e800397851c9"}}
    :main-opts ["-m" "jolt.sim.explore-worker"]}
 
   ;; Process-isolated integration gate for worker completion, timeout,
@@ -301,7 +301,7 @@
      :git/sha "0ceaa900bfca11933d35831d7697c7e2c5b22f04"}
     io.github.casselc/jolt-net
     {:git/url "https://github.com/casselc/jolt-net.git"
-     :git/sha "699b908ffb4eb79ad35055cdc20866bb504e6932"}}
+     :git/sha "f335b8d5f26722233fd82af5e8c0e800397851c9"}}
    :main-opts ["-m" "jolt.sim.explore-worker"]}
 
   ;; Real SQLite lane: use the complete public DB coordinate so its native
@@ -333,7 +333,7 @@
      :git/sha "0ceaa900bfca11933d35831d7697c7e2c5b22f04"}
     io.github.casselc/jolt-net
     {:git/url "https://github.com/casselc/jolt-net.git"
-     :git/sha "699b908ffb4eb79ad35055cdc20866bb504e6932"}
+     :git/sha "f335b8d5f26722233fd82af5e8c0e800397851c9"}
     io.github.casselc/jolt-bencode
     {:git/url "https://github.com/casselc/jolt-bencode.git"
      :git/sha "6c68bf2a1dbd7e438923ce38252c2abbdcb1643f"}
@@ -357,7 +357,7 @@
      :git/sha "0ceaa900bfca11933d35831d7697c7e2c5b22f04"}
     io.github.casselc/jolt-net
     {:git/url "https://github.com/casselc/jolt-net.git"
-     :git/sha "699b908ffb4eb79ad35055cdc20866bb504e6932"}
+     :git/sha "f335b8d5f26722233fd82af5e8c0e800397851c9"}
     io.github.casselc/jolt-bencode
     {:git/url "https://github.com/casselc/jolt-bencode.git"
      :git/sha "6c68bf2a1dbd7e438923ce38252c2abbdcb1643f"}
@@ -387,12 +387,12 @@
    :extra-deps
    {io.github.casselc/jolt-net
     {:git/url "https://github.com/casselc/jolt-net.git"
-     :git/sha "699b908ffb4eb79ad35055cdc20866bb504e6932"}}
+     :git/sha "f335b8d5f26722233fd82af5e8c0e800397851c9"}}
    :main-opts ["-m" "jolt.sim.posix-loopback-test-main"]}
 
   ;; Unchanged public jolt-http (README Hello World) application code over the
   ;; deterministic POSIX loopback FFI pack. Override jolt-http's historical
-  ;; transport pins with the reviewed Jolt 0.5.20 clock-compatible jolt-tcp and
+  ;; transport pins with the reviewed Jolt v0.7.3-compatible jolt-tcp and
   ;; jolt-net commits, so CI needs no sibling checkout or moving branch.
   :http-hello-test
   {:extra-paths ["test"]
@@ -405,7 +405,7 @@
      :git/sha "0ceaa900bfca11933d35831d7697c7e2c5b22f04"}
     io.github.casselc/jolt-net
     {:git/url "https://github.com/casselc/jolt-net.git"
-     :git/sha "699b908ffb4eb79ad35055cdc20866bb504e6932"}}
+     :git/sha "f335b8d5f26722233fd82af5e8c0e800397851c9"}}
    :main-opts ["-m" "jolt.sim.posix-loopback-http-test-main"]}
 
   ;; Ordinary jolt-http and db application code exercised first against real
@@ -425,7 +425,7 @@
      :git/sha "0ceaa900bfca11933d35831d7697c7e2c5b22f04"}
     io.github.casselc/jolt-net
     {:git/url "https://github.com/casselc/jolt-net.git"
-     :git/sha "699b908ffb4eb79ad35055cdc20866bb504e6932"}}
+     :git/sha "f335b8d5f26722233fd82af5e8c0e800397851c9"}}
    :main-opts ["-m" "jolt.sim.http-sqlite-test-main"]}
 
   ;; Hermetic SQLite variant: load only db's source path so its native-library
@@ -445,7 +445,7 @@
      :git/sha "0ceaa900bfca11933d35831d7697c7e2c5b22f04"}
     io.github.casselc/jolt-net
     {:git/url "https://github.com/casselc/jolt-net.git"
-     :git/sha "699b908ffb4eb79ad35055cdc20866bb504e6932"}}
+     :git/sha "f335b8d5f26722233fd82af5e8c0e800397851c9"}}
    :main-opts ["-m" "jolt.sim.http-sqlite-test-main" "--sim-only"]}
 
   ;; Simulator-free pure application core: the canonical HTTP command ->
@@ -497,7 +497,7 @@
      :git/sha "0ceaa900bfca11933d35831d7697c7e2c5b22f04"}
     io.github.casselc/jolt-net
     {:git/url "https://github.com/casselc/jolt-net.git"
-     :git/sha "699b908ffb4eb79ad35055cdc20866bb504e6932"}
+     :git/sha "f335b8d5f26722233fd82af5e8c0e800397851c9"}
     io.github.casselc/data.json
     {:git/url "https://github.com/casselc/data.json.git"
      :git/sha "8a6dc9668e5c3596a335759defeb7ec80cd3b5f8"}
@@ -538,7 +538,7 @@
      :git/sha "0ceaa900bfca11933d35831d7697c7e2c5b22f04"}
     io.github.casselc/jolt-net
     {:git/url "https://github.com/casselc/jolt-net.git"
-     :git/sha "699b908ffb4eb79ad35055cdc20866bb504e6932"}
+     :git/sha "f335b8d5f26722233fd82af5e8c0e800397851c9"}
     io.github.casselc/jolt-bencode
     {:git/url "https://github.com/casselc/jolt-bencode.git"
      :git/sha "6c68bf2a1dbd7e438923ce38252c2abbdcb1643f"}
@@ -581,7 +581,7 @@
      :git/sha "0ceaa900bfca11933d35831d7697c7e2c5b22f04"}
     io.github.casselc/jolt-net
     {:git/url "https://github.com/casselc/jolt-net.git"
-     :git/sha "699b908ffb4eb79ad35055cdc20866bb504e6932"}
+     :git/sha "f335b8d5f26722233fd82af5e8c0e800397851c9"}
     io.github.casselc/jolt-bencode
     {:git/url "https://github.com/casselc/jolt-bencode.git"
      :git/sha "6c68bf2a1dbd7e438923ce38252c2abbdcb1643f"}
@@ -640,7 +640,7 @@
      :git/sha "0ceaa900bfca11933d35831d7697c7e2c5b22f04"}
     io.github.casselc/jolt-net
     {:git/url "https://github.com/casselc/jolt-net.git"
-     :git/sha "699b908ffb4eb79ad35055cdc20866bb504e6932"}
+     :git/sha "f335b8d5f26722233fd82af5e8c0e800397851c9"}
     io.github.casselc/jolt-bencode
     {:git/url "https://github.com/casselc/jolt-bencode.git"
      :git/sha "6c68bf2a1dbd7e438923ce38252c2abbdcb1643f"}
@@ -667,7 +667,7 @@
      :git/sha "0ceaa900bfca11933d35831d7697c7e2c5b22f04"}
     io.github.casselc/jolt-net
     {:git/url "https://github.com/casselc/jolt-net.git"
-     :git/sha "699b908ffb4eb79ad35055cdc20866bb504e6932"}
+     :git/sha "f335b8d5f26722233fd82af5e8c0e800397851c9"}
     io.github.casselc/jolt-bencode
     {:git/url "https://github.com/casselc/jolt-bencode.git"
      :git/sha "6c68bf2a1dbd7e438923ce38252c2abbdcb1643f"}
@@ -711,7 +711,7 @@
      :git/sha "0ceaa900bfca11933d35831d7697c7e2c5b22f04"}
     io.github.casselc/jolt-net
     {:git/url "https://github.com/casselc/jolt-net.git"
-     :git/sha "699b908ffb4eb79ad35055cdc20866bb504e6932"}
+     :git/sha "f335b8d5f26722233fd82af5e8c0e800397851c9"}
     io.github.casselc/jolt-bencode
     {:git/url "https://github.com/casselc/jolt-bencode.git"
      :git/sha "6c68bf2a1dbd7e438923ce38252c2abbdcb1643f"}
@@ -740,7 +740,7 @@
      :git/sha "0ceaa900bfca11933d35831d7697c7e2c5b22f04"}
     io.github.casselc/jolt-net
     {:git/url "https://github.com/casselc/jolt-net.git"
-     :git/sha "699b908ffb4eb79ad35055cdc20866bb504e6932"}
+     :git/sha "f335b8d5f26722233fd82af5e8c0e800397851c9"}
     io.github.casselc/jolt-bencode
     {:git/url "https://github.com/casselc/jolt-bencode.git"
      :git/sha "6c68bf2a1dbd7e438923ce38252c2abbdcb1643f"}
@@ -791,7 +791,7 @@
      :git/sha "0ceaa900bfca11933d35831d7697c7e2c5b22f04"}
     io.github.casselc/jolt-net
     {:git/url "https://github.com/casselc/jolt-net.git"
-     :git/sha "699b908ffb4eb79ad35055cdc20866bb504e6932"}
+     :git/sha "f335b8d5f26722233fd82af5e8c0e800397851c9"}
     io.github.casselc/jolt-bencode
     {:git/url "https://github.com/casselc/jolt-bencode.git"
      :git/sha "6c68bf2a1dbd7e438923ce38252c2abbdcb1643f"}
@@ -837,7 +837,7 @@
      :git/sha "0ceaa900bfca11933d35831d7697c7e2c5b22f04"}
     io.github.casselc/jolt-net
     {:git/url "https://github.com/casselc/jolt-net.git"
-     :git/sha "699b908ffb4eb79ad35055cdc20866bb504e6932"}
+     :git/sha "f335b8d5f26722233fd82af5e8c0e800397851c9"}
     io.github.casselc/jolt-bencode
     {:git/url "https://github.com/casselc/jolt-bencode.git"
      :git/sha "6c68bf2a1dbd7e438923ce38252c2abbdcb1643f"}
@@ -885,7 +885,7 @@
      :git/sha "0ceaa900bfca11933d35831d7697c7e2c5b22f04"}
     io.github.casselc/jolt-net
     {:git/url "https://github.com/casselc/jolt-net.git"
-     :git/sha "699b908ffb4eb79ad35055cdc20866bb504e6932"}
+     :git/sha "f335b8d5f26722233fd82af5e8c0e800397851c9"}
     io.github.casselc/jolt-bencode
     {:git/url "https://github.com/casselc/jolt-bencode.git"
      :git/sha "6c68bf2a1dbd7e438923ce38252c2abbdcb1643f"}
