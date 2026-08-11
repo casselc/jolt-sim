@@ -1,0 +1,17 @@
+{:paths ["src"]
+
+ :deps
+ {;; Ripple contributes the generic retained-process and persistent evaluation
+  ;; services.  The Broadcast application itself stays in the separately
+  ;; launched root worker selected by JOLT_SIM_PROJECT_DIR.
+  io.github.casselc/jolt-sim-viewer
+  {:local/root "../../viewer"}}
+
+ :aliases
+ {:workbench
+  {:main-opts ["-m" "maelstrom-broadcast-workbench.main"]}
+
+  ;; Real loopback HTTP integration against one fresh retained Broadcast child.
+  :workbench-test
+  {:extra-paths ["test"]
+   :main-opts ["-m" "maelstrom-broadcast-workbench.workbench-test-main"]}}}
