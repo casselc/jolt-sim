@@ -227,7 +227,13 @@ JOLT_SIM_RETAINED_WORKBENCH_PROGRESS_FILE='/tmp/retained-workbench-progress.edn'
 
 ## Interactive flow/effect outbox
 
-`:flow-ripple` attaches Ripple directly to one pure finite flow whose two
+This is an acceptance fixture for Ripple's generic live workbench. It is not a
+separate Outbox UI. The launcher supplies three caller-owned capabilities to
+`jolt.sim.viewer/start-workbench!`: a flow/effect bridge, its retained worker,
+and an EvalSession. Ripple contributes only its common session, worker, REPL,
+document, and presentation surfaces.
+
+`:flow-ripple` attaches one pure finite flow whose two
 branches emit the ordinary retained commands in order. The first choice sends
 the unchanged `{:op :submit ...}` payload; the next sends unchanged
 `{:op :deliver}`. `jolt.sim.flow-effect-session` publishes each intent only
@@ -279,3 +285,23 @@ JOLT_SIM_PROGRESS_FILE='/tmp/flow-ripple-progress.edn' \
 
 The progress file and the retained worker's printed artifact directory are
 never removed on failure or timeout.
+
+The no-mock Playwright gate chooses submit in Ripple, chooses delivery through
+an evaluated Jolt form against the same bridge, and then stops the retained
+worker. The unchanged application crosses real HTTP, SQLite, TCP, and bencode
+boundaries. The gate retains screenshots, video, browser trace, and worker
+mailboxes under `target/ripple-playwright/outbox-flow/`:
+
+```sh
+cd viewer
+JOLT_SIM_BIN='/absolute/path/to/sim-enabled-jolt' \
+JOLT_SIM_EVAL_BIN='/absolute/path/to/eval-capable-jolt' \
+JOLT_SIM_CHEZ_WRAPPER='/home/chuck/ai-src/tools/jolt-with-chez-10.4.1' \
+JOLT_SIM_PROJECT_DIR='/absolute/path/to/jolt-sim-worktree' \
+  npx playwright test --config=playwright.outbox-flow.config.mjs
+```
+
+The current generic raw-EDN fallback is deliberately visible in these
+artifacts. Domain presenters and user-selected or persisted Kindly-compatible
+view kinds belong to the shared workbench item model, not to Outbox-specific
+HTML or JavaScript.
