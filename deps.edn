@@ -71,6 +71,11 @@
   {:extra-paths ["test"]
    :main-opts ["-m" "jolt.sim.session-test-main"]}
 
+  ;; Minimal Mycelium-shaped finite workflow compiler over kernel + Session.
+  :flow-test
+  {:extra-paths ["test"]
+   :main-opts ["-m" "jolt.sim.flow-test-main"]}
+
   ;; Focused persistent evaluation-session gate. This uses the socket-free
   ;; evaluator and ordinary source paths; it does not start Ripple or a server.
   :eval-session-test
