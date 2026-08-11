@@ -80,4 +80,15 @@
   ;; ordinary receipt-continuation flow.
   :flow-retained-test
   {:extra-paths ["test"]
-   :main-opts ["-m" "outbox-workbench.flow-retained-test-main"]}}}
+   :main-opts ["-m" "outbox-workbench.flow-retained-test-main"]}
+
+  ;; Interactive real outbox flow: Ripple chooses the submit branch and a
+  ;; trusted REPL can choose deliver through the same bridge/revision/ledger.
+  :flow-ripple
+  {:main-opts ["-m" "outbox-workbench.flow-ripple-main"]}
+
+  ;; Fresh-process proof of the same UI + REPL vertical over the unchanged
+  ;; retained HTTP/SQLite/TCP/bencode application worker.
+  :flow-ripple-test
+  {:extra-paths ["test"]
+   :main-opts ["-m" "outbox-workbench.flow-ripple-test-main"]}}}
