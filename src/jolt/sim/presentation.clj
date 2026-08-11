@@ -20,6 +20,8 @@
 
 (def invalid-registry ::invalid-registry)
 (def invalid-presentation ::invalid-presentation)
+(def invalid-value-registry ::invalid-value-registry)
+(def invalid-value-presentation ::invalid-value-presentation)
 
 (def ^:private transition-ops
   #{:yield :block :sleep :complete :fail})
@@ -312,6 +314,242 @@
   (let [present (event-presenter registry)]
     (mapv (fn [index event] (present index event))
         (range) events)))
+
+;; ---- arbitrary canonical value presentation ---------------------------------
+
+(def ^:private value-entry-keys #{:kind :present})
+(def ^:private value-projection-keys #{:summary :fields})
+(def ^:private topology-projection-keys #{:summary :fields :graph})
+(def ^:private value-field-keys #{:label :value})
+(def ^:private graph-keys #{:directed? :nodes :edges})
+(def ^:private graph-node-keys #{:id :label :status :fields})
+(def ^:private graph-edge-keys
+  #{:id :from :to :label :status :fields})
+(def ^:private maximum-value-summary-length 512)
+(def ^:private maximum-value-label-length 128)
+(def ^:private maximum-value-kind-length 128)
+(def ^:private maximum-graph-id-length 128)
+(def ^:private maximum-value-fields 64)
+(def ^:private maximum-graph-nodes 256)
+(def ^:private maximum-graph-edges 1024)
+(def ^:private maximum-value-presentation-bytes (* 256 1024))
+
+(defn- value-registry-error! [reason detail]
+  (throw (ex-info "Invalid jolt-sim value presentation registry"
+                  {:type invalid-value-registry
+                   :reason reason
+                   :detail detail})))
+
+(defn- value-presentation-error! [reason detail]
+  (throw (ex-info "Invalid jolt-sim value presentation"
+                  {:type invalid-value-presentation
+                   :reason reason
+                   :detail detail})))
+
+(defn validate-value-registry!
+  "Validates an immutable trusted-code registry keyed by exact value kind.
+
+  Keys and output kinds are namespaced keywords. Entries are exact
+  `{:kind output-kind :present fn}` maps. This function never installs global
+  state or resolves executable data."
+  [value]
+  (when-not (map? value)
+    (value-registry-error! :not-a-map (str (class value))))
+  (doseq [[source-kind entry] value]
+    (when-not (and (namespaced-keyword? source-kind)
+                   (<= (count (keyword-text source-kind))
+                       maximum-value-kind-length))
+      (value-registry-error! :invalid-source-kind source-kind))
+    (when-not (and (map? entry)
+                   (= value-entry-keys (set (keys entry))))
+      (value-registry-error! :invalid-entry-shape source-kind))
+    (when-not (and (namespaced-keyword? (:kind entry))
+                   (<= (count (keyword-text (:kind entry)))
+                       maximum-value-kind-length))
+      (value-registry-error! :invalid-output-kind source-kind))
+    (when-not (fn? (:present entry))
+      (value-registry-error! :invalid-presenter source-kind)))
+  value)
+
+(defn value-registry
+  "Composes explicit value registries; later exact-kind entries win."
+  [& registries]
+  (reduce (fn [result candidate]
+            (if (nil? candidate)
+              result
+              (merge result (validate-value-registry! candidate))))
+          {}
+          registries))
+
+(defn- bounded-string? [value maximum]
+  (and (string? value) (<= (count value) maximum)))
+
+(defn- exact-plain-map? [value expected-keys]
+  (and (map? value)
+       (nil? (meta value))
+       (= expected-keys (set (keys value)))))
+
+(defn- canonical-field [path field]
+  (when-not (exact-plain-map? field value-field-keys)
+    (value-presentation-error! :invalid-field-shape path))
+  (when-not (bounded-string? (:label field) maximum-value-label-length)
+    (value-presentation-error! :invalid-field-label path))
+  {:label (:label field)
+   ;; Store the canonical representation itself. This snapshots byte arrays and
+   ;; excludes functions, handles, metadata, and other mutable/opaque leaves.
+   :value (trace/canonical-value (:value field) (conj path :value))})
+
+(defn- canonical-fields [path fields]
+  (when-not (and (vector? fields)
+                 (nil? (meta fields))
+                 (<= (count fields) maximum-value-fields))
+    (value-presentation-error! :invalid-fields path))
+  (let [result (mapv #(canonical-field path %) fields)
+        labels (mapv :label result)]
+    (when-not (= labels (vec (sort labels)))
+      (value-presentation-error! :unstable-field-order path))
+    (when-not (= (count labels) (count (set labels)))
+      (value-presentation-error! :duplicate-field-label path))
+    result))
+
+(defn- valid-status? [value]
+  (or (nil? value)
+      (and (namespaced-keyword? value)
+           (<= (count (keyword-text value)) maximum-value-kind-length))))
+
+(defn- validate-graph-id! [path value]
+  (when-not (and (bounded-string? value maximum-graph-id-length)
+                 (pos? (count value)))
+    (value-presentation-error! :invalid-graph-id path))
+  value)
+
+(defn- canonical-node [node]
+  (when-not (exact-plain-map? node graph-node-keys)
+    (value-presentation-error! :invalid-node-shape nil))
+  (validate-graph-id! [:graph :node :id] (:id node))
+  (when-not (bounded-string? (:label node) maximum-value-label-length)
+    (value-presentation-error! :invalid-node-label (:id node)))
+  (when-not (valid-status? (:status node))
+    (value-presentation-error! :invalid-node-status (:id node)))
+  {:id (:id node)
+   :label (:label node)
+   :status (:status node)
+   :fields (canonical-fields [:graph :node (:id node) :fields]
+                             (:fields node))})
+
+(defn- canonical-edge [edge]
+  (when-not (exact-plain-map? edge graph-edge-keys)
+    (value-presentation-error! :invalid-edge-shape nil))
+  (doseq [key [:id :from :to]]
+    (validate-graph-id! [:graph :edge key] (get edge key)))
+  (when-not (bounded-string? (:label edge) maximum-value-label-length)
+    (value-presentation-error! :invalid-edge-label (:id edge)))
+  (when-not (valid-status? (:status edge))
+    (value-presentation-error! :invalid-edge-status (:id edge)))
+  {:id (:id edge)
+   :from (:from edge)
+   :to (:to edge)
+   :label (:label edge)
+   :status (:status edge)
+   :fields (canonical-fields [:graph :edge (:id edge) :fields]
+                             (:fields edge))})
+
+(defn- canonical-graph [graph]
+  (when-not (exact-plain-map? graph graph-keys)
+    (value-presentation-error! :invalid-graph-shape nil))
+  (when-not (boolean? (:directed? graph))
+    (value-presentation-error! :invalid-directed-flag nil))
+  (when-not (and (vector? (:nodes graph))
+                 (nil? (meta (:nodes graph)))
+                 (<= (count (:nodes graph)) maximum-graph-nodes))
+    (value-presentation-error! :invalid-nodes nil))
+  (when-not (and (vector? (:edges graph))
+                 (nil? (meta (:edges graph)))
+                 (<= (count (:edges graph)) maximum-graph-edges))
+    (value-presentation-error! :invalid-edges nil))
+  (let [nodes (mapv canonical-node (:nodes graph))
+        edges (mapv canonical-edge (:edges graph))
+        node-ids (mapv :id nodes)
+        edge-ids (mapv :id edges)
+        node-set (set node-ids)]
+    (when-not (= node-ids (vec (sort node-ids)))
+      (value-presentation-error! :unstable-node-order node-ids))
+    (when-not (= edge-ids (vec (sort edge-ids)))
+      (value-presentation-error! :unstable-edge-order edge-ids))
+    (when-not (= (count node-ids) (count node-set))
+      (value-presentation-error! :duplicate-node-id node-ids))
+    (when-not (= (count edge-ids) (count (set edge-ids)))
+      (value-presentation-error! :duplicate-edge-id edge-ids))
+    (doseq [{:keys [id from to]} edges]
+      (when-not (and (contains? node-set from) (contains? node-set to))
+        (value-presentation-error! :dangling-edge id))
+      (when (and (not (:directed? graph)) (pos? (compare from to)))
+        (value-presentation-error! :unstable-undirected-edge id)))
+    {:directed? (:directed? graph) :nodes nodes :edges edges}))
+
+(defn- source-kind [value]
+  (let [candidate (when (map? value) (:kind value))]
+    (when (namespaced-keyword? candidate) candidate)))
+
+(defn- raw-value-projection [kind]
+  {:summary (if kind
+              (str "Raw value " (keyword-text kind))
+              "Raw canonical value")
+   :fields []})
+
+(defn- present-value* [registry value]
+  (let [source-canonical (trace/canonical-value value [:value-presentation :source])
+        source (trace/restore-value source-canonical)
+        source-edn (trace/canonical-edn source)
+        source-kind (source-kind source)
+        entry (get registry source-kind)
+        output-kind (if entry (:kind entry) :jolt.sim.kind/raw-value)
+        projection
+        (try
+          ((if entry (:present entry) (fn [_] (raw-value-projection source-kind)))
+           source)
+          (catch :default error
+            (throw (ex-info "Value presentation function failed"
+                            {:type invalid-value-presentation
+                             :reason :presenter-threw
+                             :source-kind source-kind}
+                            error))))
+        keys (when (map? projection) (set (keys projection)))
+        topology? (= topology-projection-keys keys)]
+    (when-not (or (= value-projection-keys keys) topology?)
+      (value-presentation-error! :invalid-projection-shape keys))
+    (when-not (bounded-string? (:summary projection)
+                               maximum-value-summary-length)
+      (value-presentation-error! :invalid-summary source-kind))
+    (let [result
+          (cond-> {:version 1
+                   :kind output-kind
+                   :source-kind source-kind
+                   :summary (:summary projection)
+                   :fields (canonical-fields [:value-presentation :fields]
+                                             (:fields projection))
+                   :source-edn source-edn}
+            topology? (assoc :graph (canonical-graph (:graph projection))))
+          bytes (count (.getBytes (trace/canonical-edn result) "UTF-8"))]
+      (when (> bytes maximum-value-presentation-bytes)
+        (value-presentation-error! :presentation-too-large
+                                   {:bytes bytes
+                                    :maximum maximum-value-presentation-bytes}))
+      result)))
+
+(defn value-presenter
+  "Validates one registry and returns a pure projector for arbitrary values."
+  [registry]
+  (validate-value-registry! registry)
+  (fn [value] (present-value* registry value)))
+
+(defn present-value
+  "Snapshots and presents one canonicalizable value by exact top-level kind.
+
+  Unknown or kindless values receive the bounded raw view. Presenter failures
+  and malformed/overbound outputs fail closed without modifying the source."
+  [registry value]
+  ((value-presenter registry) value))
 
 ;; ---- activity event presentation ---------------------------------------------
 

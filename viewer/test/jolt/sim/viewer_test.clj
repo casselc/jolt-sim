@@ -612,6 +612,38 @@
     (is (= :invalid-presentation-registry (:reason data)))
     (is (= :invalid-kind (get-in data [:detail :reason])))))
 
+(deftest programmatic-value-presentation-registry-is-validated-at-startup
+  (let [registry
+        {:example/value
+         {:kind :example.kind/value
+          :present (fn [_] {:summary "value" :fields []})}}
+        valid (assoc (config) :value-presentation-registry registry)
+        invalid (assoc (config) :value-presentation-registry
+                       {:example/value {:kind :plain :present identity}})
+        data (try
+               (viewer/validate-config! invalid)
+               nil
+               (catch :default error (ex-data error)))]
+    (is (= registry
+           (:value-presentation-registry (viewer/validate-config! valid))))
+    (is (= viewer/invalid-config (:type data)))
+    (is (= :invalid-value-presentation-registry (:reason data)))
+    (is (= :invalid-output-kind (get-in data [:detail :reason])))))
+
+(deftest value-presentation-functions-cannot-enter-the-edn-config-path
+  (let [path (str "/tmp/jolt-sim-viewer-value-registry-"
+                  (java.util.UUID/randomUUID) ".edn")
+        read-config (resolve 'jolt.sim.viewer/read-main-config)]
+    (try
+      (spit path "{:port 0 :value-presentation-registry {}}")
+      (let [data (try (read-config path)
+                      nil
+                      (catch :default error (ex-data error)))]
+        (is (= viewer/invalid-config (:type data)))
+        (is (= :value-presentation-registry-programmatic-only (:reason data))))
+      (finally
+        (fs/delete path)))))
+
 (defn- experiment-fixture-text []
   (slurp "examples/experiment-plan.edn"))
 
@@ -4564,8 +4596,125 @@
              (:error (edn/read-string (:body bad)))))
       (is (= 1 (count @calls))))))
 
+(deftest retained-value-presentation-is-advisory-and-data-only
+  (let [payload {:kind :example/network :hostile "<script>x</script>"}
+        registry
+        {:example/network
+         {:kind :example.kind/topology
+          :present
+          (fn [value]
+            {:summary "Example network"
+             :fields [{:label "Hostile" :value (:hostile value)}]
+             :graph
+             {:directed? false
+              :nodes [{:id "a" :label "A" :status :example.status/ready
+                       :fields []}
+                      {:id "b" :label "B" :status nil :fields []}]
+              :edges [{:id "a--b" :from "a" :to "b" :label "link"
+                       :status :example.status/connected :fields []}]}})}}
+        svc (assoc (retained-services (atom []))
+                   :command-retained! (fn [_]
+                                        (retained-result :completed payload)))
+        handler (viewer/make-handler
+                 (assoc (config) :value-presentation-registry registry) svc)
+        response (handler
+                  (json-post-request "/api/retained-command"
+                                     {"version" 1 "commandEdn" ":inspect"}))
+        wire (json/read-str (:body response))]
+    (is (= 200 (:status response)))
+    (is (= "4" (get wire "sequence")))
+    (is (= "Example network" (get-in wire ["presentation" "summary"])))
+    (is (= "example/network"
+           (get-in wire ["presentation" "sourceKind"])))
+    (is (= "\"<script>x</script>\""
+           (get-in wire ["presentation" "fields" 0 "valueEdn"])))
+    (is (= ["a" "b"]
+           (mapv #(get % "id")
+                 (get-in wire ["presentation" "graph" "nodes"]))))
+    (is (nil? (get wire "presentationError")))
+    (is (= payload (:value (edn/read-string (get wire "receiptEdn")))))))
+
+(deftest retained-presentation-failure-preserves-the-committed-receipt
+  (let [payload {:kind :example/broken :value 42}
+        registry
+        {:example/broken
+         {:kind :example.kind/broken
+          :present (fn [_] (throw (ex-info "secret presenter failure" {})))}}
+        svc (assoc (retained-services (atom []))
+                   :command-retained! (fn [_]
+                                        (retained-result :completed payload)))
+        handler (viewer/make-handler
+                 (assoc (config) :value-presentation-registry registry) svc)
+        response (handler
+                  (json-post-request "/api/retained-command"
+                                     {"version" 1 "commandEdn" ":inspect"}))
+        wire (json/read-str (:body response))]
+    (is (= 200 (:status response)))
+    (is (= "completed" (get wire "outcome")))
+    (is (= "4" (get wire "sequence")))
+    (is (= payload (:value (edn/read-string (get wire "receiptEdn")))))
+    (is (nil? (get wire "presentation")))
+    (is (= "presenter-threw" (get-in wire ["presentationError" "reason"])))
+    (is (not (string/includes? (:body response) "secret presenter failure")))))
+
+(deftest retained-unknown-value-kind-uses-the-generic-raw-view
+  (let [payload {:kind :example/unknown :value 42}
+        registry {:example/known
+                  {:kind :example.kind/known
+                   :present (fn [_] {:summary "known" :fields []})}}
+        svc (assoc (retained-services (atom []))
+                   :command-retained! (fn [_]
+                                        (retained-result :completed payload)))
+        response ((viewer/make-handler
+                   (assoc (config) :value-presentation-registry registry) svc)
+                  (json-post-request "/api/retained-command"
+                                     {"version" 1 "commandEdn" ":inspect"}))
+        wire (json/read-str (:body response))]
+    (is (= 200 (:status response)))
+    (is (= "jolt.sim.kind/raw-value"
+           (get-in wire ["presentation" "kind"])))
+    (is (= "example/unknown"
+           (get-in wire ["presentation" "sourceKind"])))
+    (is (= (trace/canonical-edn payload)
+           (get-in wire ["presentation" "sourceEdn"])))
+    (is (= payload (:value (edn/read-string (get wire "receiptEdn")))))))
+
+(deftest oversized-presentation-is-dropped-before-definite-receipt-truncation
+  (let [payload {:kind :example/large :value 42}
+        registry
+        {:example/large
+         {:kind :example.kind/large
+          :present (fn [_]
+                     {:summary (apply str (repeat 400 \x)) :fields []})}}
+        svc (assoc (retained-services (atom []))
+                   :command-retained! (fn [_]
+                                        (retained-result :completed payload)))
+        cfg (assoc (config)
+                   :max-document-bytes 1100
+                   :value-presentation-registry registry)
+        response ((viewer/make-handler cfg svc)
+                  (json-post-request "/api/retained-command"
+                                     {"version" 1 "commandEdn" ":inspect"}))
+        wire (json/read-str (:body response))]
+    (is (= 200 (:status response)))
+    (is (= "completed" (get wire "outcome")))
+    (is (true? (get wire "committed")))
+    (is (= "4" (get wire "sequence")))
+    (is (nil? (get wire "presentation")))
+    (is (= "presentation-omitted-for-size"
+           (get-in wire ["presentationError" "reason"])))
+    (is (false? (get wire "truncated")))
+    (is (string? (get wire "receiptEdn")))))
+
 (deftest retained-application-failure-is-a-definite-http-200
   (let [calls (atom 0)
+        presentation-calls (atom 0)
+        registry
+        {:application/rejected
+         {:kind :application.kind/rejected
+          :present (fn [_]
+                     (swap! presentation-calls inc)
+                     {:summary "rejected" :fields []})}}
         svc (assoc (retained-services (atom []))
                    :command-retained!
                    (fn [_]
@@ -4573,15 +4722,20 @@
                      (retained-result :failed
                                       {:type :application/rejected
                                        :reason :hostile-ack})))
-        response ((viewer/make-handler (config) svc)
+        response ((viewer/make-handler
+                   (assoc (config) :value-presentation-registry registry)
+                   svc)
                   (json-post-request "/api/retained-command"
                                      {"version" 1
                                       "commandEdn" "{:op :deliver}"}))
         wire (json/read-str (:body response))]
     (is (= 200 (:status response)))
     (is (= 1 @calls))
+    (is (zero? @presentation-calls))
     (is (= "failed" (get wire "outcome")))
     (is (true? (get wire "committed")))
+    (is (nil? (get wire "presentation")))
+    (is (nil? (get wire "presentationError")))
     (is (= :failed (:status (edn/read-string (get wire "receiptEdn")))))))
 
 (deftest retained-large-post-commit-receipt-stays-definite

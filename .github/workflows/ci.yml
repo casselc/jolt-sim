@@ -507,6 +507,7 @@ jobs:
           artifacts="$repo/target/broadcast-workbench-artifacts/http"
           mkdir -p "$artifacts/retained-workers"
           cd "$repo/examples/maelstrom-broadcast-workbench"
+          "$sim" -M:presentation-test
           JOLT_SIM_BIN="$sim" \
           JOLT_SIM_PROJECT_DIR="$repo" \
           JOLT_SIM_RETAINED_ARTIFACT_DIR="$artifacts/retained-workers" \

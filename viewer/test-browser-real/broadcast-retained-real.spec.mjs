@@ -25,11 +25,30 @@ test("controls the real retained Broadcast worker from Ripple and its shared REP
     expect(initial).toContain(":sequence 0");
     expect(initial).toContain(":status :created");
     expect(initial).toContain(":ready-mailboxes []");
+    await expect(page.getByTestId("retained-presentation")).toBeVisible();
+    await expect(page.locator('[data-node-id]')).toHaveCount(3);
+    await expect(page.locator('[data-edge-id]')).toHaveCount(2);
+    await expect(page.locator('[data-edge-id="n2--n3"] title'))
+      .toHaveText("jolt.sim.status/partitioned");
+    await expect(page.locator('[data-node-detail-id="n2"]'))
+      .toContainText("Mailbox count");
+    await expect(page.locator(
+      '[data-node-detail-id="n2"] [data-field-label="Messages"] + dd'
+    )).toHaveText("0");
+    await expect(page.locator(
+      '[data-edge-detail-id="n2--n3"] ' +
+      '[data-field-label="Dropped envelopes"] + dd'
+    )).toHaveText("0");
 
     const bootstrapped = await sendRetained(page, "{:op :bootstrap}");
     expect(bootstrapped).toContain(":sequence 1");
     expect(bootstrapped).toContain(":enqueued 7");
     expect(bootstrapped).toContain(":ready-mailboxes [\"n1\" \"n2\" \"n3\"]");
+    await expect(page.locator('[data-node-id="n1"]'))
+      .toContainText("jolt.sim.status/ready");
+    await expect(page.locator(
+      '[data-node-detail-id="n1"] [data-field-label="Mailbox count"] + dd'
+    )).not.toHaveText("0");
 
     await page.getByTestId("eval-form").fill(
       "(do (require '[maelstrom-broadcast-workbench.main :as wb] :reload) " +
@@ -49,9 +68,17 @@ test("controls the real retained Broadcast worker from Ripple and its shared REP
     expect(afterReplStep).toContain(":step-count 1");
     expect(afterReplStep).toContain(":last-step");
     expect(afterReplStep).toContain(":node-id \"n2\"");
+    await expect(page.locator('[data-node-id="n2"]'))
+      .toContainText("jolt.sim.status/ready");
+
+    const healed = await sendRetained(page, "{:op :heal}");
+    expect(healed).toContain(":sequence 4");
+    expect(healed).toContain(":operation :heal");
+    await expect(page.locator('[data-edge-id="n2--n3"] title'))
+      .toHaveText("jolt.sim.status/healed");
 
     const stopped = await sendRetained(page, "{:op :stop}");
-    expect(stopped).toContain(":sequence 4");
+    expect(stopped).toContain(":sequence 5");
     expect(stopped).toContain(":owner? true");
     expect(stopped).toContain(":status :stopped");
     await expect.poll(async () => {

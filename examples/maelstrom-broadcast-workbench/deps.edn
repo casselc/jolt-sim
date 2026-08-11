@@ -14,4 +14,8 @@
   ;; Real loopback HTTP integration against one fresh retained Broadcast child.
   :workbench-test
   {:extra-paths ["test"]
-   :main-opts ["-m" "maelstrom-broadcast-workbench.workbench-test-main"]}}}
+   :main-opts ["-m" "maelstrom-broadcast-workbench.workbench-test-main"]}
+
+  :presentation-test
+  {:extra-paths ["test"]
+   :main-opts ["-m" "maelstrom-broadcast-workbench.presentation-test"]}}}

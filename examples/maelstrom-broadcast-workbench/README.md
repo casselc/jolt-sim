@@ -99,7 +99,13 @@ These UI-neutral helpers delegate only through `jolt.sim.retained-view`:
 (wb/retry!)
 (wb/read!)
 (wb/stop-worker!)
+(wb/present (get-in (wb/inspect!) [:receipt :value]))
 ```
+
+`present` is pure and returns the same bounded ordinary map/vector topology
+model used by Ripple and static reports. It is suitable for `datafy`, default
+`nav`, or an explicit `tap>`; it never taps automatically. Broadcast snapshot
+semantics remain in the example's immutable value registry, not in Ripple.
 
 A command issued in this REPL consumes the next retained sequence; refreshing
 the retained panel observes that exact new coordinate. The retained handle's

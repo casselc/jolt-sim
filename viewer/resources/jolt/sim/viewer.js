@@ -34,6 +34,7 @@
   const retainedStatus = document.getElementById("retained-status");
   const retainedFrame = document.getElementById("retained-frame");
   const retainedReceipt = document.getElementById("retained-receipt");
+  const retainedPresentation = document.getElementById("retained-presentation");
   const sessionRefresh = document.getElementById("session-refresh");
   const sessionReset = document.getElementById("session-reset");
   const sessionStatus = document.getElementById("session-status");
@@ -129,10 +130,64 @@
     validRetainedCoordinate(value.coordinate) &&
     boundedString(value.frameEdn, 16 * 1024 * 1024);
 
+  const validPresentationField = (value) =>
+    exactKeys(value, ["label", "valueEdn"]) &&
+    boundedString(value.label, 128) &&
+    boundedString(value.valueEdn, 256 * 1024);
+
+  const validPresentationStatus = (value) =>
+    value === null || (boundedString(value, 128) && namespacedIdentifier(value));
+
+  const validPresentationGraph = (value) => {
+    if (value === null) return true;
+    if (!exactKeys(value, ["directed", "nodes", "edges"]) ||
+        typeof value.directed !== "boolean" ||
+        !Array.isArray(value.nodes) || value.nodes.length > 256 ||
+        !Array.isArray(value.edges) || value.edges.length > 1024) return false;
+    const ids = new Set();
+    for (const node of value.nodes) {
+      if (!exactKeys(node, ["id", "label", "status", "fields"]) ||
+          !boundedString(node.id, 128) || node.id.length === 0 ||
+          !boundedString(node.label, 128) ||
+          !validPresentationStatus(node.status) ||
+          !Array.isArray(node.fields) || node.fields.length > 64 ||
+          !node.fields.every(validPresentationField) || ids.has(node.id)) return false;
+      ids.add(node.id);
+    }
+    const edgeIds = new Set();
+    for (const edge of value.edges) {
+      if (!exactKeys(edge,
+        ["id", "from", "to", "label", "status", "fields"]) ||
+          !boundedString(edge.id, 128) || edge.id.length === 0 ||
+          !ids.has(edge.from) || !ids.has(edge.to) ||
+          !boundedString(edge.label, 128) ||
+          !validPresentationStatus(edge.status) ||
+          !Array.isArray(edge.fields) || edge.fields.length > 64 ||
+          !edge.fields.every(validPresentationField) || edgeIds.has(edge.id)) return false;
+      edgeIds.add(edge.id);
+    }
+    return true;
+  };
+
+  const validValuePresentation = (value) =>
+    exactKeys(value,
+      ["version", "kind", "sourceKind", "summary", "fields", "graph", "sourceEdn"]) &&
+    value.version === 1 && boundedString(value.kind, 128) &&
+    namespacedIdentifier(value.kind) && validPresentationStatus(value.sourceKind) &&
+    boundedString(value.summary, 512) && Array.isArray(value.fields) &&
+    value.fields.length <= 64 && value.fields.every(validPresentationField) &&
+    validPresentationGraph(value.graph) &&
+    boundedString(value.sourceEdn, 256 * 1024);
+
+  const validPresentationError = (value) =>
+    value === null || (exactKeys(value, ["reason"]) &&
+      boundedString(value.reason, 128) && value.reason.length > 0);
+
   const validRetainedOutcomeResponse = (value) => {
     if (!exactKeys(value,
       ["version", "outcome", "committed", "sequence", "coordinate",
-        "receiptEdn", "frameEdn", "frameError", "truncated"])) return false;
+        "receiptEdn", "frameEdn", "frameError", "presentation",
+        "presentationError", "truncated"])) return false;
     if (value.version !== 1 ||
         !["completed", "failed"].includes(value.outcome) ||
         value.committed !== true || !canonicalUnsignedDecimal(value.sequence) ||
@@ -146,6 +201,9 @@
         BigInt(value.coordinate.nextSequence) === receiptNext
       : BigInt(value.coordinate.nextSequence) >= receiptNext;
     if (!coherentCoordinate) return false;
+    if (!validPresentationError(value.presentationError) ||
+        !(value.presentation === null || validValuePresentation(value.presentation)) ||
+        (value.presentation !== null && value.presentationError !== null)) return false;
     const fullFrame = value.truncated === false &&
       boundedString(value.receiptEdn, 16 * 1024 * 1024) &&
       boundedString(value.frameEdn, 16 * 1024 * 1024) &&
@@ -155,8 +213,134 @@
       value.frameEdn === null && validRetainedFrameError(value.frameError) &&
       value.coordinate.protocol === null && value.coordinate.status === null;
     const truncated = value.truncated === true && value.receiptEdn === null &&
-      value.frameEdn === null && value.frameError === null;
+      value.frameEdn === null && value.frameError === null &&
+      value.presentation === null && value.presentationError === null;
     return fullFrame || frameUnavailable || truncated;
+  };
+
+  const clearChildren = (element) => {
+    while (element.firstChild) element.removeChild(element.firstChild);
+  };
+
+  const appendPresentationFields = (parent, fields) => {
+    if (fields.length === 0) return;
+    const list = document.createElement("dl");
+    list.className = "retained-presentation-fields";
+    for (const field of fields) {
+      const term = document.createElement("dt");
+      term.textContent = field.label;
+      term.dataset.fieldLabel = field.label;
+      const detail = document.createElement("dd");
+      detail.textContent = field.valueEdn;
+      list.append(term, detail);
+    }
+    parent.appendChild(list);
+  };
+
+  const renderPresentationGraph = (parent, graph) => {
+    if (!graph || graph.nodes.length === 0) return;
+    const ns = "http://www.w3.org/2000/svg";
+    const width = Math.max(360, graph.nodes.length * 190);
+    const svg = document.createElementNS(ns, "svg");
+    svg.setAttribute("class", "retained-topology");
+    svg.setAttribute("viewBox", `0 0 ${width} 210`);
+    svg.setAttribute("role", "img");
+    svg.setAttribute("aria-label", "Value topology");
+    const positions = new Map();
+    graph.nodes.forEach((node, index) => {
+      positions.set(node.id, {x: 95 + index * 190, y: 95});
+    });
+    for (const edge of graph.edges) {
+      const from = positions.get(edge.from);
+      const to = positions.get(edge.to);
+      const group = document.createElementNS(ns, "g");
+      group.dataset.edgeId = edge.id;
+      const line = document.createElementNS(ns, "line");
+      line.setAttribute("x1", String(from.x));
+      line.setAttribute("y1", String(from.y));
+      line.setAttribute("x2", String(to.x));
+      line.setAttribute("y2", String(to.y));
+      line.setAttribute("stroke", "currentColor");
+      const label = document.createElementNS(ns, "text");
+      label.setAttribute("x", String((from.x + to.x) / 2));
+      label.setAttribute("y", String(from.y - 12));
+      label.setAttribute("text-anchor", "middle");
+      label.textContent = edge.label;
+      const status = document.createElementNS(ns, "title");
+      status.textContent = edge.status || "";
+      group.append(line, label, status);
+      svg.appendChild(group);
+    }
+    for (const node of graph.nodes) {
+      const point = positions.get(node.id);
+      const group = document.createElementNS(ns, "g");
+      group.dataset.nodeId = node.id;
+      const box = document.createElementNS(ns, "rect");
+      box.setAttribute("x", String(point.x - 70));
+      box.setAttribute("y", String(point.y - 35));
+      box.setAttribute("width", "140");
+      box.setAttribute("height", "70");
+      box.setAttribute("rx", "8");
+      box.setAttribute("fill", "Canvas");
+      box.setAttribute("stroke", "currentColor");
+      const label = document.createElementNS(ns, "text");
+      label.setAttribute("x", String(point.x));
+      label.setAttribute("y", String(point.y));
+      label.setAttribute("text-anchor", "middle");
+      label.textContent = node.label;
+      const status = document.createElementNS(ns, "text");
+      status.setAttribute("x", String(point.x));
+      status.setAttribute("y", String(point.y + 20));
+      status.setAttribute("text-anchor", "middle");
+      status.textContent = node.status || "";
+      group.append(box, label, status);
+      svg.appendChild(group);
+    }
+    parent.appendChild(svg);
+  };
+
+  const appendTopologyDetails = (parent, graph) => {
+    if (!graph) return;
+    const container = document.createElement("div");
+    container.className = "retained-topology-details";
+    const appendEntity = (entity, entityType) => {
+      const details = document.createElement("details");
+      details.dataset[`${entityType}DetailId`] = entity.id;
+      const summary = document.createElement("summary");
+      summary.textContent =
+        `${entityType === "node" ? "Node" : "Edge"} ${entity.label} ` +
+        `(${entity.id})${entity.status ? ` — ${entity.status}` : ""}`;
+      details.appendChild(summary);
+      appendPresentationFields(details, entity.fields);
+      container.appendChild(details);
+    };
+    graph.nodes.forEach((node) => appendEntity(node, "node"));
+    graph.edges.forEach((edge) => appendEntity(edge, "edge"));
+    parent.appendChild(container);
+  };
+
+  const renderValuePresentation = (model, error) => {
+    clearChildren(retainedPresentation);
+    if (!model) {
+      retainedPresentation.hidden = true;
+      if (error) retainedPresentation.dataset.error = error.reason;
+      return;
+    }
+    retainedPresentation.hidden = false;
+    delete retainedPresentation.dataset.error;
+    const heading = document.createElement("h3");
+    heading.textContent = model.summary;
+    retainedPresentation.appendChild(heading);
+    appendPresentationFields(retainedPresentation, model.fields);
+    renderPresentationGraph(retainedPresentation, model.graph);
+    appendTopologyDetails(retainedPresentation, model.graph);
+    const details = document.createElement("details");
+    const summary = document.createElement("summary");
+    summary.textContent = "Canonical source EDN";
+    const source = document.createElement("pre");
+    source.textContent = model.sourceEdn;
+    details.append(summary, source);
+    retainedPresentation.appendChild(details);
   };
 
   const validRetainedTerminateResponse = (value) => {
@@ -1665,6 +1849,7 @@
             ? `Receipt ${result.sequence} committed, but its body exceeded the configured browser projection limit.`
             : "No application receipt body."
           : result.receiptEdn;
+        renderValuePresentation(result.presentation, result.presentationError);
       }
       if (result.frameEdn) retainedFrame.textContent = result.frameEdn;
       if (!result.frameEdn && operation !== "Termination") {

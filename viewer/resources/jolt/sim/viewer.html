@@ -40,6 +40,14 @@
     .activity-event-fields dt { font-weight: 600; }
     .activity-event-fields dd { margin: 0; font-family: ui-monospace, monospace; overflow-wrap: anywhere; }
     .activity-event details code { display: block; margin-top: .35rem; white-space: pre-wrap; overflow-wrap: anywhere; }
+    #retained-presentation { margin: .8rem 0; padding: .7rem .9rem; border: 1px solid #8886; border-radius: .3rem; }
+    #retained-presentation[hidden] { display: none; }
+    .retained-topology { width: 100%; min-height: 13rem; border: 1px solid #8886; }
+    .retained-presentation-fields { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: .2rem .7rem; }
+    .retained-presentation-fields dt { font-weight: 600; }
+    .retained-presentation-fields dd { margin: 0; font-family: ui-monospace, monospace; overflow-wrap: anywhere; }
+    .retained-topology-details { margin-top: .6rem; }
+    .retained-topology-details details { margin: .25rem 0; }
     @media (max-width: 700px) { .controls { grid-template-columns: 1fr; } }
   </style>
 </head>
@@ -125,6 +133,7 @@
       <pre id="retained-frame" data-testid="retained-frame">No retained worker frame requested.</pre>
       <h3>Last command receipt</h3>
       <pre id="retained-receipt" data-testid="retained-receipt">No retained worker command sent.</pre>
+      <section id="retained-presentation" data-testid="retained-presentation" hidden></section>
     </section>
     <section aria-labelledby="session-heading">
       <h2 id="session-heading">Attached simulation session</h2>

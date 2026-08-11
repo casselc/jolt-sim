@@ -73,7 +73,8 @@
 (def ^:private config-keys
   #{:port :capability-token :max-document-bytes
     :allowed-scenarios :runtime-config :presentation-registry
-    :activity-presentation-registry :run-presets :session-instance-id})
+    :activity-presentation-registry :value-presentation-registry
+    :run-presets :session-instance-id})
 
 (def ^:private run-preset-keys
   #{:id :label :scenario :profile-id :schedule :plan-document :regimes})
@@ -382,6 +383,18 @@
             "jolt-sim viewer rejected its activity presentation registry"
             {:type invalid-config
              :reason :invalid-activity-presentation-registry
+             :detail (select-keys (ex-data error) [:reason :detail])}
+            error)))))
+    (when (contains? config :value-presentation-registry)
+      (try
+        (presentation/validate-value-registry!
+         (:value-presentation-registry config))
+        (catch :default error
+          (throw
+           (ex-info
+            "jolt-sim viewer rejected its value presentation registry"
+            {:type invalid-config
+             :reason :invalid-value-presentation-registry
              :detail (select-keys (ex-data error) [:reason :detail])}
             error)))))
     (when has-scenarios
@@ -1882,7 +1895,63 @@
      "frameEdn" (when frame
                    (trace/canonical-edn (public-retained-frame frame)))
      "frameError" (frame-error-wire (:frame-error result))
+     "presentation" nil
+     "presentationError" nil
      "truncated" false}))
+
+(defn- presentation-field-wire [{:keys [label value]}]
+  {"label" label
+   "valueEdn" (trace/canonical-edn (trace/restore-value value))})
+
+(defn- presentation-status-wire [status]
+  (when status (retained-keyword-text status)))
+
+(defn- presentation-graph-wire [graph]
+  (when graph
+    {"directed" (:directed? graph)
+     "nodes"
+     (mapv (fn [{:keys [id label status fields]}]
+             {"id" id
+              "label" label
+              "status" (presentation-status-wire status)
+              "fields" (mapv presentation-field-wire fields)})
+           (:nodes graph))
+     "edges"
+     (mapv (fn [{:keys [id from to label status fields]}]
+             {"id" id
+              "from" from
+              "to" to
+              "label" label
+              "status" (presentation-status-wire status)
+              "fields" (mapv presentation-field-wire fields)})
+           (:edges graph))}))
+
+(defn- presentation-wire [model]
+  {"version" (:version model)
+   "kind" (retained-keyword-text (:kind model))
+   "sourceKind" (presentation-status-wire (:source-kind model))
+   "summary" (:summary model)
+   "fields" (mapv presentation-field-wire (:fields model))
+   "graph" (presentation-graph-wire (:graph model))
+   "sourceEdn" (:source-edn model)})
+
+(defn- presentation-outcome [config result]
+  (if (and (= :completed (:status result))
+           (contains? config :value-presentation-registry))
+    (try
+      {:presentation
+       (presentation-wire
+        (presentation/present-value
+         (:value-presentation-registry config)
+         (get-in result [:receipt :value])))
+       :presentation-error nil}
+      (catch :default error
+        {:presentation nil
+         :presentation-error
+         {"reason"
+          (or (retained-keyword-text (:reason (ex-data error)))
+              "presentation-failed")}}))
+    {:presentation nil :presentation-error nil}))
 
 (defn- retained-definite-wire [result]
   (let [frame (:frame result)
@@ -1899,17 +1968,32 @@
      "receiptEdn" nil
      "frameEdn" nil
      "frameError" nil
+     "presentation" nil
+     "presentationError" nil
      "truncated" true}))
 
 (defn- retained-result-response [config result operation]
   (let [result (checked-retained-result result operation)
-        wire (retained-result-wire result)
+        {:keys [presentation presentation-error]}
+        (presentation-outcome config result)
+        wire (assoc (retained-result-wire result)
+                    "presentation" presentation
+                    "presentationError" presentation-error)
         [body size] (retained-json-bytes wire)]
     (if (<= size (:max-document-bytes config))
       (response 200 "application/json; charset=utf-8" body)
-      ;; The command has a definite receipt. Never turn it into a 413 or any
-      ;; other retry-looking failure after commit.
-      (json-response 200 (retained-definite-wire result)))))
+      ;; Presentation is advisory. Drop it before any existing definite-receipt
+      ;; truncation, and never convert a committed command into a retry-looking
+      ;; transport failure.
+      (let [without-presentation
+            (assoc wire
+                   "presentation" nil
+                   "presentationError" {"reason" "presentation-omitted-for-size"})
+            [smaller-body smaller-size]
+            (retained-json-bytes without-presentation)]
+        (if (<= smaller-size (:max-document-bytes config))
+          (response 200 "application/json; charset=utf-8" smaller-body)
+          (json-response 200 (retained-definite-wire result)))))))
 
 (defn- retained-terminate-response [config frame]
   (let [wire (assoc (retained-frame-wire frame) "outcome" "terminated")
@@ -3221,6 +3305,8 @@
       (throw (config-error :config-file-not-a-map (str (class value)))))
     (when (contains? value :capability-token)
       (throw (config-error :token-must-come-from-environment nil)))
+    (when (contains? value :value-presentation-registry)
+      (throw (config-error :value-presentation-registry-programmatic-only nil)))
     (assoc value :capability-token
            (System/getenv "JOLT_SIM_VIEWER_TOKEN"))))
 

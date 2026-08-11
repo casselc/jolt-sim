@@ -62,6 +62,8 @@ test("controls a retained worker without retrying an uncertain command", async (
         receiptEdn: "{:status :failed :sequence 5 :error {:reason :ack-mismatch}}",
         frameEdn: "{:status :ready :next-sequence 6}",
         frameError: null,
+        presentation: null,
+        presentationError: null,
         truncated: false
       })
     });
@@ -82,6 +84,8 @@ test("controls a retained worker without retrying an uncertain command", async (
         receiptEdn: "{:status :completed :sequence 4 :value {:rows []}}",
         frameEdn: "{:status :ready :next-sequence 5}",
         frameError: null,
+        presentation: null,
+        presentationError: null,
         truncated: false
       })
     });
@@ -221,6 +225,8 @@ test("keeps a definite receipt when a REPL caller advances the fresh frame", asy
         receiptEdn: "{:status :completed :sequence 0 :value :accepted}",
         frameEdn: `{:status :${laterCoordinates[index].status} :next-sequence 2}`,
         frameError: null,
+        presentation: null,
+        presentationError: null,
         truncated: false
       })
     });
@@ -252,6 +258,8 @@ test("rejects incompatible retained acknowledgments and blocks resend", async ({
     receiptEdn: "{:status :completed :sequence 0 :value :ok}",
     frameEdn: "{:status :ready :next-sequence 1}",
     frameError: null,
+    presentation: null,
+    presentationError: null,
     truncated: false
   };
   const malformed = [

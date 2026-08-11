@@ -11,7 +11,8 @@
             [jolt.sim.eval-session :as eval-session]
             [jolt.sim.retained-process :as retained]
             [jolt.sim.retained-view :as retained-view]
-            [jolt.sim.viewer :as viewer]))
+            [jolt.sim.viewer :as viewer]
+            [maelstrom-broadcast-workbench.presentation :as value-presentation]))
 
 (def default-config-path "config/ripple.edn")
 
@@ -131,6 +132,11 @@
 (defn read! [] (command! {:op :read}))
 (defn stop-worker! [] (command! {:op :stop}))
 
+(defn present
+  "Purely presents one snapshot or application command value for REPL/tap use."
+  [value]
+  (value-presentation/present value))
+
 (defn reconcile!
   "Reconciles the one uncertain retained command without republishing it."
   []
@@ -201,7 +207,10 @@
             partial {:worker worker :session session}
             _ (reset! active-workbench* partial)
             server (viewer/start-retained-eval-session!
-                    viewer-config worker session)
+                    (assoc viewer-config
+                           :value-presentation-registry
+                           value-presentation/value-registry)
+                    worker session)
             _ (vreset! server* server)
             workbench (assoc partial
                              :server server
