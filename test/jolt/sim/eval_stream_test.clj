@@ -1,20 +1,17 @@
 (ns jolt.sim.eval-stream-test
   "Discriminating clojure.test coverage for jolt.sim.eval-stream/evaluate!.
 
-  These tests stub jolt.eval/evaluate and jolt.eval/record-history! with
+  These tests stub eval-engine/evaluate and eval-engine/record-history! with
   with-redefs, so they exercise the adapter's validation, emission order,
   terminal :ret construction, history forwarding, empty-stream omission, and
-  emitter-failure propagation without depending on a live jolt.eval engine.
-  They require the jolt.eval namespace merged into the fork at d040d502; CI
-  pins that exact core commit. An upstream release without that namespace
-  cannot load this suite."
+  emitter-failure propagation without depending on a live eval engine."
   (:require [clojure.test :refer [deftest is testing]]
-            [jolt.eval :as eval]
+            [jolt.sim.eval-engine :as eval]
             [jolt.sim.eval-stream :as stream]))
 
 (defn- run-eval
-  "Runs stream/evaluate! with a stubbed jolt.eval/evaluate returning
-  evaluate-result and a stubbed jolt.eval/record-history! that records each
+  "Runs stream/evaluate! with a stubbed eval-engine/evaluate returning
+  evaluate-result and a stubbed eval-engine/record-history! that records each
   [mode result] pair. Returns {:ret .. :events .. :history ..}."
   [request evaluate-result]
   (let [events (atom [])
@@ -143,7 +140,7 @@
       (is (= [:ret] (mapv :tag events))))))
 
 (deftest validation-happens-before-evaluation
-  (testing "malformed requests throw typed ex-info and never call jolt.eval"
+  (testing "malformed requests throw typed ex-info and never call the engine"
     (let [called (atom 0)]
       (with-redefs [eval/evaluate (fn [_] (swap! called inc)
                                     {:status :ok :value 1 :form "x" :ns "user" :ms 1})
@@ -186,7 +183,7 @@
                                 #(swap! events conj %))]
       (is (= 42 (:val ret)))
       (is (= [:ret] (mapv :tag @events)))))
-  (testing "the adapter and real jolt.eval agree on values, streams, and history"
+  (testing "the adapter and real engine agree on values, streams, and history"
     (binding [*1 :before *2 :older *3 :oldest *e nil]
       (let [events (atom [])
             form (str "(do (print \"real-out\") "

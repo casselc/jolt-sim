@@ -1,13 +1,13 @@
 (ns jolt.sim.eval-stream
   "Socket-free, UI-neutral, prepl-compatible-subset adapter over the public
-  jolt.eval API.
+  project-local jolt.sim.eval-engine API.
 
   This namespace is deliberately narrow. It does not own a socket, a REPL
   loop, tap lifecycle, stdin, multiform reading, request IDs, interruption,
   remote sessions, browser code, DAP, persistence, or any streaming-during-
-  evaluation claim. It evaluates exactly one form through jolt.eval/evaluate
+  evaluation claim. It evaluates exactly one form through eval-engine/evaluate
   with stdout and stderr capture enabled, records history once through
-  jolt.eval/record-history!, and emits a prepl-compatible subset of events
+  eval-engine/record-history!, and emits a prepl-compatible subset of events
   through a caller-supplied emit! callback.
 
   API:
@@ -19,17 +19,17 @@
     :form                  required string, the exact form to evaluate.
     :ns                    optional string namespace to evaluate in.
     :history               optional :thread, :root, or nil (default); passed
-                           unchanged to jolt.eval/record-history!. :thread is
+                           unchanged to eval-engine/record-history!. :thread is
                            for a REPL/session owner that has already installed
                            dynamic *1/*2/*3/*e bindings on the calling thread.
     :allow-unresolved-vars? optional boolean (default false).
 
   The request and the emit! callback are validated before any evaluation
   happens; a malformed request throws a typed ex-info
-  ({:type :jolt.sim.eval-stream/invalid-request}) and jolt.eval is never
+  ({:type :jolt.sim.eval-stream/invalid-request}) and the engine is never
   called. If emit! throws, the exception propagates and no further event is
   emitted, so a failing emitter never causes a duplicate terminal event."
-  (:require [jolt.eval :as eval]))
+  (:require [jolt.sim.eval-engine :as eval]))
 
 (def ^:private history-modes #{:thread :root nil})
 
@@ -78,25 +78,27 @@
   "Reference Throwable->map plus Jolt's catch-site host backtrace.
 
   Jolt Throwable->map intentionally has an empty JVM-style :trace because a
-  thrown value does not retain the Chez continuation. jolt.eval captures the
-  useful host backtrace at the catch site, so preserve it as namespaced data."
+  thrown value does not retain the Chez continuation. The eval engine captures
+  the useful host backtrace at the catch site, so preserve it as namespaced
+  data."
   [t backtrace]
   (cond-> (Throwable->map t)
     (some? backtrace) (assoc :jolt/backtrace backtrace)))
 
 (defn evaluate!
-  "Evaluates one form through jolt.eval and emits a prepl-compatible subset of
-  events through emit!. Returns the terminal :ret event.
+  "Evaluates one form through the project-local eval engine and emits a
+  prepl-compatible subset of events through emit!. Returns the terminal :ret
+  event.
 
-  Calls jolt.eval/evaluate exactly once with both stdout and stderr capture
-  enabled, then jolt.eval/record-history! once with the resolved :history mode.
+  Calls eval-engine/evaluate exactly once with both stdout and stderr capture
+  enabled, then eval-engine/record-history! once with the resolved :history mode.
   Emits nonempty captured stdout as {:tag :out :val string}, then nonempty
   captured stderr as {:tag :err :val string}, then exactly one terminal
   {:tag :ret :val .. :ns .. :ms .. :form ..} event (with :exception true only
   for errors). The terminal :ret event is returned.
 
   The request and emit! are validated before evaluation; a malformed request
-  throws a typed ex-info and jolt.eval is never called. If emit! throws, the
+  throws a typed ex-info and the engine is never called. If emit! throws, the
   exception propagates and no further event is emitted."
   [request emit!]
   (validate-request! request emit!)
