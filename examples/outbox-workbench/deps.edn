@@ -61,4 +61,15 @@
   ;; stable post-COMMIT inspection, explicit delivery, and EvalSession use.
   :live-lifecycle-test
   {:extra-paths ["test"]
-   :main-opts ["-m" "outbox-workbench.live-lifecycle-test-main"]}}}
+   :main-opts ["-m" "outbox-workbench.live-lifecycle-test-main"]}
+
+  ;; Ripple with both a persistent EvalSession and one retained canonical
+  ;; outbox worker. The child resolves the root repository's exact real
+  ;; HTTP/SQLite/TCP dependency graph rather than this example's launcher
+  ;; graph.
+  :retained-workbench
+  {:main-opts ["-m" "outbox-workbench.retained-main"]}
+
+  :retained-workbench-test
+  {:extra-paths ["test"]
+   :main-opts ["-m" "outbox-workbench.retained-workbench-test-main"]}}}

@@ -166,3 +166,61 @@ cd examples/outbox-workbench
 
 Its append-only progress path can be pinned with
 `JOLT_SIM_OUTBOX_LIVE_PROGRESS_FILE`; failures and timeouts are never deleted.
+
+## Retained application worker
+
+The retained workbench is the first interactive process-isolated form. Ripple
+owns neither capability: the launcher attaches one persistent EvalSession and
+one separately running canonical outbox worker, while the existing retained
+panel supplies explicit Refresh, Send once, Reconcile, and Terminate controls.
+The child still runs the unchanged real HTTP → SQLite → TCP/bencode lifecycle;
+the file-mailbox protocol only preserves exact command receipts and ambiguity
+across the process boundary.
+
+Launch from this directory with an eval-capable parent image, an explicitly
+sim-enabled child image in `JOLT_SIM_BIN`, and the absolute jolt-sim repository
+root. One image may fill both roles when it has both capabilities; the local
+development images shown below deliberately do not assume that:
+
+```sh
+cd /home/chuck/ai-src/worktrees/jolt-sim-retained-outbox-workbench/examples/outbox-workbench
+JOLT_SIM_VIEWER_TOKEN='replace-with-at-least-32-random-characters' \
+JOLT_SIM_BIN='/absolute/path/to/sim-enabled-jolt' \
+JOLT_SIM_PROJECT_DIR='/home/chuck/ai-src/worktrees/jolt-sim-retained-outbox-workbench' \
+  /home/chuck/ai-src/tools/jolt-with-chez-10.4.1 \
+  /absolute/path/to/eval-capable-jolt -M:retained-workbench
+```
+
+In Ripple's retained panel, use these exact commands in order:
+
+```clojure
+{:op :inspect}
+{:op :submit :command {:request-id "req-1"
+                       :entity-id "entity-a"
+                       :payload [0 127 128 255]}}
+{:op :deliver}
+{:op :inspect}
+{:op :stop}
+```
+
+The first inspect is empty. Submit returns real HTTP 201 and commits one
+`:pending` row without contacting the receiver. Deliver performs one real
+TCP/bencode exchange and changes that exact row to `:delivered` only after the
+correlated acknowledgement. Stop asks the application to close its resources
+and publish completed terminal evidence; Ctrl+C uses the same graceful path,
+then reaps the child only if it did not exit within the bounded grace period.
+All retained artifact paths are printed at startup and are never deleted on a
+failure.
+
+The focused fresh-process gate proves the combined launcher, persistent eval,
+durable post-COMMIT boundary, explicit delivery, graceful terminal document,
+and idempotent launcher shutdown:
+
+```sh
+cd examples/outbox-workbench
+JOLT_SIM_BIN='/absolute/path/to/sim-enabled-jolt' \
+JOLT_SIM_PROJECT_DIR='/absolute/path/to/jolt-sim-worktree' \
+JOLT_SIM_RETAINED_WORKBENCH_PROGRESS_FILE='/tmp/retained-workbench-progress.edn' \
+  /home/chuck/ai-src/tools/jolt-with-chez-10.4.1 \
+  /absolute/path/to/eval-capable-jolt -M:retained-workbench-test
+```
