@@ -176,3 +176,191 @@
         (present 0 event)
         (present 1 event)
         (is (= 1 @calls))))))
+
+(defn- restored-field [model label]
+  (some->> (:fields model)
+           (filter #(= label (:label %)))
+           first
+           :value
+           trace/restore-value))
+
+(def ^:private value-presenter-entry
+  {:kind :acme.kind/widget
+   :present
+   (fn [value]
+     {:summary (str "Widget " (:id value))
+      :fields [{:label "Count" :value (:count value)}
+               {:label "ID" :value (:id value)}]})})
+
+(deftest value-registry-is-explicit-exact-and-later-wins
+  (let [registry (presentation/value-registry
+                  nil
+                  {:acme/widget value-presenter-entry}
+                  {:acme/widget
+                   {:kind :acme.kind/override
+                    :present (fn [_]
+                               {:summary "override" :fields []})}})
+        exact (presentation/present-value
+               registry {:kind :acme/widget :id "w1" :count 2})
+        unknown (presentation/present-value
+                 registry {:kind :acme/other :id "w1"})
+        nested (presentation/present-value
+                registry {:payload {:kind :acme/widget}})]
+    (is (= :acme.kind/override (:kind exact)))
+    (is (= :acme/widget (:source-kind exact)))
+    (is (= "override" (:summary exact)))
+    (is (= :jolt.sim.kind/raw-value (:kind unknown)))
+    (is (= :acme/other (:source-kind unknown)))
+    (is (= :jolt.sim.kind/raw-value (:kind nested)))
+    (is (nil? (:source-kind nested)))
+    (is (= (trace/canonical-edn {:payload {:kind :acme/widget}})
+           (:source-edn nested)))))
+
+(deftest value-presenter-snapshots-source-and-output
+  (let [bytes (byte-array [(byte 1) (byte 2)])
+        seen (atom nil)
+        registry
+        {:acme/blob
+         {:kind :acme.kind/blob
+          :present (fn [value]
+                     (reset! seen (:bytes value))
+                     {:summary "blob"
+                      :fields [{:label "Bytes" :value (:bytes value)}]})}}
+        model (presentation/present-value
+               registry {:kind :acme/blob :bytes bytes})]
+    (aset-byte bytes 0 (byte 9))
+    (is (not (identical? bytes @seen)))
+    (is (= [1 2] (vec (restored-field model "Bytes"))))
+    (is (= model (presentation/present-value
+                  registry {:bytes (byte-array [(byte 1) (byte 2)])
+                            :kind :acme/blob})))))
+
+(deftest presenter-cannot-rewrite-the-captured-source-edn
+  (let [bytes (byte-array [(byte 1) (byte 2)])
+        registry
+        {:acme/blob
+         {:kind :acme.kind/blob
+          :present (fn [value]
+                     (aset-byte (:bytes value) 0 (byte 9))
+                     {:summary "blob" :fields []})}}
+        original {:kind :acme/blob :bytes bytes}
+        expected (trace/canonical-edn original)
+        model (presentation/present-value registry original)]
+    (is (= expected (:source-edn model)))
+    (is (= [1 2] (vec bytes)))))
+
+(deftest value-topology-is-closed-bounded-and-deterministic
+  (let [registry
+        {:acme/network
+         {:kind :acme.kind/topology
+          :present
+          (fn [_]
+            {:summary "network"
+             :fields [{:label "Nodes" :value 2}]
+             :graph
+             {:directed? false
+              :nodes [{:id "a" :label "A" :status :acme.status/ready
+                       :fields [{:label "Count" :value 1}]}
+                      {:id "b" :label "B" :status nil :fields []}]
+              :edges [{:id "a--b" :from "a" :to "b" :label "link"
+                       :status :acme.status/partitioned :fields []}]}})}}
+        model (presentation/present-value registry {:kind :acme/network})]
+    (is (= :acme.kind/topology (:kind model)))
+    (is (= ["a" "b"] (mapv :id (get-in model [:graph :nodes]))))
+    (is (= ["a--b"] (mapv :id (get-in model [:graph :edges]))))
+    (is (= 2 (restored-field model "Nodes")))
+    (is (= model
+           (presentation/present-value registry {:kind :acme/network})))))
+
+(deftest value-registry-and-projections-fail-closed
+  (doseq [[registry reason]
+          [[{:plain value-presenter-entry} :invalid-source-kind]
+           [{:acme/widget {:kind :plain :present identity}}
+            :invalid-output-kind]
+           [{:acme/widget {:kind :acme.kind/x}} :invalid-entry-shape]
+           [{:acme/widget {:kind :acme.kind/x :present nil}}
+            :invalid-presenter]]]
+    (let [data (caught-data #(presentation/validate-value-registry! registry))]
+      (is (= presentation/invalid-value-registry (:type data)))
+      (is (= reason (:reason data)))))
+  (let [bad (fn [projection]
+              (caught-data
+               #(presentation/present-value
+                 {:acme/value {:kind :acme.kind/value
+                               :present (fn [_] projection)}}
+                 {:kind :acme/value})))]
+    (is (= :invalid-projection-shape (:reason (bad {:summary "x"}))))
+    (is (= :invalid-fields
+           (:reason (bad {:summary "x" :fields (list)}))))
+    (is (= :duplicate-field-label
+           (:reason (bad {:summary "x"
+                          :fields [{:label "A" :value 1}
+                                   {:label "A" :value 2}]}))))
+    (is (= :unstable-field-order
+           (:reason (bad {:summary "x"
+                          :fields [{:label "B" :value 1}
+                                   {:label "A" :value 2}]}))))
+    (is (= :presenter-threw
+           (:reason
+            (caught-data
+             #(presentation/present-value
+               {:acme/value
+                {:kind :acme.kind/value
+                 :present (fn [_] (throw (ex-info "boom" {})))}}
+               {:kind :acme/value})))))))
+
+(deftest malformed-topologies-fail-closed
+  (let [data-for
+        (fn [graph]
+          (caught-data
+           #(presentation/present-value
+             {:acme/network
+              {:kind :acme.kind/topology
+               :present (fn [_]
+                          {:summary "network" :fields [] :graph graph})}}
+             {:kind :acme/network})))
+        node (fn [id]
+               {:id id :label id :status nil :fields []})
+        edge (fn [id from to]
+               {:id id :from from :to to :label id
+                :status nil :fields []})]
+    (is (= :duplicate-node-id
+           (:reason (data-for
+                     {:directed? false
+                      :nodes [(node "a") (node "a")] :edges []}))))
+    (is (= :dangling-edge
+           (:reason (data-for
+                     {:directed? false :nodes [(node "a")]
+                      :edges [(edge "a--b" "a" "b")]}))))
+    (is (= :duplicate-edge-id
+           (:reason (data-for
+                     {:directed? true :nodes [(node "a") (node "b")]
+                      :edges [(edge "e" "a" "b")
+                              (edge "e" "a" "b")]}))))
+    (is (= :unstable-node-order
+           (:reason (data-for
+                     {:directed? false
+                      :nodes [(node "b") (node "a")] :edges []}))))
+    (is (= :unstable-undirected-edge
+           (:reason (data-for
+                     {:directed? false :nodes [(node "a") (node "b")]
+                      :edges [(edge "b--a" "b" "a")]}))))
+    (is (= :invalid-nodes
+           (:reason (data-for
+                     {:directed? false
+                      :nodes (mapv #(node (str "n" %)) (range 257))
+                      :edges []}))))
+    (is (= :invalid-fields
+           (:reason
+            (caught-data
+             #(presentation/present-value
+               {:acme/value
+                {:kind :acme.kind/value
+                 :present
+                 (fn [_]
+                   {:summary "too many fields"
+                    :fields
+                    (mapv (fn [index]
+                            {:label (str "Field " index) :value index})
+                          (range 65))})}}
+               {:kind :acme/value})))))))

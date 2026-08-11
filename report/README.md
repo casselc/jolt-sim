@@ -71,6 +71,19 @@ state; function purity cannot be inferred at runtime. An absent entry uses a raw
 can only select functions already present in trusted process configuration;
 they cannot name vars, load namespaces, evaluate forms, or supply HTML.
 
+Arbitrary canonical application values use a distinct exact-kind registry and
+the same bounded model as Ripple:
+
+```clojure
+(report/value->view-model application-value-registry value)
+(report/value->html application-value-registry value)
+```
+
+The second call returns an inert escaped HTML fragment with generic SVG,
+accessible details, and canonical EDN fallback. Application projection logic
+stays in the application registry; the report contains no application-specific
+dispatch and does not claim full Kindly integration.
+
 Case reports render the exact validated Case coordinate, every top-level
 completed-result section, and, for the canonical outbox scenario family, an
 ordered evidence journey through the fields that were actually recorded.

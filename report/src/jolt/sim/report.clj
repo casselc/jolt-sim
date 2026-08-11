@@ -81,6 +81,111 @@
   "Version of the official Maelstrom run view-model shape."
   1)
 
+(defn value->view-model
+  "Returns the shared closed value/topology model for a trusted registry.
+
+  Application semantics remain in the supplied immutable registry; this
+  report namespace performs no application-specific dispatch or field search."
+  [registry value]
+  (presentation/present-value registry value))
+
+(defn- escaped-html [value]
+  (selmer-util/with-escaping
+    (selmer/render "{{value}}" {:value (str value)})))
+
+(defn- kind-text [value]
+  (when value
+    (str (namespace value) "/" (name value))))
+
+(defn- value-field-html [{:keys [label value]}]
+  (str "<dt>" (escaped-html label) "</dt><dd><code>"
+       (escaped-html (trace/canonical-edn (trace/restore-value value)))
+       "</code></dd>"))
+
+(defn- value-fields-html [fields]
+  (when (seq fields)
+    (str "<dl class=\"jolt-sim-value-fields\">"
+         (apply str (map value-field-html fields))
+         "</dl>")))
+
+(defn- value-topology-svg [graph]
+  (when (and graph (seq (:nodes graph)))
+    (let [nodes (:nodes graph)
+          width (max 360 (* 190 (count nodes)))
+          positions (into {}
+                          (map-indexed
+                           (fn [index node]
+                             [(:id node) {:x (+ 95 (* index 190)) :y 95}])
+                           nodes))]
+      (str
+       "<svg class=\"jolt-sim-value-topology\" viewBox=\"0 0 " width
+       " 210\" role=\"img\" aria-label=\"Value topology\">"
+       (apply str
+              (map (fn [{:keys [id from to label status]}]
+                     (let [{x1 :x y1 :y} (get positions from)
+                           {x2 :x y2 :y} (get positions to)]
+                       (str "<g data-edge-id=\"" (escaped-html id) "\">"
+                            "<line x1=\"" x1 "\" y1=\"" y1
+                            "\" x2=\"" x2 "\" y2=\"" y2
+                            "\" stroke=\"currentColor\"/>"
+                            "<text x=\"" (/ (+ x1 x2) 2) "\" y=\""
+                            (- y1 12) "\" text-anchor=\"middle\">"
+                            (escaped-html label) "</text><title>"
+                            (escaped-html (or (kind-text status) ""))
+                            "</title></g>")))
+                   (:edges graph)))
+       (apply str
+              (map (fn [{:keys [id label status]}]
+                     (let [{:keys [x y]} (get positions id)]
+                       (str "<g data-node-id=\"" (escaped-html id) "\">"
+                            "<rect x=\"" (- x 70) "\" y=\"" (- y 35)
+                            "\" width=\"140\" height=\"70\" rx=\"8\""
+                            " fill=\"Canvas\" stroke=\"currentColor\"/>"
+                            "<text x=\"" x "\" y=\"" y
+                            "\" text-anchor=\"middle\">"
+                            (escaped-html label) "</text>"
+                            "<text x=\"" x "\" y=\"" (+ y 20)
+                            "\" text-anchor=\"middle\">"
+                            (escaped-html (or (kind-text status) ""))
+                            "</text></g>")))
+                   nodes))
+       "</svg>"))))
+
+(defn- graph-details-html [graph]
+  (when graph
+    (str
+     (apply str
+            (map (fn [{:keys [id label fields]}]
+                   (str "<details><summary>Node " (escaped-html label)
+                        " <code>" (escaped-html id) "</code></summary>"
+                        (value-fields-html fields) "</details>"))
+                 (:nodes graph)))
+     (apply str
+            (map (fn [{:keys [id label fields]}]
+                   (str "<details><summary>Edge " (escaped-html label)
+                        " <code>" (escaped-html id) "</code></summary>"
+                        (value-fields-html fields) "</details>"))
+                 (:edges graph))))))
+
+(defn value->html
+  "Renders one value through the same bounded model consumed by Ripple.
+
+  The result is a self-contained inert fragment: escaped SVG, bounded details,
+  and canonical source EDN. It contains no script or application-specific
+  renderer logic."
+  [registry value]
+  (let [{:keys [summary fields graph source-edn] :as model}
+        (value->view-model registry value)]
+    (str "<article class=\"jolt-sim-value-presentation\" data-kind=\""
+         (escaped-html (kind-text (:kind model))) "\"><h1>"
+         (escaped-html summary) "</h1>"
+         (value-fields-html fields)
+         (value-topology-svg graph)
+         (graph-details-html graph)
+         "<details><summary>Canonical source EDN</summary><pre>"
+         (escaped-html source-edn)
+         "</pre></details></article>")))
+
 (def invalid-monitor-result
   "Type value for a malformed supplied monitor decision."
   ::invalid-monitor-result)

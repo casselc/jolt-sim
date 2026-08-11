@@ -66,6 +66,14 @@ use it to select filesystem paths or native calls, or perform other
 input-directed side effects. See the report README for the small presenter
 shape.
 
+An attached retained application may separately supply a trusted
+`:value-presentation-registry` from programmatic startup code. Exact
+namespaced top-level value kinds select bounded ordinary or topology
+projections. Completed command receipts then carry an advisory presentation;
+presenter failure or response pressure drops that view before any receipt is
+truncated. Functions are rejected from EDN configuration, and the generic
+browser renderer knows no application schemas.
+
 The server admits one body-consuming inspection or replay request at a time,
 even when several tabs share the capability. A competing request receives 429
 before its body is read. Two bounded HTTP threads let jolt-http's parser keep

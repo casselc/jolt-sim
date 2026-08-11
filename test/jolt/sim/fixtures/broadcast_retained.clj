@@ -39,7 +39,8 @@
 
 (defn- continued [operation result application]
   {:terminal? false
-   :value {:operation operation
+   :value {:kind :maelstrom-broadcast-workbench/command-result
+           :operation operation
            :result result
            :snapshot (live/snapshot! application)}})
 
@@ -67,7 +68,8 @@
       :stop
       (let [owner? (live/stop! application)]
         {:terminal? true
-         :value {:operation :stop
+         :value {:kind :maelstrom-broadcast-workbench/command-result
+                 :operation :stop
                  :owner? owner?
                  :snapshot (live/snapshot! application)}}))))
 

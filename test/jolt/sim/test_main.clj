@@ -41,6 +41,7 @@
             [jolt.sim.pack-registry-test]
             [jolt.sim.posix-fault-test]
             [jolt.sim.posix-loopback-model-test]
+            [jolt.sim.presentation-test]
             [jolt.sim.process-explorer-test]
             [jolt.sim.repl-test]
             [jolt.sim.replay-test]
@@ -96,6 +97,7 @@
                         'jolt.sim.pack-registry-test
                         'jolt.sim.posix-fault-test
                         'jolt.sim.posix-loopback-model-test
+                        'jolt.sim.presentation-test
                         'jolt.sim.process-explorer-test
                         'jolt.sim.repl-test
                         'jolt.sim.replay-test

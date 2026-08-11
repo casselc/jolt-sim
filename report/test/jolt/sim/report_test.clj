@@ -1627,6 +1627,34 @@
     (is (= html (string/replace html #"[ \t]+\n" "\n")))
     (is (= html (string/replace html #"[ \t]+\z" "")))))
 
+(deftest generic-value-topology-report-reuses-the-closed-model-and-escapes
+  (let [value {:kind :example/network :hostile "<script>alert(1)</script>"}
+        registry
+        {:example/network
+         {:kind :example.kind/topology
+          :present
+          (fn [source]
+            {:summary "Topology <one>"
+             :fields [{:label "Hostile" :value (:hostile source)}]
+             :graph
+             {:directed? false
+              :nodes [{:id "a<&" :label "A <node>"
+                       :status :example.status/ready :fields []}
+                      {:id "b" :label "B" :status nil :fields []}]
+              :edges [{:id "a<&--b" :from "a<&" :to "b"
+                       :label "A <-> B" :status :example.status/connected
+                       :fields [{:label "Packets" :value [1 2]}]}]}})}}
+        vm (report/value->view-model registry value)
+        html (report/value->html registry value)]
+    (is (= :example.kind/topology (:kind vm)))
+    (is (= ["a<&" "b"] (mapv :id (get-in vm [:graph :nodes]))))
+    (is (string/includes? html "<svg"))
+    (is (string/includes? html "data-node-id=\"a&lt;&amp;\""))
+    (is (string/includes? html "Topology &lt;one&gt;"))
+    (is (string/includes? html "&lt;script&gt;alert(1)&lt;/script&gt;"))
+    (is (not (string/includes? html "<script>")))
+    (is (= html (report/value->html registry value)))))
+
 (deftest committed-outbox-example-is-current-ack-gated-witness
   (let [doc
         (case-outcome/read-edn
