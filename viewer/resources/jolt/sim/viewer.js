@@ -42,6 +42,9 @@
   const sessionStepStatus = document.getElementById("session-step-status");
   const sessionStepRetryRow = document.getElementById("session-step-retry-row");
   const sessionStepRetry = document.getElementById("session-step-retry");
+  const sessionEffectReconcile = document.getElementById("session-effect-reconcile");
+  const sessionClose = document.getElementById("session-close");
+  const sessionEffect = document.getElementById("session-effect");
   const sessionInstanceHeader = "X-Jolt-Sim-Session-Instance";
   let documentText = null;
   let busy = false;
@@ -59,6 +62,7 @@
   // same producer and never synthesize a new coordinate. A later stale or
   // rejected retry does not resolve whether the original attempt committed.
   let pendingRetry = null;
+  let sessionEffectCoordinate = null;
   let activityCursors = ["0"];
   let activityPageIndex = 0;
   let activityPage = null;
@@ -262,6 +266,29 @@
       ? canonicalUnsignedDecimal(choice.value)
       : canonicalSignedDecimal(choice.value)) &&
     typeof choice.label === "string";
+
+  const flowEffectStatuses = new Set(["ready", "uncertain", "failed", "closed"]);
+
+  const validFlowEffectCoordinate = (value) =>
+    exactKeys(value, ["status", "closed", "workerOwnership", "stepEnabled",
+      "reconcileEnabled", "closeEnabled", "uncertainSequence"]) &&
+    flowEffectStatuses.has(value.status) &&
+    typeof value.closed === "boolean" &&
+    value.closed === (value.status === "closed") &&
+    value.workerOwnership === "borrowed" &&
+    typeof value.stepEnabled === "boolean" &&
+    typeof value.reconcileEnabled === "boolean" &&
+    typeof value.closeEnabled === "boolean" &&
+    value.stepEnabled === (value.status === "ready" && !value.closed) &&
+    value.reconcileEnabled === (value.status === "uncertain" && !value.closed) &&
+    value.closeEnabled === !value.closed &&
+    (value.status === "uncertain"
+      ? value.uncertainSequence !== null &&
+        canonicalUnsignedDecimal(value.uncertainSequence)
+      : value.status === "closed"
+        ? value.uncertainSequence === null ||
+          canonicalUnsignedDecimal(value.uncertainSequence)
+        : value.uncertainSequence === null);
 
   const safeStepErrors = new Set([
     "400:invalid-session-step",
@@ -815,6 +842,10 @@
     // the only available action stays Retry until it resolves or Reset runs.
     sessionRefresh.disabled = busy || capability.value.length === 0 || pendingRetry !== null;
     sessionReset.disabled = busy;
+    sessionEffectReconcile.disabled = busy || capability.value.length === 0 ||
+      sessionEffectCoordinate === null || !sessionEffectCoordinate.reconcileEnabled;
+    sessionClose.disabled = busy || capability.value.length === 0 ||
+      sessionEffectCoordinate === null || !sessionEffectCoordinate.closeEnabled;
     retainedCommand.disabled = retainedBusy;
     retainedRefresh.disabled = retainedBusy || capability.value.length === 0;
     retainedSend.disabled = retainedBusy || retainedUncertain || retainedTerminationUnknown ||
@@ -855,6 +886,9 @@
   const syncSessionChoiceUI = () => {
     sessionStepRetryRow.hidden = pendingRetry === null;
     sessionStepRetry.disabled = busy;
+    sessionStepRetry.textContent = pendingRetry && pendingRetry.reconcileOnly
+      ? "Reconcile exact branch (never resend)"
+      : "Explicitly retry identical command (original outcome unknown)";
     renderChoices();
   };
 
@@ -1147,6 +1181,7 @@
       lastStepUnknown = false;
     }
     pendingRetry = null;
+    sessionEffectCoordinate = null;
     if (forgetInstance) {
       sessionInstanceKnown = false;
       sessionInstanceId = null;
@@ -1203,10 +1238,16 @@
         }
       }
       const body = await response.json().catch(() => null);
-      if (!response.ok ||
-          !exactKeys(body, ["version", "revision", "nextCursor", "stepEnabled",
-            "frameEdn", "choices"]) ||
-          body.version !== 1 ||
+      const v1Frame = exactKeys(body,
+        ["version", "revision", "nextCursor", "stepEnabled", "frameEdn", "choices"]) &&
+        body.version === 1;
+      const v2Frame = exactKeys(body,
+        ["version", "revision", "nextCursor", "stepEnabled", "frameEdn", "choices",
+          "effect", "effectEdn"]) &&
+        body.version === 2 && validFlowEffectCoordinate(body.effect) &&
+        body.stepEnabled === body.effect.stepEnabled &&
+        boundedString(body.effectEdn, 16 * 1024 * 1024);
+      if (!response.ok || (!v1Frame && !v2Frame) ||
           !canonicalUnsignedDecimal(body.revision) ||
           !canonicalUnsignedDecimal(body.nextCursor) ||
           typeof body.stepEnabled !== "boolean" ||
@@ -1217,6 +1258,10 @@
       }
       sessionCursor = body.nextCursor;
       sessionFrame.textContent = body.frameEdn;
+      sessionEffectCoordinate = v2Frame ? body.effect : null;
+      sessionEffect.textContent = v2Frame
+        ? body.effectEdn
+        : "No flow/effect attachment detected.";
       sessionStepEnabled = body.stepEnabled === true;
       sessionChoices = Array.isArray(body.choices) ? body.choices : [];
       const availability = sessionChoices.length === 0
@@ -1234,6 +1279,8 @@
       sessionStatus.textContent = `Session refresh failed: ${error.message}`;
       sessionStepEnabled = false;
       sessionChoices = [];
+      sessionEffectCoordinate = null;
+      sessionEffect.textContent = "No current flow/effect state; the last refresh failed.";
     } finally {
       busy = false;
       updateButtons();
@@ -1259,6 +1306,7 @@
   };
 
   const performStep = async (bodyText, isRetry, instanceId) => {
+    const flowEffectRequest = sessionEffectCoordinate !== null;
     busy = true;
     if (!isRetry) {
       lastStepStatus = null;
@@ -1279,7 +1327,10 @@
       } catch (networkError) {
         sessionStepStatus.textContent =
           `Network failure without receiving a server acknowledgment; not confirmed committed. ` +
-          `(${networkError.message}) Retry sends the identical command bytes.`;
+          `(${networkError.message}) ` +
+          (flowEffectRequest
+            ? `Reconcile checks the exact branch without resending it.`
+            : `Retry sends the identical command bytes.`);
         return;
       }
       receipt = await response.json().catch(() => null);
@@ -1297,26 +1348,41 @@
         receipt.revision === command.revision &&
         receipt.kind === command.kind &&
         receipt.value === command.value;
+      const v1StepReceipt = receipt && receipt.version === 1 &&
+        exactKeys(receipt, ["version", "outcome", "committed", "revision", "kind",
+          "value", "receiptEdn"]);
+      const v2StepReceipt = receipt && receipt.version === 2 &&
+        exactKeys(receipt, ["version", "outcome", "committed", "revision", "kind",
+          "value", "receiptEdn", "effect", "effectEdn", "truncated"]) &&
+        validFlowEffectCoordinate(receipt.effect) &&
+        ((receipt.truncated === false &&
+          boundedString(receipt.receiptEdn, 16 * 1024 * 1024) &&
+          boundedString(receipt.effectEdn, 16 * 1024 * 1024)) ||
+         (receipt.truncated === true && receipt.receiptEdn === null &&
+          receipt.effectEdn === null));
+      const recognizedStepVersion = flowEffectRequest ? v2StepReceipt : v1StepReceipt;
       const committedReceipt = receiptInstanceMatches &&
         jsonResponse && response.ok &&
-        exactKeys(receipt, ["version", "outcome", "committed", "revision", "kind",
-          "value", "receiptEdn"]) &&
-        receipt.version === 1 && receipt.outcome === "committed" &&
+        recognizedStepVersion && receipt.outcome === "committed" &&
         receipt.committed === true && exactCoordinate &&
-        typeof receipt.receiptEdn === "string";
+        (v2StepReceipt || typeof receipt.receiptEdn === "string");
       const staleReceipt = receiptInstanceMatches &&
         jsonResponse && response.status === 409 &&
-        exactKeys(receipt, ["version", "outcome", "committed", "revision", "kind",
-          "value", "receiptEdn"]) &&
-        receipt.version === 1 && receipt.outcome === "stale" &&
+        recognizedStepVersion && receipt.outcome === "stale" &&
         receipt.committed === false && exactCoordinate &&
-        typeof receipt.receiptEdn === "string";
+        (v2StepReceipt || typeof receipt.receiptEdn === "string");
       const rejectedReceipt = jsonResponse &&
         exactKeys(receipt, ["version", "outcome", "committed", "error"]) &&
         receipt.version === 1 && receipt.outcome === "error" &&
         receipt.committed === false && typeof receipt.error === "string" &&
         safeStepErrors.has(`${response.status}:${receipt.error}`);
       if (committedReceipt) {
+        if (v2StepReceipt) {
+          sessionEffectCoordinate = receipt.effect;
+          sessionEffect.textContent = receipt.truncated
+            ? "Effect detail omitted because the definite acknowledgment exceeded the configured document limit."
+            : receipt.effectEdn;
+        }
         outcome = "committed";
         lastStepCommitted = true;
         lastStepUnknown = false;
@@ -1326,7 +1392,9 @@
         lastStepStatus =
           `Committed on ${producer}: revision ${receipt.revision} ` +
           `(${receipt.kind} ${receipt.value}); ` +
-          `server acknowledged the exact command.`;
+          (v2StepReceipt && receipt.effect.status === "uncertain"
+            ? `the flow committed, but effect sequence ${receipt.effect.uncertainSequence} is uncertain and must be reconciled.`
+            : `server acknowledged the exact command.`);
         sessionStepStatus.textContent = `${lastStepStatus} Refreshing session frame.`;
       } else if (staleReceipt) {
         outcome = isRetry ? "unresolved" : "stale";
@@ -1349,10 +1417,15 @@
       } else {
         sessionStepStatus.textContent =
           `Unacknowledged: server returned ${response.status} without a recognizable receipt; ` +
-          `not confirmed committed. Retry sends the identical command bytes.`;
+          `not confirmed committed. ` +
+          (flowEffectRequest
+            ? `Reconcile checks the exact branch without resending it.`
+            : `Retry sends the identical command bytes.`);
       }
     } finally {
-      pendingRetry = outcome === "ambiguous" ? {bodyText, instanceId} : null;
+      pendingRetry = outcome === "ambiguous"
+        ? {bodyText, instanceId, reconcileOnly: flowEffectRequest}
+        : null;
       sessionChoices = [];
       busy = false;
       updateButtons();
@@ -1376,16 +1449,122 @@
     return performStep(bodyText, false, sessionInstanceId);
   };
 
+  const performFlowEffectControl = async (operation, path, bodyText) => {
+    if (busy || sessionEffectCoordinate === null) return;
+    busy = true;
+    updateButtons();
+    sessionStepStatus.textContent = `${operation} in progress; Ripple will not retry it automatically...`;
+    try {
+      const headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "X-Jolt-Sim-Capability": capability.value,
+        "X-Jolt-Sim-Journal-Cursor": sessionCursor
+      };
+      if (sessionInstanceId !== null) headers[sessionInstanceHeader] = sessionInstanceId;
+      const response = await fetch(path, {
+        method: "POST",
+        headers,
+        body: bodyText,
+        cache: "no-store",
+        credentials: "omit"
+      });
+      const responseInstance = response.headers.get(sessionInstanceHeader);
+      const instanceMatches = sessionInstanceId === null
+        ? responseInstance === null
+        : responseInstance === sessionInstanceId;
+      const result = await response.json().catch(() => null);
+      const jsonResponse = (response.headers.get("Content-Type") || "")
+        .toLowerCase().startsWith("application/json");
+      const common = instanceMatches && jsonResponse && response.ok &&
+        result && result.version === 2 &&
+        validFlowEffectCoordinate(result.effect) &&
+        ((result.truncated === false &&
+          boundedString(result.effectEdn, 16 * 1024 * 1024)) ||
+         (result.truncated === true && result.effectEdn === null));
+      const effectReconcile = operation === "Effect reconciliation" && common &&
+        exactKeys(result, ["version", "operation", "outcome", "flowCommitted",
+          "effect", "effectEdn", "truncated"]) &&
+        result.operation === "effect-reconcile" &&
+        ["settled", "uncertain", "failed"].includes(result.outcome) &&
+        result.flowCommitted === true;
+      const close = operation === "Flow close" && common &&
+        exactKeys(result, ["version", "operation", "outcome", "closed",
+          "effect", "effectEdn", "truncated"]) &&
+        result.operation === "close" && result.outcome === "closed" &&
+        result.closed === true && result.effect.closed === true;
+      let stepReconcile = false;
+      if (operation === "Step reconciliation" && common &&
+          exactKeys(result, ["version", "operation", "outcome", "committed",
+            "revision", "kind", "value", "effect", "effectEdn", "truncated"]) &&
+          result.operation === "step-reconcile" &&
+          ["missing", "committed", "different"].includes(result.outcome)) {
+        const submitted = JSON.parse(bodyText).branch;
+        stepReconcile = result.revision === submitted.revision &&
+          result.kind === submitted.kind && result.value === submitted.value &&
+          result.committed === (result.outcome === "committed");
+      }
+      if (!effectReconcile && !close && !stepReconcile) {
+        throw new Error(`${response.status} ${result ? JSON.stringify(result) : "unparseable response"}`);
+      }
+      sessionEffectCoordinate = result.effect;
+      sessionEffect.textContent = result.truncated
+        ? "Effect detail omitted because the definite acknowledgment exceeded the configured document limit."
+        : result.effectEdn;
+      sessionStepEnabled = result.effect.stepEnabled;
+      sessionChoices = [];
+      if (stepReconcile) {
+        pendingRetry = null;
+        lastStepUnknown = false;
+        lastStepCommitted = result.outcome === "committed";
+        lastStepStatus = result.outcome === "committed"
+          ? "The exact branch committed; reconciliation was read-only and did not resend it."
+          : `The exact branch did not commit (${result.outcome}); reconciliation was read-only.`;
+      }
+      sessionStepStatus.textContent = close
+        ? "Flow admission is closed; the borrowed worker was not terminated."
+        : stepReconcile
+          ? lastStepStatus
+          : `Effect reconciliation completed with outcome ${result.outcome}; the flow commit remains authoritative.`;
+    } catch (error) {
+      // The control acknowledgment was not recognized.  Do not let the user
+      // repeat an effect reconciliation against a possibly later pending
+      // sequence.  A fresh coherent frame is required before another choice.
+      sessionEffectCoordinate = null;
+      sessionEffect.textContent =
+        "Flow/effect control outcome is unknown; refresh before choosing another control.";
+      sessionStepStatus.textContent =
+        `${operation} did not return a recognized acknowledgment (${error.message}); no command was resent automatically.`;
+    } finally {
+      busy = false;
+      updateButtons();
+    }
+  };
+
   sessionStepRetry.addEventListener("click", () => {
     if (busy || pendingRetry === null) return;
-    performStep(pendingRetry.bodyText, true, pendingRetry.instanceId);
+    if (pendingRetry.reconcileOnly) {
+      performFlowEffectControl("Step reconciliation",
+        "/api/session-step-reconcile", pendingRetry.bodyText);
+    } else {
+      performStep(pendingRetry.bodyText, true, pendingRetry.instanceId);
+    }
   });
+
+  sessionEffectReconcile.addEventListener("click", () =>
+    performFlowEffectControl("Effect reconciliation",
+      "/api/session-effect-reconcile", JSON.stringify({version: 1})));
+
+  sessionClose.addEventListener("click", () =>
+    performFlowEffectControl("Flow close",
+      "/api/session-close", JSON.stringify({version: 1})));
 
   sessionReset.addEventListener("click", () => {
     clearSessionClientState(true);
     sessionFrame.textContent = "No current session frame; refresh from cursor zero.";
     sessionStatus.textContent = "Journal cursor reset; refresh to read from the beginning.";
     sessionStepStatus.textContent = "No branch choice sent.";
+    sessionEffect.textContent = "No flow/effect attachment detected.";
     updateButtons();
   });
 

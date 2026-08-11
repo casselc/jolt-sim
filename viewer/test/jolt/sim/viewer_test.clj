@@ -8,6 +8,7 @@
             [jolt.sim.activity :as activity]
             [jolt.sim.case-outcome :as case-outcome]
             [jolt.sim.eval-session :as eval-session]
+            [jolt.sim.flow-effect-view :as flow-effect-view]
             [jolt.sim.kernel :as kernel]
             [jolt.sim.maelstrom.official-run :as official-run]
             [jolt.sim.presentation :as presentation]
@@ -4760,6 +4761,369 @@
         (is (= :completed (:status ((:reconcile-retained! plain)))))
         (is (= :terminated (:status ((:terminate-retained! plain)))))
         (is (= :eval-service (:evaluate-form! combined)))))))
+
+;; --- Flow/effect Session attachment (wire v2) ---
+
+(defn- flow-effect-state [status]
+  (let [uncertain? (= :uncertain status)
+        closed? (= :closed status)]
+    {:status status
+     :closed? closed?
+     :ownership {:worker :borrowed}
+     :effects {:seen-intents 1
+               :records []
+               :pending (when uncertain? {:id [:effect 4]})
+               :remaining []}
+     :worker {:status (if uncertain? :uncertain :ready)
+              :next-sequence 4
+              :uncertain-sequence (when uncertain? 4)}
+     :commands {:step? (= :ready status)
+                :reconcile-effect? uncertain?
+                :reconcile-step? true
+                :close? (not closed?)}}))
+
+(defn- flow-effect-frame
+  ([status] (flow-effect-frame status 0 0))
+  ([status revision cursor]
+   {:jolt.sim.session-view/type :frame
+    :kind :jolt.sim.kind/flow-effect-session-frame
+    :revision revision
+    :status nil
+    :projection {:world :fixture}
+    :branches (if (= :ready status)
+                [{:revision revision :action [:run 0]}]
+                [])
+    :previews []
+    :journal {:cursor cursor :next-cursor cursor :count cursor
+              :page-size 0 :remaining? false :entries []}
+    :flow-effect (flow-effect-state status)}))
+
+(defn- flow-effect-services [calls]
+  (merge
+   (services (atom []) (atom []) {:status :unused})
+   {:read-session-frame
+    (fn [cursor]
+      (swap! calls conj [:read cursor])
+      (flow-effect-frame :ready 0 cursor))
+    :step-session-frame!
+    (fn [branch cursor]
+      (swap! calls conj [:step branch cursor])
+      {:jolt.sim.session-view/type :step-result
+       :kind :jolt.sim.kind/flow-effect-step-result
+       :status :committed :committed? true
+       :ack {:branch branch :revision (inc (:revision branch))}
+       :flow-effect (flow-effect-state :uncertain)
+       :frame (flow-effect-frame :uncertain (inc (:revision branch)) cursor)
+       :frame-error nil})
+    :reconcile-session-effect!
+    (fn [cursor]
+      (swap! calls conj [:effect-reconcile cursor])
+      {:jolt.sim.flow-effect-view/type :effect-reconcile-result
+       :kind :jolt.sim.kind/flow-effect-reconcile-result
+       :operation :reconcile-effect :flow-committed? true
+       :target {:intent-id [:intent 4] :sequence 4}
+       :status :settled :effect {:state :settled}
+       :frame (flow-effect-frame :ready 1 cursor)
+       :frame-error nil})
+    :reconcile-session-step
+    (fn [branch cursor]
+      (swap! calls conj [:step-reconcile branch cursor])
+      {:jolt.sim.flow-effect-view/type :step-reconcile-result
+       :kind :jolt.sim.kind/flow-effect-step-reconcile-result
+       :operation :reconcile-step :submitted branch
+       :status :committed :committed? true :revision 1
+       :intent-ids [[:intent 4]]
+       :frame (flow-effect-frame :ready 1 cursor)})
+    :close-session!
+    (fn [cursor]
+      (swap! calls conj [:close cursor])
+      {:jolt.sim.flow-effect-view/type :close-result
+       :kind :jolt.sim.kind/flow-effect-close-result
+       :operation :close :status :closed
+       :worker {:ownership :borrowed :operation :none}
+       :frame (flow-effect-frame :closed 1 cursor)})}))
+
+(defn- flow-json-request [request]
+  (assoc-in request [:headers "accept"] "application/json"))
+
+(deftest flow-effect-frame-and-step-use-closed-v2-with-committed-uncertainty
+  (let [calls (atom [])
+        handler (viewer/make-handler
+                 (assoc (config) :max-document-bytes (* 1024 1024))
+                 (flow-effect-services calls))
+        frame (handler (flow-json-request (get-request "/api/session-frame")))
+        frame-wire (json/read-str (:body frame))
+        step (handler
+              (flow-json-request
+               (step-request (step-body "0" "0" "run" "0"))))
+        step-wire (json/read-str (:body step))]
+    (is (= 200 (:status frame)))
+    (is (= 2 (get frame-wire "version")))
+    (is (= #{"version" "revision" "nextCursor" "stepEnabled"
+             "frameEdn" "choices" "effect" "effectEdn"}
+           (set (keys frame-wire))))
+    (is (= {"status" "ready" "closed" false
+            "workerOwnership" "borrowed" "stepEnabled" true
+            "reconcileEnabled" false "closeEnabled" true
+            "uncertainSequence" nil}
+           (get frame-wire "effect")))
+    (is (= 200 (:status step))
+        "effect uncertainty does not erase the authoritative flow commit")
+    (is (= #{"version" "outcome" "committed" "revision" "kind"
+             "value" "receiptEdn" "effect" "effectEdn" "truncated"}
+           (set (keys step-wire))))
+    (is (= 2 (get step-wire "version")))
+    (is (true? (get step-wire "committed")))
+    (is (= "committed" (get step-wire "outcome")))
+    (is (= "uncertain" (get-in step-wire ["effect" "status"])))
+    (is (false? (get-in step-wire ["effect" "stepEnabled"])))
+    (is (true? (get-in step-wire ["effect" "reconcileEnabled"])))
+    (is (false? (get step-wire "truncated")))
+    (is (= "4" (get-in step-wire ["effect" "uncertainSequence"])))
+    (is (= [[:read 0]
+            [:step {:revision 0 :action [:run 0]} 0]]
+           @calls))))
+
+(deftest flow-effect-controls-are-exact-and-preserve-borrowed-lifecycle
+  (let [calls (atom [])
+        handler (viewer/make-handler
+                 (assoc (config) :max-document-bytes (* 1024 1024))
+                 (flow-effect-services calls))
+        effect-request
+        (flow-json-request
+         (json-post-request "/api/session-effect-reconcile" {"version" 1}))
+        effect-response (handler effect-request)
+        effect-wire (json/read-str (:body effect-response))
+        reconcile-request
+        (-> (step-request (step-body "0" "0" "run" "0"))
+            (assoc :uri "/api/session-step-reconcile")
+            flow-json-request)
+        reconcile-response (handler reconcile-request)
+        reconcile-wire (json/read-str (:body reconcile-response))
+        close-response
+        (handler
+         (flow-json-request
+          (json-post-request "/api/session-close" {"version" 1})))
+        close-wire (json/read-str (:body close-response))]
+    (is (= #{"version" "operation" "outcome" "flowCommitted"
+             "effect" "effectEdn" "truncated"}
+           (set (keys effect-wire))))
+    (is (= "settled" (get effect-wire "outcome")))
+    (is (true? (get effect-wire "flowCommitted")))
+    (is (= #{"version" "operation" "outcome" "committed"
+             "revision" "kind" "value" "effect" "effectEdn" "truncated"}
+           (set (keys reconcile-wire))))
+    (is (= "committed" (get reconcile-wire "outcome")))
+    (is (= #{"version" "operation" "outcome" "closed"
+             "effect" "effectEdn" "truncated"}
+           (set (keys close-wire))))
+    (is (= "closed" (get close-wire "outcome")))
+    (is (= "borrowed" (get-in close-wire ["effect" "workerOwnership"])))
+    (is (= [[:effect-reconcile 0]
+            [:step-reconcile {:revision 0 :action [:run 0]} 0]
+            [:close 0]]
+           @calls)
+        "the viewer exposes no raw retained command or termination call")))
+
+(deftest flow-effect-definite-acknowledgments-survive-size-and-frame-failures
+  (let [calls (atom [])
+        tiny-handler
+        (viewer/make-handler
+         (assoc (config) :max-document-bytes 1)
+         (flow-effect-services calls))
+        step (tiny-handler
+              (flow-json-request
+               (step-request (step-body "0" "0" "run" "0"))))
+        step-wire (json/read-str (:body step))
+        control (tiny-handler
+                 (flow-json-request
+                  (json-post-request "/api/session-effect-reconcile"
+                                     {"version" 1})))
+        control-wire (json/read-str (:body control))
+        frame-failure-services
+        (assoc
+         (flow-effect-services (atom []))
+         :reconcile-session-effect!
+         (fn [_]
+           {:jolt.sim.flow-effect-view/type :effect-reconcile-result
+            :kind :jolt.sim.kind/flow-effect-reconcile-result
+            :operation :reconcile-effect
+            :flow-committed? true
+            :target {:intent-id [:intent 4] :sequence 4}
+            :status :settled
+            :effect {:state :settled}
+            :flow-effect (flow-effect-state :ready)
+            :frame nil
+            :frame-error
+            {:type :jolt.sim.flow-effect-view/coherence-failed
+             :phase :post-effect-reconcile
+             :attempts 8 :max-attempts 8}}))
+        frame-failure-handler
+        (viewer/make-handler
+         (assoc (config) :max-document-bytes (* 1024 1024))
+         frame-failure-services)
+        frame-failure-response
+        (frame-failure-handler
+         (flow-json-request
+          (json-post-request "/api/session-effect-reconcile" {"version" 1})))
+        frame-failure-wire (json/read-str (:body frame-failure-response))]
+    (is (= 200 (:status step)))
+    (is (true? (get step-wire "committed")))
+    (is (true? (get step-wire "truncated")))
+    (is (nil? (get step-wire "receiptEdn")))
+    (is (nil? (get step-wire "effectEdn")))
+    (is (= "uncertain" (get-in step-wire ["effect" "status"])))
+    (is (= 200 (:status control)))
+    (is (true? (get control-wire "flowCommitted")))
+    (is (true? (get control-wire "truncated")))
+    (is (nil? (get control-wire "effectEdn")))
+    (is (= 200 (:status frame-failure-response)))
+    (is (= "settled" (get frame-failure-wire "outcome")))
+    (is (= "ready" (get-in frame-failure-wire ["effect" "status"])))
+    (is (false? (get frame-failure-wire "truncated")))))
+
+(deftest flow-effect-control-orders-auth-availability-media-and-body
+  (let [calls (atom [])
+        read? (atom false)
+        full (viewer/make-handler (config) (flow-effect-services calls))
+        ordinary
+        (viewer/make-handler
+         (config)
+         (assoc (services (atom []) (atom []) {:status :unused})
+                :read-session-frame (fn [_] (flow-effect-frame :ready))))
+        tracked
+        {:request-method :post :uri "/api/session-close"
+         :headers {"content-type" "application/json"
+                   "x-jolt-sim-capability" token}
+         :body (recording-body read?)}
+        forbidden (full (assoc-in tracked
+                                  [:headers "x-jolt-sim-capability"] "wrong"))
+        unavailable (ordinary tracked)
+        unavailable-wrong-media
+        (ordinary (assoc-in tracked [:headers "content-type"] "text/plain"))
+        wrong-media
+        (full (assoc-in tracked [:headers "content-type"] "text/plain"))
+        invalid-body
+        (full (flow-json-request
+               (json-post-request "/api/session-close"
+                                  {"version" 1 "extra" true})))
+        epoch-read? (atom false)
+        epoch-handler
+        (viewer/make-handler
+         (assoc (config) :session-instance-id session-instance-id)
+         (flow-effect-services (atom [])))
+        missing-epoch
+        (epoch-handler
+         (assoc tracked :body (recording-body epoch-read?)))]
+    (is (= 403 (:status forbidden)))
+    (is (= 404 (:status unavailable)))
+    (is (= 404 (:status unavailable-wrong-media)))
+    (is (= 415 (:status wrong-media)))
+    (is (= 400 (:status invalid-body)))
+    (is (= 409 (:status missing-epoch)))
+    (is (false? @read?))
+    (is (false? @epoch-read?)
+        "producer epoch rejection precedes body consumption")
+    (is (= [] @calls))))
+
+(deftest flow-effect-control-shares-the-session-single-flight-gate
+  (let [entered (promise)
+        release (promise)
+        calls (atom [])
+        services-map
+        (assoc (flow-effect-services calls)
+               :reconcile-session-effect!
+               (fn [cursor]
+                 (deliver entered true)
+                 @release
+                 {:jolt.sim.flow-effect-view/type :effect-reconcile-result
+                  :operation :reconcile-effect :flow-committed? true
+                  :status :settled :effect {:state :settled}
+                  :frame (flow-effect-frame :ready 1 cursor)
+                  :frame-error nil}))
+        handler (viewer/make-handler (config) services-map)
+        first-response
+        (future
+          (handler
+           (flow-json-request
+            (json-post-request "/api/session-effect-reconcile"
+                               {"version" 1}))))]
+    (try
+      (is (= true (deref entered 5000 ::timeout)))
+      (is (= 429 (:status
+                  (handler (get-request "/api/session-frame")))))
+      (finally
+        (deliver release true)))
+    (is (= 200 (:status (deref first-response 5000 {:status ::timeout}))))))
+
+(deftest start-flow-effect-session-installs-five-opaque-closures-only
+  (let [bridge (Object.)
+        captured (atom nil)
+        calls (atom [])]
+    (with-redefs [viewer/start!
+                  (fn [supplied-config supplied-services]
+                    (reset! captured {:config supplied-config
+                                      :services supplied-services})
+                    :server)
+                  flow-effect-view/read-frame
+                  (fn [actual cursor]
+                    (is (identical? bridge actual))
+                    (swap! calls conj [:read cursor])
+                    :frame)
+                  flow-effect-view/step-frame!
+                  (fn [actual branch cursor]
+                    (is (identical? bridge actual))
+                    (swap! calls conj [:step branch cursor])
+                    :step)
+                  flow-effect-view/reconcile-effect-frame!
+                  (fn [actual cursor]
+                    (is (identical? bridge actual))
+                    (swap! calls conj [:effect-reconcile cursor])
+                    :effect)
+                  flow-effect-view/reconcile-step-frame
+                  (fn [actual branch cursor]
+                    (is (identical? bridge actual))
+                    (swap! calls conj [:step-reconcile branch cursor])
+                    :reconciled)
+                  flow-effect-view/close-frame!
+                  (fn [actual cursor]
+                    (is (identical? bridge actual))
+                    (swap! calls conj [:close cursor])
+                    :closed)]
+      (is (= :server
+             (viewer/start-flow-effect-session! (config) bridge)))
+      (let [service-map (:services @captured)
+            installed (select-keys service-map
+                                   [:read-session-frame
+                                    :step-session-frame!
+                                    :reconcile-session-effect!
+                                    :reconcile-session-step
+                                    :close-session!])
+            branch {:revision 0 :action [:run 0]}]
+        (is (= 5 (count installed)))
+        (is (not-any? #(contains? service-map %)
+                      [:read-retained-frame :command-retained!
+                       :reconcile-retained! :terminate-retained!]))
+        (is (= :frame ((:read-session-frame installed) 0)))
+        (is (= :step ((:step-session-frame! installed) branch 0)))
+        (is (= :effect ((:reconcile-session-effect! installed) 0)))
+        (is (= :reconciled
+               ((:reconcile-session-step installed) branch 0)))
+        (is (= :closed ((:close-session! installed) 0)))
+        (is (= [[:read 0] [:step branch 0] [:effect-reconcile 0]
+                [:step-reconcile branch 0] [:close 0]]
+               @calls))))))
+
+(deftest stopping-viewer-does-not-close-a-flow-effect-bridge
+  (let [stops (atom [])
+        bridge-calls (atom 0)]
+    (with-redefs [jolt.http.server/stop-server
+                  (fn [server] (swap! stops conj server) :stopped)
+                  flow-effect-view/close-frame!
+                  (fn [& _] (swap! bridge-calls inc))]
+      (is (= :stopped (viewer/stop! :server)))
+      (is (= [:server] @stops))
+      (is (zero? @bridge-calls)))))
 
 (defn -main [& _]
   (let [result (test/run-tests 'jolt.sim.viewer-test)
