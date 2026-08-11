@@ -18,7 +18,8 @@
   projects the definite worker receipt onto declared application facts, then a
   finite flow consumes those facts as ordinary accumulated data. No effect is
   smuggled into a preview handler."
-  (:require [jolt.sim.flow :as flow]
+  (:require [jolt.sim.command-cell-session :as command-cell-session]
+            [jolt.sim.flow :as flow]
             [jolt.sim.kernel :as kernel]))
 
 ;; ---- retained worker launch contract --------------------------------------
@@ -51,9 +52,20 @@
   "The closed boundary of one canonical outbox command payload, matching
   jolt.sim.fixtures.outbox-delivery/default-command."
   [:map {:closed true}
-   [:request-id :string]
-   [:entity-id :string]
-   [:payload [:vector :int]]])
+   [:request-id [:string {:min 1}]]
+   [:entity-id [:string {:min 1}]]
+   [:payload [:vector [:int {:min 0 :max 255}]]]])
+
+(def submit-command-schema
+  "Exact closed input boundary for the submit command cell."
+  [:map {:closed true}
+   [:op [:= :submit]]
+   [:command outbox-command-schema]])
+
+(def deliver-command-schema
+  "Exact closed input boundary for the independent deliver command cell."
+  [:map {:closed true}
+   [:op [:= :deliver]]])
 
 (def command-schema
   "The closed structural boundary for one retained outbox command.
@@ -125,7 +137,8 @@
   receipt contains richer nested evidence than this example needs. It performs
   no I/O and does not reinterpret HTTP, SQLite, TCP, or bencode semantics."
   [{:keys [operation result snapshot]}]
-  (let [row-status (get-in snapshot [:store-state :outbox 0 :status])
+  (let [row-status (or (get-in snapshot [:store-state :outbox 0 :status])
+                       :empty)
         receiver-count (get-in snapshot [:receiver-requests :count])]
     (cond-> {:operation operation
              :row-status row-status
@@ -136,7 +149,7 @@
 (def receipt-observation-schema
   [:map {:closed true}
    [:operation [:enum :submit :deliver]]
-   [:row-status [:enum :pending :delivered]]
+   [:row-status [:enum :empty :pending :delivered]]
    [:receiver-requests :int]
    [:http-status {:optional true} :int]])
 
@@ -170,3 +183,43 @@
   "Runs the pure finite receipt continuation to its terminal accumulated data."
   [receipt-value]
   (get-in (kernel/run (receipt-flow receipt-value)) [:tasks 0 :result]))
+
+;; ---- generic CommandCellSession adapter -----------------------------------
+
+(def command-cell-descriptors
+  "Data-only catalog entries for exact submit and independent deliver cells."
+  {:example.outbox/submit
+   {:effect-kind :example.outbox/command
+    :input-schema submit-command-schema
+    :output-schema receipt-observation-schema
+    :projector :example.outbox/receipt-observation
+    ;; Existing Outbox presenters consume full bridge/effect results.
+    :suggested-kind nil}
+   :example.outbox/deliver
+   {:effect-kind :example.outbox/command
+    :input-schema deliver-command-schema
+    :output-schema receipt-observation-schema
+    :projector :example.outbox/receipt-observation
+    :suggested-kind nil}})
+
+(defn start-command-cell-session
+  "Starts the generic command-cell owner over one borrowed Outbox worker.
+
+  Config is exact. The worker and WorkbenchSession remain caller-owned; this
+  factory only binds the existing command flow and receipt projector to their
+  generic UI-neutral contracts."
+  [{:keys [worker workbench evidence-stream-id] :as config}]
+  (when-not (and (map? config)
+                 (= #{:worker :workbench :evidence-stream-id}
+                    (set (keys config))))
+    (throw (ex-info "Outbox command-cell config has the wrong shape"
+                    {:type ::invalid-command-cell-config})))
+  (let [cell-ids (keys command-cell-descriptors)]
+    (command-cell-session/start
+     {:evidence-stream-id evidence-stream-id
+      :descriptors command-cell-descriptors
+      :trusted
+      {:compilers (zipmap cell-ids (repeat command-flow))
+       :workers (zipmap cell-ids (repeat worker))
+       :projectors {:example.outbox/receipt-observation receipt-observation}
+       :workbench (command-cell-session/workbench-service workbench)}})))

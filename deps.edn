@@ -132,6 +132,17 @@
   {:extra-paths ["test"]
    :main-opts ["-m" "jolt.sim.command-cell-session-test-main"]}
 
+  ;; Shared pure contract for the real Broadcast and Outbox command-cell
+  ;; adapters. It uses scripted worker services and the existing application
+  ;; compilers/projectors; no child process, native I/O, browser, or app stack
+  ;; is started.
+  :command-cell-adapter-conformance-test
+  {:extra-paths ["test"
+                 "examples/maelstrom-broadcast-workbench/src"
+                 "examples/outbox-workbench/src"]
+   :main-opts
+   ["-m" "jolt.sim.command-cell-adapter-conformance-test-main"]}
+
   ;; Focused parent/child retained-process protocol gate. It uses only local
   ;; source and an in-process worker fixture; the real outbox worker remains a
   ;; separate integration alias because it carries the full ecosystem graph.
