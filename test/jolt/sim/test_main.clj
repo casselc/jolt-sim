@@ -25,6 +25,7 @@
             [jolt.sim.ffi-schedule-test]
             [jolt.sim.flow-test]
             [jolt.sim.flow-effect-session-test]
+            [jolt.sim.flow-effect-view-test]
             [jolt.sim.future-schedule-test]
             [jolt.sim.handler-pack-test]
             [jolt.sim.journal-file-test]
@@ -78,6 +79,7 @@
                         'jolt.sim.ffi-schedule-test
                         'jolt.sim.flow-test
                         'jolt.sim.flow-effect-session-test
+                        'jolt.sim.flow-effect-view-test
                         'jolt.sim.future-schedule-test
                         'jolt.sim.handler-pack-test
                         'jolt.sim.journal-file-test

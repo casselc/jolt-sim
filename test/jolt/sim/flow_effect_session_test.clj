@@ -149,6 +149,12 @@
 
     (let [reconciled (effect-session/reconcile! bridge)]
       (is (= :ready (:status reconciled)))
+      (is (= {:id [:jolt.sim.flow-effect/commit
+                   1
+                   [:jolt.sim.flow/intent :effect 0 0]]
+              :intent-id [:jolt.sim.flow/intent :effect 0 0]
+              :sequence 0}
+             (:target reconciled)))
       (is (= :settled (get-in reconciled [:effects :records 0 :state])))
       (is (= :completed
              (get-in reconciled [:effects :records 0 :status])))
