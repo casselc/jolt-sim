@@ -84,6 +84,12 @@
   {:extra-paths ["test"]
    :main-opts ["-m" "jolt.sim.retained-test-main"]}
 
+  ;; UI-neutral retained-process projection and command acknowledgment gate.
+  ;; It uses scripted supervisor seams and starts no child process.
+  :retained-view-test
+  {:extra-paths ["test"]
+   :main-opts ["-m" "jolt.sim.retained-view-test"]}
+
   ;; Main-option overlays for the retained real-outbox vertical. Compose each
   ;; with :outbox-json-delivery-test so parent and child resolve the exact same
   ;; DB/HTTP/TCP/codec dependency graph without duplicating its pins here.

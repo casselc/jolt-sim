@@ -25,6 +25,8 @@
     #session-step-retry-row { margin: .5rem 0 0; }
     #activity-panel { border: 1px solid #8886; border-radius: .3rem; padding: .7rem .9rem; }
     #eval-form { width: min(100%, 70rem); min-height: 7rem; box-sizing: border-box; font-family: ui-monospace, monospace; }
+    #retained-command { width: min(100%, 70rem); min-height: 5rem; box-sizing: border-box; font-family: ui-monospace, monospace; }
+    #retained-controls { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; }
     #eval-transcript { list-style: none; margin: .7rem 0; padding: 0; display: grid; gap: .55rem; }
     .eval-entry { border-left: .3rem solid #678; background: #8881; padding: .55rem .7rem; }
     .eval-entry header { border: 0; padding: 0; display: flex; justify-content: space-between; gap: 1rem; }
@@ -106,6 +108,23 @@
          class="muted">Select a runnable example to inspect its regimes.</p>
       <span id="run-preset-status" data-testid="run-preset-status"
             role="status" aria-live="polite">Enter the session capability, then load examples.</span>
+    </section>
+    <section id="retained-panel" aria-labelledby="retained-heading">
+      <h2 id="retained-heading">Attached retained worker</h2>
+      <p class="muted">Control one trusted, server-owned Jolt worker without moving its process handle, PID, artifacts, or captured logs into the browser. Commands are published at most once. If publication becomes uncertain, Ripple disables new commands and offers reconciliation or termination; it never retries automatically.</p>
+      <label for="retained-command">Command EDN</label>
+      <textarea id="retained-command" data-testid="retained-command" spellcheck="false">{:op :inspect}</textarea>
+      <div id="retained-controls">
+        <button id="retained-refresh" data-testid="retained-refresh" type="button" disabled>Refresh worker</button>
+        <button id="retained-send" data-testid="retained-send" type="button" disabled>Send once</button>
+        <button id="retained-reconcile" data-testid="retained-reconcile" type="button" disabled>Reconcile uncertain command</button>
+        <button id="retained-terminate" data-testid="retained-terminate" type="button" disabled>Terminate worker</button>
+        <span id="retained-status" data-testid="retained-status" role="status" aria-live="polite">Enter the session capability. The server may not have a retained worker attached.</span>
+      </div>
+      <h3>Worker frame</h3>
+      <pre id="retained-frame" data-testid="retained-frame">No retained worker frame requested.</pre>
+      <h3>Last command receipt</h3>
+      <pre id="retained-receipt" data-testid="retained-receipt">No retained worker command sent.</pre>
     </section>
     <section aria-labelledby="session-heading">
       <h2 id="session-heading">Attached simulation session</h2>

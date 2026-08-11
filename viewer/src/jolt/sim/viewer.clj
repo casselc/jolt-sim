@@ -25,7 +25,10 @@
 
   `jolt-tcp`, underneath jolt-http, binds its listener to 127.0.0.1. The token
   remains required because other local processes and browser-origin attacks
-  are still inside that network boundary."
+  are still inside that network boundary. An optional retained-process
+  attachment is a separate trusted capability: it exposes only a redacted
+  canonical frame and exact single-command/reconcile/terminate operations,
+  never the process handle, PID, artifact paths, or automatic retries."
   (:require [clojure.data.json :as json]
             [clojure.edn :as edn]
             [clojure.java.io :as io]
@@ -42,6 +45,7 @@
             [jolt.sim.process-explorer :as process-explorer]
             [jolt.sim.repl :as sim-repl]
             [jolt.sim.report :as report]
+            [jolt.sim.retained-view :as retained-view]
             [jolt.sim.trace :as trace]
             [jolt.sim.viewer.experiment :as experiment-viewer]
             [jolt.sim.viewer.eval :as viewer-eval]
@@ -61,6 +65,9 @@
 (def invalid-activity-cursor ::invalid-activity-cursor)
 (def ^:private invalid-session-frame ::invalid-session-frame)
 (def ^:private invalid-session-step-result ::invalid-session-step-result)
+(def ^:private invalid-retained-command ::invalid-retained-command)
+(def ^:private invalid-retained-frame ::invalid-retained-frame)
+(def ^:private invalid-retained-result ::invalid-retained-result)
 
 (def ^:private config-keys
   #{:port :capability-token :max-document-bytes
@@ -83,7 +90,13 @@
 
 (def ^:private service-keys
   #{:render-trace :render-case-outcome :replay-document
-    :read-session-frame :step-session-frame! :run-case :evaluate-form!})
+    :read-session-frame :step-session-frame! :run-case :evaluate-form!
+    :read-retained-frame :command-retained! :reconcile-retained!
+    :terminate-retained!})
+
+(def ^:private retained-service-keys
+  #{:read-retained-frame :command-retained! :reconcile-retained!
+    :terminate-retained!})
 
 (def ^:private default-max-document-bytes (* 1024 1024))
 (def ^:private maximum-max-document-bytes (* 16 1024 1024))
@@ -98,6 +111,8 @@
 (def ^:private session-step-body-limit 4096)
 (def ^:private run-command-body-limit 4096)
 (def ^:private eval-command-body-limit 65536)
+(def ^:private retained-command-body-limit 65536)
+(def ^:private retained-control-body-limit 4096)
 (def ^:private maximum-run-regimes 32)
 (def ^:private maximum-run-regime-label-length 128)
 (def ^:private maximum-run-regime-summary-length 512)
@@ -1501,6 +1516,409 @@
       (finally
         (reset! document-active? false)))))
 
+;; ---- retained interactive process attachment --------------------------------
+
+(def ^:private retained-command-request-keys
+  #{"version" "commandEdn"})
+(def ^:private retained-control-request-keys #{"version"})
+(def ^:private retained-frame-keys
+  #{:jolt.sim.retained-view/type :kind :protocol :instance-id :status
+    :next-sequence :uncertain-sequence :last-receipt :worker :diagnostics})
+(def ^:private retained-worker-keys #{:alive? :exit})
+(def ^:private retained-diagnostic-keys #{:bytes :truncated? :read-error?})
+(def ^:private retained-result-keys
+  #{:jolt.sim.retained-view/type :kind :operation :status :committed?
+    :receipt :frame :frame-error})
+(def ^:private retained-frame-error-keys
+  #{:type :phase :reason :status :sequence})
+(def ^:private retained-command-end (Object.))
+(def ^:private retained-statuses
+  #{:ready :uncertain :exited :terminated :failed})
+(def ^:private retained-receipt-statuses #{:completed :failed})
+(def ^:private maximum-retained-coordinate-text 128)
+
+(declare retained-transport-response)
+
+(defn- retained-keyword-text [value]
+  (when (keyword? value)
+    (let [text (if-let [ns (namespace value)]
+                 (str ns "/" (name value))
+                 (name value))]
+      (if (<= (count text) maximum-retained-coordinate-text)
+        text
+        (subs text 0 maximum-retained-coordinate-text)))))
+
+(defn- optional-wire-long? [value]
+  (or (nil? value) (wire-long? value)))
+
+(defn- valid-retained-diagnostic? [value]
+  (and (map? value)
+       (= retained-diagnostic-keys (set (keys value)))
+       (or (nil? (:bytes value))
+           (and (wire-long? (:bytes value)) (<= 0 (:bytes value))))
+       (boolean? (:truncated? value))
+       (boolean? (:read-error? value))))
+
+(defn- valid-retained-frame? [frame]
+  (and (map? frame)
+       (= retained-frame-keys (set (keys frame)))
+       (= :frame (:jolt.sim.retained-view/type frame))
+       (= :jolt.sim.kind/retained-process-frame (:kind frame))
+       (= 1 (:protocol frame))
+       (string? (:instance-id frame))
+       (<= 1 (count (:instance-id frame)) 256)
+       (contains? retained-statuses (:status frame))
+       (wire-long? (:next-sequence frame))
+       (<= 0 (:next-sequence frame))
+       (optional-wire-long? (:uncertain-sequence frame))
+       (or (nil? (:uncertain-sequence frame))
+           (= (:next-sequence frame) (:uncertain-sequence frame)))
+       (or (nil? (:last-receipt frame))
+           (and (map? (:last-receipt frame))
+                (= #{:status :sequence}
+                   (set (keys (:last-receipt frame))))
+                (contains? retained-receipt-statuses
+                           (get-in frame [:last-receipt :status]))
+                (wire-long? (get-in frame [:last-receipt :sequence]))
+                (<= 0 (get-in frame [:last-receipt :sequence]))
+                (< (get-in frame [:last-receipt :sequence])
+                   (:next-sequence frame))))
+       (map? (:worker frame))
+       (= retained-worker-keys (set (keys (:worker frame))))
+       (boolean? (get-in frame [:worker :alive?]))
+       (optional-wire-long? (get-in frame [:worker :exit]))
+       (or (nil? (:diagnostics frame))
+           (and (map? (:diagnostics frame))
+                (= #{:stdout :stderr} (set (keys (:diagnostics frame))))
+                (valid-retained-diagnostic?
+                 (get-in frame [:diagnostics :stdout]))
+                (valid-retained-diagnostic?
+                 (get-in frame [:diagnostics :stderr]))))))
+
+(defn- checked-retained-frame [frame]
+  (when-not (valid-retained-frame? frame)
+    (throw (ex-info "trusted retained reader returned an invalid frame"
+                    {:type invalid-retained-frame})))
+  frame)
+
+(defn- public-retained-frame
+  "Drops the supervisor instance ID before producing browser-visible EDN.
+  The ID is useful for parent protocol validation but is neither needed nor
+  accepted as browser authority."
+  [frame]
+  (dissoc (checked-retained-frame frame) :instance-id))
+
+(defn- retained-coordinate [frame]
+  (when frame
+    (let [frame (checked-retained-frame frame)]
+      {"protocol" (:protocol frame)
+       "status" (retained-keyword-text (:status frame))
+       "nextSequence" (str (:next-sequence frame))
+       "uncertainSequence" (when-let [sequence (:uncertain-sequence frame)]
+                              (str sequence))})))
+
+(defn- retained-frame-wire [frame]
+  (let [public (public-retained-frame frame)]
+    {"version" 1
+     "status" "ok"
+     "coordinate" (retained-coordinate frame)
+     "frameEdn" (trace/canonical-edn public)}))
+
+(defn- retained-json-bytes [value]
+  (let [body (json/write-str value)]
+    [body (alength (.getBytes ^String body "UTF-8"))]))
+
+(defn- retained-frame-response [config services]
+  (try
+    (let [frame ((:read-retained-frame services))
+          wire (retained-frame-wire frame)
+          [body byte-count] (retained-json-bytes wire)]
+      (if (> byte-count (:max-document-bytes config))
+        (error-response 413 :retained-frame-too-large
+                        {:limit (:max-document-bytes config)
+                         :actual byte-count})
+        (response 200 "application/json; charset=utf-8" body)))
+    (catch :default error
+      (if (= invalid-retained-frame (:type (ex-data error)))
+        (error-response 500 :retained-frame-unavailable nil)
+        (throw error)))))
+
+(defn- execute-retained-frame-request
+  [config services retained-active? request]
+  (cond
+    (not (authorized? config request))
+    (error-response 403 :forbidden nil)
+
+    (not (fn? (:read-retained-frame services)))
+    (error-response 404 :retained-unavailable nil)
+
+    (not (compare-and-set! retained-active? false true))
+    (error-response 429 :retained-busy nil)
+
+    :else
+    (try
+      (retained-frame-response config services)
+      (catch :default error
+        (if (= :jolt.sim.retained-process/transport-error
+               (:type (ex-data error)))
+          (retained-transport-response error)
+          (error-response 500 :retained-frame-unavailable nil)))
+      (finally
+        (reset! retained-active? false)))))
+
+(defn- parse-retained-json! [request limit expected-keys]
+  (let [bytes (bounded-body-bytes request limit)
+        seen (atom #{})
+        value
+        (try
+          (json/read-str
+           (trim-json-whitespace (String. bytes "UTF-8"))
+           :extra-data-fn json/on-extra-throw
+           :value-fn
+           (fn [key entry]
+             (when (contains? @seen key)
+               (throw (ex-info "retained request repeats a key"
+                               {:type invalid-retained-command
+                                :reason :duplicate-key})))
+             (swap! seen conj key)
+             entry))
+          (catch :default error
+            (if (= invalid-retained-command (:type (ex-data error)))
+              (throw error)
+              (throw (ex-info "retained request is not exactly one JSON value"
+                              {:type invalid-retained-command
+                               :reason :malformed-json})))))]
+    (when-not (and (map? value) (= expected-keys (set (keys value))))
+      (throw (ex-info "retained request keys are not the closed set"
+                      {:type invalid-retained-command
+                       :reason :unexpected-keys})))
+    (when-not (and (integer? (get value "version"))
+                   (= 1 (get value "version")))
+      (throw (ex-info "retained request version is unsupported"
+                      {:type invalid-retained-command
+                       :reason :unsupported-version})))
+    value))
+
+(defn- parse-retained-command-edn! [text]
+  (when-not (string? text)
+    (throw (ex-info "retained command EDN must be a string"
+                    {:type invalid-retained-command
+                     :reason :invalid-command-edn})))
+  (try
+    (let [reader (__string-reader text)
+          [value _] (read+string reader false retained-command-end)
+          [trailing _] (read+string reader false retained-command-end)]
+      (when (identical? value retained-command-end)
+        (throw (ex-info "retained command EDN is empty" {})))
+      (when-not (identical? trailing retained-command-end)
+        (throw (ex-info "retained command EDN has trailing data" {})))
+      ;; Re-read through the data-only reader, then canonicalize and restore so
+      ;; mutable canonical leaves are snapshotted before trusted delegation.
+      (let [form (edn/read-string text)]
+        (trace/restore-value
+         (trace/canonical-value form [:viewer :retained-command]))))
+    (catch :default error
+      (if (= invalid-retained-command (:type (ex-data error)))
+        (throw error)
+        (throw (ex-info "retained command EDN is not one canonical value"
+                        {:type invalid-retained-command
+                         :reason :invalid-command-edn}))))))
+
+(defn- retained-command-request! [_config request]
+  (let [value (parse-retained-json!
+               request
+               retained-command-body-limit
+               retained-command-request-keys)]
+    (parse-retained-command-edn! (get value "commandEdn"))))
+
+(defn- retained-control-request! [request]
+  (parse-retained-json! request retained-control-body-limit
+                        retained-control-request-keys)
+  nil)
+
+(defn- valid-retained-frame-error? [value]
+  (and (map? value)
+       (every? retained-frame-error-keys (keys value))
+       (= :post-receipt (:phase value))
+       (keyword? (:type value))
+       (or (not (contains? value :reason)) (keyword? (:reason value)))
+       (or (not (contains? value :status)) (keyword? (:status value)))
+       (or (not (contains? value :sequence))
+           (and (wire-long? (:sequence value))
+                (<= 0 (:sequence value))))))
+
+(defn- checked-retained-result [result expected-operation]
+  (when-not
+   (and (map? result)
+        (= retained-result-keys (set (keys result)))
+        (= :command-result (:jolt.sim.retained-view/type result))
+        (= :jolt.sim.kind/retained-command-result (:kind result))
+        (= expected-operation (:operation result))
+        (contains? #{:completed :failed} (:status result))
+        (true? (:committed? result))
+        (map? (:receipt result))
+        (= (:status result) (get-in result [:receipt :status]))
+        (wire-long? (get-in result [:receipt :sequence]))
+        (<= 0 (get-in result [:receipt :sequence]))
+        (= (if (= :completed (:status result))
+             #{:status :sequence :value}
+             #{:status :sequence :error})
+           (set (keys (:receipt result))))
+        (or (and (map? (:frame result))
+                 (nil? (:frame-error result))
+                 (valid-retained-frame? (:frame result)))
+            (and (nil? (:frame result))
+                 (valid-retained-frame-error? (:frame-error result)))))
+    (throw (ex-info "trusted retained command returned an invalid result"
+                    {:type invalid-retained-result})))
+  ;; Prove the application payload belongs to the canonical data domain before
+  ;; it is serialized into a committed receipt.
+  (trace/canonical-value (:receipt result) [:viewer :retained-receipt])
+  result)
+
+(defn- frame-error-wire [error]
+  (when error
+    (cond-> {"type" (retained-keyword-text (:type error))
+             "phase" (retained-keyword-text (:phase error))}
+      (:reason error) (assoc "reason" (retained-keyword-text (:reason error)))
+      (:status error) (assoc "status" (retained-keyword-text (:status error)))
+      (:sequence error) (assoc "sequence" (str (:sequence error))))))
+
+(defn- retained-result-wire [result]
+  (let [frame (:frame result)
+        receipt (:receipt result)
+        coordinate (or (retained-coordinate frame)
+                       {"protocol" nil
+                        "status" nil
+                        "nextSequence" (str (inc (:sequence receipt)))
+                        "uncertainSequence" nil})]
+    {"version" 1
+     "outcome" (retained-keyword-text (:status result))
+     "committed" true
+     "sequence" (str (:sequence receipt))
+     "coordinate" coordinate
+     "receiptEdn" (trace/canonical-edn receipt)
+     "frameEdn" (when frame
+                   (trace/canonical-edn (public-retained-frame frame)))
+     "frameError" (frame-error-wire (:frame-error result))
+     "truncated" false}))
+
+(defn- retained-definite-wire [result]
+  (let [frame (:frame result)
+        receipt (:receipt result)]
+    {"version" 1
+     "outcome" (retained-keyword-text (:status result))
+     "committed" true
+     "sequence" (str (:sequence receipt))
+     "coordinate" (or (retained-coordinate frame)
+                       {"protocol" nil
+                        "status" nil
+                        "nextSequence" (str (inc (:sequence receipt)))
+                        "uncertainSequence" nil})
+     "receiptEdn" nil
+     "frameEdn" nil
+     "frameError" nil
+     "truncated" true}))
+
+(defn- retained-result-response [config result operation]
+  (let [result (checked-retained-result result operation)
+        wire (retained-result-wire result)
+        [body size] (retained-json-bytes wire)]
+    (if (<= size (:max-document-bytes config))
+      (response 200 "application/json; charset=utf-8" body)
+      ;; The command has a definite receipt. Never turn it into a 413 or any
+      ;; other retry-looking failure after commit.
+      (json-response 200 (retained-definite-wire result)))))
+
+(defn- retained-terminate-response [config frame]
+  (let [wire (assoc (retained-frame-wire frame) "outcome" "terminated")
+        [body size] (retained-json-bytes wire)]
+    ;; Termination has already happened. Like a command receipt, preserve a
+    ;; definite success even if the complete terminal frame exceeds the cap.
+    (if (<= size (:max-document-bytes config))
+      (response 200 "application/json; charset=utf-8" body)
+      (json-response 200
+                     {"version" 1
+                      "status" "ok"
+                      "outcome" "terminated"
+                      "coordinate" (retained-coordinate frame)
+                      "frameEdn" nil
+                      "truncated" true}))))
+
+(defn- retained-transport-response [error]
+  (let [data (ex-data error)]
+    (json-response
+     503
+     {"version" 1
+      "outcome" "transport-error"
+      "error" "retained-transport-error"
+      "reason" (retained-keyword-text (:reason data))
+      "status" (retained-keyword-text (:status data))
+      "sequence" (when (wire-long? (:sequence data))
+                   (str (:sequence data)))
+      "uncertainSequence" (when (wire-long? (:uncertain-sequence data))
+                            (str (:uncertain-sequence data)))})))
+
+(defn- retained-service-error-response [error fallback]
+  (let [data (ex-data error)]
+    (cond
+      (= request-too-large (:type data))
+      (error-response 413 :request-too-large
+                      (select-keys data [:limit :actual]))
+
+      (= invalid-retained-command (:type data))
+      (error-response 400 :invalid-retained-command
+                      (select-keys data [:reason]))
+
+      (= :jolt.sim.retained-process/transport-error (:type data))
+      (retained-transport-response error)
+
+      :else
+      (error-response 500 fallback nil))))
+
+(defn- execute-retained-post-request
+  [config services retained-active? request service-key operation parse!]
+  (cond
+    (not (authorized? config request))
+    (error-response 403 :forbidden nil)
+
+    (not (fn? (get services service-key)))
+    (error-response 404 :retained-unavailable nil)
+
+    (not (json-content-type? request))
+    (error-response 415 :expected-application-json nil)
+
+    :else
+    (try
+      ;; Parse before admission: malformed input is caller-owned and cannot
+      ;; reveal whether another trusted retained operation is active.
+      (let [argument (parse!)]
+        (if-not (compare-and-set! retained-active? false true)
+          (error-response 429 :retained-busy nil)
+          (try
+            (let [result (if (= :command operation)
+                           ((get services service-key) argument)
+                           ((get services service-key)))]
+              (if (= :terminate operation)
+                (retained-terminate-response config result)
+                (retained-result-response config result operation)))
+            (catch :default error
+              (retained-service-error-response
+               error
+               (case operation
+                 :command :retained-command-error
+                 :reconcile :retained-reconcile-error
+                 :terminate :retained-terminate-error)))
+            (finally
+              (reset! retained-active? false)))))
+      (catch :default error
+        (retained-service-error-response
+         error
+         (case operation
+           :command :retained-command-error
+           :reconcile :retained-reconcile-error
+           :terminate :retained-terminate-error))))))
+
 (defn- find-run-preset [config wire-id]
   (some #(when (= wire-id (keyword-coordinate-text (:id %))) %)
         (:run-presets config)))
@@ -2032,6 +2450,18 @@
   shared with `POST /api/session-step`, admits only one frame computation or
   step at a time.
 
+  The retained-process services are a separate all-or-nothing attachment:
+  `:read-retained-frame`, `:command-retained!`, `:reconcile-retained!`, and
+  `:terminate-retained!`. They serve `/api/retained-frame`,
+  `/api/retained-command`, `/api/retained-reconcile`, and
+  `/api/retained-terminate` under a dedicated single-flight gate. Command EDN
+  is exactly one canonical value inside the closed JSON v1 envelope. Both
+  completed and failed application receipts are definite HTTP 200 results;
+  an oversized post-commit result is replaced by a small definite coordinate,
+  never a retry-looking 413. Typed transport uncertainty is a bounded 503 and
+  is never retried. The HTTP projection redacts the retained instance ID as
+  well as every handle, PID, diagnostic text, and artifact path.
+
   When startup config contains `:session-instance-id`, every authorized frame
   or step response carries it in `X-Jolt-Sim-Session-Instance`; unauthorized
   responses never do. The ID is a producer epoch, not authority; the
@@ -2089,6 +2519,7 @@
           unknown-services (into #{} (remove service-keys) (keys services))
           document-active? (atom false)
           session-active? (atom false)
+          retained-active? (atom false)
           active-replay (atom (initial-replay-state))
           activity-registry
           (presentation/activity-registry
@@ -2096,6 +2527,11 @@
            (:activity-presentation-registry config))]
      (when (seq unknown-services)
        (throw (config-error :unknown-service-keys unknown-services)))
+     (let [present (into #{} (filter #(contains? services %))
+                         retained-service-keys)]
+       (when (and (seq present) (not= retained-service-keys present))
+         (throw (config-error :retained-services-must-be-all-or-nothing
+                              present))))
      (when-not (and (fn? (:render-trace services))
                     (fn? (:render-case-outcome services))
                     (fn? (:replay-document services))
@@ -2106,7 +2542,10 @@
                     (or (not (contains? services :step-session-frame!))
                         (fn? (:step-session-frame! services)))
                     (or (not (contains? services :evaluate-form!))
-                        (fn? (:evaluate-form! services))))
+                        (fn? (:evaluate-form! services)))
+                    (every? #(or (not (contains? services %))
+                                 (fn? (get services %)))
+                            retained-service-keys))
        (throw (config-error :invalid-services (set (keys services)))))
      (fn [request]
        (let [method (:request-method request)
@@ -2137,9 +2576,31 @@
            (execute-session-frame-request
             config services session-active? request)
 
+           (and (= :get method) (= "/api/retained-frame" uri))
+           (execute-retained-frame-request
+            config services retained-active? request)
+
            (and (= :post method) (= "/api/session-step" uri))
            (execute-session-step-request
             config services session-active? document-active? request)
+
+           (and (= :post method) (= "/api/retained-command" uri))
+           (execute-retained-post-request
+            config services retained-active? request
+            :command-retained! :command
+            #(retained-command-request! config request))
+
+           (and (= :post method) (= "/api/retained-reconcile" uri))
+           (execute-retained-post-request
+            config services retained-active? request
+            :reconcile-retained! :reconcile
+            #(retained-control-request! request))
+
+           (and (= :post method) (= "/api/retained-terminate" uri))
+           (execute-retained-post-request
+            config services retained-active? request
+            :terminate-retained! :terminate
+            #(retained-control-request! request))
 
            (and (= :post method) (= "/api/run" uri))
            (if (replay-enabled? config)
@@ -2257,6 +2718,41 @@
   (start! config
           (assoc (default-services config)
                  :evaluate-form! (viewer-eval/service eval-session))))
+
+(defn- retained-services
+  "Returns the four all-or-nothing trusted closures for one caller-owned
+  retained process handle. The closures never expose the handle and never
+  start, retry, or implicitly terminate it."
+  [handle]
+  {:read-retained-frame
+   (fn [] (retained-view/read-frame handle))
+   :command-retained!
+   (fn [command] (retained-view/command-frame! handle command))
+   :reconcile-retained!
+   (fn [] (retained-view/reconcile-frame! handle))
+   :terminate-retained!
+   (fn [] (retained-view/terminate-frame! handle))})
+
+(defn start-retained-process!
+  "Starts Ripple with one already-started trusted retained process attached.
+
+  The caller owns the handle and its lifecycle. Starting or stopping this HTTP
+  server never starts, retries, reconciles, or terminates the worker; those
+  actions occur only through the four explicit retained routes or through the
+  caller's own REPL operations."
+  [config handle]
+  (start! config (merge (default-services config)
+                        (retained-services handle))))
+
+(defn start-retained-eval-session!
+  "Starts Ripple with one caller-owned retained process and one explicitly
+  trusted EvalSession. The two capabilities remain independent and use
+  distinct admission gates; neither is created or closed by the viewer."
+  [config handle eval-session]
+  (start! config
+          (merge (default-services config)
+                 (retained-services handle)
+                 {:evaluate-form! (viewer-eval/service eval-session)})))
 
 (defn start-remote-session!
   "Starts Ripple with one separately running loopback Session attached read-only.

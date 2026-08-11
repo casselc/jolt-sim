@@ -11,6 +11,7 @@
             [jolt.sim.kernel :as kernel]
             [jolt.sim.maelstrom.official-run :as official-run]
             [jolt.sim.presentation :as presentation]
+            [jolt.sim.retained-view :as retained-view]
             [jolt.sim.session :as session]
             [jolt.sim.trace :as trace]
             [jolt.sim.viewer :as viewer]
@@ -201,6 +202,59 @@
              (String. (concat-byte-arrays chunks) "UTF-8"))))
        (finally
          (client/close! connection))))))
+
+(def retained-frame
+  {:jolt.sim.retained-view/type :frame
+   :kind :jolt.sim.kind/retained-process-frame
+   :protocol 1
+   :instance-id "private-retained-instance"
+   :status :ready
+   :next-sequence 4
+   :uncertain-sequence nil
+   :last-receipt {:status :completed :sequence 3}
+   :worker {:alive? true :exit nil}
+   :diagnostics {:stdout {:bytes 0 :truncated? false :read-error? false}
+                 :stderr {:bytes 17 :truncated? false :read-error? false}}})
+
+(defn retained-result
+  ([status payload] (retained-result :command status payload retained-frame))
+  ([operation status payload frame]
+   {:jolt.sim.retained-view/type :command-result
+    :kind :jolt.sim.kind/retained-command-result
+    :operation operation
+    :status status
+    :committed? true
+    :receipt (cond-> {:status status :sequence 4}
+               (= :completed status) (assoc :value payload)
+               (= :failed status) (assoc :error payload))
+    :frame frame
+    :frame-error (when-not frame
+                   {:type :example/frame-race
+                    :phase :post-receipt
+                    :reason :snapshot-race})}))
+
+(defn retained-services [calls]
+  (merge
+   (services (atom []) (atom []) {:status :unused})
+   {:read-retained-frame
+    (fn []
+      (swap! calls conj [:read])
+      retained-frame)
+    :command-retained!
+    (fn [command]
+      (swap! calls conj [:command command])
+      (retained-result :completed {:accepted true}))
+    :reconcile-retained!
+    (fn []
+      (swap! calls conj [:reconcile])
+      (retained-result :reconcile :completed {:recovered true}
+                       retained-frame))
+    :terminate-retained!
+    (fn []
+      (swap! calls conj [:terminate])
+      (assoc retained-frame
+             :status :terminated
+             :worker {:alive? false :exit 0}))}))
 
 (deftest startup-config-is-closed-and-fail-closed
   (is (= 8788 (:port (viewer/validate-config! (config)))))
@@ -4403,6 +4457,309 @@
                            [:headers "X-Jolt-Sim-Activity-Next-Cursor"])))
       (is (not (string/includes? (:body response) run-dir)))
       (is (not (string/includes? (:body response) big))))))
+
+(deftest retained-services-are-all-or-nothing
+  (doseq [key [:read-retained-frame :command-retained!
+               :reconcile-retained! :terminate-retained!]]
+    (let [partial (assoc (services (atom []) (atom []) nil) key (fn [& _]))
+          error (try
+                  (viewer/make-handler (config) partial)
+                  nil
+                  (catch :default error error))]
+      (is (= :retained-services-must-be-all-or-nothing
+             (:reason (ex-data error))))))
+  (is (fn? (viewer/make-handler (config) (retained-services (atom []))))))
+
+(deftest retained-routes-check-authority-and-availability-before-body
+  (let [reads (atom 0)
+        counted-body
+        (fn []
+          (reify http-body/RequestBody
+            (body-recv [_] (swap! reads inc) nil)
+            (body-bytes [_] (byte-array 0))
+            (body-string [_ _] "")))
+        base {:request-method :post
+              :uri "/api/retained-command"
+              :headers {"content-type" "application/json"}
+              :body (counted-body)}
+        unavailable (viewer/make-handler
+                     (config) (services (atom []) (atom []) nil))
+        available (viewer/make-handler
+                   (config) (retained-services (atom [])))]
+    (is (= 403 (:status (available base))))
+    (is (zero? @reads))
+    (is (= 404 (:status
+                (unavailable
+                 (assoc-in base [:headers "x-jolt-sim-capability"] token)))))
+    (is (zero? @reads))
+    (is (= 415 (:status
+                (available
+                 (-> base
+                     (assoc-in [:headers "x-jolt-sim-capability"] token)
+                     (assoc-in [:headers "content-type"] "text/plain"))))))
+    (is (zero? @reads))))
+
+(deftest retained-frame-is-closed-redacted-and-uses-a-distinct-gate
+  (let [nested (atom nil)
+        handler-ref (atom nil)
+        calls (atom [])
+        svc (assoc (retained-services calls)
+                   :read-retained-frame
+                   (fn []
+                     (swap! calls conj [:read])
+                     (when-not @nested
+                       (reset! nested
+                               (@handler-ref
+                                (get-request "/api/retained-frame"))))
+                     retained-frame)
+                   :render-case-outcome
+                   (fn [_]
+                     ;; The document gate is held while rendering, but retained
+                     ;; inspection has a deliberately separate admission gate.
+                     (let [response (@handler-ref
+                                     (get-request "/api/retained-frame"))]
+                       (is (= 200 (:status response))))
+                     "<html>ok</html>"))
+        handler (viewer/make-handler (config) svc)]
+    (reset! handler-ref handler)
+    (let [response (handler (get-request "/api/retained-frame"))
+          wire (json/read-str (:body response))]
+      (is (= 200 (:status response)))
+      (is (= 429 (:status @nested)))
+      (is (= "ready" (get-in wire ["coordinate" "status"])))
+      (is (= "4" (get-in wire ["coordinate" "nextSequence"])))
+      (is (string? (get wire "frameEdn")))
+      (is (not (string/includes? (:body response) "private-retained-instance")))
+      (is (not (string/includes? (:body response) "/tmp")))
+      (is (not (string/includes? (:body response) "pid"))))
+    (is (= 200
+           (:status
+            (handler
+             (request "/api/render"
+                      (case-outcome/canonical-edn (document)))))))))
+
+(deftest retained-command-parses-one-canonical-edn-form-and-delegates-once
+  (let [calls (atom [])
+        handler (viewer/make-handler (config) (retained-services calls))
+        response (handler
+                  (json-post-request
+                   "/api/retained-command"
+                   {"version" 1
+                    "commandEdn" "{:op :inspect :payload [0 255]}"}))
+        wire (json/read-str (:body response))]
+    (is (= 200 (:status response)))
+    (is (= [[:command {:op :inspect :payload [0 255]}]] @calls))
+    (is (= "completed" (get wire "outcome")))
+    (is (true? (get wire "committed")))
+    (is (= "4" (get wire "sequence")))
+    (is (false? (get wire "truncated")))
+    (is (map? (edn/read-string (get wire "receiptEdn"))))
+    (let [bad (handler
+               (json-post-request
+                "/api/retained-command"
+                {"version" 1 "commandEdn" ":one :two"}))]
+      (is (= 400 (:status bad)))
+      (is (= :invalid-retained-command
+             (:error (edn/read-string (:body bad)))))
+      (is (= 1 (count @calls))))))
+
+(deftest retained-application-failure-is-a-definite-http-200
+  (let [calls (atom 0)
+        svc (assoc (retained-services (atom []))
+                   :command-retained!
+                   (fn [_]
+                     (swap! calls inc)
+                     (retained-result :failed
+                                      {:type :application/rejected
+                                       :reason :hostile-ack})))
+        response ((viewer/make-handler (config) svc)
+                  (json-post-request "/api/retained-command"
+                                     {"version" 1
+                                      "commandEdn" "{:op :deliver}"}))
+        wire (json/read-str (:body response))]
+    (is (= 200 (:status response)))
+    (is (= 1 @calls))
+    (is (= "failed" (get wire "outcome")))
+    (is (true? (get wire "committed")))
+    (is (= :failed (:status (edn/read-string (get wire "receiptEdn")))))))
+
+(deftest retained-large-post-commit-receipt-stays-definite
+  (let [svc (assoc (retained-services (atom []))
+                   :command-retained!
+                   (fn [_]
+                     (retained-result :completed
+                                      {:payload (apply str (repeat 8000 \x))})))
+        small-config (assoc (config) :max-document-bytes 512)
+        response ((viewer/make-handler small-config svc)
+                  (json-post-request "/api/retained-command"
+                                     {"version" 1 "commandEdn" ":go"}))
+        wire (json/read-str (:body response))]
+    (is (= 200 (:status response)))
+    (is (= "completed" (get wire "outcome")))
+    (is (true? (get wire "committed")))
+    (is (true? (get wire "truncated")))
+    (is (nil? (get wire "receiptEdn")))
+    (is (= "4" (get wire "sequence")))
+    (is (not (string/includes? (:body response) (apply str (repeat 128 \x)))))))
+
+(deftest retained-transport-uncertainty-is-bounded-and-never-retried
+  (let [calls (atom 0)
+        svc (assoc (retained-services (atom []))
+                   :command-retained!
+                   (fn [_]
+                     (swap! calls inc)
+                     (throw
+                      (ex-info
+                       "secret /tmp/private-retained"
+                       {:type :jolt.sim.retained-process/transport-error
+                        :reason :receipt-deadline
+                        :status :uncertain
+                        :sequence 4
+                        :uncertain-sequence 4
+                        :artifact-dir "/tmp/private-retained"}))))
+        response ((viewer/make-handler (config) svc)
+                  (json-post-request "/api/retained-command"
+                                     {"version" 1 "commandEdn" ":go"}))
+        wire (json/read-str (:body response))]
+    (is (= 503 (:status response)))
+    (is (= 1 @calls))
+    (is (= "transport-error" (get wire "outcome")))
+    (is (= "receipt-deadline" (get wire "reason")))
+    (is (= "uncertain" (get wire "status")))
+    (is (= "4" (get wire "sequence")))
+    (is (= "4" (get wire "uncertainSequence")))
+    (is (not (string/includes? (:body response) "private-retained")))))
+
+(deftest retained-prepublication-failure-has-no-uncertain-coordinate
+  (let [svc (assoc (retained-services (atom []))
+                   :command-retained!
+                   (fn [_]
+                     (throw
+                      (ex-info
+                       "prepublication failure"
+                       {:type :jolt.sim.retained-process/transport-error
+                        :reason :publication-failed
+                        :status :failed
+                        :sequence 4
+                        :uncertain-sequence nil}))))
+        response ((viewer/make-handler (config) svc)
+                  (json-post-request "/api/retained-command"
+                                     {"version" 1 "commandEdn" ":go"}))
+        wire (json/read-str (:body response))]
+    (is (= 503 (:status response)))
+    (is (= "4" (get wire "sequence")))
+    (is (nil? (get wire "uncertainSequence")))))
+
+(deftest retained-frame-transport-failure-is-also-a-bounded-503
+  (let [calls (atom 0)
+        svc (assoc (retained-services (atom []))
+                   :read-retained-frame
+                   (fn []
+                     (swap! calls inc)
+                     (throw
+                      (ex-info
+                       "secret frame transport"
+                       {:type :jolt.sim.retained-process/transport-error
+                        :reason :child-exited
+                        :status :exited
+                        :sequence 5
+                        :uncertain-sequence 5
+                        :artifact-dir "/tmp/private-frame"}))))
+        response ((viewer/make-handler (config) svc)
+                  (get-request "/api/retained-frame"))
+        wire (json/read-str (:body response))]
+    (is (= 503 (:status response)))
+    (is (= 1 @calls))
+    (is (= "transport-error" (get wire "outcome")))
+    (is (= "child-exited" (get wire "reason")))
+    (is (= "exited" (get wire "status")))
+    (is (= "5" (get wire "sequence")))
+    (is (= "5" (get wire "uncertainSequence")))
+    (is (not (string/includes? (:body response) "private-frame")))))
+
+(deftest retained-reconcile-and-terminate-use-closed-control-bodies
+  (let [calls (atom [])
+        handler (viewer/make-handler (config) (retained-services calls))
+        reconciled (handler
+                    (json-post-request "/api/retained-reconcile"
+                                       {"version" 1}))
+        terminated (handler
+                    (json-post-request "/api/retained-terminate"
+                                       {"version" 1}))]
+    (is (= 200 (:status reconciled)))
+    (is (= "completed"
+           (get (json/read-str (:body reconciled)) "outcome")))
+    (is (= 200 (:status terminated)))
+    (let [wire (json/read-str (:body terminated))]
+      (is (= "terminated" (get wire "outcome")))
+      (is (= #{"version" "status" "outcome" "coordinate" "frameEdn"}
+             (set (keys wire)))))
+    (is (= [[:reconcile] [:terminate]] @calls))
+    (let [bad (handler
+               (json-post-request "/api/retained-reconcile"
+                                  {"version" 1 "extra" true}))]
+      (is (= 400 (:status bad)))
+      (is (= 2 (count @calls))))))
+
+(deftest retained-terminate-after-commit-has-a-closed-truncated-shape
+  (let [calls (atom [])
+        handler (viewer/make-handler
+                 (assoc (config) :max-document-bytes 128)
+                 (retained-services calls))
+        response (handler
+                  (json-post-request "/api/retained-terminate"
+                                     {"version" 1}))
+        wire (json/read-str (:body response))]
+    (is (= 200 (:status response)))
+    (is (= [[:terminate]] @calls))
+    (is (= #{"version" "status" "outcome" "coordinate"
+             "frameEdn" "truncated"}
+           (set (keys wire))))
+    (is (= "terminated" (get wire "outcome")))
+    (is (true? (get wire "truncated")))
+    (is (nil? (get wire "frameEdn")))))
+
+(deftest retained-convenience-starts-capture-only-the-trusted-handle
+  (let [captured (atom [])
+        handle (Object.)
+        eval (Object.)]
+    (with-redefs [viewer/start!
+                  (fn [_ services]
+                    (swap! captured conj services)
+                    :server)
+                  retained-view/read-frame
+                  (fn [actual]
+                    (is (identical? handle actual))
+                    retained-frame)
+                  retained-view/command-frame!
+                  (fn [actual command]
+                    (is (identical? handle actual))
+                    (retained-result :completed command))
+                  retained-view/reconcile-frame!
+                  (fn [actual]
+                    (is (identical? handle actual))
+                    (retained-result :reconcile :completed :ok retained-frame))
+                  retained-view/terminate-frame!
+                  (fn [actual]
+                    (is (identical? handle actual))
+                    (assoc retained-frame :status :terminated))
+                  viewer-eval/service
+                  (fn [actual]
+                    (is (identical? eval actual))
+                    :eval-service)]
+      (is (= :server (viewer/start-retained-process! (config) handle)))
+      (is (= :server
+             (viewer/start-retained-eval-session! (config) handle eval)))
+      (let [[plain combined] @captured]
+        (let [expected #{:read-retained-frame :command-retained!
+                         :reconcile-retained! :terminate-retained!}]
+          (is (= expected (set (filter expected (keys plain))))))
+        (is (= retained-frame ((:read-retained-frame plain))))
+        (is (= :completed
+               (:status ((:command-retained! plain) {:op :inspect}))))
+        (is (= :completed (:status ((:reconcile-retained! plain)))))
+        (is (= :terminated (:status ((:terminate-retained! plain)))))
+        (is (= :eval-service (:evaluate-form! combined)))))))
 
 (defn -main [& _]
   (let [result (test/run-tests 'jolt.sim.viewer-test)

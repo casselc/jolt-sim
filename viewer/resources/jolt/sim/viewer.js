@@ -26,6 +26,14 @@
   const evalSubmit = document.getElementById("eval-submit");
   const evalStatus = document.getElementById("eval-status");
   const evalTranscript = document.getElementById("eval-transcript");
+  const retainedCommand = document.getElementById("retained-command");
+  const retainedRefresh = document.getElementById("retained-refresh");
+  const retainedSend = document.getElementById("retained-send");
+  const retainedReconcile = document.getElementById("retained-reconcile");
+  const retainedTerminate = document.getElementById("retained-terminate");
+  const retainedStatus = document.getElementById("retained-status");
+  const retainedFrame = document.getElementById("retained-frame");
+  const retainedReceipt = document.getElementById("retained-receipt");
   const sessionRefresh = document.getElementById("session-refresh");
   const sessionReset = document.getElementById("session-reset");
   const sessionStatus = document.getElementById("session-status");
@@ -59,6 +67,11 @@
   let runPresets = [];
   let selectedRunPreset = null;
   let selectedRunRegime = null;
+  let retainedBusy = false;
+  let retainedUncertain = false;
+  let retainedTerminationUnknown = false;
+  let retainedCoordinateKnown = false;
+  let retainedWorkerStatus = null;
 
   const canonicalUnsignedDecimal = (value) =>
     typeof value === "string" && /^(0|[1-9][0-9]*)$/.test(value);
@@ -70,6 +83,104 @@
   const boundedString = (value, maximumCharacters) =>
     typeof value === "string" &&
     Array.from(value).length <= maximumCharacters;
+
+  const retainedStatusName = (value) =>
+    typeof value === "string" && value.length > 0 && value.length <= 64 &&
+    /^[A-Za-z][A-Za-z0-9_-]*$/.test(value);
+
+  const retainedWorkerStatuses = new Set([
+    "ready", "uncertain", "exited", "failed", "terminated"
+  ]);
+
+  const retainedKeywordText = (value) =>
+    retainedStatusName(value) || namespacedIdentifier(value);
+
+  const validRetainedFrameError = (value) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+    const allowed = new Set(["type", "phase", "reason", "status", "sequence"]);
+    const keys = Object.keys(value);
+    return keys.every((key) => allowed.has(key)) &&
+      keys.includes("type") && keys.includes("phase") &&
+      retainedKeywordText(value.type) && value.phase === "post-receipt" &&
+      (!keys.includes("reason") || retainedKeywordText(value.reason)) &&
+      (!keys.includes("status") || retainedKeywordText(value.status)) &&
+      (!keys.includes("sequence") || canonicalUnsignedDecimal(value.sequence));
+  };
+
+  const validRetainedCoordinate = (value, partial = false) => {
+    if (!exactKeys(value,
+      ["protocol", "status", "nextSequence", "uncertainSequence"])) return false;
+    const unknown = value.protocol === null && value.status === null;
+    const identified = value.protocol === 1 && retainedWorkerStatuses.has(value.status);
+    return (identified || (partial && unknown)) &&
+      canonicalUnsignedDecimal(value.nextSequence) &&
+      (value.uncertainSequence === null ||
+        (canonicalUnsignedDecimal(value.uncertainSequence) &&
+         value.uncertainSequence === value.nextSequence));
+  };
+
+  const validRetainedFrameResponse = (value) =>
+    exactKeys(value, ["version", "status", "coordinate", "frameEdn"]) &&
+    value.version === 1 && value.status === "ok" &&
+    validRetainedCoordinate(value.coordinate) &&
+    boundedString(value.frameEdn, 16 * 1024 * 1024);
+
+  const validRetainedOutcomeResponse = (value) => {
+    if (!exactKeys(value,
+      ["version", "outcome", "committed", "sequence", "coordinate",
+        "receiptEdn", "frameEdn", "frameError", "truncated"])) return false;
+    if (value.version !== 1 ||
+        !["completed", "failed"].includes(value.outcome) ||
+        value.committed !== true || !canonicalUnsignedDecimal(value.sequence) ||
+        !validRetainedCoordinate(value.coordinate, true)) {
+      return false;
+    }
+    const receiptNext = BigInt(value.sequence) + 1n;
+    const partialCoordinate = value.coordinate.protocol === null;
+    const coherentCoordinate = partialCoordinate
+      ? value.coordinate.uncertainSequence === null &&
+        BigInt(value.coordinate.nextSequence) === receiptNext
+      : BigInt(value.coordinate.nextSequence) >= receiptNext;
+    if (!coherentCoordinate) return false;
+    const fullFrame = value.truncated === false &&
+      boundedString(value.receiptEdn, 16 * 1024 * 1024) &&
+      boundedString(value.frameEdn, 16 * 1024 * 1024) &&
+      value.frameError === null && validRetainedCoordinate(value.coordinate);
+    const frameUnavailable = value.truncated === false &&
+      boundedString(value.receiptEdn, 16 * 1024 * 1024) &&
+      value.frameEdn === null && validRetainedFrameError(value.frameError) &&
+      value.coordinate.protocol === null && value.coordinate.status === null;
+    const truncated = value.truncated === true && value.receiptEdn === null &&
+      value.frameEdn === null && value.frameError === null;
+    return fullFrame || frameUnavailable || truncated;
+  };
+
+  const validRetainedTerminateResponse = (value) => {
+    const normal = exactKeys(value,
+      ["version", "status", "outcome", "coordinate", "frameEdn"]);
+    const truncated = exactKeys(value,
+      ["version", "status", "outcome", "coordinate", "frameEdn", "truncated"]);
+    return (normal || truncated) &&
+    value.version === 1 && value.status === "ok" &&
+    value.outcome === "terminated" && validRetainedCoordinate(value.coordinate) &&
+    (value.frameEdn === null || boundedString(value.frameEdn, 16 * 1024 * 1024)) &&
+    (normal ? value.frameEdn !== null : value.truncated === true && value.frameEdn === null);
+  };
+
+  const validRetainedTransportResponse = (value) =>
+    exactKeys(value,
+      ["version", "outcome", "error", "reason", "status", "sequence",
+        "uncertainSequence"]) &&
+    value.version === 1 && value.outcome === "transport-error" &&
+    value.error === "retained-transport-error" &&
+    retainedStatusName(value.reason) &&
+    (value.status === null || retainedWorkerStatuses.has(value.status)) &&
+    (value.sequence === null || canonicalUnsignedDecimal(value.sequence)) &&
+    (value.uncertainSequence === null ||
+      (canonicalUnsignedDecimal(value.uncertainSequence) &&
+       value.uncertainSequence === value.sequence));
+
+  const retainedNotAdmittedStatuses = new Set([400, 403, 404, 413, 415, 429]);
 
   const validSessionInstanceId = (value) =>
     typeof value === "string" && value.length >= 16 && value.length <= 128 &&
@@ -688,7 +799,7 @@
                   capability.value.length > 0;
     file.disabled = busy;
     kind.disabled = busy;
-    capability.disabled = busy;
+    capability.disabled = busy || retainedBusy;
     evalForm.disabled = busy;
     evalSubmit.disabled = busy || capability.value.length === 0 ||
       evalForm.value.trim().length === 0;
@@ -704,6 +815,15 @@
     // the only available action stays Retry until it resolves or Reset runs.
     sessionRefresh.disabled = busy || capability.value.length === 0 || pendingRetry !== null;
     sessionReset.disabled = busy;
+    retainedCommand.disabled = retainedBusy;
+    retainedRefresh.disabled = retainedBusy || capability.value.length === 0;
+    retainedSend.disabled = retainedBusy || retainedUncertain || retainedTerminationUnknown ||
+      capability.value.length === 0 || retainedCommand.value.trim().length === 0 ||
+      (retainedCoordinateKnown && retainedWorkerStatus !== "ready");
+    retainedReconcile.disabled = retainedBusy || !retainedUncertain ||
+      capability.value.length === 0;
+    retainedTerminate.disabled = retainedBusy || capability.value.length === 0 ||
+      (retainedCoordinateKnown && retainedWorkerStatus === "terminated");
     syncSessionChoiceUI();
   };
 
@@ -1268,6 +1388,148 @@
     sessionStepStatus.textContent = "No branch choice sent.";
     updateButtons();
   });
+
+  const retainedHeaders = () => ({
+    "Content-Type": "application/json",
+    "Accept": "application/json",
+    "X-Jolt-Sim-Capability": capability.value
+  });
+
+  const observeRetainedCoordinate = (coordinate) => {
+    retainedUncertain = coordinate.uncertainSequence !== null;
+    retainedTerminationUnknown = false;
+    retainedCoordinateKnown = true;
+    retainedWorkerStatus = coordinate.status;
+  };
+
+  const refreshRetainedFrame = async ({preserveStatus = false} = {}) => {
+    if (retainedBusy) return;
+    retainedBusy = true;
+    updateButtons();
+    if (!preserveStatus) {
+      retainedStatus.textContent = "Reading retained worker coordinates...";
+    }
+    try {
+      const response = await fetch("/api/retained-frame", {
+        method: "GET",
+        headers: {
+          "Accept": "application/json",
+          "X-Jolt-Sim-Capability": capability.value
+        },
+        cache: "no-store",
+        credentials: "omit"
+      });
+      const body = await response.json().catch(() => null);
+      if (!response.ok || !validRetainedFrameResponse(body)) {
+        throw new Error(`${response.status} ${body ? JSON.stringify(body) : "unparseable response"}`);
+      }
+      observeRetainedCoordinate(body.coordinate);
+      retainedFrame.textContent = body.frameEdn;
+      if (!preserveStatus) {
+        retainedStatus.textContent = retainedUncertain
+          ? `Worker is ${body.coordinate.status}; command sequence ${body.coordinate.uncertainSequence} is uncertain.`
+          : `Worker is ${body.coordinate.status}; next command sequence is ${body.coordinate.nextSequence}.`;
+      }
+    } catch (error) {
+      retainedFrame.textContent =
+        "No current retained worker frame; the last refresh failed.";
+      if (!preserveStatus) {
+        retainedStatus.textContent = `Retained worker refresh failed: ${error.message}`;
+      }
+    } finally {
+      retainedBusy = false;
+      updateButtons();
+    }
+  };
+
+  const retainedControl = async (path, body, operation) => {
+    if (retainedBusy) return;
+    retainedBusy = true;
+    updateButtons();
+    retainedStatus.textContent = `${operation} in progress; Ripple will not retry it automatically...`;
+    try {
+      const response = await fetch(path, {
+        method: "POST",
+        headers: retainedHeaders(),
+        body: JSON.stringify(body),
+        cache: "no-store",
+        credentials: "omit"
+      });
+      const result = await response.json().catch(() => null);
+      if (response.status === 503 && validRetainedTransportResponse(result)) {
+        retainedUncertain = result.uncertainSequence !== null;
+        retainedTerminationUnknown = operation === "Termination";
+        retainedCoordinateKnown = result.status !== null;
+        retainedWorkerStatus = result.status;
+        retainedStatus.textContent = retainedUncertain
+          ? `${operation} has an uncertain transport outcome at sequence ${result.uncertainSequence}; reconcile or terminate, but do not resend.`
+          : `${operation} failed before admission (${result.reason}); no command was acknowledged.`;
+        retainedReceipt.textContent = JSON.stringify(result, null, 2);
+        return;
+      }
+      const definiteResult = operation === "Termination"
+        ? validRetainedTerminateResponse(result)
+        : validRetainedOutcomeResponse(result);
+      if (!response.ok || !definiteResult) {
+        const error = new Error(
+          `${response.status} ${result ? JSON.stringify(result) : "unparseable response"}`
+        );
+        error.retainedNotAdmitted = retainedNotAdmittedStatuses.has(response.status);
+        throw error;
+      }
+      observeRetainedCoordinate(result.coordinate);
+      if (operation === "Termination") {
+        retainedReceipt.textContent = "No application receipt; termination was acknowledged.";
+      } else {
+        retainedReceipt.textContent = result.receiptEdn === null
+          ? result.truncated
+            ? `Receipt ${result.sequence} committed, but its body exceeded the configured browser projection limit.`
+            : "No application receipt body."
+          : result.receiptEdn;
+      }
+      if (result.frameEdn) retainedFrame.textContent = result.frameEdn;
+      if (!result.frameEdn && operation !== "Termination") {
+        retainedFrame.textContent = result.truncated
+          ? "The command receipt is definite, but the resulting frame exceeded the browser projection limit. Refresh to inspect it."
+          : "The command receipt is definite, but its post-receipt frame was unavailable. Refresh to inspect current state.";
+      }
+      retainedStatus.textContent = result.outcome === "failed"
+        ? "Application failure was acknowledged definitively; the command must not be retried."
+        : `${operation} acknowledged with outcome ${result.outcome}.`;
+      if (result.outcome === "terminated") {
+        retainedFrame.textContent = result.frameEdn ||
+          "The attached retained worker was terminated; its terminal frame exceeded the browser projection limit.";
+      }
+    } catch (error) {
+      if (!error.retainedNotAdmitted) {
+        if (operation === "Termination") {
+          retainedTerminationUnknown = true;
+        } else {
+          retainedUncertain = true;
+        }
+      }
+      retainedStatus.textContent = error.retainedNotAdmitted
+        ? `${operation} was not admitted: ${error.message}.`
+        : `${operation} returned no recognizable acknowledgment: ${error.message}. Do not retry automatically.`;
+    } finally {
+      retainedBusy = false;
+      updateButtons();
+    }
+  };
+
+  retainedRefresh.addEventListener("click", () => refreshRetainedFrame());
+  retainedSend.addEventListener("click", () => retainedControl(
+    "/api/retained-command",
+    {version: 1, commandEdn: retainedCommand.value},
+    "Retained command"
+  ));
+  retainedReconcile.addEventListener("click", () => retainedControl(
+    "/api/retained-reconcile", {version: 1}, "Reconciliation"
+  ));
+  retainedTerminate.addEventListener("click", () => retainedControl(
+    "/api/retained-terminate", {version: 1}, "Termination"
+  ));
+  retainedCommand.addEventListener("input", updateButtons);
 
   inspect.addEventListener("click", async () => {
     if (busy) return;
