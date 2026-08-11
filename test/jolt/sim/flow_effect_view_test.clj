@@ -161,6 +161,7 @@
       (is (= :settled (:status reconciled)))
       (is (= 0 (get-in reconciled [:target :sequence])))
       (is (= :settled (get-in reconciled [:effect :state])))
+      (is (= :ready (get-in reconciled [:flow-effect :status])))
       (is (= [command] (:command-calls @(:state worker))))
       (is (= 1 (:reconcile-calls @(:state worker))))
       (is (= (:entries journal-before)
@@ -289,6 +290,7 @@
         second-close (view/close-frame! bridge 0)]
     (is (= first-close second-close))
     (is (= :closed (:status first-close)))
+    (is (= :closed (get-in first-close [:flow-effect :status])))
     (is (= {:ownership :borrowed :operation :none}
            (:worker first-close)))
     (is (= :closed (get-in first-close [:frame :flow-effect :status])))

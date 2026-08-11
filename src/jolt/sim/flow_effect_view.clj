@@ -256,7 +256,12 @@
       :flow-committed? true
       :target (select-keys target [:intent-id :sequence])
       :status (effect-result-status effect)
-      :effect effect}
+      :effect effect
+      ;; The bridge returned this coordinate with the exact reconciliation
+      ;; receipt.  Preserve it independently of the later optional frame so a
+      ;; transport can acknowledge the reconciliation without inviting a
+      ;; second reconcile when frame refresh fails.
+      :flow-effect (delivery-state delivery)}
      ;; Reconciliation may settle an external effect. Preserve that result if
      ;; a later inspection frame cannot be obtained; never reconcile again as
      ;; an implicit refresh strategy.
@@ -300,13 +305,17 @@
   ;; Close itself is idempotent, but callers should still receive a normal
   ;; result for every accepted command.
   (read-frame* ops cursor)
-  ((:close! ops))
-  {:jolt.sim.flow-effect-view/type :close-result
-   :kind :jolt.sim.kind/flow-effect-close-result
-   :operation :close
-   :status :closed
-   :worker {:ownership :borrowed :operation :none}
-   :frame (read-frame* ops cursor)})
+  (let [closed ((:close! ops))]
+    (merge
+     {:jolt.sim.flow-effect-view/type :close-result
+      :kind :jolt.sim.kind/flow-effect-close-result
+      :operation :close
+      :status :closed
+      :worker {:ownership :borrowed :operation :none}
+      :flow-effect (flow-effect-state closed)}
+     ;; Closing admission is already authoritative and idempotent.  A frame
+     ;; failure is data, never an exception that obscures the closed result.
+     (frame-after-command ops cursor :post-close))))
 
 (defn close-frame!
   "Closes bridge admission idempotently and returns its final frame.
