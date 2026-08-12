@@ -61,6 +61,7 @@
 ;; watchdog below and runs serially. Nominal initial-case ceilings are:
 ;;
 ;;   parity witness       1 * (30000 + 500) =  30500 ms /  60000 ms watchdog
+;;   domain witnesses     6 * (20000 + 500) = 123000 ms / 180000 ms watchdog
 ;;   finite-domain lane  15 * (20000 + 500) = 307500 ms / 450000 ms watchdog
 ;;   UTF-8 lane           5 * (20000 + 500) = 102500 ms / 300000 ms watchdog
 ;;
@@ -459,12 +460,56 @@
 (deftest tcp-bencode-real-sim-parity-witness
   (check-case-with-progress! :parity 1 parity-witness-input))
 
+;; Exhaustive coverage is a deterministic acceptance obligation, not a claim
+;; about which values an adaptive randomized campaign must happen to select.
+;; These six cases cover every value in all four declared finite domains while
+;; keeping each worker input an ordinary application scenario.
+(def ^:private finite-domain-witness-inputs
+  [{:stream-capacity 1
+    :pipe-capacity 1
+    :poll-eintr-ordinal nil
+    :request-text ""
+    :check-parity? false}
+   {:stream-capacity 2
+    :pipe-capacity 2
+    :poll-eintr-ordinal 1
+    :request-text "hello"
+    :check-parity? false}
+   {:stream-capacity 4
+    :pipe-capacity 4
+    :poll-eintr-ordinal 2
+    :request-text "cafe society"
+    :check-parity? false}
+   {:stream-capacity 8
+    :pipe-capacity 8
+    :poll-eintr-ordinal 4
+    :request-text "cafe au lait Ω≈ç"
+    :check-parity? false}
+   {:stream-capacity 1
+    :pipe-capacity 1
+    :poll-eintr-ordinal 8
+    :request-text "日本語テキスト"
+    :check-parity? false}
+   {:stream-capacity 2
+    :pipe-capacity 2
+    :poll-eintr-ordinal nil
+    :request-text "🎉🎊✨ mixed 中文"
+    :check-parity? false}])
+
+(deftest tcp-bencode-finite-domain-witnesses
+  (doseq [[index input] (map-indexed vector finite-domain-witness-inputs)]
+    (check-case-with-progress! :domain-witness (inc index) input))
+  (is (= (set capacity-domain)
+         (set (map :stream-capacity finite-domain-witness-inputs))))
+  (is (= (set capacity-domain)
+         (set (map :pipe-capacity finite-domain-witness-inputs))))
+  (is (= (set poll-eintr-domain)
+         (set (map :poll-eintr-ordinal finite-domain-witness-inputs))))
+  (is (= (set request-text-domain)
+         (set (map :request-text finite-domain-witness-inputs)))))
+
 (deftest hegel-tcp-bencode-holds-across-capacities-eintr-and-request-domain
-  (let [seen-stream-capacities (atom #{})
-        seen-pipe-capacities (atom #{})
-        seen-poll-ordinals (atom #{})
-        seen-texts (atom #{})
-        case-ordinal (atom 0)
+  (let [case-ordinal (atom 0)
         result
         (h/run-test!
          {:test-cases 15
@@ -479,10 +524,6 @@
            (let [input (h/draw! (input-generator) "scenario-input")]
              (check-case-with-progress!
               :finite-domain (swap! case-ordinal inc) input)
-             (swap! seen-stream-capacities conj (:stream-capacity input))
-             (swap! seen-pipe-capacities conj (:pipe-capacity input))
-             (swap! seen-poll-ordinals conj (:poll-eintr-ordinal input))
-             (swap! seen-texts conj (:request-text input))
              nil)))]
     (is (true? (:passed? result))
         (pr-str {:status (:status result)
@@ -495,18 +536,12 @@
         (pr-str {:seed (:seed result)
                  :flaky? (:flaky? result)
                  :observed-failures (:observed-failures result)}))
-    (is (= (set capacity-domain) @seen-stream-capacities)
-        (str "Hegel did not exercise the full stream-capacity domain: "
-             (pr-str @seen-stream-capacities)))
-    (is (= (set capacity-domain) @seen-pipe-capacities)
-        (str "Hegel did not exercise the full pipe-capacity domain: "
-             (pr-str @seen-pipe-capacities)))
-    (is (= (set poll-eintr-domain) @seen-poll-ordinals)
-        (str "Hegel did not exercise the full poll-EINTR domain: "
-             (pr-str @seen-poll-ordinals)))
-    (is (= (set request-text-domain) @seen-texts)
-        (str "Hegel did not exercise the full request-text domain: "
-             (pr-str @seen-texts)))))
+    (is (= 15 (:valid-test-cases result))
+        (pr-str (select-keys result
+                             [:test-cases :valid-test-cases
+                              :invalid-test-cases :overrun-test-cases])))
+    (is (= 0 (:invalid-test-cases result)))
+    (is (= 0 (:overrun-test-cases result)))))
 
 ;; Keep the fixed discriminating-domain regression above, then let Hegel own a
 ;; small true UTF-8 text domain as a separate shrinkable lane. It is not a
@@ -544,6 +579,9 @@
   [{:name "tcp-bencode-real-sim-parity-witness"
     :var #'tcp-bencode-real-sim-parity-witness
     :watchdog-ms 60000}
+   {:name "tcp-bencode-finite-domain-witnesses"
+    :var #'tcp-bencode-finite-domain-witnesses
+    :watchdog-ms 180000}
    {:name "hegel-tcp-bencode-holds-across-capacities-eintr-and-request-domain"
     :var #'hegel-tcp-bencode-holds-across-capacities-eintr-and-request-domain
     :watchdog-ms 450000}
