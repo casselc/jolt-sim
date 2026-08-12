@@ -57,7 +57,9 @@
               (swap! state assoc :status :uncertain
                      :uncertain-sequence sequence)
               (throw (ex-info "scripted uncertain publication"
-                              {:type ::transport :sequence sequence})))
+                              {:type ::transport :sequence sequence
+                               :uncertain-sequence sequence
+                               :published? true})))
 
             :else
             (do
@@ -74,6 +76,12 @@
           (apply-outcome! outcome)))
       :reconcile!
       (fn []
+        (swap! state update :reconcile-calls inc)
+        (let [outcome (first @reconciliations)]
+          (swap! reconciliations #(vec (rest %)))
+          (apply-outcome! outcome)))
+      :reconcile-sequence!
+      (fn [_]
         (swap! state update :reconcile-calls inc)
         (let [outcome (first @reconciliations)]
           (swap! reconciliations #(vec (rest %)))

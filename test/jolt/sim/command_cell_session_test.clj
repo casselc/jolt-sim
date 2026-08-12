@@ -92,7 +92,10 @@
              (let [sequence (:next-sequence @state)]
                (swap! state assoc :status :uncertain
                       :uncertain-sequence sequence)
-               (throw (ex-info "uncertain" {:reason (:uncertain outcome)})))
+               (throw (ex-info "uncertain" {:reason (:uncertain outcome)
+                                              :sequence sequence
+                                              :uncertain-sequence sequence
+                                              :published? true})))
 
              :else
              (do
@@ -110,6 +113,12 @@
            (apply-outcome! outcome)))
        :reconcile!
        (fn []
+         (swap! state update :reconcile-calls inc)
+         (let [outcome (first @reconciliations)]
+           (swap! reconciliations #(vec (rest %)))
+           (apply-outcome! outcome)))
+       :reconcile-sequence!
+       (fn [_]
          (swap! state update :reconcile-calls inc)
          (let [outcome (first @reconciliations)]
            (swap! reconciliations #(vec (rest %)))
@@ -502,7 +511,7 @@
            (select-keys after-second
                         [:status :next-sequence :uncertain-sequence
                          :command-calls :reconcile-calls :published])))
-    (is (= #{:command! :reconcile! :snapshot}
+    (is (= #{:command! :reconcile! :reconcile-sequence! :snapshot}
            (set (keys (:service worker)))))
     (is (= :closed
            (:reason (caught-data #(command-session/branches session)))))

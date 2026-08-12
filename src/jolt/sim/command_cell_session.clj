@@ -36,7 +36,8 @@
 (def ^:private trusted-required-keys
   #{:compilers :workers :projectors :workbench})
 (def ^:private trusted-keys (conj trusted-required-keys :tap!))
-(def ^:private worker-keys #{:command! :reconcile! :snapshot})
+(def ^:private worker-keys
+  #{:command! :reconcile! :reconcile-sequence! :snapshot})
 (def ^:private workbench-keys #{:append-item!})
 
 (def ^:private catalog-operation (Object.))

@@ -283,6 +283,34 @@
             (is (= :ready (:status snap)))
             (is (= 1 (:next-sequence snap)))
             (is (nil? (:uncertain-sequence snap))))))
+      ;; A second capability can adopt the already-settled immutable receipt.
+      ;; It must not disturb a newer uncertainty owned by another publisher.
+      (with-redefs-fn
+        {alive-var (fn [_] true)
+         wait-var (fn [_ _ _] :deadline)}
+        (fn []
+          (is (= :receipt-deadline
+                 (:reason
+                  (ex-data-of
+                   #(retained/command! handle {:op :later} 7)))))))
+      (is (= {:status :completed
+              :sequence 0
+              :value {:snapshot :stable}}
+             (retained/reconcile-sequence! handle 0 7)))
+      (with-redefs-fn
+        {alive-var (fn [_] true)}
+        (fn []
+          (let [snap (retained/snapshot handle)]
+            (is (= :uncertain (:status snap)))
+            (is (= 1 (:uncertain-sequence snap)))
+            (is (= 1 (:next-sequence snap))))))
+      (write-receipt! paths :completed 1 {:later true})
+      (with-redefs-fn
+        {alive-var (fn [_] true)
+         wait-var (fn [_ _ _] :present)}
+        (fn []
+          (is (= {:status :completed :sequence 1 :value {:later true}}
+                 (retained/reconcile-sequence! handle 1 7)))))
       (finally
         (retain-artifacts! dir)))))
 

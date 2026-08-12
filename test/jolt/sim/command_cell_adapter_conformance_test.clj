@@ -125,7 +125,10 @@
                (swap! state assoc :status :uncertain
                       :uncertain-sequence sequence)
                (throw (ex-info "uncertain publication"
-                               {:reason (:uncertain outcome)})))
+                               {:reason (:uncertain outcome)
+                                :sequence sequence
+                                :uncertain-sequence sequence
+                                :published? true})))
 
              :else
              (do
@@ -145,6 +148,12 @@
            (apply-outcome! outcome)))
        :reconcile!
        (fn []
+         (swap! state update :reconcile-calls inc)
+         (let [outcome (first @reconciliations)]
+           (swap! reconciliations #(vec (rest %)))
+           (apply-outcome! outcome)))
+       :reconcile-sequence!
+       (fn [_]
          (swap! state update :reconcile-calls inc)
          (let [outcome (first @reconciliations)]
            (swap! reconciliations #(vec (rest %)))
