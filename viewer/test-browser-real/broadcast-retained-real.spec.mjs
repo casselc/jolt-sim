@@ -45,6 +45,15 @@ const drainReadyMailboxes = async (page, maximum = 32) => {
   throw new Error(`Ripple Broadcast drain exceeded ${maximum} visible steps`);
 };
 
+const selectCommandCell = async (page, displayId) => {
+  const option = page.getByTestId("command-cell-select")
+    .locator("option").filter({hasText: displayId});
+  await expect(option).toHaveCount(1);
+  const handle = await option.getAttribute("value");
+  expect(handle).not.toBeNull();
+  await page.getByTestId("command-cell-select").selectOption(handle);
+};
+
 test("controls the real retained Broadcast worker from Ripple and its shared REPL",
   async ({page}, testInfo) => {
     // This acceptance intentionally installs no page.route mocks. Every browser
@@ -79,12 +88,57 @@ test("controls the real retained Broadcast worker from Ripple and its shared REP
       '[data-edge-detail-id="n2--n3"] [data-action-id="drop"]'
     )).toBeDisabled();
 
-    const bootstrapped = await sendRetained(page, "{:op :bootstrap}");
-    expect(bootstrapped).toContain(":sequence 1");
-    expect(bootstrapped).toContain(":enqueued 7");
-    expect(bootstrapped).toContain(":ready-mailboxes [\"n1\" \"n2\" \"n3\"]");
+    await page.getByTestId("command-cell-load").click();
+    await expect(page.getByTestId("command-cell-select").locator("option"))
+      .toHaveCount(8);
+    await expect(page.getByTestId("command-cell-status"))
+      .toContainText("revision 0");
+    await selectCommandCell(page, "example.broadcast/bootstrap");
+    await page.getByTestId("command-cell-input").fill("{:op :bootstrap}");
+    await page.getByTestId("command-cell-prepare").click();
+    await expect(page.getByTestId("command-cell-status"))
+      .toContainText("prepare completed with outcome prepared");
+    await expect(page.getByTestId("command-cell-choice")).toHaveCount(1);
+
+    // Catalog reads, preparation, and successor preview are pure with respect
+    // to the retained worker. The initial inspect consumed sequence 0; no
+    // command-cell operation has consumed sequence 1 yet.
+    await page.getByTestId("retained-refresh").click();
+    await expect(page.getByTestId("retained-status"))
+      .toContainText("Worker is ready; next command sequence is 1.");
+    await page.locator("#command-cell-panel").screenshot({
+      path: testInfo.outputPath("ripple-real-broadcast-command-cell-prepared.png")
+    });
+
+    await page.getByTestId("command-cell-choice").click();
+    await expect(page.getByTestId("command-cell-status"))
+      .toContainText("step committed with outcome ready");
+    await expect(page.getByTestId("command-cell-result"))
+      .toContainText("bootstrap");
+    await expect(page.getByTestId("command-cell-result"))
+      .toContainText("running");
+    await expect(page.getByTestId("command-cell-choice")).toHaveCount(0);
+
+    await page.getByTestId("retained-refresh").click();
+    await expect(page.getByTestId("retained-status"))
+      .toContainText("Worker is ready; next command sequence is 2.");
     await expect(page.locator('[data-node-id="n1"]'))
       .toContainText("jolt.sim.status/ready");
+    await expect(page.locator(
+      '[data-node-detail-id="n2"] [data-field-label="Mailbox count"] + dd'
+    )).not.toHaveText("0");
+    await page.locator("#command-cell-panel").screenshot({
+      path: testInfo.outputPath("ripple-real-broadcast-command-cell-running.png")
+    });
+
+    await page.getByTestId("workbench-refresh").click();
+    const commandEvidence = page.locator("article.workbench-item")
+      .filter({hasText: "command-cell/broadcast-live-"});
+    await expect(commandEvidence).toHaveCount(3);
+    await expect(commandEvidence.filter({hasText: "/prepare"})).toHaveCount(1);
+    await expect(commandEvidence.filter({hasText: "/commit"})).toHaveCount(1);
+    await expect(commandEvidence.filter({hasText: "/projected-receipt"}))
+      .toHaveCount(1);
 
     const dropped = await clickTopologyAction(
       page, "edge", "n2--n3", "drop"
