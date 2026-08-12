@@ -146,6 +146,26 @@ full browser video, trace, both pending and delivered screenshots, and the
 retained worker command/receipt journal under
 `target/ripple-playwright/outbox-flow/`.
 
+### Command cells
+
+An embedded application can also attach a `jolt.sim.command-cell-session` to
+`start-workbench!`. Ripple lists its declared cells, accepts one ordinary or
+lossless canonical EDN input, shows pure server-issued branch previews, and
+commits one exact branch. Ripple never derives an application command or
+retries an ambiguous mutation. The authoritative evidence-stream ID and
+revision prevent an old page or detached button from mutating a replacement
+session.
+
+The same session is ordinary data/capabilities for a Jolt REPL or another UI.
+Applications supply schemas, compilers, projectors, and borrowed workers;
+Ripple contains no Broadcast or Outbox command vocabulary.
+
+The real no-mock examples exercise this generic panel through the unchanged
+applications:
+
+- [Broadcast prepared and committed cells](../examples/maelstrom-broadcast-workbench/README.md#generic-command-cells)
+- [Outbox pending and delivered cells](../examples/outbox-workbench/README.md)
+
 Port `0` selects an ephemeral loopback port and the startup message prints the
 actual URL. A fixed port such as `8788` is more convenient for repeated use.
 Press Ctrl+C in the foreground viewer process to stop the listener and handler

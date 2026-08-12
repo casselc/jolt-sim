@@ -286,11 +286,13 @@ JOLT_SIM_PROGRESS_FILE='/tmp/flow-ripple-progress.edn' \
 The progress file and the retained worker's printed artifact directory are
 never removed on failure or timeout.
 
-The no-mock Playwright gate chooses submit in Ripple, chooses delivery through
-an evaluated Jolt form against the same bridge, and then stops the retained
-worker. The unchanged application crosses real HTTP, SQLite, TCP, and bencode
-boundaries. The gate retains screenshots, video, browser trace, and worker
-mailboxes under `target/ripple-playwright/outbox-flow/`:
+The no-mock Playwright gate loads the generic Command Cell catalog, prepares
+and commits exact submit and deliver inputs independently, and then stops the
+retained worker. Preparation is pure: the retained sequence stays at 0 before
+Submit and at 1 before Deliver. The unchanged application crosses real HTTP,
+SQLite, TCP, and bencode boundaries. The gate retains screenshots, video,
+browser trace, and worker mailboxes under
+`target/ripple-playwright/outbox-flow/`:
 
 ```sh
 cd viewer
@@ -301,9 +303,17 @@ JOLT_SIM_PROJECT_DIR='/absolute/path/to/jolt-sim-worktree' \
   npx playwright test --config=playwright.outbox-flow.config.mjs
 ```
 
-The gate also refreshes the generic workbench items, selects the app-owned
-`example.outbox/effect-result` kind for the exact submitted step, and proves
-that its immutable source EDN does not change. The committed screenshot is
-`../../viewer/docs/ripple-workbench-items-outbox.png`. Outbox contributes only
-the trusted presenter function; item storage, kind selection, rendering, and
-HTTP controls remain generic Ripple/workbench behavior.
+The pending capture contains the definite HTTP 201 projection and proves that
+the receiver has not run:
+
+![Pending Outbox command cell](docs/ripple-outbox-command-cell-pending.png)
+
+The delivered capture contains the independently committed Deliver projection
+and exactly one receiver request:
+
+![Delivered Outbox command cell](docs/ripple-outbox-command-cell-delivered.png)
+
+The gate also verifies the shared generic Workbench evidence streams for
+prepare, commit, and projected receipt. Outbox contributes only its closed
+schemas, pure compiler/projector, and borrowed worker capability; item storage,
+rendering, mutation admission, and HTTP controls remain generic.
