@@ -122,7 +122,7 @@ test("treats stale rejection as definite and requires a fresh coordinate", async
     frameRead += 1;
     return json(route, frameRead === 1
       ? frame({revision: "1", phase: "prepared", choices: [choice(0)]})
-      : frame({revision: "2", phase: "failed"}));
+      : frame({revision: "2", phase: "definite"}));
   });
   await page.route("**/api/command-cell-step", (route) => json(route, {
     version: 1, outcome: "error", committed: false,
