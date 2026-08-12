@@ -151,6 +151,7 @@ test("controls the real retained Broadcast worker from Ripple and its shared REP
     });
 
     await page.getByTestId("workbench-refresh").click();
+    await expect(page.locator("article.workbench-item")).toHaveCount(3);
     const commandEvidence = page.locator("article.workbench-item")
       .filter({hasText: "command-cell/broadcast-live-"});
     await expect(commandEvidence).toHaveCount(3);
@@ -223,11 +224,35 @@ test("controls the real retained Broadcast worker from Ripple and its shared REP
     expect(partitioned).toContain('"n2" {:messages [42]');
     expect(partitioned).toContain('"n3" {:messages []');
     expect(partitioned).toContain(":dropped-total 1");
-    await page.locator("svg.retained-topology").screenshot({
-      path: testInfo.outputPath("ripple-real-broadcast-partition.png")
-    });
+    // Keep the application evidence visible in the documentation capture.
+    // The graph alone shows topology/status but not the per-node message
+    // counts that distinguish the partitioned state.
+    await Promise.all(["n1", "n2", "n3"].map((nodeId) =>
+      page.locator(`[data-node-detail-id="${nodeId}"]`)
+        .evaluate((element) => { element.open = true; })
+    ));
     const partitionedEdge = page.locator('[data-edge-detail-id="n2--n3"]');
     await partitionedEdge.evaluate((element) => { element.open = true; });
+    const topologyGraph = page.locator("svg.retained-topology");
+    const topologyDetails = page.locator(".retained-topology-details");
+    const [graphBox, detailsBox] = await Promise.all([
+      topologyGraph.boundingBox(), topologyDetails.boundingBox()
+    ]);
+    expect(graphBox).not.toBeNull();
+    expect(detailsBox).not.toBeNull();
+    const topologyX = Math.min(graphBox.x, detailsBox.x);
+    const topologyRight = Math.max(
+      graphBox.x + graphBox.width, detailsBox.x + detailsBox.width
+    );
+    await page.screenshot({
+      path: testInfo.outputPath("ripple-real-broadcast-partition.png"),
+      clip: {
+        x: topologyX,
+        y: graphBox.y,
+        width: topologyRight - topologyX,
+        height: detailsBox.y + detailsBox.height - graphBox.y
+      }
+    });
     await partitionedEdge.screenshot({
       path: testInfo.outputPath("ripple-real-broadcast-edge-actions.png")
     });

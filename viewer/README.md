@@ -128,10 +128,13 @@ persistent Jolt REPL without granting any fresh-process execution capability.
 ### Live workbench items
 
 An embedded application can attach one `jolt.sim.workbench-session` to
-`start-workbench!`. Ripple then shows values recorded by the shared REPL,
-simulation, evaluator, and retained-worker services. Each card keeps immutable
-canonical source EDN and a source fingerprint. Its presentation selector
-changes only an exact source revision.
+`start-workbench!`. Ripple then shows curated values and the results recorded
+by the shared evaluator, simulation, and Command Cell services. Raw retained
+commands and reconciliation already have an exact command/receipt journal, so
+Ripple does not copy those growing receipts into the Workbench document.
+Retained-worker termination is captured because a forced stop may have no
+child receipt. Each card keeps immutable canonical source EDN and a source
+fingerprint. Its presentation selector changes only an exact source revision.
 
 Libraries and applications supply trusted renderer functions in the session's
 programmatic kind registry. Saved documents and browser requests contain only
