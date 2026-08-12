@@ -5450,6 +5450,58 @@
       (is (= {"form" "still-definite"}
              ((:evaluate-form! @captured) "still-definite"))))))
 
+(deftest start-workbench-does-not-duplicate-retained-journal-results
+  (let [handle (Object.)
+        document
+        (workbench/append-item
+         (workbench/empty-document)
+         {:id "curated" :source-revision 0 :value {:kept true}
+          :schema-id :jolt.sim.result/curated :suggested-kind nil
+          :provenance
+          {:producer :example/curator
+           :coordinate {:ordinal 0}}})
+        items (workbench-session/start {:document document})
+        captured (atom nil)]
+    (with-redefs [viewer/start!
+                  (fn [_ services]
+                    (reset! captured services)
+                    :server)
+                  retained-view/read-frame
+                  (fn [actual]
+                    (is (identical? handle actual))
+                    retained-frame)
+                  retained-view/command-frame!
+                  (fn [actual command]
+                    (is (identical? handle actual))
+                    (retained-result :completed command))
+                  retained-view/reconcile-frame!
+                  (fn [actual]
+                    (is (identical? handle actual))
+                    (retained-result :reconcile :completed :ok retained-frame))
+                  retained-view/terminate-frame!
+                  (fn [actual]
+                    (is (identical? handle actual))
+                    (assoc retained-frame :status :terminated))]
+      (is (= :server
+             (viewer/start-workbench!
+              (config) {:retained-process handle
+                        :workbench-session items})))
+      (is (= :completed
+             (:status ((:command-retained! @captured) {:op :inspect}))))
+      (is (= :completed (:status ((:reconcile-retained! @captured)))))
+      (let [frame (workbench-session/frame items)]
+        (is (= 1 (:item-count frame)))
+        (is (= 1 (:current-item-count frame)))
+        (is (= ["curated"]
+               (mapv #(get-in % [:coordinate :item-id]) (:items frame)))))
+      (is (= :terminated (:status ((:terminate-retained! @captured)))))
+      (let [frame (workbench-session/frame items)]
+        (is (= 2 (:item-count frame)))
+        (is (= 2 (:current-item-count frame)))
+        (is (= #{"curated" "worker-termination"}
+               (set (map #(get-in % [:coordinate :item-id])
+                         (:items frame)))))))))
+
 (deftest start-workbench-continues-capture-revisions-from-restored-document
   (let [document
         (workbench/append-item

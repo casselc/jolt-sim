@@ -151,6 +151,7 @@ test("controls the real retained Broadcast worker from Ripple and its shared REP
     });
 
     await page.getByTestId("workbench-refresh").click();
+    await expect(page.locator("article.workbench-item")).toHaveCount(3);
     const commandEvidence = page.locator("article.workbench-item")
       .filter({hasText: "command-cell/broadcast-live-"});
     await expect(commandEvidence).toHaveCount(3);

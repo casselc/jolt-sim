@@ -4388,10 +4388,8 @@
    :reconcile-session-step
    ["step-reconciliation" :jolt.sim.result/step-reconciliation]
    :close-session! ["simulation-close" :jolt.sim.result/simulation-close]
-   :command-retained! ["worker-command" :jolt.sim.result/worker-command]
-   :reconcile-retained!
-   ["worker-reconciliation" :jolt.sim.result/worker-reconciliation]
-   :terminate-retained! ["worker-termination" :jolt.sim.result/worker-termination]})
+   :terminate-retained!
+   ["worker-termination" :jolt.sim.result/worker-termination]})
 
 (defn- captured-service-ordinals [session]
   (let [latest
@@ -4461,10 +4459,14 @@
   render/replay/run services remain available from the ordinary viewer config,
   so applications do not need a new launcher API for each capability mix.
 
-  When a WorkbenchSession is present, successful results from the other live
-  services are appended after those operations return. This evidence capture
-  is advisory: it never retries an operation and a capture failure cannot
-  replace or obscure its already-definite result.
+  When a WorkbenchSession is present, successful evaluation and simulation
+  results and retained-worker termination are appended after those operations
+  return. Retained-process commands and reconciliation results are not copied
+  into the Workbench document: their exact command and receipt artifacts
+  already form the authoritative retained journal, and recursively capturing
+  every growing receipt would duplicate evidence. This advisory capture never
+  retries an operation, and a capture failure cannot replace or obscure its
+  already-definite result.
 
   Application and library semantics belong in presenter registries and the
   supplied capabilities, never in this composer or browser-selected code."
