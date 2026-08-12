@@ -221,7 +221,7 @@
 ;; ---- Worker/case budgets and serial ownership -----------------------------
 ;; Nominal initial-case ceilings are:
 ;;
-;;   ordinary boundary witness   2 * (60000 + 500) = 121000 ms
+;;   finite-domain witness       5 * (60000 + 500) = 302500 ms
 ;;   ordinary generated lane    15 * (20000 + 500) = 307500 ms
 ;;   terminal boundary witness   6 * (60000 + 500) = 363000 ms
 ;;   terminal generated lane    12 * (20000 + 500) = 246000 ms
@@ -1838,41 +1838,57 @@
         (when (fs/exists? export-root)
           (fs/delete-tree export-root))))))
 
-;; The deterministic payload-semantics boundary witness: the empty payload
-;; and the [0 127 128 255] payload (embedded zero, 0x7f, 0x80, 0xff) at the
-;; fixed smoke capacities, the second with one captured first-poll EINTR as
-;; the smoke-capacity fault control. The two witnesses carry the two
-;; discriminating first-poll admission plans, so both release orders hold
-;; even if a future generator edit stops drawing them. These run outside
-;; Hegel generation so the boundary semantics hold even if a future generator
-;; edit stops drawing them.
+;; Deterministic acceptance witnesses own exhaustive coverage of the finite
+;; capacity, EINTR, admission-plan, and payload-boundary domains. The adaptive
+;; Hegel campaign below remains shrinkable, but its fixed seed is not required
+;; to rediscover every finite value.
 (def ^:private boundary-witness-inputs
-  [(outbox-regimes/scenario-input
-    {:payload [] :stream-capacity 8 :pipe-capacity 1}
-    :jolt.example.outbox.regime/receiver-first-no-eintr)
-   (outbox-regimes/scenario-input
-    :jolt.example.outbox.regime/http-first-poll-eintr-1)])
+  [{:payload []
+    :stream-capacity 8
+    :pipe-capacity 1
+    :poll-eintr-ordinal nil
+    :admission-plan :receiver-poll-then-http-poll}
+   {:payload [0 127 128 255]
+    :stream-capacity 16
+    :pipe-capacity 2
+    :poll-eintr-ordinal 1
+    :admission-plan :http-poll-then-receiver-poll}
+   {:payload [1]
+    :stream-capacity 32
+    :pipe-capacity 4
+    :poll-eintr-ordinal 2
+    :admission-plan :receiver-poll-then-http-poll}
+   {:payload [2]
+    :stream-capacity 8
+    :pipe-capacity 1
+    :poll-eintr-ordinal 4
+    :admission-plan :http-poll-then-receiver-poll}
+   {:payload [3]
+    :stream-capacity 16
+    :pipe-capacity 2
+    :poll-eintr-ordinal 8
+    :admission-plan :receiver-poll-then-http-poll}])
 
 (deftest outbox-delivery-payload-boundary-witness
   (doseq [[index input] (map-indexed vector boundary-witness-inputs)]
-    (check-case-with-progress! :boundary (inc index) input)))
+    (check-case-with-progress! :boundary (inc index) input))
+  (is (= (set stream-capacity-domain)
+         (set (map :stream-capacity boundary-witness-inputs))))
+  (is (= (set pipe-capacity-domain)
+         (set (map :pipe-capacity boundary-witness-inputs))))
+  (is (= (set poll-eintr-domain)
+         (set (map :poll-eintr-ordinal boundary-witness-inputs))))
+  (is (= (set admission-plan-domain)
+         (set (map :admission-plan boundary-witness-inputs)))))
 
 (deftest hegel-outbox-delivery-holds-across-payload-capacities-eintr-and-plans
-  (let [seen-stream-capacities (atom #{})
-        seen-pipe-capacities (atom #{})
-        seen-poll-ordinals (atom #{})
-        seen-admission-plans (atom #{})
-        case-ordinal (atom 0)
+  (let [case-ordinal (atom 0)
         result
         (h/run-test!
          {:test-cases 15
           ;; Each case launches a fresh isolated Jolt worker so generation is
           ;; intentionally slower than Hegel's unit-test health threshold.
           :suppress-health-checks [:too-slow]
-          ;; Parent-only sampling verified that this fixed seed exercises every
-          ;; declared finite capacity, EINTR ordinal, and first-poll admission
-          ;; plan in 15 cases. The assertions below keep that coverage from
-          ;; silently drifting.
           :seed 3
           :database ""
           :report-multiple-failures? false
@@ -1881,10 +1897,6 @@
            (let [input (h/draw! (input-generator) "scenario-input")]
              (check-case-with-progress!
               :generated (swap! case-ordinal inc) input)
-             (swap! seen-stream-capacities conj (:stream-capacity input))
-             (swap! seen-pipe-capacities conj (:pipe-capacity input))
-             (swap! seen-poll-ordinals conj (:poll-eintr-ordinal input))
-             (swap! seen-admission-plans conj (:admission-plan input))
              nil)))]
     (is (true? (:passed? result))
         (pr-str {:status (:status result)
@@ -1897,18 +1909,9 @@
         (pr-str {:seed (:seed result)
                  :flaky? (:flaky? result)
                  :observed-failures (:observed-failures result)}))
-    (is (= (set stream-capacity-domain) @seen-stream-capacities)
-        (str "Hegel did not exercise the full stream-capacity domain: "
-             (pr-str @seen-stream-capacities)))
-    (is (= (set pipe-capacity-domain) @seen-pipe-capacities)
-        (str "Hegel did not exercise the full pipe-capacity domain: "
-             (pr-str @seen-pipe-capacities)))
-    (is (= (set poll-eintr-domain) @seen-poll-ordinals)
-        (str "Hegel did not exercise the full poll-EINTR domain: "
-             (pr-str @seen-poll-ordinals)))
-    (is (= (set admission-plan-domain) @seen-admission-plans)
-        (str "Hegel did not exercise both first-poll admission plans: "
-             (pr-str @seen-admission-plans)))))
+    (is (= 15 (:valid-test-cases result)))
+    (is (= 0 (:invalid-test-cases result)))
+    (is (= 0 (:overrun-test-cases result)))))
 
 ;; ---- Routed JSON exact replay / conflict lane ----------------------------
 
@@ -2235,8 +2238,7 @@
      :boundary (inc index) input boundary-case-timeout-ms)))
 
 (deftest hegel-outbox-live-lifecycle-preserves-acknowledgement-boundary
-  (let [seen-ack-outcomes (atom #{})
-        case-ordinal (atom 0)
+  (let [case-ordinal (atom 0)
         result
         (h/run-test!
          {:test-cases 6
@@ -2253,7 +2255,6 @@
               live-lifecycle-scenario-sym
               assert-live-lifecycle-case-outcome!
               :generated (swap! case-ordinal inc) input case-timeout-ms)
-             (swap! seen-ack-outcomes conj (:ack-outcome input))
              nil)))]
     (is (true? (:passed? result))
         (pr-str (select-keys result
@@ -2262,9 +2263,9 @@
     (is (false? (:flaky? result))
         (pr-str (select-keys result
                              [:seed :flaky? :observed-failures])))
-    (is (= #{:accepted :hostile} @seen-ack-outcomes)
-        (str "Hegel did not exercise both acknowledgement outcomes: "
-             (pr-str @seen-ack-outcomes)))))
+    (is (= 6 (:valid-test-cases result)))
+    (is (= 0 (:invalid-test-cases result)))
+    (is (= 0 (:overrun-test-cases result)))))
 
 ;; ---- Ordinary JSON HTTP webhook acknowledgement lane --------------------
 
@@ -3026,42 +3027,50 @@
                    input
                    {:clean? clean?})))))
 
-;; The deterministic retry boundary witness: the empty payload and the
-;; [0 127 128 255] payload (embedded zero, 0x7f, 0x80, 0xff) at the fixed
-;; smoke capacities, the second with one captured first-poll EINTR beside
-;; the structural recv reset as the smoke-capacity mixed-fault control. Both
-;; run outside Hegel generation so the retry boundary semantics hold even if
-;; a future generator edit stops drawing them.
+;; Deterministic acceptance witnesses own the retry lane's finite-domain
+;; coverage. Hegel still varies and shrinks the same input shape independently.
 (def ^:private retry-boundary-witness-inputs
   [{:payload []
     :stream-capacity 8
     :pipe-capacity 1
     :poll-eintr-ordinal nil}
    {:payload [0 127 128 255]
+    :stream-capacity 16
+    :pipe-capacity 2
+    :poll-eintr-ordinal 1}
+   {:payload [1]
+    :stream-capacity 32
+    :pipe-capacity 4
+    :poll-eintr-ordinal 2}
+   {:payload [2]
     :stream-capacity 8
     :pipe-capacity 1
-    :poll-eintr-ordinal 1}])
+    :poll-eintr-ordinal 4}
+   {:payload [3]
+    :stream-capacity 16
+    :pipe-capacity 2
+    :poll-eintr-ordinal 8}])
 
 (deftest outbox-delivery-retry-boundary-witness
   (doseq [[index input] (map-indexed vector retry-boundary-witness-inputs)]
     (check-case-with-progress!
      retry-scenario-sym assert-retry-case-outcome!
-     :boundary (inc index) input boundary-case-timeout-ms)))
+     :boundary (inc index) input boundary-case-timeout-ms))
+  (is (= (set stream-capacity-domain)
+         (set (map :stream-capacity retry-boundary-witness-inputs))))
+  (is (= (set pipe-capacity-domain)
+         (set (map :pipe-capacity retry-boundary-witness-inputs))))
+  (is (= (set poll-eintr-domain)
+         (set (map :poll-eintr-ordinal retry-boundary-witness-inputs)))))
 
 (deftest hegel-outbox-delivery-retry-holds-across-payload-capacities-and-eintr
-  (let [seen-stream-capacities (atom #{})
-        seen-pipe-capacities (atom #{})
-        seen-poll-ordinals (atom #{})
-        case-ordinal (atom 0)
+  (let [case-ordinal (atom 0)
         result
         (h/run-test!
          {:test-cases 15
           ;; Each case launches a fresh isolated Jolt worker so generation is
           ;; intentionally slower than Hegel's unit-test health threshold.
           :suppress-health-checks [:too-slow]
-          ;; Parent-only sampling verified that this fixed seed exercises
-          ;; every declared finite capacity and EINTR ordinal in 15 cases.
-          ;; The assertions below keep that coverage from silently drifting.
           :seed 3
           :database ""
           :report-multiple-failures? false
@@ -3073,9 +3082,6 @@
               retry-scenario-sym assert-retry-case-outcome!
               :generated (swap! case-ordinal inc) input
               retry-case-timeout-ms)
-             (swap! seen-stream-capacities conj (:stream-capacity input))
-             (swap! seen-pipe-capacities conj (:pipe-capacity input))
-             (swap! seen-poll-ordinals conj (:poll-eintr-ordinal input))
              nil)))]
     (is (true? (:passed? result))
         (pr-str {:status (:status result)
@@ -3088,15 +3094,9 @@
         (pr-str {:seed (:seed result)
                  :flaky? (:flaky? result)
                  :observed-failures (:observed-failures result)}))
-    (is (= (set stream-capacity-domain) @seen-stream-capacities)
-        (str "Hegel did not exercise the full stream-capacity domain: "
-             (pr-str @seen-stream-capacities)))
-    (is (= (set pipe-capacity-domain) @seen-pipe-capacities)
-        (str "Hegel did not exercise the full pipe-capacity domain: "
-             (pr-str @seen-pipe-capacities)))
-    (is (= (set poll-eintr-domain) @seen-poll-ordinals)
-        (str "Hegel did not exercise the full poll-EINTR domain: "
-             (pr-str @seen-poll-ordinals)))))
+    (is (= 15 (:valid-test-cases result)))
+    (is (= 0 (:invalid-test-cases result)))
+    (is (= 0 (:overrun-test-cases result)))))
 
 ;; ---- Cancel-before-ack lane (structural pre-ack cancellation) --------------
 
@@ -3461,42 +3461,50 @@
                    input
                    {:clean? clean?})))))
 
-;; The deterministic cancel-before-ack boundary witness: the empty payload and
-;; the [0 127 128 255] payload (embedded zero, 0x7f, 0x80, 0xff) at the fixed
-;; smoke capacities, the second with one captured first-poll EINTR beside the
-;; structural cancellation as the smoke-capacity mixed-fault control. Both run
-;; outside Hegel generation so the cancel-before-ack boundary semantics hold
-;; even if a future generator edit stops drawing them.
+;; Deterministic acceptance witnesses own the cancellation lane's finite-domain
+;; coverage. Hegel still varies and shrinks the same input shape independently.
 (def ^:private cancel-boundary-witness-inputs
   [{:payload []
     :stream-capacity 8
     :pipe-capacity 1
     :poll-eintr-ordinal nil}
    {:payload [0 127 128 255]
+    :stream-capacity 16
+    :pipe-capacity 2
+    :poll-eintr-ordinal 1}
+   {:payload [1]
+    :stream-capacity 32
+    :pipe-capacity 4
+    :poll-eintr-ordinal 2}
+   {:payload [2]
     :stream-capacity 8
     :pipe-capacity 1
-    :poll-eintr-ordinal 1}])
+    :poll-eintr-ordinal 4}
+   {:payload [3]
+    :stream-capacity 16
+    :pipe-capacity 2
+    :poll-eintr-ordinal 8}])
 
 (deftest outbox-delivery-cancel-boundary-witness
   (doseq [[index input] (map-indexed vector cancel-boundary-witness-inputs)]
     (check-case-with-progress!
      cancel-scenario-sym assert-cancel-case-outcome!
-     :boundary (inc index) input boundary-case-timeout-ms)))
+     :boundary (inc index) input boundary-case-timeout-ms))
+  (is (= (set stream-capacity-domain)
+         (set (map :stream-capacity cancel-boundary-witness-inputs))))
+  (is (= (set pipe-capacity-domain)
+         (set (map :pipe-capacity cancel-boundary-witness-inputs))))
+  (is (= (set poll-eintr-domain)
+         (set (map :poll-eintr-ordinal cancel-boundary-witness-inputs)))))
 
 (deftest hegel-outbox-delivery-cancel-holds-across-payload-capacities-and-eintr
-  (let [seen-stream-capacities (atom #{})
-        seen-pipe-capacities (atom #{})
-        seen-poll-ordinals (atom #{})
-        case-ordinal (atom 0)
+  (let [case-ordinal (atom 0)
         result
         (h/run-test!
          {:test-cases 15
           ;; Each case launches a fresh isolated Jolt worker so generation is
           ;; intentionally slower than Hegel's unit-test health threshold.
           :suppress-health-checks [:too-slow]
-          ;; Parent-only sampling verified that this fixed seed exercises every
-          ;; declared finite capacity and EINTR ordinal in 15 cases. The
-          ;; assertions below keep that coverage from silently drifting.
           :seed 3
           :database ""
           :report-multiple-failures? false
@@ -3508,9 +3516,6 @@
               cancel-scenario-sym assert-cancel-case-outcome!
               :generated (swap! case-ordinal inc) input
               case-timeout-ms)
-             (swap! seen-stream-capacities conj (:stream-capacity input))
-             (swap! seen-pipe-capacities conj (:pipe-capacity input))
-             (swap! seen-poll-ordinals conj (:poll-eintr-ordinal input))
              nil)))]
     (is (true? (:passed? result))
         (pr-str {:status (:status result)
@@ -3523,15 +3528,9 @@
         (pr-str {:seed (:seed result)
                  :flaky? (:flaky? result)
                  :observed-failures (:observed-failures result)}))
-    (is (= (set stream-capacity-domain) @seen-stream-capacities)
-        (str "Hegel did not exercise the full stream-capacity domain: "
-             (pr-str @seen-stream-capacities)))
-    (is (= (set pipe-capacity-domain) @seen-pipe-capacities)
-        (str "Hegel did not exercise the full pipe-capacity domain: "
-             (pr-str @seen-pipe-capacities)))
-    (is (= (set poll-eintr-domain) @seen-poll-ordinals)
-        (str "Hegel did not exercise the full poll-EINTR domain: "
-             (pr-str @seen-poll-ordinals)))))
+    (is (= 15 (:valid-test-cases result)))
+    (is (= 0 (:invalid-test-cases result)))
+    (is (= 0 (:overrun-test-cases result)))))
 
 ;; ---- One absolute deadline / cancellation terminal campaign --------------
 
