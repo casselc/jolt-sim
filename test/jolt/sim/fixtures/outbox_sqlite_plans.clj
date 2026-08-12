@@ -548,3 +548,46 @@
                  scans
                  (mark-delivered-statement-plans base)
                  scans))))
+
+(defn live-lifecycle-statement-plans
+  "Returns the exact SQLite transcript for the persistent live-lifecycle
+   witness. The ordinary lifecycle starts one store, exposes an initial
+   snapshot, submits one fresh command, exposes the stable pending boundary,
+   attempts one delivery, exposes the resulting boundary, and stops.
+
+   `ack-outcome` is either :accepted or :hostile. An accepted acknowledgement
+   authorizes the existing guarded six-statement mark plus its corroborating
+   reload. A hostile acknowledgement performs only the pre-attempt and
+   post-failure reloads; any attempted mark therefore fails exact FIFO plan
+   consumption. Snapshot and stop reloads remain explicit so inspection is
+   part of the exercised application lifecycle rather than simulator-side
+   evidence fabrication."
+  [command ack-outcome]
+  (when-not (and (map? command)
+                 (= #{:request-id :entity-id :payload}
+                    (set (keys command)))
+                 (contains? #{:accepted :hostile} ack-outcome))
+    (throw
+     (ex-info "invalid live lifecycle plan input"
+              {:type :jolt.sim.fixtures.outbox-sqlite-plans/invalid-live-input
+               :command command
+               :ack-outcome ack-outcome})))
+  (let [base (parity-statement-plans (:payload command))
+        schema (subvec base 0 4)
+        scans (state-scan-statement-plans)
+        delivery-plans
+        (if (= :accepted ack-outcome)
+          (concat scans
+                  (mark-delivered-statement-plans base)
+                  scans)
+          (concat scans scans))]
+    (vec
+     (concat schema
+             scans                    ; start!: initial load
+             scans                    ; initial snapshot!
+             (first-command-statement-plans command)
+             scans                    ; submit-command!: reconcile after HTTP
+             scans                    ; stable pending snapshot!
+             delivery-plans
+             scans                    ; resulting snapshot!
+             scans))))                ; stop!: retained final state

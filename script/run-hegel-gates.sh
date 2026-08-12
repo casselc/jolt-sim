@@ -39,7 +39,19 @@ if ! mkdir -p "$gate_root/logs"; then
 fi
 transcript="$gate_root/logs/hegel-gates.log"
 status_file="$gate_root/status.log"
-exec > >(tee -a "$transcript") 2>&1
+
+# Keep transcript mirroring inside each foreground operation. A script-wide
+# asynchronous process substitution can outlive the script body when any
+# descendant inherits its write end: every gate may pass, yet CI still waits
+# forever for the global tee to observe EOF. Synchronous helpers also make a
+# transcript write failure authoritative instead of silently losing evidence.
+log() {
+  printf '%s\n' "$*" | tee -a "$transcript"
+}
+
+log_err() {
+  printf '%s\n' "$*" | tee -a "$transcript" >&2
+}
 
 record_status() {
   printf '%s\t%s\t%s\n' "$1" "$2" "$3" >> "$status_file"
@@ -49,15 +61,29 @@ run_step() {
   local phase="$1"
   local name="$2"
   shift 2
+  local -a pipeline_status
+  local command_exit
+  local tee_exit
+  local exit_code
   record_status "$phase" "$name" start
-  echo "[$phase] $name"
-  if "$@"; then
+  log "[$phase] $name"
+  set +e
+  "$@" 2>&1 | tee -a "$transcript"
+  pipeline_status=("${PIPESTATUS[@]}")
+  set -e
+  command_exit="${pipeline_status[0]}"
+  tee_exit="${pipeline_status[1]}"
+  if [[ "$command_exit" -eq 0 && "$tee_exit" -eq 0 ]]; then
     record_status "$phase" "$name" pass
   else
-    local exit_code=$?
+    if [[ "$command_exit" -ne 0 ]]; then
+      exit_code="$command_exit"
+    else
+      exit_code="$tee_exit"
+    fi
     record_status "$phase" "$name" "fail:$exit_code"
-    echo "[$phase] $name failed with exit $exit_code" >&2
-    echo "retained gate root: $gate_root" >&2
+    log_err "[$phase] $name failed: command=$command_exit transcript=$tee_exit"
+    log_err "retained gate root: $gate_root"
     exit "$exit_code"
   fi
 }
@@ -71,7 +97,7 @@ require_absolute_path() {
   fi
 }
 
-echo "retained gate root: $gate_root"
+log "retained gate root: $gate_root"
 
 # Dependency source state is intentionally separate from the fresh process
 # state. Capture the caller's complete Git cache before replacing HOME. In CI
@@ -151,6 +177,10 @@ for gate in "$@"; do
       parent_alias=outbox-delivery-hegel-test
       worker_alias=outbox-delivery-explore-worker
       ;;
+    outbox-live-lifecycle-hegel-test)
+      parent_alias=outbox-delivery-hegel-test
+      worker_alias=outbox-delivery-explore-worker
+      ;;
     outbox-http-webhook-hegel-test)
       worker_alias=outbox-http-webhook-explore-worker
       ;;
@@ -168,9 +198,9 @@ for gate in "$@"; do
       # worker service and start no child process or native application stack.
       ;;
     *)
-      echo "unknown Hegel gate: $gate" >&2
-      echo "allowed: hegel-explore-test http-sqlite-hegel-test tcp-bencode-hegel-test outbox-delivery-hegel-test outbox-delivery-cancel-hegel-test outbox-http-webhook-hegel-test maelstrom-echo-hegel-test maelstrom-broadcast-hegel-test flow-effect-stateful-hegel-test" >&2
-      echo "retained gate root: $gate_root" >&2
+      log_err "unknown Hegel gate: $gate"
+      log_err "allowed: hegel-explore-test http-sqlite-hegel-test tcp-bencode-hegel-test outbox-delivery-hegel-test outbox-delivery-cancel-hegel-test outbox-live-lifecycle-hegel-test outbox-http-webhook-hegel-test maelstrom-echo-hegel-test maelstrom-broadcast-hegel-test flow-effect-stateful-hegel-test"
+      log_err "retained gate root: $gate_root"
       exit 2
       ;;
   esac
@@ -182,7 +212,7 @@ for gate in "$@"; do
   fi
 done
 
-echo "Git dependency cache: $JOLT_GITLIBS"
+log "Git dependency cache: $JOLT_GITLIBS"
 cd "$project_dir"
 
 # Resolve every parent and nested-worker dependency before Hegel starts. A
@@ -200,11 +230,14 @@ for gate in "${gates[@]}"; do
   if [[ "$gate" == outbox-delivery-cancel-hegel-test ]]; then
     run_step hegel-gate "$gate" \
       "$sim_bin" -M:outbox-delivery-hegel-test --cancel-only
+  elif [[ "$gate" == outbox-live-lifecycle-hegel-test ]]; then
+    run_step hegel-gate "$gate" \
+      "$sim_bin" -M:outbox-delivery-hegel-test --live-lifecycle-only
   else
     run_step hegel-gate "$gate" \
       "$sim_bin" "-M:$gate"
   fi
 done
 
-echo "all requested Hegel gates passed"
-echo "retained gate root: $gate_root"
+log "all requested Hegel gates passed"
+log "retained gate root: $gate_root"

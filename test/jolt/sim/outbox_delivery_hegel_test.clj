@@ -118,6 +118,9 @@
 (def ^:private json-replay-conflict-scenario-sym
   'jolt.sim.fixtures.outbox-json-delivery-scenarios/exercise-replay-or-conflict)
 
+(def ^:private live-lifecycle-scenario-sym
+  'jolt.sim.fixtures.outbox-json-delivery-live-scenarios/exercise-live-lifecycle)
+
 (def ^:private http-webhook-scenario-sym
   'jolt.sim.fixtures.outbox-http-webhook-scenarios/exercise)
 
@@ -128,6 +131,8 @@
 (def ^:private terminal-monitor-id :outbox/terminal-boundary-invariants)
 (def ^:private json-replay-conflict-monitor-id
   :outbox/json-replay-conflict-invariants)
+(def ^:private live-lifecycle-monitor-id
+  :outbox/live-lifecycle-invariants)
 (def ^:private http-webhook-monitor-id
   :outbox/http-webhook-invariants)
 
@@ -373,6 +378,19 @@
                :min-size 1 :max-size 12})
     (g/string {:alphabet "abcdefghijklmnopqrstuvwxyz0123456789-_"
                :min-size 1 :max-size 12}))))
+
+(defn- live-lifecycle-input-generator
+  "One shrinkable input over exact accepted/hostile acknowledgement outcomes
+   and the complete bounded payload-octet domain. The application operation
+   order is fixed in this lane; generated operation sequences follow only
+   after this persistent lifecycle transcript is stable."
+  []
+  (g/fmap
+   (fn [[ack-outcome payload]]
+     {:payload payload :ack-outcome ack-outcome})
+   (g/tuple
+    (g/sampled-from [:accepted :hostile])
+    (g/vector {:max-size max-payload-octets} (g/octet)))))
 
 (defn- http-webhook-input-generator
   "One shrinkable input over the complete closed response-mode domain and
@@ -1360,6 +1378,8 @@
     (= scenario terminal-scenario-sym) terminal-monitor-id
     (= scenario json-replay-conflict-scenario-sym)
     json-replay-conflict-monitor-id
+    (= scenario live-lifecycle-scenario-sym)
+    live-lifecycle-monitor-id
     (= scenario http-webhook-scenario-sym)
     http-webhook-monitor-id
     :else
@@ -1405,6 +1425,7 @@
          (= scenario cancel-scenario-sym) "outbox-cancel-"
          (= scenario terminal-scenario-sym) "outbox-terminal-"
          (= scenario json-replay-conflict-scenario-sym) "outbox-json-idempotency-"
+         (= scenario live-lifecycle-scenario-sym) "outbox-live-lifecycle-"
          (= scenario http-webhook-scenario-sym) "outbox-http-webhook-"
          :else "outbox-delivery-")
        (name lane) "-" ordinal "-"))
@@ -1543,6 +1564,8 @@
                 (and (= scenario terminal-scenario-sym)
                      (= :boundary lane))
                 (and (= scenario json-replay-conflict-scenario-sym)
+                     (= :boundary lane))
+                (and (= scenario live-lifecycle-scenario-sym)
                      (= :boundary lane))
                 (and (= scenario http-webhook-scenario-sym)
                      (= :boundary lane)))
@@ -2114,6 +2137,134 @@
     (is (false? (:flaky? result))
         (pr-str (select-keys result
                              [:seed :flaky? :observed-failures])))))
+
+;; ---- Persistent live lifecycle under hermetic worlds --------------------
+
+(defn- assert-live-lifecycle-case-outcome!
+  [input outcome]
+  (let [completed (require-completed-carrying-input! outcome input)
+        evidence (:result completed)
+        application (:application evidence)
+        expected (expected-for (:payload input))
+        accepted? (= :accepted (:ack-outcome input))
+        expected-final (if accepted?
+                         (:store-state expected)
+                         (:pending-state expected))
+        expected-plan-count (if accepted? 42 36)]
+    (when-not (exact-map-keys?
+               evidence
+               #{:application :input :routes :sqlite :capacity :clean?})
+      (violation "jolt.sim.outbox-delivery-hegel-test/live-evidence-shape"
+                 input {:evidence evidence}))
+    (when-not (= input (:input evidence))
+      (violation "jolt.sim.outbox-delivery-hegel-test/live-input"
+                 input {:actual (:input evidence)}))
+    (when-not (and (= :open (get-in application [:initial :status]))
+                   (= :empty (get-in application [:initial :phase]))
+                   (= [] (get-in application
+                                 [:initial :store-state :outbox])))
+      (violation "jolt.sim.outbox-delivery-hegel-test/live-initial"
+                 input {:initial (:initial application)}))
+    (when-not (= 201 (get-in application [:submission :status]))
+      (violation "jolt.sim.outbox-delivery-hegel-test/live-submit"
+                 input {:submission (:submission application)}))
+    (when-not (and (= (:pending-state expected)
+                      (get-in application [:pending :store-state]))
+                   (= :pending (get-in application [:pending :phase]))
+                   (= 0 (get-in application
+                                [:pending :receiver-requests :count])))
+      (violation "jolt.sim.outbox-delivery-hegel-test/live-pending-boundary"
+                 input {:pending (:pending application)}))
+    (when-not (and (= expected-final
+                     (get-in application [:resulting :store-state]))
+                   (= (if accepted? :delivered :pending)
+                      (get-in application [:resulting :phase]))
+                   (= 1 (get-in application
+                                [:resulting :receiver-requests :count])))
+      (violation "jolt.sim.outbox-delivery-hegel-test/live-final-state"
+                 input {:resulting (:resulting application)
+                        :expected expected-final}))
+    (if accepted?
+      (when-not (and (= :delivered
+                        (get-in application [:delivery :value :status]))
+                     (= (:ack expected)
+                        (get-in application [:delivery :value :reply])))
+        (violation "jolt.sim.outbox-delivery-hegel-test/live-accepted-ack"
+                   input {:delivery (:delivery application)}))
+      (when-not (= :ack-mismatch
+                   (get-in application [:delivery :error :reason]))
+        (violation "jolt.sim.outbox-delivery-hegel-test/live-hostile-ack"
+                   input {:delivery (:delivery application)})))
+    (when-not (and (= [true false] (:stop-results application))
+                   (= :stopped (get-in application [:stopped :status]))
+                   (= expected-final
+                      (get-in application [:stopped :store-state])))
+      (violation "jolt.sim.outbox-delivery-hegel-test/live-stop"
+                 input {:application application}))
+    (when-not (= {:plan-index expected-plan-count
+                  :plan-count expected-plan-count
+                  :open-dbs 0
+                  :active-stmts 0}
+                 (:sqlite evidence))
+      (violation "jolt.sim.outbox-delivery-hegel-test/live-sqlite-plan"
+                 input {:sqlite (:sqlite evidence)}))
+    (let [routes (:routes evidence)]
+      (when-not (and (positive-integer? (:count routes))
+                     (true? (:all-handled? routes))
+                     (every? (set (:foreign-symbols routes))
+                             required-foreign-symbols))
+        (violation "jolt.sim.outbox-delivery-hegel-test/live-routes"
+                   input {:routes routes})))
+    (when-not (= 8 (get-in evidence [:capacity :stream :stream-capacity]))
+      (violation "jolt.sim.outbox-delivery-hegel-test/live-capacity"
+                 input {:capacity (:capacity evidence)}))
+    (when-not (= {:memory true :sqlite true :posix true} (:clean? evidence))
+      (violation "jolt.sim.outbox-delivery-hegel-test/live-cleanup"
+                 input {:clean? (:clean? evidence)}))))
+
+(def ^:private live-lifecycle-boundary-inputs
+  [{:payload [] :ack-outcome :accepted}
+   {:payload [0 127 128 255] :ack-outcome :hostile}])
+
+(deftest outbox-live-lifecycle-boundary-witness
+  (doseq [[index input]
+          (map-indexed vector live-lifecycle-boundary-inputs)]
+    (check-case-with-progress!
+     live-lifecycle-scenario-sym
+     assert-live-lifecycle-case-outcome!
+     :boundary (inc index) input boundary-case-timeout-ms)))
+
+(deftest hegel-outbox-live-lifecycle-preserves-acknowledgement-boundary
+  (let [seen-ack-outcomes (atom #{})
+        case-ordinal (atom 0)
+        result
+        (h/run-test!
+         {:test-cases 6
+          :suppress-health-checks [:too-slow]
+          :seed 13
+          :database ""
+          :report-multiple-failures? false
+          :verbosity :quiet}
+         (fn [_]
+           (let [input
+                 (h/draw! (live-lifecycle-input-generator)
+                          "live-lifecycle-input")]
+             (check-case-with-progress!
+              live-lifecycle-scenario-sym
+              assert-live-lifecycle-case-outcome!
+              :generated (swap! case-ordinal inc) input case-timeout-ms)
+             (swap! seen-ack-outcomes conj (:ack-outcome input))
+             nil)))]
+    (is (true? (:passed? result))
+        (pr-str (select-keys result
+                             [:status :seed :n-failures :flaky? :failures
+                              :final])))
+    (is (false? (:flaky? result))
+        (pr-str (select-keys result
+                             [:seed :flaky? :observed-failures])))
+    (is (= #{:accepted :hostile} @seen-ack-outcomes)
+        (str "Hegel did not exercise both acknowledgement outcomes: "
+             (pr-str @seen-ack-outcomes)))))
 
 ;; ---- Ordinary JSON HTTP webhook acknowledgement lane --------------------
 
@@ -3644,6 +3795,8 @@
    #'hegel-outbox-delivery-holds-across-payload-capacities-eintr-and-plans
    #'outbox-json-replay-conflict-boundary-witness
    #'hegel-outbox-json-replay-conflict-preserves-idempotency
+   #'outbox-live-lifecycle-boundary-witness
+   #'hegel-outbox-live-lifecycle-preserves-acknowledgement-boundary
    #'outbox-delivery-retry-boundary-witness
    #'hegel-outbox-delivery-retry-holds-across-payload-capacities-and-eintr
    #'outbox-delivery-cancel-boundary-witness
@@ -3662,6 +3815,10 @@
   [#'outbox-delivery-cancel-boundary-witness
    #'hegel-outbox-delivery-cancel-holds-across-payload-capacities-and-eintr
    #'cancellation-claim-with-marking-records-monitor-violation])
+
+(def ^:private live-lifecycle-test-vars
+  [#'outbox-live-lifecycle-boundary-witness
+   #'hegel-outbox-live-lifecycle-preserves-acknowledgement-boundary])
 
 (defn- counter-snapshot []
   {:test (:test @test/counters)
@@ -3687,6 +3844,7 @@
                [] :all
                ["--http-webhook-only"] :http-webhook
                ["--cancel-only"] :cancel
+               ["--live-lifecycle-only"] :live-lifecycle
                nil)
         _ (when-not mode
             (throw
@@ -3698,6 +3856,7 @@
         selected-test-vars (case mode
                              :http-webhook http-webhook-test-vars
                              :cancel cancel-test-vars
+                             :live-lifecycle live-lifecycle-test-vars
                              serial-test-vars)
         worker-alias (if (= :http-webhook mode)
                        "outbox-http-webhook-explore-worker"
