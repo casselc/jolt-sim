@@ -591,7 +591,7 @@ and coverage-guided sampling remain later work.
 
 The `jolt.sim.hegel` namespace is an optional adapter. Activate a
 `jolt-hegel` dependency before requiring it; the repository's
-`:hegel-explore-test` alias pins the exact public v0.2.0 candidate and demonstrates the
+`:hegel-explore-test` alias pins the exact public v0.2.0 release and demonstrates the
 setup. A property can let Hegel select one ordered plan, run it in the
 fresh-process supervisor, and shrink a failure:
 

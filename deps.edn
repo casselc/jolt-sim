@@ -98,7 +98,7 @@
    :extra-deps
    {io.github.chucklehead-dev/jolt-hegel
     {:git/url "https://github.com/chucklehead-dev/jolt-hegel.git"
-     :git/sha "c14f87220eba6d899f1a7beac0c2861147e00151"}}
+     :git/sha "297283e49fc0e67ae030dc4ca73d972d551b4e72"}}
    :main-opts ["-m" "jolt.sim.flow-effect-stateful-hegel-test-main"]}
 
   ;; Focused persistent evaluation-session gate. This uses the socket-free
@@ -235,13 +235,13 @@
 
   ;; Optional Hegel generator/shrinker adapter and its fresh-process
   ;; exploration witness. Keep the released dependency out of the ordinary
-  ;; compatibility suite and pin the exact public v0.2.0 candidate commit.
+  ;; compatibility suite and pin the exact public v0.2.0 release commit.
   :hegel-explore-test
   {:extra-paths ["test"]
    :extra-deps
    {io.github.chucklehead-dev/jolt-hegel
     {:git/url "https://github.com/chucklehead-dev/jolt-hegel.git"
-     :git/sha "c14f87220eba6d899f1a7beac0c2861147e00151"}}
+     :git/sha "297283e49fc0e67ae030dc4ca73d972d551b4e72"}}
    :main-opts ["-m" "jolt.sim.hegel-explore-test"]}
 
   ;; In-process Hegel property lane over the unchanged Maelstrom Echo
@@ -251,13 +251,13 @@
   ;; THIS process. There is no nested worker alias to preflight; run through
   ;; script/run-hegel-gates.sh so dependency and Hegel native preflight
   ;; still happen before generation. Pinned to the same exact public v0.2.0
-  ;; candidate commit as :hegel-explore-test.
+  ;; release commit as :hegel-explore-test.
   :maelstrom-echo-hegel-test
   {:extra-paths ["test"]
    :extra-deps
    {io.github.chucklehead-dev/jolt-hegel
     {:git/url "https://github.com/chucklehead-dev/jolt-hegel.git"
-     :git/sha "c14f87220eba6d899f1a7beac0c2861147e00151"}}
+     :git/sha "297283e49fc0e67ae030dc4ca73d972d551b4e72"}}
    :main-opts ["-m" "jolt.maelstrom.echo-hegel-test"]}
 
   ;; In-process paired-regime property lane over the unchanged three-node
@@ -265,13 +265,13 @@
   ;; healthy line topology and the fixed n2--n3 partition/heal input, so the
   ;; fault cannot be omitted or shrunk away. There is no nested worker alias;
   ;; use script/run-hegel-gates.sh for dependency/native preflight and retained
-  ;; gate evidence. Pinned to the same exact public v0.2.0 candidate commit.
+  ;; gate evidence. Pinned to the same exact public v0.2.0 release commit.
   :maelstrom-broadcast-hegel-test
   {:extra-paths ["test"]
    :extra-deps
    {io.github.chucklehead-dev/jolt-hegel
     {:git/url "https://github.com/chucklehead-dev/jolt-hegel.git"
-     :git/sha "c14f87220eba6d899f1a7beac0c2861147e00151"}}
+     :git/sha "297283e49fc0e67ae030dc4ca73d972d551b4e72"}}
    :main-opts ["-m" "jolt.maelstrom.broadcast-hegel-test"]}
 
   ;; Hegel-owned, shrinkable capacities and poll-fault ordinals drive the
@@ -281,7 +281,7 @@
    :extra-deps
    {io.github.chucklehead-dev/jolt-hegel
     {:git/url "https://github.com/chucklehead-dev/jolt-hegel.git"
-     :git/sha "c14f87220eba6d899f1a7beac0c2861147e00151"}}
+     :git/sha "297283e49fc0e67ae030dc4ca73d972d551b4e72"}}
    :main-opts ["-m" "jolt.sim.http-sqlite-hegel-test"]}
 
   ;; Child side of :http-sqlite-hegel-test. Loading db from source keeps the
@@ -376,7 +376,7 @@
    :extra-deps
    {io.github.chucklehead-dev/jolt-hegel
     {:git/url "https://github.com/chucklehead-dev/jolt-hegel.git"
-     :git/sha "c14f87220eba6d899f1a7beac0c2861147e00151"}}
+     :git/sha "297283e49fc0e67ae030dc4ca73d972d551b4e72"}}
    :main-opts ["-m" "jolt.sim.tcp-bencode-hegel-test"]}
 
   ;; Unchanged public jolt.net application code over the deterministic POSIX
@@ -917,7 +917,7 @@
    :extra-deps
    {io.github.chucklehead-dev/jolt-hegel
     {:git/url "https://github.com/chucklehead-dev/jolt-hegel.git"
-     :git/sha "c14f87220eba6d899f1a7beac0c2861147e00151"}}
+     :git/sha "297283e49fc0e67ae030dc4ca73d972d551b4e72"}}
    :main-opts ["-m" "jolt.sim.outbox-delivery-hegel-test"
                "--http-webhook-only"]}
 
@@ -931,7 +931,7 @@
    :extra-deps
    {io.github.chucklehead-dev/jolt-hegel
     {:git/url "https://github.com/chucklehead-dev/jolt-hegel.git"
-     :git/sha "c14f87220eba6d899f1a7beac0c2861147e00151"}}
+     :git/sha "297283e49fc0e67ae030dc4ca73d972d551b4e72"}}
    :main-opts ["-m" "jolt.sim.outbox-delivery-hegel-test"]}}
 
  :tasks
