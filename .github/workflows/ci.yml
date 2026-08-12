@@ -19,7 +19,7 @@ env:
   # evaluator, fiber, timer, and image hooks required by the gates below.
   # Do not replace this with a release binary: the simulation ABI is an exact
   # source/seed contract and the public release does not provide these hooks.
-  JOLT_CORE_SHA: 1701c60e717e4e61838c64c1670e9a93fbb2e9e4
+  JOLT_CORE_SHA: f6e35716d58c948e0633e839a2187ba365aa27c5
   CHEZ_RELEASE_TAG: chez-ci-10.4.1.1
   MAELSTROM_RELEASE: v0.2.4
   MAELSTROM_ARCHIVE_SHA256: 301ec71d6b12af0d765edb413f5cf5aa1046b5609bd4e31376a0b549548e5799
