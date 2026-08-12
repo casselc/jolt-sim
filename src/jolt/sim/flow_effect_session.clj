@@ -25,7 +25,8 @@
 (def ^:private reconcile-step-operation (Object.))
 (def ^:private close-operation (Object.))
 
-(def ^:private worker-keys #{:command! :reconcile! :snapshot})
+(def ^:private worker-keys
+  #{:command! :reconcile! :reconcile-sequence! :snapshot})
 
 (defn retained-worker-service
   "Adapts one caller-owned retained-process handle to the closed service seam
@@ -34,6 +35,7 @@
   [handle]
   {:command! #(retained/command! handle %)
    :reconcile! #(retained/reconcile! handle)
+   :reconcile-sequence! #(retained/reconcile-sequence! handle %)
    :snapshot #(retained/snapshot handle)})
 
 (defn- invalid! [message data]
@@ -195,11 +197,18 @@
                                  (update :records replace-record
                                          (:id authorized) failed)))))))
               (let [coordinate (worker-coordinate worker)
-                    uncertain? (and (integer? (:uncertain-sequence coordinate))
-                                    (not (neg? (:uncertain-sequence coordinate))))
-                    failed (error-record authorized
-                                         (if uncertain? :uncertain :failed)
-                                         (:error outcome) coordinate)]
+                    data (ex-data (:error outcome))
+                    sequence (:sequence data)
+                    uncertain? (and (true? (:published? data))
+                                    (integer? sequence)
+                                    (not (neg? sequence))
+                                    (= sequence (:uncertain-sequence data)))
+                    failed (cond->
+                            (error-record authorized
+                                          (if uncertain? :uncertain :failed)
+                                          (:error outcome) coordinate)
+                             uncertain?
+                             (assoc :publication-sequence sequence))]
                 (swap! state
                        (fn [current]
                          (-> current
@@ -340,11 +349,17 @@
     (when-not (and (= :uncertain status) pending)
       (throw (ex-info "Flow effect Session has no uncertain publication"
                       {:type ::rejected :reason :nothing-to-reconcile})))
-    (let [outcome (try
-                    {:receipt ((:reconcile! worker))}
+    (let [sequence (:publication-sequence pending)
+          outcome (try
+                    {:receipt ((:reconcile-sequence! worker) sequence)}
                     (catch :default error {:error error}))]
       (if-let [receipt (:receipt outcome)]
         (try
+          (when-not (= sequence (:sequence receipt))
+            (throw (ex-info "Worker returned the wrong reconciled sequence"
+                            {:type ::invalid-worker-receipt
+                             :expected-sequence sequence
+                             :actual-sequence (:sequence receipt)})))
           (settle-reconciled! state receipt)
           (catch :default error
             (let [failed (error-record pending :failed error
@@ -359,7 +374,7 @@
               still-uncertain?
               (and (integer? (:uncertain-sequence coordinate))
                    (= (:uncertain-sequence coordinate)
-                      (get-in pending [:worker :uncertain-sequence])))]
+                      (:publication-sequence pending)))]
           (if still-uncertain?
             (let [uncertain (error-record pending :uncertain
                                           (:error outcome) coordinate)]
@@ -385,8 +400,7 @@
       (assoc (select-keys (summary* @state) [:status :effects :worker])
              :target {:id (:id pending)
                       :intent-id (:intent-id pending)
-                      :sequence (get-in pending
-                                        [:worker :uncertain-sequence])}))))
+                      :sequence (:publication-sequence pending)}))))
 
 (defn reconcile!
   "Reconciles only the exact retained sequence already marked uncertain. It

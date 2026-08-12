@@ -27,7 +27,8 @@
                       :next-sequence 0
                       :uncertain-sequence nil
                       :attempts []
-                      :reconciliations 0})
+                      :reconciliations 0
+                      :receipts {}})
          apply-outcome!
          (fn [source outcome]
            (cond
@@ -37,6 +38,7 @@
                       :status :ready
                       :next-sequence (inc (:sequence receipt))
                       :uncertain-sequence nil)
+               (swap! state assoc-in [:receipts (:sequence receipt)] receipt)
                receipt)
 
              (:uncertain outcome)
@@ -47,7 +49,9 @@
                                {:type ::transport
                                 :reason (:uncertain outcome)
                                 :source source
-                                :sequence sequence})))
+                                :sequence sequence
+                                :uncertain-sequence sequence
+                                :published? true})))
 
              :else
              (do
@@ -61,16 +65,31 @@
       :service
       {:command!
        (fn [command]
-         (swap! state update :attempts conj command)
-         (let [outcome (first @commands)]
-           (swap! commands #(vec (rest %)))
-           (apply-outcome! :command outcome)))
+         (if (= :uncertain (:status @state))
+           (throw (ex-info "another surface owns uncertainty"
+                           {:type ::transport
+                            :reason :uncertain-command
+                            :sequence (:uncertain-sequence @state)
+                            :published? false}))
+           (do
+             (swap! state update :attempts conj command)
+             (let [outcome (first @commands)]
+               (swap! commands #(vec (rest %)))
+               (apply-outcome! :command outcome)))))
        :reconcile!
        (fn []
          (swap! state update :reconciliations inc)
          (let [outcome (first @reconciliations)]
            (swap! reconciliations #(vec (rest %)))
            (apply-outcome! :reconcile outcome)))
+       :reconcile-sequence!
+       (fn [sequence]
+         (swap! state update :reconciliations inc)
+         (if-let [receipt (get-in @state [:receipts sequence])]
+           receipt
+           (let [outcome (first @reconciliations)]
+             (swap! reconciliations #(vec (rest %)))
+             (apply-outcome! :reconcile outcome))))
        :snapshot (fn [] @state)}})))
 
 (defn- attach [worker intents]
@@ -176,6 +195,103 @@
                      (try
                        (effect-session/step! bridge branch)
                        (catch :default error error))))))))
+
+(deftest targeted-reconciliation-adopts-a-receipt-settled-by-another-surface
+  (let [command {:op :submit :command {:request-id "req-shared-worker"}}
+        worker (scripted-worker [{:uncertain :receipt-deadline}]
+                                [(completed 0 {:http-status 201})])
+        bridge (attach worker [(intent 0 command)])
+        branch (get-in (effect-session/branches bridge) [0 :branch])]
+    (is (= :uncertain
+           (get-in (effect-session/step! bridge branch)
+                   [:delivery :status])))
+    ;; Model the raw retained panel reconciling the shared worker first.
+    (is (= {:status :completed :sequence 0 :value {:http-status 201}}
+           ((get-in worker [:service :reconcile!]))))
+    (is (= :ready (:status @(:state worker))))
+    ;; The owning bridge targets sequence 0 and adopts the immutable receipt;
+    ;; it must not turn the already-committed effect into a false failure.
+    (let [reconciled (effect-session/reconcile! bridge)]
+      (is (= :ready (:status reconciled)))
+      (is (= :settled (get-in reconciled [:effects :records 0 :state])))
+      (is (= :completed (get-in reconciled [:effects :records 0 :status])))
+      (is (= [command] (:attempts @(:state worker)))))))
+
+(deftest foreign-uncertainty-is-never-adopted-as-this-bridge-publication
+  (let [command {:op :submit :command {:request-id "req-foreign"}}
+        worker (scripted-worker [(completed 1 {:wrong :receipt})])
+        _ (swap! (:state worker) assoc
+                 :status :uncertain :uncertain-sequence 0)
+        bridge (attach worker [(intent 0 command)])
+        branch (get-in (effect-session/branches bridge) [0 :branch])
+        result (effect-session/step! bridge branch)]
+    (is (true? (:committed? result)))
+    (is (= :failed (get-in result [:delivery :status])))
+    (is (nil? (get-in result [:delivery :effects :pending])))
+    (is (= :failed
+           (get-in result [:delivery :effects :records 0 :state])))
+    (is (= [] (:attempts @(:state worker))))
+    (is (= 0 (:uncertain-sequence @(:state worker))))))
+
+(deftest atomic-publication-evidence-survives-a-concurrent-raw-reconcile
+  (let [command {:op :submit :command {:request-id "req-raced"}}
+        calls (atom [])
+        receipt {:status :completed :sequence 0 :value {:http-status 201}}
+        worker {:command!
+                (fn [value]
+                  (swap! calls conj [:command value])
+                  ;; Model another surface settling N after this command's
+                  ;; response was lost but before the bridge reads snapshot.
+                  (throw (ex-info "published response was lost"
+                                  {:type ::transport
+                                   :reason :receipt-deadline
+                                   :published? true
+                                   :sequence 0
+                                   :uncertain-sequence 0})))
+                :reconcile! (fn [] receipt)
+                :reconcile-sequence!
+                (fn [sequence]
+                  (swap! calls conj [:reconcile sequence])
+                  receipt)
+                :snapshot (fn [] {:status :ready
+                                  :next-sequence 1
+                                  :uncertain-sequence nil})}
+        bridge (effect-session/attach!
+                {:sim (intent-sim [(intent 0 command)])
+                 :worker worker
+                 :effect-kind :example.outbox/command})
+        branch (get-in (effect-session/branches bridge) [0 :branch])
+        stepped (effect-session/step! bridge branch)]
+    (is (= :uncertain (get-in stepped [:delivery :status])))
+    (is (= 0 (get-in stepped
+                     [:delivery :effects :pending :publication-sequence])))
+    (let [result (effect-session/reconcile! bridge)]
+      (is (= :ready (:status result)))
+      (is (= :completed (get-in result [:effects :records 0 :status])))
+      (is (= [[:command command] [:reconcile 0]] @calls)))))
+
+(deftest historical-adoption-does-not-claim-a-newer-foreign-uncertainty
+  (let [commands [{:op :first} {:op :second}]
+        worker (scripted-worker [{:uncertain :receipt-deadline}
+                                 (completed 1 {:wrong :second})]
+                                [(completed 0 {:ok :first})])
+        bridge (attach worker [(intent 0 (first commands))
+                               (intent 1 (second commands))])
+        branch (get-in (effect-session/branches bridge) [0 :branch])]
+    (is (= :uncertain
+           (get-in (effect-session/step! bridge branch)
+                   [:delivery :status])))
+    ;; A foreign surface settles sequence 0, then itself publishes sequence 1
+    ;; and loses that response before this bridge adopts its old receipt.
+    (is (= :completed (:status ((get-in worker [:service :reconcile!])))))
+    (swap! (:state worker) assoc :status :uncertain :uncertain-sequence 1)
+    (let [result (effect-session/reconcile! bridge)]
+      (is (= :failed (:status result)))
+      (is (= :settled (get-in result [:effects :records 0 :state])))
+      (is (= :failed (get-in result [:effects :records 1 :state])))
+      (is (nil? (get-in result [:effects :pending])))
+      (is (= [(first commands)] (:attempts @(:state worker))))
+      (is (= 1 (:uncertain-sequence @(:state worker)))))))
 
 (deftest multiple-intents-publish-in-deterministic-order
   (let [commands [{:op :first} {:op :second}]

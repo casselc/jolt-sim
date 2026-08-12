@@ -38,6 +38,7 @@
             [jolt.http.server :as http]
             [jolt.sim.activity-view :as activity-view]
             [jolt.sim.case-outcome :as case-outcome]
+            [jolt.sim.command-cell-view :as command-cell-view]
             [jolt.sim.eval-session :as eval-session]
             [jolt.sim.flow-effect-view :as flow-effect-view]
             [jolt.sim.maelstrom.official-run :as official-run]
@@ -71,6 +72,8 @@
 (def ^:private invalid-retained-command ::invalid-retained-command)
 (def ^:private invalid-retained-frame ::invalid-retained-frame)
 (def ^:private invalid-retained-result ::invalid-retained-result)
+(def ^:private invalid-command-cell-command ::invalid-command-cell-command)
+(def ^:private invalid-command-cell-result ::invalid-command-cell-result)
 
 (def ^:private config-keys
   #{:port :capability-token :max-document-bytes
@@ -98,7 +101,10 @@
     :reconcile-session-effect! :reconcile-session-step :close-session!
     :read-retained-frame :command-retained! :reconcile-retained!
     :terminate-retained! :read-workbench-frame
-    :set-workbench-item-kind!})
+    :set-workbench-item-kind!
+    :read-command-cell-frame :read-command-cell-catalog
+    :prepare-command-cell! :step-command-cell!
+    :reconcile-command-cell! :close-command-cell!})
 
 (def ^:private flow-effect-service-keys
   #{:read-session-frame :step-session-frame! :reconcile-session-effect!
@@ -110,6 +116,11 @@
 
 (def ^:private workbench-service-keys
   #{:read-workbench-frame :set-workbench-item-kind!})
+
+(def ^:private command-cell-service-keys
+  #{:read-command-cell-frame :read-command-cell-catalog
+    :prepare-command-cell! :step-command-cell!
+    :reconcile-command-cell! :close-command-cell!})
 
 (def ^:private default-max-document-bytes (* 1024 1024))
 (def ^:private maximum-max-document-bytes (* 16 1024 1024))
@@ -128,6 +139,11 @@
 (def ^:private retained-command-body-limit 65536)
 (def ^:private retained-control-body-limit 4096)
 (def ^:private workbench-command-body-limit 4096)
+(def ^:private command-cell-command-body-limit 65536)
+(def ^:private maximum-command-cell-definite-ack-bytes 512)
+(def ^:private maximum-command-cell-wire-entries 256)
+(def ^:private maximum-command-cell-wire-text 65536)
+(def ^:private maximum-command-cell-coordinate-text 128)
 (def ^:private maximum-run-regimes 32)
 (def ^:private maximum-run-regime-label-length 128)
 (def ^:private maximum-run-regime-summary-length 512)
@@ -2274,6 +2290,621 @@
             :else (throw error))))
       (finally (reset! workbench-active? false)))))
 
+;; ---- generic CommandCellSession HTTP adapter ------------------------------
+
+(def ^:private command-cell-prepare-canonical-keys
+  #{"version" "evidenceStreamId" "revision" "cellHandle"
+    "inputCanonicalEdn"})
+(def ^:private command-cell-prepare-edn-keys
+  #{"version" "evidenceStreamId" "revision" "cellHandle" "inputEdn"})
+(def ^:private command-cell-step-keys
+  #{"version" "evidenceStreamId" "revision" "branchEdn"})
+(def ^:private command-cell-control-keys #{"version" "evidenceStreamId"})
+(def ^:private end-of-command-cell-edn (Object.))
+
+(defn- command-cell-error-response [status reason]
+  (update
+   (json-response status
+                  {"version" 1 "outcome" "error"
+                   "committed" false "error" (name reason)})
+   :headers assoc "Connection" "close"))
+
+(defn- command-cell-json! [request expected-keysets]
+  (let [bytes (bounded-body-bytes request command-cell-command-body-limit)
+        seen (atom #{})]
+    (try
+      (let [value
+            (json/read-str
+             (trim-json-whitespace (String. bytes "UTF-8"))
+             :extra-data-fn json/on-extra-throw
+             :value-fn
+             (fn [key entry]
+               (when (contains? @seen key)
+                 (throw
+                  (ex-info "command-cell request repeats an object key"
+                           {:type invalid-command-cell-command
+                            :reason :duplicate-key})))
+               (swap! seen conj key)
+               entry))]
+        (when-not (some #(exact-keyset? value %) expected-keysets)
+          (throw
+           (ex-info "command-cell request has unexpected keys"
+                    {:type invalid-command-cell-command
+                     :reason :unexpected-keys})))
+        (when-not (= 1 (get value "version"))
+          (throw
+           (ex-info "command-cell request version is unsupported"
+                    {:type invalid-command-cell-command
+                     :reason :unsupported-version})))
+        value)
+      (catch :default error
+        (if (= invalid-command-cell-command (:type (ex-data error)))
+          (throw error)
+          (throw
+           (ex-info "command-cell request is malformed JSON"
+                    {:type invalid-command-cell-command
+                     :reason :malformed-json})))))))
+
+(defn- command-cell-long! [text]
+  (when-not (and (canonical-unsigned-decimal? text)
+                 (<= (count text) maximum-session-cursor-digits))
+    (throw
+     (ex-info "command-cell revision is not a canonical unsigned decimal"
+              {:type invalid-command-cell-command
+               :reason :invalid-revision})))
+  (let [value (parse-long text)]
+    (when-not (and (integer? value) (<= 0 value Long/MAX_VALUE))
+      (throw
+       (ex-info "command-cell revision is outside the wire range"
+                {:type invalid-command-cell-command
+                 :reason :invalid-revision})))
+    value))
+
+(defn- command-cell-edn! [text field]
+  (when-not (and (string? text)
+                 (<= 1 (count text) command-cell-command-body-limit))
+    (throw
+     (ex-info "command-cell EDN field is invalid"
+              {:type invalid-command-cell-command :reason field})))
+  (try
+    (let [reader (__string-reader text)
+          [value _] (read+string reader false end-of-command-cell-edn)
+          [trailing _] (read+string reader false end-of-command-cell-edn)]
+      (when (or (identical? value end-of-command-cell-edn)
+                (not (identical? trailing end-of-command-cell-edn)))
+        (throw
+         (ex-info "command-cell EDN must contain exactly one form"
+                  {:type invalid-command-cell-command :reason field})))
+      (edn/read-string text))
+    (catch :default error
+      (if (= invalid-command-cell-command (:type (ex-data error)))
+        (throw error)
+        (throw
+         (ex-info "command-cell EDN field is malformed"
+                  {:type invalid-command-cell-command :reason field}))))))
+
+(defn- command-cell-evidence-stream! [value]
+  (when-not (and (string? value) (<= 1 (count value) 96))
+    (throw
+     (ex-info "command-cell evidence stream is invalid"
+              {:type invalid-command-cell-command
+               :reason :invalid-evidence-stream-id})))
+  value)
+
+(defn- command-cell-prepare-command! [request]
+  (let [value (command-cell-json!
+               request
+               #{command-cell-prepare-canonical-keys
+                 command-cell-prepare-edn-keys})
+        handle (get value "cellHandle")]
+    (when-not (and (string? handle)
+                   (not (string/blank? handle))
+                   (<= (count handle) 128))
+      (throw
+       (ex-info "command-cell handle is invalid"
+                {:type invalid-command-cell-command
+                 :reason :invalid-cell-handle})))
+    {:evidence-stream-id
+     (command-cell-evidence-stream! (get value "evidenceStreamId"))
+     :revision (command-cell-long! (get value "revision"))
+     ;; This is an opaque server-issued catalog handle, not a keyword spelling
+     ;; or an application identifier. The trusted closure resolves it only
+     ;; against its startup snapshot; browser text is never interned.
+     :cell-handle handle
+     :input
+     (if (contains? value "inputCanonicalEdn")
+       (try
+         (let [canonical
+               (command-cell-edn! (get value "inputCanonicalEdn")
+                                  :invalid-input-canonical-edn)]
+           (when-not (trace/canonical-form? canonical)
+             (throw (ex-info "input is not canonical" {})))
+           (trace/restore-value canonical))
+         (catch :default _
+           (throw
+            (ex-info "command-cell input is not canonical value EDN"
+                     {:type invalid-command-cell-command
+                      :reason :invalid-input-canonical-edn}))))
+       (try
+         ;; This is a convenience boundary only. The browser supplies one
+         ;; ordinary EDN form; canonicalize then restore it here so the
+         ;; selected CommandCell still receives a fresh, trace-domain value.
+         ;; No client-side parser, keyword interning, or application default
+         ;; participates in the request.
+         (-> (command-cell-edn! (get value "inputEdn")
+                                :invalid-input-edn)
+             (trace/canonical-value [:viewer :command-cell :input-edn])
+             trace/restore-value)
+         (catch :default _
+           (throw
+            (ex-info "command-cell input EDN is outside the canonical domain"
+                     {:type invalid-command-cell-command
+                      :reason :invalid-input-edn})))))}))
+
+(defn- command-cell-step-command! [request]
+  (let [value (command-cell-json! request #{command-cell-step-keys})
+        branch (command-cell-edn! (get value "branchEdn")
+                                  :invalid-branch-edn)]
+    (when-not (and (map? branch)
+                   (= #{:revision :action} (set (keys branch))))
+      (throw
+       (ex-info "command-cell branch has the wrong shape"
+                {:type invalid-command-cell-command
+                 :reason :invalid-branch})))
+    {:evidence-stream-id
+     (command-cell-evidence-stream! (get value "evidenceStreamId"))
+     :revision (command-cell-long! (get value "revision"))
+     :branch branch}))
+
+(defn- command-cell-control-command! [request]
+  (let [value (command-cell-json! request #{command-cell-control-keys})]
+    {:evidence-stream-id
+     (command-cell-evidence-stream! (get value "evidenceStreamId"))}))
+
+(def ^:private command-cell-frame-phases #{:prepared :definite :uncertain})
+(def ^:private command-cell-preview-keys
+  #{:branch :site :status :projection :events :evidence-stream-id :coordinate})
+
+(defn- command-cell-branch? [branch]
+  (and (map? branch)
+       (= #{:revision :action} (set (keys branch)))
+       (wire-long? (:revision branch))
+       (<= 0 (:revision branch))
+       (vector? (:action branch))
+       (= 2 (count (:action branch)))))
+
+(defn- command-cell-active? [frame]
+  (let [active (:active frame)
+        cell (:cell frame)]
+    (if (nil? active)
+      (and (nil? cell) (empty? (:branches frame)))
+      (and (map? active)
+           (= #{:revision :cell-id :phase} (set (keys active)))
+           (= (:revision frame) (:revision active))
+           (keyword? (:cell-id active))
+           (some? (namespace (:cell-id active)))
+           (contains? command-cell-frame-phases (:phase active))
+           (map? cell)
+           (every? #(contains? cell %) #{:cell-id :prepared-revision :phase :input})
+           (= (:cell-id active) (:cell-id cell))
+           (= (:phase active) (:phase cell))
+           (wire-long? (:prepared-revision cell))
+           (<= 0 (:prepared-revision cell) (:revision frame))
+           (or (empty? (:branches frame))
+               (and (not (:closed? frame))
+                    (= :prepared (:phase active))))))))
+
+(defn- command-cell-preview? [frame preview]
+  (let [coordinate (:coordinate preview)
+        branch (:branch coordinate)]
+    (and (map? preview)
+         (= command-cell-preview-keys (set (keys preview)))
+         (= (:evidence-stream-id frame) (:evidence-stream-id preview))
+         (map? coordinate)
+         (= #{:revision :branch} (set (keys coordinate)))
+         (= (:revision frame) (:revision coordinate))
+         (command-cell-branch? branch)
+         (= (:branch preview) branch)
+         (vector? (:events preview)))))
+
+(defn- checked-command-cell-frame [frame]
+  (when-not (and (map? frame)
+                 (= #{:jolt.sim.command-cell-view/type :kind :version
+                      :evidence-stream-id :revision :closed? :catalog
+                      :active :cell :branches}
+                    (set (keys frame)))
+                 (= :frame (:jolt.sim.command-cell-view/type frame))
+                 (= :jolt.sim.kind/command-cell-frame (:kind frame))
+                 (= 1 (:version frame))
+                 (and (string? (:evidence-stream-id frame))
+                      (<= 1 (count (:evidence-stream-id frame)) 96))
+                 (wire-long? (:revision frame))
+                 (<= 0 (:revision frame))
+                 (boolean? (:closed? frame))
+                 (and (map? (:catalog frame))
+                      (= #{:count} (set (keys (:catalog frame))))
+                      (integer? (get-in frame [:catalog :count]))
+                      (<= 0 (get-in frame [:catalog :count])))
+                 (vector? (:branches frame))
+                 (<= (count (:branches frame))
+                     maximum-command-cell-wire-entries)
+                 (command-cell-active? frame)
+                 (every? #(command-cell-preview? frame %) (:branches frame)))
+    (throw (ex-info "trusted command-cell reader returned an invalid frame"
+                    {:type invalid-command-cell-result})))
+  frame)
+
+(defn- command-cell-advisory-keyword-text [value]
+  (when-not (and (keyword? value)
+                 (some? (namespace value)))
+    (throw (ex-info "trusted command-cell value has an invalid keyword"
+                    {:type invalid-command-cell-result})))
+  (let [text (keyword-coordinate-text value)]
+    (when (<= 1 (count text) maximum-command-cell-coordinate-text)
+      text)))
+
+(defn- command-cell-tag-text! [value]
+  (when-not (keyword? value)
+    (throw (ex-info "trusted command-cell value has an invalid tag"
+                    {:type invalid-command-cell-result})))
+  (let [text (keyword-coordinate-text value)]
+    (when-not (<= 1 (count text) maximum-command-cell-coordinate-text)
+      (throw (ex-info "trusted command-cell tag is too large"
+                      {:type invalid-command-cell-result})))
+    text))
+
+(defn- command-cell-display-edn! [limit value]
+  (try
+    (let [text (trace/canonical-edn value)]
+      (when-not (<= (count text)
+                     (min limit maximum-command-cell-wire-text))
+        (throw (ex-info "trusted command-cell display is too large"
+                        {:type invalid-command-cell-result})))
+      text)
+    (catch :default error
+      (if (= invalid-command-cell-result (:type (ex-data error)))
+        (throw error)
+        (throw (ex-info "trusted command-cell display is invalid"
+                        {:type invalid-command-cell-result}
+                        error))))))
+
+(defn- command-cell-branch-edn! [limit branch]
+  (when-not (and (map? branch)
+                 (= #{:revision :action} (set (keys branch)))
+                 (wire-long? (:revision branch))
+                 (<= 0 (:revision branch))
+                 (vector? (:action branch))
+                 (= 2 (count (:action branch))))
+    (throw (ex-info "trusted command-cell branch is invalid"
+                    {:type invalid-command-cell-result})))
+  (try
+    ;; This deliberately remains ordinary EDN because it is the exact input
+    ;; grammar already accepted by /api/command-cell-step. It is not a
+    ;; canonical-value encoding and is never decoded or reconstructed by JS.
+    (let [text (pr-str branch)
+          restored (command-cell-edn! text :invalid-branch-edn)]
+      (when-not (and (<= 1 (count text)
+                          (min limit command-cell-command-body-limit))
+                     (= (trace/canonical-value branch
+                                               [:viewer :command-cell :branch])
+                        (trace/canonical-value restored
+                                               [:viewer :command-cell :branch])))
+        (throw (ex-info "trusted command-cell branch is not losslessly EDN"
+                        {:type invalid-command-cell-result})))
+      text)
+    (catch :default error
+      (if (= invalid-command-cell-result (:type (ex-data error)))
+        (throw error)
+        (throw (ex-info "trusted command-cell branch cannot be issued"
+                        {:type invalid-command-cell-result}
+                        error))))))
+
+(defn- command-cell-choice-wire [limit frame index preview]
+  (let [coordinate (:coordinate preview)
+        branch (:branch coordinate)]
+    (when-not (and (map? preview)
+                   (command-cell-preview? frame preview))
+      (throw (ex-info "trusted command-cell preview is invalid"
+                      {:type invalid-command-cell-result})))
+    {"id" (str index)
+     ;; This outer coordinate is directly postable with branchEdn. It is not
+     ;; inferred from an older operation result or from browser state.
+     "revision" (str (:revision frame))
+     "branchEdn" (command-cell-branch-edn! limit branch)
+     "previewEdn" (command-cell-display-edn! limit preview)}))
+
+(defn- command-cell-choice-wires [limit frame]
+  (mapv #(command-cell-choice-wire limit frame %1 %2)
+        (range)
+        (:branches frame)))
+
+(defn- command-cell-frame-wire [limit frame]
+  (let [frame (checked-command-cell-frame frame)
+        choices (command-cell-choice-wires limit frame)]
+    {"version" 1
+     "evidenceStreamId" (:evidence-stream-id frame)
+     "revision" (str (:revision frame))
+     "closed" (:closed? frame)
+     "activeCellDisplayId"
+     (when-let [cell-id (get-in frame [:active :cell-id])]
+       (command-cell-advisory-keyword-text cell-id))
+     "phase" (when-let [phase (get-in frame [:active :phase])]
+               (command-cell-tag-text! phase))
+     "branchCount" (str (count (:branches frame)))
+     "choices" choices
+     "frameEdn" (command-cell-display-edn! limit frame)}))
+
+(defn- command-cell-catalog-wire [limit frame]
+  (when-not (and (map? frame)
+                 (= #{:jolt.sim.command-cell-view/type :kind :version
+                      :evidence-stream-id :count :cells}
+                    (set (keys frame)))
+                 (= :catalog-frame
+                    (:jolt.sim.command-cell-view/type frame))
+                 (= :jolt.sim.kind/command-cell-catalog (:kind frame))
+                 (= 1 (:version frame))
+                 (and (string? (:evidence-stream-id frame))
+                      (<= 1 (count (:evidence-stream-id frame)) 96))
+                 (integer? (:count frame))
+                 (<= 0 (:count frame))
+                 (vector? (:cells frame))
+                 (= (:count frame) (count (:cells frame)))
+                 (<= (:count frame) maximum-command-cell-wire-entries))
+    (throw (ex-info "trusted command-cell catalog returned an invalid frame"
+                    {:type invalid-command-cell-result})))
+  (let [cells
+        (mapv
+         (fn [index descriptor]
+           (when-not (and (map? descriptor)
+                          (= #{:id :effect-kind :input-schema :output-schema
+                               :projector :suggested-kind}
+                             (set (keys descriptor))))
+             (throw (ex-info "trusted command-cell descriptor is invalid"
+                             {:type invalid-command-cell-result})))
+           (let [id (:id descriptor)]
+             {"handle" (str index)
+              ;; All keyword spellings are advisory display only. The opaque
+              ;; ordinal is the sole prepare authority, so slash collisions
+              ;; and long legal keyword names cannot overwrite a cell.
+              "id" (command-cell-advisory-keyword-text id)
+              "effectKind" (command-cell-advisory-keyword-text
+                            (:effect-kind descriptor))
+              "suggestedKind" (when-let [kind (:suggested-kind descriptor)]
+                                  (command-cell-advisory-keyword-text kind))
+              "descriptorEdn" (command-cell-display-edn! limit descriptor)}))
+         (range)
+         (:cells frame))]
+    (let [source-ids (mapv :id (:cells frame))]
+      (when-not (= (count source-ids) (count (set source-ids)))
+        (throw (ex-info "trusted command-cell descriptor IDs are not unique"
+                        {:type invalid-command-cell-result}))))
+    {"version" 1
+     "evidenceStreamId" (:evidence-stream-id frame)
+     "cellCount" (str (:count frame))
+     "cells" cells
+     "catalogEdn" (command-cell-display-edn! limit frame)}))
+
+(defn- command-cell-read-response [config service]
+  (let [wire (service)
+        wire (if (= :catalog-frame
+                    (:jolt.sim.command-cell-view/type wire))
+               (command-cell-catalog-wire (:max-document-bytes config) wire)
+               (command-cell-frame-wire (:max-document-bytes config) wire))
+        [body bytes] (retained-json-bytes wire)]
+    (if (> bytes (:max-document-bytes config))
+      (command-cell-error-response 413 :command-cell-frame-too-large)
+      (response 200 "application/json; charset=utf-8" body))))
+
+(defn- command-cell-result-wire [limit operation result]
+  (let [result-keys
+        #{:jolt.sim.command-cell-view/type :kind :version :operation
+          :evidence-stream-id :revision :cell-id :status :result}
+        allowed-keys #{(conj result-keys :frame)
+                       (conj result-keys :frame-error)}
+        status (:status result)
+        core-result (:result result)
+        frame (:frame result)
+        frame-error (:frame-error result)]
+    (when-not (and (map? result)
+                 (contains? allowed-keys (set (keys result)))
+                 (= :operation-result
+                    (:jolt.sim.command-cell-view/type result))
+                 (= :jolt.sim.kind/command-cell-operation-result
+                    (:kind result))
+                 (= operation (:operation result))
+                 (= 1 (:version result))
+                 (string? (:evidence-stream-id result))
+                 (wire-long? (:revision result))
+                 (<= 0 (:revision result))
+                 (keyword? status)
+                 (map? core-result)
+                 (= operation (:operation core-result))
+                 (= (case operation
+                      :prepare :jolt.sim.kind/command-cell-prepare-result
+                      :step :jolt.sim.kind/command-cell-step-result
+                      :reconcile :jolt.sim.kind/command-cell-reconcile-result
+                      :close :jolt.sim.kind/command-cell-close-result)
+                    (:kind core-result))
+                 (= (:revision result) (:revision core-result))
+                 (= (:cell-id result) (:cell-id core-result))
+                 (= status (:status core-result))
+                 (if frame
+                   ;; A post-operation frame is advisory. Its own complete
+                   ;; validation happens while building its browser wire so a
+                   ;; bad refreshed choice can never obscure an already
+                   ;; definite or uncertain operation result.
+                   (map? frame)
+                   (and (map? frame-error)
+                        (= #{:type :reason :phase} (set (keys frame-error)))
+                        (keyword? (:type frame-error))
+                        (keyword? (:reason frame-error))
+                        (= :post-operation-frame (:phase frame-error))))
+                 (case operation
+                   :prepare (and (= :prepared status)
+                                 (not (contains? core-result :committed?)))
+                   :step (and (contains? #{:ready :uncertain :failed} status)
+                              (true? (:committed? core-result)))
+                   :reconcile
+                   (and (contains? #{:ready :uncertain :failed} status)
+                        (true? (:committed? core-result)))
+                   :close (and (= :closed status)
+                               (not (contains? core-result :committed?)))
+                   false))
+      (throw (ex-info "trusted command-cell operation returned an invalid result"
+                      {:type invalid-command-cell-result})))
+    (let [encode (fn [value]
+                   (when value
+                     (try (command-cell-display-edn! limit value)
+                          (catch :default _ ::unavailable))))
+          result-edn (encode core-result)
+          frame-wire
+          (when frame
+            (try
+              (let [wire (command-cell-frame-wire limit frame)]
+                (when-not (and (= (:evidence-stream-id result)
+                                  (:evidence-stream-id frame))
+                               (<= (:revision result) (:revision frame))
+                               (or (not= :close operation) (:closed? frame)))
+                  (throw (ex-info "trusted command-cell refresh is incoherent"
+                                  {:type invalid-command-cell-result})))
+                wire)
+              (catch :default _ ::unavailable)))
+          frame-edn (when (map? frame-wire) (get frame-wire "frameEdn"))
+          frame-error-edn (encode (:frame-error result))
+          presentation-failed?
+          (some #(identical? ::unavailable %)
+                [result-edn frame-wire frame-error-edn])]
+      {"version" 1
+       "operation" (name operation)
+       "outcome" (name status)
+       "committed" (boolean (:committed? core-result))
+       "evidenceStreamId" (:evidence-stream-id result)
+       "revision" (str (:revision result))
+       "cellDisplayId" (when-let [cell-id (:cell-id result)]
+                         (command-cell-advisory-keyword-text cell-id))
+       "resultEdn"
+       (when-not (identical? ::unavailable result-edn) result-edn)
+       "frameStatus" (if (map? frame-wire)
+                       "available" "unavailable")
+       "frameEdn" frame-edn
+       "frameErrorEdn"
+       (when-not (identical? ::unavailable frame-error-edn) frame-error-edn)
+       ;; `choices` is always present. It is populated only from the coherent
+       ;; refreshed frame and empty when that refresh is unavailable, so a
+       ;; generic browser never needs to infer availability from an omitted
+       ;; optional field or parse frameEdn.
+       "branchCount" (if (map? frame-wire)
+                         (get frame-wire "branchCount") "0")
+       "choices" (if (map? frame-wire)
+                    (get frame-wire "choices") [])
+       "truncated" (boolean presentation-failed?)})))
+
+(defn- command-cell-result-response [config operation result]
+  (let [wire (command-cell-result-wire (:max-document-bytes config)
+                                       operation result)
+        [body bytes] (retained-json-bytes wire)]
+    (if (<= bytes (:max-document-bytes config))
+      (response 200 "application/json; charset=utf-8" body)
+      ;; The operation has already returned a definite result (including an
+      ;; explicit :uncertain publication state). Preserve its coordinates and
+      ;; omit only presentation payloads; never answer with a retry-looking
+      ;; size error after publication may have happened.
+      (let [ack {"version" 1
+                 "operation" (get wire "operation")
+                 "outcome" (get wire "outcome")
+                 "committed" (get wire "committed")
+                 "revision" (get wire "revision")
+                 "frameStatus" "unavailable"
+                 "branchCount" "0"
+                 "choices" []
+                 "truncated" true}
+            [ack-body ack-bytes] (retained-json-bytes ack)]
+        ;; This fixed, data-free acknowledgement is exempt from the
+        ;; presentation document cap. A committed command must never become a
+        ;; retry-looking 413 merely because a caller configured a tiny cap.
+        ;; Keep its bound explicit so the exception cannot become an
+        ;; unbounded second response protocol.
+        (when (> ack-bytes maximum-command-cell-definite-ack-bytes)
+          (throw (ex-info "command-cell definite acknowledgement exceeded its bound"
+                          {:type invalid-command-cell-result})))
+        (response 200 "application/json; charset=utf-8" ack-body)))))
+
+(defn- command-cell-operation-error-response [error]
+  (let [data (ex-data error)]
+    (cond
+      (= request-too-large (:type data))
+      (command-cell-error-response 413 :request-too-large)
+
+      (= invalid-command-cell-command (:type data))
+      (command-cell-error-response 400 :invalid-command-cell-command)
+
+      (= :jolt.sim.schema/invalid-value (:type data))
+      (command-cell-error-response 400 :invalid-command-cell-input)
+
+      (= :jolt.sim.command-cell-session/rejected (:type data))
+      (command-cell-error-response 409
+                                   (or (:reason data)
+                                       :command-cell-rejected))
+
+      (= :jolt.sim.kernel/invalid-machine-action (:type data))
+      (command-cell-error-response 409 :command-cell-branch-rejected)
+
+      :else nil)))
+
+(defn- execute-command-cell-read-request
+  [config services active? request service-key unavailable]
+  (cond
+    (not (authorized? config request))
+    (command-cell-error-response 403 :forbidden)
+
+    (not (fn? (get services service-key)))
+    (command-cell-error-response 404 unavailable)
+
+    (not (compare-and-set! active? false true))
+    (command-cell-error-response 429 :command-cell-busy)
+
+    :else
+    (try
+      (command-cell-read-response config (get services service-key))
+      (catch :default error
+        (if (= invalid-command-cell-result (:type (ex-data error)))
+          (command-cell-error-response 500 :command-cell-result-invalid)
+          (command-cell-error-response 500 :command-cell-read-failed)))
+      (finally (reset! active? false)))))
+
+(defn- execute-command-cell-mutation-request
+  [config services active? document-active? request
+   service-key operation parse-command]
+  (cond
+    (not (authorized? config request))
+    (command-cell-error-response 403 :forbidden)
+
+    (not (fn? (get services service-key)))
+    (command-cell-error-response 404 :command-cell-unavailable)
+
+    (not (json-content-type? request))
+    (command-cell-error-response 415 :expected-application-json)
+
+    (not (compare-and-set! active? false true))
+    (command-cell-error-response 429 :command-cell-busy)
+
+    :else
+    (try
+      (if-not (compare-and-set! document-active? false true)
+        (command-cell-error-response 429 :viewer-busy)
+        (try
+          (let [argument (parse-command request)
+                result (if argument
+                         ((get services service-key) argument)
+                         ((get services service-key)))]
+            (command-cell-result-response config operation result))
+          (catch :default error
+            (or (command-cell-operation-error-response error)
+                (command-cell-error-response
+                 500 :command-cell-operation-failed)))
+          (finally (reset! document-active? false))))
+      (finally (reset! active? false)))))
+
 (defn- presentation-outcome [config result]
   (if (and (= :completed (:status result))
            (contains? config :value-presentation-registry))
@@ -3250,6 +3881,7 @@
           session-active? (atom false)
           retained-active? (atom false)
           workbench-active? (atom false)
+          command-cell-active? (atom false)
           active-replay (atom (initial-replay-state))
           activity-registry
           (presentation/activity-registry
@@ -3266,6 +3898,11 @@
                          workbench-service-keys)]
        (when (and (seq present) (not= workbench-service-keys present))
          (throw (config-error :workbench-services-must-be-all-or-nothing
+                              present))))
+     (let [present (into #{} (filter #(contains? services %))
+                         command-cell-service-keys)]
+       (when (and (seq present) (not= command-cell-service-keys present))
+         (throw (config-error :command-cell-services-must-be-all-or-nothing
                               present))))
      (let [control-keys
            #{:reconcile-session-effect! :reconcile-session-step
@@ -3300,7 +3937,10 @@
                             retained-service-keys)
                     (every? #(or (not (contains? services %))
                                  (fn? (get services %)))
-                            workbench-service-keys))
+                            workbench-service-keys)
+                    (every? #(or (not (contains? services %))
+                                 (fn? (get services %)))
+                            command-cell-service-keys))
        (throw (config-error :invalid-services (set (keys services)))))
      (fn [request]
        (let [method (:request-method request)
@@ -3338,6 +3978,16 @@
            (and (= :get method) (= "/api/workbench-frame" uri))
            (execute-workbench-frame-request
             config services workbench-active? request)
+
+           (and (= :get method) (= "/api/command-cell-catalog" uri))
+           (execute-command-cell-read-request
+            config services command-cell-active? request
+            :read-command-cell-catalog :command-cell-unavailable)
+
+           (and (= :get method) (= "/api/command-cell-frame" uri))
+           (execute-command-cell-read-request
+            config services command-cell-active? request
+            :read-command-cell-frame :command-cell-unavailable)
 
            (and (= :post method) (= "/api/session-step" uri))
            (execute-session-step-request
@@ -3381,6 +4031,27 @@
            (and (= :post method) (= "/api/workbench-item-kind" uri))
            (execute-workbench-kind-request
             config services workbench-active? request)
+
+           (and (= :post method) (= "/api/command-cell-prepare" uri))
+           (execute-command-cell-mutation-request
+            config services command-cell-active? document-active? request
+            :prepare-command-cell! :prepare command-cell-prepare-command!)
+
+           (and (= :post method) (= "/api/command-cell-step" uri))
+           (execute-command-cell-mutation-request
+            config services command-cell-active? document-active? request
+            :step-command-cell! :step command-cell-step-command!)
+
+           (and (= :post method) (= "/api/command-cell-reconcile" uri))
+           (execute-command-cell-mutation-request
+            config services command-cell-active? document-active? request
+            :reconcile-command-cell! :reconcile
+            command-cell-control-command!)
+
+           (and (= :post method) (= "/api/command-cell-close" uri))
+           (execute-command-cell-mutation-request
+            config services command-cell-active? document-active? request
+            :close-command-cell! :close command-cell-control-command!)
 
            (and (= :post method) (= "/api/run" uri))
            (if (replay-enabled? config)
@@ -3656,8 +4327,58 @@
    (merge (dissoc (default-services config) :run-case)
           (flow-effect-services bridge))))
 
+(defn- command-cell-services
+  "Returns six opaque closures over one caller-owned CommandCellSession."
+  [session]
+  (let [catalog (command-cell-view/catalog-frame session)
+        cells (:cells catalog)
+        evidence-stream-id (:evidence-stream-id catalog)
+        by-handle (into {}
+                        (map-indexed (fn [index cell]
+                                       [(str index) (:id cell)]))
+                        cells)
+        check-stream!
+        (fn [supplied]
+          ;; The catalog and all command closures share this one startup
+          ;; incarnation. Reject a stale page/restarted session before a
+          ;; compiler, CommandCell mutation, or borrowed worker can observe
+          ;; the request.
+          (when-not (= evidence-stream-id supplied)
+            (throw
+             (ex-info "command-cell evidence stream is stale"
+                      {:type :jolt.sim.command-cell-session/rejected
+                       :reason :stale-evidence-stream}))))]
+    {:read-command-cell-frame
+     (fn [] (command-cell-view/read-frame session))
+     :read-command-cell-catalog
+     (fn [] catalog)
+     :prepare-command-cell!
+     (fn [{:keys [evidence-stream-id revision cell-handle input]}]
+       (check-stream! evidence-stream-id)
+       (if-let [cell-id (get by-handle cell-handle)]
+         (command-cell-view/prepare-frame!
+          session {:revision revision :cell-id cell-id :input input})
+         (throw
+          (ex-info "command-cell handle is not in the installed catalog"
+                   {:type :jolt.sim.command-cell-session/rejected
+                    :reason :unknown-cell}))))
+     :step-command-cell!
+     (fn [{:keys [evidence-stream-id] :as coordinate}]
+       (check-stream! evidence-stream-id)
+       (command-cell-view/step-frame!
+        session (dissoc coordinate :evidence-stream-id)))
+     :reconcile-command-cell!
+     (fn [{:keys [evidence-stream-id]}]
+       (check-stream! evidence-stream-id)
+       (command-cell-view/reconcile-frame! session))
+     :close-command-cell!
+     (fn [{:keys [evidence-stream-id]}]
+       (check-stream! evidence-stream-id)
+       (command-cell-view/close-frame! session))}))
+
 (def ^:private workbench-capability-keys
-  #{:flow-effect-bridge :retained-process :eval-session :workbench-session})
+  #{:flow-effect-bridge :retained-process :eval-session :workbench-session
+    :command-cell-session})
 
 (def ^:private workbench-captured-services
   {:evaluate-form! ["evaluation" :jolt.sim.result/evaluation]
@@ -3733,8 +4454,8 @@
   "Starts one generic Ripple workbench from caller-owned live capabilities.
 
   `capabilities` is an exact programmatic map. It may contain a flow/effect
-  bridge, a retained process, an EvalSession, a WorkbenchSession, or any
-  combination of the four.
+  bridge, a retained process, an EvalSession, a WorkbenchSession, a
+  CommandCellSession, or any combination of the five.
   Ripple composes only their existing UI-neutral services; it does not create,
   close, retry, reconcile, or otherwise own any supplied capability. Document
   render/replay/run services remain available from the ordinary viewer config,
@@ -3779,7 +4500,11 @@
 
           (contains? capabilities :workbench-session)
           (merge (workbench-services
-                  (:workbench-session capabilities))))
+                  (:workbench-session capabilities)))
+
+          (contains? capabilities :command-cell-session)
+          (merge (command-cell-services
+                  (:command-cell-session capabilities))))
         services
         (if-let [session (:workbench-session capabilities)]
           (capture-workbench-results services session)

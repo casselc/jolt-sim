@@ -12,6 +12,7 @@
             [jolt.sim.activity-view-test]
             [jolt.sim.case-outcome-test]
             [jolt.sim.clock-test]
+            [jolt.sim.command-cell-session-test]
             [jolt.sim.completion-test]
             [jolt.sim.explore-states-test]
             [jolt.sim.explore-test]
@@ -70,6 +71,7 @@
                         'jolt.sim.activity-view-test
                         'jolt.sim.case-outcome-test
                         'jolt.sim.clock-test
+                        'jolt.sim.command-cell-session-test
                         'jolt.sim.completion-test
                         'jolt.sim.explore-states-test
                         'jolt.sim.explore-test

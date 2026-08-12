@@ -104,7 +104,9 @@
               (throw
                (ex-info "Scripted command response was lost"
                         {:type ::transport-uncertain
-                         :sequence next-sequence})))
+                         :sequence next-sequence
+                         :uncertain-sequence next-sequence
+                         :published? true})))
 
             :completed
             (settle! next-command-outcome next-sequence)
@@ -119,6 +121,34 @@
       :reconcile!
       (fn []
         (let [{:keys [uncertain-sequence next-reconcile-outcome]} @state]
+          (swap! state
+                 (fn [current]
+                   (-> current
+                       (assoc :next-reconcile-outcome nil)
+                       (update :reconciliations conj uncertain-sequence))))
+          (case next-reconcile-outcome
+            :still-uncertain
+            (throw
+             (ex-info "Scripted reconciliation response was lost"
+                      {:type ::transport-uncertain
+                       :sequence uncertain-sequence}))
+
+            :completed
+            (settle! next-reconcile-outcome uncertain-sequence)
+
+            :application-failed
+            (settle! next-reconcile-outcome uncertain-sequence)
+
+            (violation! "flow-effect-stateful/reconcile-not-programmed"
+                        #{:completed :application-failed :still-uncertain}
+                        next-reconcile-outcome))))
+
+      :reconcile-sequence!
+      (fn [sequence]
+        (let [{:keys [uncertain-sequence next-reconcile-outcome]} @state]
+          (when-not (= sequence uncertain-sequence)
+            (violation! "flow-effect-stateful/reconcile-wrong-sequence"
+                        uncertain-sequence sequence))
           (swap! state
                  (fn [current]
                    (-> current

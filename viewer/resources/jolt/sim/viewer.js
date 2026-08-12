@@ -38,6 +38,19 @@
   const workbenchRefresh = document.getElementById("workbench-refresh");
   const workbenchStatus = document.getElementById("workbench-status");
   const workbenchItems = document.getElementById("workbench-items");
+  const commandCellLoad = document.getElementById("command-cell-load");
+  const commandCellRefresh = document.getElementById("command-cell-refresh");
+  const commandCellSelect = document.getElementById("command-cell-select");
+  const commandCellInputMode = document.getElementById("command-cell-input-mode");
+  const commandCellInputLabel = document.getElementById("command-cell-input-label");
+  const commandCellInput = document.getElementById("command-cell-input");
+  const commandCellPrepare = document.getElementById("command-cell-prepare");
+  const commandCellReconcile = document.getElementById("command-cell-reconcile");
+  const commandCellClose = document.getElementById("command-cell-close");
+  const commandCellStatus = document.getElementById("command-cell-status");
+  const commandCellBranches = document.getElementById("command-cell-branches");
+  const commandCellFrame = document.getElementById("command-cell-frame");
+  const commandCellResult = document.getElementById("command-cell-result");
   const sessionRefresh = document.getElementById("session-refresh");
   const sessionReset = document.getElementById("session-reset");
   const sessionStatus = document.getElementById("session-status");
@@ -83,6 +96,11 @@
   let retainedNextSequence = null;
   let workbenchBusy = false;
   let workbenchAvailableKinds = [];
+  let commandCellBusy = false;
+  let commandCellCatalog = [];
+  let commandCellEvidenceStreamId = null;
+  let commandCellCoordinate = null;
+  let commandCellOutcomeUnknown = false;
   // Buttons rendered from the current value presentation's inert action
   // descriptors: [{button, enabled}]. Rebuilt on every presentation render so
   // a later result can never leave a stale descriptor clickable.
@@ -90,6 +108,10 @@
 
   const canonicalUnsignedDecimal = (value) =>
     typeof value === "string" && /^(0|[1-9][0-9]*)$/.test(value);
+
+  const canonicalCommandCellLong = (value) =>
+    canonicalUnsignedDecimal(value) && value.length <= 19 &&
+    (value.length < 19 || value <= "9223372036854775807");
 
   const canonicalSignedDecimal = (value) =>
     canonicalUnsignedDecimal(value) ||
@@ -272,6 +294,103 @@
         !value.items.every(validWorkbenchItem)) return false;
     return BigInt(value.currentItemCount) ===
       BigInt(value.omittedItemCount) + BigInt(value.items.length);
+  };
+
+  const validCommandCellChoice = (value) =>
+    exactKeys(value, ["id", "revision", "branchEdn", "previewEdn"]) &&
+    canonicalUnsignedDecimal(value.id) &&
+    canonicalCommandCellLong(value.revision) &&
+    boundedString(value.branchEdn, 64 * 1024) && value.branchEdn.length > 0 &&
+    boundedString(value.previewEdn, 64 * 1024) && value.previewEdn.length > 0;
+
+  const validCommandCellChoices = (choices, count, revision = null) =>
+    Array.isArray(choices) && choices.length <= 256 &&
+    choices.every(validCommandCellChoice) &&
+    choices.every(({id}, index) => id === String(index)) &&
+    (revision === null || choices.every((choice) => choice.revision === revision)) &&
+    canonicalCommandCellLong(count) && Number(count) === choices.length;
+
+  const validCommandCellCatalogEntry = (value) =>
+    exactKeys(value,
+      ["handle", "id", "effectKind", "suggestedKind", "descriptorEdn"]) &&
+    canonicalUnsignedDecimal(value.handle) &&
+    [value.id, value.effectKind, value.suggestedKind].every((entry) =>
+      entry === null || (boundedString(entry, 128) && entry.length > 0)) &&
+    boundedString(value.descriptorEdn, 64 * 1024) && value.descriptorEdn.length > 0;
+
+  const validCommandCellCatalogResponse = (value) =>
+    exactKeys(value,
+      ["version", "evidenceStreamId", "cellCount", "cells", "catalogEdn"]) &&
+    value.version === 1 && boundedString(value.evidenceStreamId, 96) &&
+    value.evidenceStreamId.length > 0 && canonicalCommandCellLong(value.cellCount) &&
+    Array.isArray(value.cells) && value.cells.length <= 256 &&
+    value.cells.every(validCommandCellCatalogEntry) &&
+    value.cells.every(({handle}, index) => handle === String(index)) &&
+    Number(value.cellCount) === value.cells.length &&
+    boundedString(value.catalogEdn, 64 * 1024) && value.catalogEdn.length > 0;
+
+  const validCommandCellFrameResponse = (value) =>
+    exactKeys(value, ["version", "evidenceStreamId", "revision", "closed",
+      "activeCellDisplayId", "phase", "branchCount", "choices", "frameEdn"]) &&
+    value.version === 1 && boundedString(value.evidenceStreamId, 96) &&
+    value.evidenceStreamId.length > 0 && canonicalCommandCellLong(value.revision) &&
+    typeof value.closed === "boolean" &&
+    (value.activeCellDisplayId === null ||
+      (boundedString(value.activeCellDisplayId, 128) &&
+       value.activeCellDisplayId.length > 0)) &&
+    (value.phase === null ||
+      ["prepared", "definite", "uncertain"].includes(value.phase)) &&
+    validCommandCellChoices(value.choices, value.branchCount, value.revision) &&
+    boundedString(value.frameEdn, 64 * 1024) && value.frameEdn.length > 0;
+
+  const validCommandCellOperationResponse = (value, operation) => {
+    const full = exactKeys(value, ["version", "operation", "outcome", "committed",
+      "evidenceStreamId", "revision", "cellDisplayId", "resultEdn", "frameStatus",
+      "frameEdn", "frameErrorEdn", "truncated", "branchCount", "choices"]);
+    const coordinateOnly = exactKeys(value,
+      ["version", "operation", "outcome", "committed", "revision",
+        "frameStatus", "branchCount", "choices", "truncated"]);
+    if ((!full && !coordinateOnly) ||
+        value.version !== 1 || value.operation !== operation ||
+        typeof value.committed !== "boolean" ||
+        !canonicalCommandCellLong(value.revision) ||
+        !["available", "unavailable"].includes(value.frameStatus) ||
+        typeof value.truncated !== "boolean" ||
+        !validCommandCellChoices(value.choices, value.branchCount)) return false;
+    if (full && (!boundedString(value.evidenceStreamId, 96) ||
+        value.evidenceStreamId.length === 0 ||
+        !(value.cellDisplayId === null ||
+          (boundedString(value.cellDisplayId, 128) && value.cellDisplayId.length > 0)) ||
+        !(value.resultEdn === null ||
+          (boundedString(value.resultEdn, 64 * 1024) && value.resultEdn.length > 0)) ||
+        !(value.frameErrorEdn === null ||
+          (boundedString(value.frameErrorEdn, 64 * 1024) &&
+           value.frameErrorEdn.length > 0)))) {
+      return false;
+    }
+    const operationCoherent = operation === "prepare"
+      ? value.outcome === "prepared" && value.committed === false
+      : operation === "close"
+        ? value.outcome === "closed" && value.committed === false
+        : ["step", "reconcile"].includes(operation) &&
+          ["ready", "uncertain", "failed"].includes(value.outcome) &&
+          value.committed === true;
+    const frameCoherent = coordinateOnly
+      ? value.frameStatus === "unavailable" && value.branchCount === "0" &&
+        value.choices.length === 0
+      : value.frameStatus === "available"
+        ? boundedString(value.frameEdn, 64 * 1024) &&
+          value.frameEdn.length > 0 &&
+          value.frameErrorEdn === null
+        : value.frameEdn === null && value.branchCount === "0" &&
+          value.choices.length === 0;
+    const choiceCoherent = value.choices.length === 0 ||
+      (value.choices.every((choice) =>
+         choice.revision === value.choices[0].revision) &&
+       BigInt(value.choices[0].revision) >= BigInt(value.revision));
+    return operationCoherent && frameCoherent && choiceCoherent &&
+      (full ? value.resultEdn !== null || value.truncated === true
+            : value.frameStatus === "unavailable" && value.truncated === true);
   };
 
   const validRetainedOutcomeResponse = (value) => {
@@ -1142,7 +1261,7 @@
                   capability.value.length > 0;
     file.disabled = busy;
     kind.disabled = busy;
-    capability.disabled = busy || retainedBusy || workbenchBusy;
+    capability.disabled = busy || retainedBusy || workbenchBusy || commandCellBusy;
     evalForm.disabled = busy;
     evalSubmit.disabled = busy || capability.value.length === 0 ||
       evalForm.value.trim().length === 0;
@@ -1172,6 +1291,32 @@
     retainedTerminate.disabled = retainedBusy || capability.value.length === 0 ||
       (retainedCoordinateKnown && retainedWorkerStatus === "terminated");
     workbenchRefresh.disabled = workbenchBusy || capability.value.length === 0;
+    const commandCellOpen = commandCellCoordinate !== null &&
+      !commandCellCoordinate.closed;
+    commandCellLoad.disabled = commandCellBusy || capability.value.length === 0;
+    commandCellRefresh.disabled = commandCellBusy || capability.value.length === 0;
+    commandCellSelect.disabled = commandCellBusy || commandCellCatalog.length === 0 ||
+      !commandCellOpen || commandCellOutcomeUnknown;
+    commandCellInput.disabled = commandCellBusy || !commandCellOpen ||
+      commandCellOutcomeUnknown;
+    commandCellInputMode.disabled = commandCellBusy || !commandCellOpen ||
+      commandCellOutcomeUnknown;
+    commandCellPrepare.disabled = commandCellBusy || capability.value.length === 0 ||
+      commandCellCatalog.length === 0 || commandCellSelect.value.length === 0 ||
+      commandCellInput.value.trim().length === 0 || !commandCellOpen ||
+      commandCellOutcomeUnknown || commandCellCoordinate.phase === "uncertain";
+    commandCellReconcile.disabled = commandCellBusy || capability.value.length === 0 ||
+      !commandCellOpen ||
+      commandCellCoordinate.phase !== "uncertain";
+    commandCellClose.disabled = commandCellBusy || capability.value.length === 0 ||
+      !commandCellOpen || commandCellOutcomeUnknown;
+    commandCellBranches.querySelectorAll("button[data-command-cell-choice]")
+      .forEach((button) => {
+        button.disabled = commandCellBusy || capability.value.length === 0 ||
+          !commandCellOpen || commandCellOutcomeUnknown ||
+          commandCellCoordinate.phase !== "prepared" ||
+          button.dataset.revision !== commandCellCoordinate.revision;
+      });
     // Descriptor buttons obey exactly the retained command surface's
     // ready/busy/uncertain/terminal disablement, plus their own declared
     // enabled flag. They never outlive the presentation that carried them.
@@ -2229,6 +2374,275 @@
   }
 
   workbenchRefresh.addEventListener("click", () => refreshWorkbenchFrame());
+
+  const commandCellHeaders = (content = false) => {
+    const headers = {
+      "Accept": "application/json",
+      "X-Jolt-Sim-Capability": capability.value
+    };
+    if (content) headers["Content-Type"] = "application/json";
+    return headers;
+  };
+
+  const clearCommandCellChoices = (message) => {
+    clearChildren(commandCellBranches);
+    const empty = document.createElement("li");
+    empty.className = "muted";
+    empty.textContent = message;
+    commandCellBranches.appendChild(empty);
+  };
+
+  const renderCommandCellChoices = () => {
+    clearChildren(commandCellBranches);
+    const choices = commandCellCoordinate ? commandCellCoordinate.choices : [];
+    if (choices.length === 0) {
+      clearCommandCellChoices(commandCellCoordinate && commandCellCoordinate.closed
+        ? "Command-cell admission is closed."
+        : "No branch choices are available in the current frame.");
+      return;
+    }
+    for (const choice of choices) {
+      const item = document.createElement("li");
+      item.className = "command-cell-branch";
+      const button = document.createElement("button");
+      button.type = "button";
+      button.dataset.testid = "command-cell-choice";
+      button.dataset.commandCellChoice = choice.id;
+      button.dataset.revision = commandCellCoordinate.revision;
+      button.textContent = `Commit branch ${choice.id} once`;
+      const issuedRevision = choice.revision;
+      const issuedEvidenceStreamId = commandCellEvidenceStreamId;
+      button.addEventListener("click", () =>
+        stepCommandCell(issuedEvidenceStreamId, issuedRevision, choice.branchEdn));
+      const preview = document.createElement("pre");
+      preview.textContent = choice.previewEdn;
+      item.append(button, preview);
+      commandCellBranches.appendChild(item);
+    }
+  };
+
+  const installCommandCellFrame = (frame) => {
+    if (commandCellEvidenceStreamId !== null &&
+        frame.evidenceStreamId !== commandCellEvidenceStreamId) {
+      throw new Error("command-cell evidence stream changed");
+    }
+    if (commandCellCoordinate !== null &&
+        BigInt(frame.revision) < BigInt(commandCellCoordinate.revision)) {
+      throw new Error("command-cell revision moved backward");
+    }
+    commandCellEvidenceStreamId = frame.evidenceStreamId;
+    commandCellCoordinate = {
+      revision: frame.revision,
+      closed: frame.closed,
+      activeCellDisplayId: frame.activeCellDisplayId,
+      phase: frame.phase,
+      choices: frame.choices
+    };
+    commandCellOutcomeUnknown = false;
+    commandCellFrame.textContent = frame.frameEdn;
+    renderCommandCellChoices();
+  };
+
+  async function refreshCommandCellFrame(options = {}) {
+    if (commandCellBusy || capability.value.length === 0) return {ok: false};
+    commandCellBusy = true;
+    updateButtons();
+    commandCellStatus.textContent = options.readingMessage ||
+      "Reading the authoritative command-cell frame...";
+    try {
+      const response = await fetch("/api/command-cell-frame", {
+        method: "GET", headers: commandCellHeaders(), cache: "no-store",
+        credentials: "omit"
+      });
+      const body = await response.json().catch(() => null);
+      if (!response.ok || !validCommandCellFrameResponse(body)) {
+        throw new Error(`${response.status} malformed command-cell frame response`);
+      }
+      installCommandCellFrame(body);
+      const detail = body.closed
+        ? `admission closed at revision ${body.revision}`
+        : `${body.branchCount} pure branch choices at revision ${body.revision}`;
+      commandCellStatus.textContent = options.successPrefix
+        ? `${options.successPrefix}; authoritative refresh found ${detail}.`
+        : `Loaded ${detail}.`;
+      return {ok: true, frame: body};
+    } catch (error) {
+      commandCellOutcomeUnknown = true;
+      if (commandCellCoordinate) commandCellCoordinate.choices = [];
+      clearCommandCellChoices(
+        "Authoritative frame is unavailable; refresh again before another mutation.");
+      commandCellStatus.textContent = options.failurePrefix
+        ? `${options.failurePrefix}; authoritative refresh failed: ${error.message}.`
+        : `Command-cell refresh failed: ${error.message}`;
+      return {ok: false, error};
+    } finally {
+      commandCellBusy = false;
+      updateButtons();
+    }
+  }
+
+  const loadCommandCellCatalog = async () => {
+    if (commandCellBusy || capability.value.length === 0) return;
+    commandCellBusy = true;
+    updateButtons();
+    commandCellStatus.textContent = "Loading the declared command-cell catalog...";
+    let loaded = false;
+    try {
+      const response = await fetch("/api/command-cell-catalog", {
+        method: "GET", headers: commandCellHeaders(), cache: "no-store",
+        credentials: "omit"
+      });
+      const body = await response.json().catch(() => null);
+      if (!response.ok || !validCommandCellCatalogResponse(body)) {
+        throw new Error(`${response.status} malformed or unavailable command-cell catalog`);
+      }
+      commandCellCatalog = body.cells;
+      commandCellEvidenceStreamId = body.evidenceStreamId;
+      commandCellCoordinate = null;
+      commandCellOutcomeUnknown = false;
+      clearCommandCellChoices("Reading current command-cell coordinates...");
+      clearChildren(commandCellSelect);
+      for (const cell of commandCellCatalog) {
+        const option = document.createElement("option");
+        option.value = cell.handle;
+        const display = cell.id || `Cell ${cell.handle}`;
+        option.textContent = [display, cell.effectKind, cell.suggestedKind]
+          .filter((entry) => entry !== null).join(" — ");
+        option.title = cell.descriptorEdn;
+        commandCellSelect.appendChild(option);
+      }
+      commandCellStatus.textContent = `Loaded ${body.cellCount} declared command cells; reading current coordinates...`;
+      loaded = true;
+    } catch (error) {
+      commandCellCatalog = [];
+      commandCellEvidenceStreamId = null;
+      commandCellCoordinate = null;
+      clearChildren(commandCellSelect);
+      const option = document.createElement("option");
+      option.value = "";
+      option.textContent = "No command cells loaded.";
+      commandCellSelect.appendChild(option);
+      clearCommandCellChoices("No command-cell frame loaded.");
+      commandCellStatus.textContent = `Could not load command cells: ${error.message}`;
+    } finally {
+      commandCellBusy = false;
+      updateButtons();
+    }
+    if (loaded) await refreshCommandCellFrame();
+  };
+
+  const performCommandCellMutation = async (operation, path, body) => {
+    if (commandCellBusy || commandCellCoordinate === null ||
+        (commandCellOutcomeUnknown &&
+         !(operation === "reconcile" && commandCellCoordinate.phase === "uncertain"))) return;
+    commandCellBusy = true;
+    updateButtons();
+    commandCellStatus.textContent =
+      `${operation} is in flight once; Ripple will not retry it automatically...`;
+    let definite = null;
+    try {
+      const response = await fetch(path, {
+        method: "POST", headers: commandCellHeaders(true),
+        body: JSON.stringify(body), cache: "no-store", credentials: "omit"
+      });
+      const text = await response.text();
+      let result = null;
+      try { result = JSON.parse(text); } catch (_) { /* fail closed below */ }
+      if (response.status >= 400 && response.status < 500) {
+        commandCellCoordinate = null;
+        clearCommandCellChoices("Refresh authoritative coordinates before another mutation.");
+        commandCellResult.textContent = text || `HTTP ${response.status}`;
+        commandCellStatus.textContent =
+          `${operation} was definitely rejected before commit (HTTP ${response.status}); refresh before continuing.`;
+        return;
+      }
+      if (!response.ok || !validCommandCellOperationResponse(result, operation)) {
+        throw new Error(`${response.status} unrecognized command-cell acknowledgment`);
+      }
+      if (Object.hasOwn(result, "evidenceStreamId") &&
+          result.evidenceStreamId !== commandCellEvidenceStreamId) {
+        throw new Error("command-cell evidence stream changed");
+      }
+      if (BigInt(result.revision) < BigInt(commandCellCoordinate.revision)) {
+        throw new Error("command-cell result revision moved backward");
+      }
+      definite = result;
+      commandCellResult.textContent = JSON.stringify(result, null, 2);
+      commandCellCoordinate = {
+        revision: result.revision,
+        closed: operation === "close",
+        activeCellDisplayId: result.cellDisplayId || null,
+        phase: operation === "prepare" ? "prepared" : result.outcome,
+        choices: []
+      };
+      commandCellOutcomeUnknown = false;
+      clearCommandCellChoices(operation === "close"
+        ? "Command-cell admission is closed."
+        : "Refreshing authoritative branch choices...");
+      if (operation === "close") {
+        commandCellStatus.textContent =
+          "Command-cell admission closed; the borrowed worker was not terminated.";
+      }
+    } catch (error) {
+      commandCellOutcomeUnknown = true;
+      if (commandCellCoordinate) commandCellCoordinate.choices = [];
+      clearCommandCellChoices("Mutation outcome is unknown; refresh authoritative state. Do not resend.");
+      commandCellResult.textContent = "No recognized operation acknowledgment was returned.";
+      commandCellStatus.textContent =
+        `${operation} outcome is unknown (${error.message}); refresh authoritative state and do not resend.`;
+    } finally {
+      commandCellBusy = false;
+      updateButtons();
+    }
+    if (definite && operation !== "close") {
+      const resultSummary = definite.committed
+        ? `${operation} committed with outcome ${definite.outcome}`
+        : `${operation} completed with outcome ${definite.outcome}`;
+      await refreshCommandCellFrame({
+        readingMessage: `${resultSummary}; refreshing authoritative coordinates...`,
+        successPrefix: resultSummary,
+        failurePrefix: `${resultSummary}. The result is definite and must not be retried`
+      });
+    }
+  };
+
+  const prepareCommandCell = () => {
+    const inputKey = commandCellInputMode.value === "canonical-value"
+      ? "inputCanonicalEdn" : "inputEdn";
+    return performCommandCellMutation("prepare", "/api/command-cell-prepare", {
+      version: 1,
+      evidenceStreamId: commandCellEvidenceStreamId,
+      revision: commandCellCoordinate.revision,
+      cellHandle: commandCellSelect.value,
+      [inputKey]: commandCellInput.value
+    });
+  };
+
+  function stepCommandCell(evidenceStreamId, revision, branchEdn) {
+    if (!commandCellCoordinate ||
+        commandCellEvidenceStreamId !== evidenceStreamId ||
+        commandCellCoordinate.revision !== revision) return;
+    return performCommandCellMutation("step", "/api/command-cell-step",
+      {version: 1, evidenceStreamId,
+       revision, branchEdn});
+  }
+
+  commandCellLoad.addEventListener("click", loadCommandCellCatalog);
+  commandCellRefresh.addEventListener("click", () => refreshCommandCellFrame());
+  commandCellPrepare.addEventListener("click", prepareCommandCell);
+  commandCellReconcile.addEventListener("click", () =>
+    performCommandCellMutation("reconcile", "/api/command-cell-reconcile",
+      {version: 1, evidenceStreamId: commandCellEvidenceStreamId}));
+  commandCellClose.addEventListener("click", () =>
+    performCommandCellMutation("close", "/api/command-cell-close",
+      {version: 1, evidenceStreamId: commandCellEvidenceStreamId}));
+  commandCellInput.addEventListener("input", updateButtons);
+  commandCellSelect.addEventListener("change", updateButtons);
+  commandCellInputMode.addEventListener("change", () => {
+    commandCellInputLabel.textContent = commandCellInputMode.value === "canonical-value"
+      ? "Canonical value EDN input (lossless bytes)" : "Input EDN (one form)";
+    updateButtons();
+  });
 
   inspect.addEventListener("click", async () => {
     if (busy) return;

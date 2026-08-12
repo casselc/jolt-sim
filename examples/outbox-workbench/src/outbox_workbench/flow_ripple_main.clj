@@ -8,9 +8,11 @@
 
   The returned lifecycle deliberately keeps ownership explicit. Stopping
   Ripple alone does not close the bridge or touch the worker. `shutdown!`
-  first closes bridge admission, then stops Ripple and gracefully stops and
-  reaps the worker, using forced termination only as a bounded fallback."
+  first stops Ripple admission, closes both command-cell and fixed-flow
+  admission, then gracefully stops and reaps the worker, using forced
+  termination only as a bounded fallback."
   (:require [clojure.edn :as edn]
+            [jolt.sim.command-cell-session :as command-cell-session]
             [jolt.sim.eval-session :as eval-session]
             [jolt.sim.fixtures.outbox-delivery :as outbox]
             [jolt.sim.flow :as flow]
@@ -25,6 +27,9 @@
 
 (defonce ^:private active-workbench* (atom nil))
 (def ^:private end-of-config (Object.))
+
+(defn- fresh-evidence-stream-id []
+  (str "outbox-live-" (System/currentTimeMillis) "-" (System/nanoTime)))
 
 (defn active-bridge
   "Returns the exact flow/effect bridge owned by the foreground workbench.
@@ -47,6 +52,14 @@
   []
   (if-let [workbench @active-workbench*]
     (:workbench-session workbench)
+    (throw (ex-info "No foreground Outbox flow workbench is active"
+                    {:type ::not-running}))))
+
+(defn active-command-cells
+  "Returns the same UI-neutral CommandCellSession attached to Ripple."
+  []
+  (if-let [workbench @active-workbench*]
+    (:command-cell-session workbench)
     (throw (ex-info "No foreground Outbox flow workbench is active"
                     {:type ::not-running}))))
 
@@ -183,6 +196,7 @@
   (let [sim (interactive-flow submit-command)
         worker* (volatile! nil)
         bridge* (volatile! nil)
+        command-cells* (volatile! nil)
         eval-session* (volatile! nil)
         server* (volatile! nil)
         startup-phase* (volatile! :retained-start)]
@@ -190,9 +204,10 @@
       (let [worker (retained/start! retained-config)
             _ (vreset! worker* worker)
             _ (vreset! startup-phase* :bridge-attach)
+            worker-service (effect-session/retained-worker-service worker)
             bridge (effect-session/attach!
                     {:sim sim
-                     :worker (effect-session/retained-worker-service worker)
+                     :worker worker-service
                      :effect-kind :example.outbox/command})
             _ (vreset! bridge* bridge)
             _ (vreset! startup-phase* :eval-session-start)
@@ -200,18 +215,26 @@
             _ (vreset! eval-session* eval-session)
             items (workbench-session/start
                    {:kind-registry workbench-kind-registry})
+            command-cells
+            (flow-retained/start-command-cell-session
+             {:worker worker-service
+              :workbench items
+              :evidence-stream-id (fresh-evidence-stream-id)})
+            _ (vreset! command-cells* command-cells)
             _ (vreset! startup-phase* :viewer-start)
             server (viewer/start-workbench!
                     viewer-config
                     {:flow-effect-bridge bridge
                      :retained-process worker
                      :eval-session eval-session
-                     :workbench-session items})
+                     :workbench-session items
+                     :command-cell-session command-cells})
             _ (vreset! server* server)]
         {:worker worker
          :bridge bridge
          :eval-session eval-session
          :workbench-session items
+         :command-cell-session command-cells
          :server server
          :viewer-stopped? (atom false)
          :stopping? (atom false)
@@ -237,6 +260,13 @@
               (catch :default error
                 (swap! cleanup-errors conj
                        {:phase :bridge-close :message (ex-message error)}))))
+          (when-let [command-cells @command-cells*]
+            (try
+              (command-cell-session/close! command-cells)
+              (catch :default error
+                (swap! cleanup-errors conj
+                       {:phase :command-cell-close
+                        :message (ex-message error)}))))
           (when-let [session @eval-session*]
             (try
               (eval-session/close! session)
@@ -289,27 +319,34 @@
         result))))
 
 (defn shutdown!
-  "Closes bridge admission, stops Ripple, and gracefully stops/reaps worker.
+  "Stops Ripple, closes both flow admissions, and stops/reaps the worker.
 
   The operation is idempotent. Closing the bridge never terminates its
   borrowed worker; this launcher performs the worker transition afterward.
   EvalSession closure is intentionally omitted because an arbitrary evaluation
   may own its lock forever; this command-line-owned session is reclaimed when
   its process exits."
-  [{:keys [bridge worker stopping? stop-result] :as workbench}]
+  [{:keys [bridge worker command-cell-session stopping? stop-result]
+    :as workbench}]
   (if (compare-and-set! stopping? false true)
-    (let [bridge-error
-          (try
-            (effect-session/close! bridge)
-            nil
-            (catch :default error
-              {:phase :bridge-close :message (ex-message error)}))
-          viewer-error
+    (let [viewer-error
           (try
             (stop-ripple! workbench)
             nil
             (catch :default error
               {:phase :viewer-stop :message (ex-message error)}))
+          command-cell-error
+          (try
+            (command-cell-session/close! command-cell-session)
+            nil
+            (catch :default error
+              {:phase :command-cell-close :message (ex-message error)}))
+          bridge-error
+          (try
+            (effect-session/close! bridge)
+            nil
+            (catch :default error
+              {:phase :bridge-close :message (ex-message error)}))
           child
           (try
             (stop-worker! worker)
@@ -321,6 +358,8 @@
                :errors [{:phase :worker-stop
                          :message (ex-message error)}]}))
           result (cond-> {:child child}
+                   command-cell-error
+                   (assoc :command-cell-error command-cell-error)
                    bridge-error (assoc :bridge-error bridge-error)
                    viewer-error (assoc :viewer-error viewer-error))]
       (deliver stop-result result)

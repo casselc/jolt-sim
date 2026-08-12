@@ -45,11 +45,12 @@
 (def ^:private error-text-limit 4096)
 (def ^:private wait-poll-ms 10)
 
-(declare snapshot command! reconcile! terminate!)
+(declare snapshot command! reconcile! reconcile-sequence! terminate!)
 
 (def ^:private snapshot-operation (Object.))
 (def ^:private command-operation (Object.))
 (def ^:private reconcile-operation (Object.))
+(def ^:private reconcile-sequence-operation (Object.))
 (def ^:private terminate-operation (Object.))
 
 (defn- invalid-config [reason data]
@@ -454,7 +455,8 @@
       :ready current
       :uncertain
       (throw (transport-error :uncertain-command current
-                              {:sequence (:uncertain-sequence current)}))
+                              {:sequence (:uncertain-sequence current)
+                               :published? false}))
       :exited
       (throw (transport-error :child-exited current
                               {:exit (:exit current)}))
@@ -522,6 +524,7 @@
                  :uncertain-sequence sequence)
           (throw (transport-error :invalid-receipt @state
                                   {:sequence sequence
+                                   :published? true
                                    :error (error-summary
                                            :receipt-protocol error)}))))
 
@@ -530,6 +533,7 @@
             after (swap! state observe-exit)]
         (throw (transport-error :child-exited after
                                 {:sequence sequence :exit (:exit after)
+                                 :published? true
                                  :diagnostics (diagnostics paths)})))
 
       :deadline
@@ -538,6 +542,7 @@
                :uncertain-sequence sequence)
         (throw (transport-error :receipt-deadline @state
                                 {:sequence sequence
+                                 :published? true
                                  :timeout-ms timeout-ms}))))))
 
 (defn- command-state! [state value timeout-ms]
@@ -553,6 +558,7 @@
                  :uncertain-sequence sequence)
           (throw (transport-error :publication-ambiguous @state
                                   {:sequence sequence
+                                   :published? true
                                    :error (error-summary
                                            :command-publication
                                            move-error)})))
@@ -580,6 +586,7 @@
               (if published? :publication-ambiguous :publication-failed)
               @state
               {:sequence sequence
+               :published? published?
                :error (error-summary :command-publication error)}))))))))
 
 (defn command!
@@ -617,6 +624,38 @@
    (handle reconcile-operation nil))
   ([handle timeout-ms]
    (handle reconcile-operation timeout-ms)))
+
+(defn- reconcile-sequence-state! [state sequence timeout-ms]
+  (validate-timeout! :timeout-ms timeout-ms)
+  (when-not (non-negative-integer? sequence)
+    (throw (invalid-config :invalid-sequence {:sequence sequence})))
+  (let [{:keys [paths instance-id uncertain-sequence] :as current} @state
+        path (receipt-path paths sequence)]
+    (cond
+      (= sequence uncertain-sequence)
+      (await-receipt! state sequence timeout-ms)
+
+      ;; Another capability may already have reconciled this exact sequence.
+      ;; Receipts are immutable, instance-bound evidence. Return the exact
+      ;; historical receipt without changing a newer ready/uncertain state.
+      (fs/exists? path)
+      (decode-receipt instance-id sequence (read-document path))
+
+      :else
+      (throw (transport-error :sequence-not-reconcilable current
+                              {:sequence sequence})))))
+
+(defn reconcile-sequence!
+  "Returns the exact receipt for `sequence` without republishing it.
+
+  If that sequence is currently uncertain this waits and settles the retained
+  coordinate. If another capability already settled it, the immutable receipt
+  is returned idempotently without disturbing any newer command or
+  uncertainty."
+  ([handle sequence]
+   (handle reconcile-sequence-operation nil sequence))
+  ([handle sequence timeout-ms]
+   (handle reconcile-sequence-operation timeout-ms sequence)))
 
 (defn- terminate-state! [state]
   (let [current (swap! state observe-exit)]
@@ -666,9 +705,16 @@
                       {:type ::invalid-operation})))))
       (invoke [_ operation argument value]
         (locking lock
-          (if (identical? operation command-operation)
+          (cond
+            (identical? operation command-operation)
             (command-state!
              state value (or argument (:command-timeout-ms @state)))
+
+            (identical? operation reconcile-sequence-operation)
+            (reconcile-sequence-state!
+             state value (or argument (:command-timeout-ms @state)))
+
+            :else
             (throw
              (ex-info "unknown retained process capability operation"
                       {:type ::invalid-operation})))))

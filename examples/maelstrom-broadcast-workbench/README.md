@@ -53,6 +53,28 @@ retained Jolt worker:
 
 ![Partitioned connection details and restore action](docs/ripple-broadcast-edge-actions.png)
 
+## Generic command cells
+
+The same workbench exposes each exact Broadcast operation as a declared
+Command Cell. Select `example.broadcast/bootstrap`, enter `{:op :bootstrap}`,
+and choose **Prepare exact input**. Preparation evaluates the pure successor
+and does not publish a worker command. **Commit branch 0 once** publishes the
+server-issued branch exactly once. A stale revision or session epoch is
+rejected without publication.
+
+This prepared capture shows the exact branch before publication:
+
+![Prepared Broadcast command cell](docs/ripple-broadcast-command-cell-prepared.png)
+
+This capture shows the definite Bootstrap result after the real retained child
+accepted sequence 1:
+
+![Committed Broadcast command cell](docs/ripple-broadcast-command-cell-running.png)
+
+The catalog, input/branch protocol, Workbench evidence, and browser controls are
+generic. Broadcast supplies only its closed schemas, pure compiler, receipt
+projector, and borrowed worker capability.
+
 ## Interactive connection regime and retry
 
 Start with `{:op :inspect}` and `{:op :bootstrap}`. Bootstrap moves the
@@ -183,8 +205,9 @@ attempts graceful cleanup, and uses the retained supervisor's TERM/forced-kill
 and reap path rather than exiting while the child is merely owned by a future.
 
 The dedicated Playwright acceptance installs no route mocks. It launches this
-real workbench, controls the retained child from both panels, and always retains
-trace, video, screenshots, and child artifacts. Its spec lives under
+real workbench, prepares and commits Bootstrap through the generic Command Cell
+panel, controls the same retained child through the topology and Jolt REPL, and
+always retains trace, video, screenshots, and child artifacts. Its spec lives under
 `viewer/test-browser-real`, outside the default mock-backed browser suite:
 
 ```sh

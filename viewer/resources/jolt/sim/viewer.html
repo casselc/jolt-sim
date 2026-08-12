@@ -53,6 +53,16 @@
     .workbench-item > header { border: 0; padding: 0; display: flex; gap: .7rem; align-items: center; flex-wrap: wrap; }
     .workbench-item > header h3 { margin: 0 auto 0 0; }
     .workbench-item-meta { font-family: ui-monospace, monospace; font-size: .85rem; opacity: .8; }
+    #command-cell-panel { min-width: 0; max-width: 100%; overflow: hidden; }
+    #command-cell-controls { display: flex; gap: .5rem; align-items: end; flex-wrap: wrap; }
+    #command-cell-controls label { min-width: min(24rem, 100%); }
+    #command-cell-controls select { max-width: 100%; }
+    #command-cell-input { width: min(100%, 70rem); min-height: 7rem; box-sizing: border-box; font-family: ui-monospace, monospace; }
+    #command-cell-panel pre { max-width: 100%; box-sizing: border-box; overflow-wrap: anywhere; }
+    #command-cell-branches { list-style: none; margin: .7rem 0; padding: 0; display: grid; gap: .55rem; }
+    .command-cell-branch { border-left: .3rem solid #678; background: #8881; padding: .55rem .7rem; }
+    .command-cell-branch button { width: 100%; text-align: left; }
+    .command-cell-branch pre { margin: .45rem 0 0; }
     @media (max-width: 700px) { .controls { grid-template-columns: 1fr; } }
   </style>
 </head>
@@ -90,6 +100,41 @@
       <button id="workbench-refresh" data-testid="workbench-refresh" type="button" disabled>Refresh items</button>
       <span id="workbench-status" data-testid="workbench-status" role="status" aria-live="polite">Enter the session capability. The server may not have a workbench session attached.</span>
       <div id="workbench-items" data-testid="workbench-items"></div>
+    </section>
+    <section id="command-cell-panel" aria-labelledby="command-cell-heading">
+      <h2 id="command-cell-heading">Command cells</h2>
+      <p class="muted">Select one server-declared cell, prepare it from one EDN form, inspect its pure successor previews, and commit one exact server-issued branch. Ripple never derives an application command and never retries a mutation automatically. An uncertain publication can only be reconciled without resending.</p>
+      <div id="command-cell-controls">
+        <button id="command-cell-load" data-testid="command-cell-load" type="button" disabled>Load cells</button>
+        <button id="command-cell-refresh" data-testid="command-cell-refresh" type="button" disabled>Refresh frame</button>
+        <label>Declared cell
+          <select id="command-cell-select" data-testid="command-cell-select" disabled>
+            <option value="">No command cells loaded.</option>
+          </select>
+        </label>
+        <label>Input encoding
+          <select id="command-cell-input-mode" data-testid="command-cell-input-mode">
+            <option value="ordinary" selected>Ordinary EDN</option>
+            <option value="canonical-value">Canonical value EDN (lossless bytes)</option>
+          </select>
+        </label>
+        <button id="command-cell-prepare" data-testid="command-cell-prepare" type="button" disabled>Prepare exact input</button>
+        <button id="command-cell-reconcile" data-testid="command-cell-reconcile" type="button" disabled>Reconcile uncertainty</button>
+        <button id="command-cell-close" data-testid="command-cell-close" type="button" disabled>Close admission</button>
+      </div>
+      <label id="command-cell-input-label" for="command-cell-input">Input EDN (one form)</label>
+      <textarea id="command-cell-input" data-testid="command-cell-input" spellcheck="false" placeholder="{:op :inspect}"></textarea>
+      <span id="command-cell-status" data-testid="command-cell-status" role="status" aria-live="polite">Enter the session capability. The server may not have command cells attached.</span>
+      <h3>Pure branch previews</h3>
+      <ol id="command-cell-branches" data-testid="command-cell-branches"><li class="muted">No command-cell frame loaded.</li></ol>
+      <details>
+        <summary>Current canonical frame</summary>
+        <pre id="command-cell-frame" data-testid="command-cell-frame">No command-cell frame loaded.</pre>
+      </details>
+      <details>
+        <summary>Last exact operation result</summary>
+        <pre id="command-cell-result" data-testid="command-cell-result">No command-cell operation sent.</pre>
+      </details>
     </section>
     <section id="eval-panel" aria-labelledby="eval-heading">
       <h2 id="eval-heading">Jolt REPL</h2>

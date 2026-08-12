@@ -11,6 +11,7 @@
   receipt as ordinary accumulated data. It performs no worker call and does
   not reinterpret Broadcast protocol behavior."
   (:require [jolt.fs :as fs]
+            [jolt.sim.command-cell-session :as command-cell-session]
             [jolt.sim.flow :as flow]
             [jolt.sim.kernel :as kernel]))
 
@@ -209,3 +210,53 @@
   "Runs the pure receipt continuation and returns its accumulated result."
   [value]
   (get-in (kernel/run (receipt-flow value)) [:tasks 0 :result]))
+
+;; ---- generic CommandCellSession adapter -----------------------------------
+
+(def ^:private command-cell-ids
+  {:inspect :example.broadcast/inspect
+   :bootstrap :example.broadcast/bootstrap
+   :step :example.broadcast/step
+   :set-connection-regime :example.broadcast/set-connection-regime
+   :heal :example.broadcast/heal
+   :retry :example.broadcast/retry
+   :read :example.broadcast/read
+   :stop :example.broadcast/stop})
+
+(def command-cell-descriptors
+  "Data-only catalog entries for the eight exact Broadcast commands."
+  (into {}
+        (map (fn [[operation cell-id]]
+               [cell-id
+                {:effect-kind effect-kind
+                 :input-schema
+                 (get-in command-specs [operation :schema :input])
+                 :output-schema receipt-observation-schema
+                 :projector :example.broadcast/receipt-observation
+                 ;; Existing topology presenters consume the full tagged
+                 ;; retained value, not this bounded receipt projection.
+                 :suggested-kind nil}]))
+        command-cell-ids))
+
+(defn start-command-cell-session
+  "Starts the generic one-active-cell owner over one borrowed Broadcast worker.
+
+  Config is exact. `:worker` is the existing closed flow-effect worker service;
+  `:workbench` is a caller-owned WorkbenchSession shared with Ripple or a REPL.
+  This factory starts and terminates neither capability."
+  [{:keys [worker workbench evidence-stream-id] :as config}]
+  (when-not (and (map? config)
+                 (= #{:worker :workbench :evidence-stream-id}
+                    (set (keys config))))
+    (throw (ex-info "Broadcast command-cell config has the wrong shape"
+                    {:type ::invalid-command-cell-config})))
+  (let [cell-ids (vals command-cell-ids)]
+    (command-cell-session/start
+     {:evidence-stream-id evidence-stream-id
+      :descriptors command-cell-descriptors
+      :trusted
+      {:compilers (zipmap cell-ids (repeat command-flow))
+       :workers (zipmap cell-ids (repeat worker))
+       :projectors
+       {:example.broadcast/receipt-observation receipt-observation}
+       :workbench (command-cell-session/workbench-service workbench)}})))

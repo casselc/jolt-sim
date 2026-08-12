@@ -125,6 +125,36 @@
   {:extra-paths ["test"]
    :main-opts ["-m" "jolt.sim.workbench-session-test-main"]}
 
+  ;; UI-neutral one-active-command-cell owner. The focused gate uses pure
+  ;; flow compilers and scripted worker closures; it starts no child process,
+  ;; browser, native I/O, or nested worker.
+  :command-cell-session-test
+  {:extra-paths ["test"]
+   :main-opts ["-m" "jolt.sim.command-cell-session-test-main"]}
+
+  ;; Shared pure contract for the real Broadcast and Outbox command-cell
+  ;; adapters. It uses scripted worker services and the existing application
+  ;; compilers/projectors; no child process, native I/O, browser, or app stack
+  ;; is started.
+  :command-cell-adapter-conformance-test
+  {:extra-paths ["test"
+                 "examples/maelstrom-broadcast-workbench/src"
+                 "examples/outbox-workbench/src"]
+   :main-opts
+   ["-m" "jolt.sim.command-cell-adapter-conformance-test-main"]}
+
+  ;; Process-free launcher composition contract. All worker, viewer, and
+  ;; lifecycle boundaries are replaced by deterministic seams.
+  :command-cell-launcher-lifecycle-test
+  {:extra-paths ["test"
+                 "examples/maelstrom-broadcast-workbench/src"
+                 "examples/outbox-workbench/src"]
+   :extra-deps
+   {io.github.casselc/outbox-workbench
+    {:local/root "examples/outbox-workbench"}}
+   :main-opts
+   ["-m" "jolt.sim.command-cell-launcher-lifecycle-test-main"]}
+
   ;; Focused parent/child retained-process protocol gate. It uses only local
   ;; source and an in-process worker fixture; the real outbox worker remains a
   ;; separate integration alias because it carries the full ecosystem graph.
