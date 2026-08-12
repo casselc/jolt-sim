@@ -392,7 +392,7 @@
 
   ;; Unchanged public jolt-http (README Hello World) application code over the
   ;; deterministic POSIX loopback FFI pack. Override jolt-http's historical
-  ;; transport pins with the reviewed Jolt v0.7.3-compatible jolt-tcp and
+  ;; transport pins with the reviewed Jolt v0.7.5-compatible jolt-tcp and
   ;; jolt-net commits, so CI needs no sibling checkout or moving branch.
   :http-hello-test
   {:extra-paths ["test"]

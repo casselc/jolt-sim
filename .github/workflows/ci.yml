@@ -15,11 +15,11 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # Upstream v0.7.3 plus the reviewed simulation controller, exact FFI,
+  # Upstream v0.7.5 plus the reviewed simulation controller, exact FFI,
   # evaluator, fiber, timer, and image hooks required by the gates below.
   # Do not replace this with a release binary: the simulation ABI is an exact
   # source/seed contract and the public release does not provide these hooks.
-  JOLT_CORE_SHA: 4773b2d22281485f1f99b53c09f565b52d875591
+  JOLT_CORE_SHA: 0e1b202032f49a895b3e246b725f8d994b73556d
   CHEZ_RELEASE_TAG: chez-ci-10.4.1.1
   MAELSTROM_RELEASE: v0.2.4
   MAELSTROM_ARCHIVE_SHA256: 301ec71d6b12af0d765edb413f5cf5aa1046b5609bd4e31376a0b549548e5799

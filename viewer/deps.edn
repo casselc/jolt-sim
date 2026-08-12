@@ -9,7 +9,7 @@
    :git/sha "96bd0fc93f1a2c77128d06f74802dd2a4631c0d4"}
 
   ;; Override jolt-http's older transitive transport pins with the reviewed
-  ;; Jolt v0.7.3-compatible pair exercised by the canonical application aliases
+  ;; Jolt v0.7.5-compatible pair exercised by the canonical application aliases
   ;; in the repository root.
   io.github.casselc/jolt-tcp
   {:git/url "https://github.com/casselc/jolt-tcp.git"
