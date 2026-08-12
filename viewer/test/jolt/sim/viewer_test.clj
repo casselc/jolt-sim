@@ -29,6 +29,7 @@
 (def session-instance-id "ripple-session-instance-0001")
 (def scenario 'example.viewer/replay-case)
 (def other-scenario 'example.viewer/not-allowed)
+(def command-cell-test-evidence-stream "viewer-command-cell-test")
 
 (defn config []
   {:port 8788
@@ -118,7 +119,12 @@
       :headers {"content-type" "application/json"
                 "content-length" (str (count (.getBytes ^String text "UTF-8")))
                 "x-jolt-sim-capability" supplied-token}
-      :body (body [(.getBytes ^String text "UTF-8")])})))
+     :body (body [(.getBytes ^String text "UTF-8")])})))
+
+(defn command-cell-post-request [uri value]
+  (json-post-request uri
+                     (assoc value "evidenceStreamId"
+                            command-cell-test-evidence-stream)))
 
 (defn run-preset []
   {:id :example.viewer/outbox-run
@@ -2783,7 +2789,7 @@
 
 (deftest start-session-installs-only-the-read-frame-capability
   (let [s (session/start (session-sim-config))
-        captured (atom nil)
+        captured (atom [])
         start-var (resolve 'jolt.sim.viewer/start!)]
     (with-redefs-fn
       {start-var
@@ -5675,25 +5681,60 @@
       (is (= [:server] @stops))
       (is (zero? @close-calls)))))
 
+(defn- command-cell-test-branches [revision]
+  [{:branch {:revision 7 :action [:run 0]}
+    :site nil
+    :coordinate {:revision revision
+                 :branch {:revision 7 :action [:run 0]}}
+    :status :ready
+    :projection {:branch :run}
+    :events []
+    :evidence-stream-id "viewer-command-cell-test"}
+   {:branch {:revision 7 :action [:advance 1]}
+    :site nil
+    :coordinate {:revision revision
+                 :branch {:revision 7 :action [:advance 1]}}
+    :status :ready
+    :projection {:branch :advance}
+    :events []
+    :evidence-stream-id "viewer-command-cell-test"}])
+
+(defn- command-cell-test-frame
+  ([] (command-cell-test-frame (command-cell-test-branches 3)))
+  ([branches]
+   {:jolt.sim.command-cell-view/type :frame
+    :kind :jolt.sim.kind/command-cell-frame
+    :version 1
+    :evidence-stream-id "viewer-command-cell-test"
+    :revision 3
+    :closed? false
+    :catalog {:count 1}
+    :active {:revision 3 :cell-id :test/deliver :phase :prepared}
+    :cell {:cell-id :test/deliver :prepared-revision 3 :phase :prepared
+           :input {:op :deliver}}
+    :branches branches}))
+
+(defn- command-cell-test-descriptor [id]
+  {:id id
+   :effect-kind :test/delivery
+   :input-schema {:kind :test/input}
+   :output-schema {:kind :test/output}
+   :projector :test/project
+   :suggested-kind nil})
+
+(defn- command-cell-test-catalog
+  ([] (command-cell-test-catalog [(command-cell-test-descriptor :test/deliver)]))
+  ([cells]
+   {:jolt.sim.command-cell-view/type :catalog-frame
+    :kind :jolt.sim.kind/command-cell-catalog
+    :version 1
+    :evidence-stream-id "viewer-command-cell-test"
+    :count (count cells)
+    :cells cells}))
+
 (defn- command-cell-test-services [calls]
-  (let [frame
-        {:jolt.sim.command-cell-view/type :frame
-         :kind :jolt.sim.kind/command-cell-frame
-         :version 1
-         :evidence-stream-id "viewer-command-cell-test"
-         :revision 3
-         :closed? false
-         :catalog {:count 1}
-         :active {:revision 3 :cell-id :test/deliver :phase :definite}
-         :cell {:cell-id :test/deliver :phase :definite}
-         :branches []}
-        catalog
-        {:jolt.sim.command-cell-view/type :catalog-frame
-         :kind :jolt.sim.kind/command-cell-catalog
-         :version 1
-         :evidence-stream-id "viewer-command-cell-test"
-         :count 1
-         :cells [{:id :test/deliver}]}
+  (let [frame (command-cell-test-frame)
+        catalog (command-cell-test-catalog)
         operation
         (fn [op argument]
           (swap! calls conj [op argument])
@@ -5709,7 +5750,12 @@
            :status (case op :prepare :prepared :step :uncertain
                          :reconcile :ready :close :closed)
            :result
-           (cond-> {:operation op :revision 2 :cell-id :test/deliver
+           (cond-> {:kind (case op
+                            :prepare :jolt.sim.kind/command-cell-prepare-result
+                            :step :jolt.sim.kind/command-cell-step-result
+                            :reconcile :jolt.sim.kind/command-cell-reconcile-result
+                            :close :jolt.sim.kind/command-cell-close-result)
+                    :operation op :revision 2 :cell-id :test/deliver
                     :status (case op :prepare :prepared :step :uncertain
                                   :reconcile :ready :close :closed)}
              (contains? #{:step :reconcile} op) (assoc :committed? true))
@@ -5721,8 +5767,8 @@
       #(do (swap! calls conj [:catalog nil]) catalog)
       :prepare-command-cell! #(operation :prepare %)
       :step-command-cell! #(operation :step %)
-      :reconcile-command-cell! #(operation :reconcile nil)
-      :close-command-cell! #(operation :close nil)})))
+      :reconcile-command-cell! #(operation :reconcile %)
+      :close-command-cell! #(operation :close %)})))
 
 (deftest command-cell-routes-are-closed-and-preserve-uncertain-commit
   (let [calls (atom [])
@@ -5737,21 +5783,23 @@
         frame (handler (get-request "/api/command-cell-frame"))
         prepared
         (handler
-         (json-post-request
+         (command-cell-post-request
           "/api/command-cell-prepare"
-          {"version" 1 "revision" "0" "cellId" "test/deliver"
+          {"version" 1 "revision" "0" "cellHandle" "0"
            "inputCanonicalEdn" input-canonical}))
         stepped
         (handler
-         (json-post-request
+         (command-cell-post-request
           "/api/command-cell-step"
           {"version" 1 "revision" "1"
            "branchEdn" "{:revision 0 :action [:run 0]}"}))
         reconciled
-        (handler (json-post-request "/api/command-cell-reconcile"
+        (handler (command-cell-post-request "/api/command-cell-reconcile"
                                     {"version" 1}))
-        closed (handler (json-post-request "/api/command-cell-close"
+        closed (handler (command-cell-post-request "/api/command-cell-close"
                                            {"version" 1}))
+        catalog-wire (json/read-str (:body catalog))
+        frame-wire (json/read-str (:body frame))
         step-wire (json/read-str (:body stepped))]
     (is (= 403 (:status forbidden)))
     (is (= [200 200 200 200 200 200]
@@ -5759,6 +5807,48 @@
     (is (= "uncertain" (get step-wire "outcome")))
     (is (true? (get step-wire "committed")))
     (is (= "available" (get step-wire "frameStatus")))
+    (is (= #{"version" "evidenceStreamId" "cellCount" "cells" "catalogEdn"}
+           (set (keys catalog-wire))))
+    (is (= "1" (get catalog-wire "cellCount")))
+    (is (= [{"handle" "0"
+             "id" "test/deliver"
+             "effectKind" "test/delivery"
+             "suggestedKind" nil
+             "descriptorEdn"
+             (trace/canonical-edn (command-cell-test-descriptor :test/deliver))}]
+           (get catalog-wire "cells")))
+    (is (= #{"version" "evidenceStreamId" "revision" "closed"
+             "activeCellDisplayId" "phase" "branchCount" "choices" "frameEdn"}
+           (set (keys frame-wire))))
+    (is (= "2" (get frame-wire "branchCount")))
+    (is (= ["0" "1"] (mapv #(get % "id")
+                              (get frame-wire "choices"))))
+    (is (= ["3" "3"] (mapv #(get % "revision")
+                              (get frame-wire "choices"))))
+    ;; The operation result is older than its coherent refreshed frame. The
+    ;; returned choices must nevertheless describe that refreshed frame, not
+    ;; the operation's authoritative result coordinate.
+    (is (= #{"version" "operation" "outcome" "committed"
+             "evidenceStreamId" "revision" "cellDisplayId" "resultEdn"
+             "frameStatus" "frameEdn" "frameErrorEdn" "branchCount"
+             "choices" "truncated"}
+           (set (keys step-wire))))
+    (is (= "2" (get step-wire "branchCount")))
+    (is (= ["0" "1"] (mapv #(get % "id")
+                              (get step-wire "choices"))))
+    (let [choice (first (get step-wire "choices"))
+          direct
+          (handler
+           (command-cell-post-request
+            "/api/command-cell-step"
+            {"version" 1 "revision" (get choice "revision")
+             "branchEdn" (get choice "branchEdn")}))]
+      ;; The refreshed frame is newer than the operation receipt (3 vs 2),
+      ;; and its choice carries the exact outer coordinate needed to post it.
+      (is (= "3" (get choice "revision")))
+      (is (= 200 (:status direct)))
+      (is (= (edn/read-string (get choice "branchEdn"))
+             (:branch (second (last @calls))))))
     (let [[_ prepared-argument] (nth @calls 2)]
       (is (= {:op :deliver} (dissoc (:input prepared-argument) :payload)))
       (is (= input-canonical
@@ -5766,19 +5856,218 @@
               (trace/canonical-value (:input prepared-argument)
                                      [:test :delegated-input])))))))
 
+(deftest command-cell-browser-wire-keeps-cells-and-choices-inert
+  (let [calls (atom [])
+        services (command-cell-test-services calls)
+        unusual-id (keyword "odd.namespace" "dash_and.dot")
+        catalog (command-cell-test-catalog
+                 [(command-cell-test-descriptor unusual-id)])
+        frame (command-cell-test-frame)
+        handler (viewer/make-handler
+                 (config)
+                 (assoc services
+                        :read-command-cell-catalog (fn [] catalog)
+                        :read-command-cell-frame (fn [] frame)))
+        catalog-wire
+        (json/read-str (:body (handler (get-request "/api/command-cell-catalog"))))
+        frame-wire
+        (json/read-str (:body (handler (get-request "/api/command-cell-frame"))))
+        empty-handler
+        (viewer/make-handler
+         (config)
+         (assoc services :read-command-cell-frame
+                #(command-cell-test-frame [])))
+        empty-wire
+        (json/read-str
+         (:body (empty-handler (get-request "/api/command-cell-frame"))))
+        choice (first (get frame-wire "choices"))
+        stepped
+        (handler
+         (command-cell-post-request "/api/command-cell-step"
+                            {"version" 1 "revision" (get choice "revision")
+                             "branchEdn" (get choice "branchEdn")}))]
+    (is (= "0" (get-in catalog-wire ["cells" 0 "handle"])))
+    (is (= "odd.namespace/dash_and.dot"
+           (get-in catalog-wire ["cells" 0 "id"])))
+    (is (= #{"handle" "id" "effectKind" "suggestedKind" "descriptorEdn"}
+           (set (keys (get-in catalog-wire ["cells" 0])))))
+    (is (= "2" (get frame-wire "branchCount")))
+    (is (= ["0" "1"] (mapv #(get % "id")
+                              (get frame-wire "choices"))))
+    (is (= "3" (get choice "revision")))
+    (is (= "0" (get empty-wire "branchCount")))
+    (is (= [] (get empty-wire "choices")))
+    ;; The browser never parses or reconstructs this command. Exact response
+    ;; text can be echoed to the existing step route and arrives unchanged as
+    ;; the branch selected by the server-issued choice.
+    (is (= 200 (:status stepped)))
+    (is (= (edn/read-string (get choice "branchEdn"))
+           (:branch (second (last @calls)))))))
+
+(deftest command-cell-catalog-handles-survive-ambiguous-or-long-keyword-display
+  (let [left (keyword "a/b" "c")
+        right (keyword "a" "b/c")
+        long-id (keyword "long" (apply str (repeat 129 "x")))
+        catalog (command-cell-test-catalog
+                 [(command-cell-test-descriptor left)
+                  (command-cell-test-descriptor right)
+                  (command-cell-test-descriptor long-id)])
+        calls (atom [])
+        handler
+        (viewer/make-handler
+         (config)
+         (assoc (command-cell-test-services calls)
+                :read-command-cell-catalog (fn [] catalog)))
+        wire
+        (json/read-str (:body (handler (get-request "/api/command-cell-catalog"))))]
+    ;; The two legal source keywords can have the same advisory printer text.
+    ;; Handles remain separate, ordered, and are the only accepted authority.
+    (is (= ["0" "1" "2"] (mapv #(get % "handle") (get wire "cells"))))
+    (is (= (get-in wire ["cells" 0 "id"])
+           (get-in wire ["cells" 1 "id"])))
+    (is (nil? (get-in wire ["cells" 2 "id"])))))
+
+(deftest command-cell-startup-handle-map-never-uses-keyword-display-text
+  (let [left (keyword "a/b" "c")
+        right (keyword "a" "b/c")
+        captured (atom [])
+        catalog {:jolt.sim.command-cell-view/type :catalog-frame
+                 :kind :jolt.sim.kind/command-cell-catalog
+                 :version 1 :evidence-stream-id "handles"
+                 :count 2 :cells [{:id left} {:id right}]}
+        installed (atom nil)]
+    (with-redefs [command-cell-view/catalog-frame (fn [_] catalog)
+                  command-cell-view/prepare-frame!
+                  (fn [_ request] (swap! captured conj request) :prepared)
+                  viewer/start! (fn [_ services]
+                                  (reset! installed services) :server)]
+      (viewer/start-workbench! (config) {:command-cell-session :opaque})
+      ((:prepare-command-cell! @installed)
+       {:evidence-stream-id "handles"
+        :revision 0 :cell-handle "0" :input {:op :deliver}})
+      ((:prepare-command-cell! @installed)
+       {:evidence-stream-id "handles"
+        :revision 0 :cell-handle "1" :input {:op :deliver}})
+      (is (= [left right] (mapv :cell-id @captured))))))
+
+(deftest command-cell-browser-wire-accepts-one-human-input-edn-arm
+  (let [calls (atom [])
+        handler (viewer/make-handler (config)
+                                     (command-cell-test-services calls))
+        ordinary
+        (handler
+         (command-cell-post-request
+          "/api/command-cell-prepare"
+          {"version" 1 "revision" "0" "cellHandle" "0"
+           "inputEdn" "{:op :deliver :payload [0 255]}"}))
+        ambiguous
+        (handler
+         (command-cell-post-request
+          "/api/command-cell-prepare"
+          {"version" 1 "revision" "0" "cellHandle" "0"
+           "inputEdn" "{:op :deliver}"
+           "inputCanonicalEdn"
+           (trace/canonical-edn
+            (trace/canonical-value {:op :deliver}
+                                   [:test :input]))}))]
+    (is (= 200 (:status ordinary)))
+    (is (= 400 (:status ambiguous)))
+    (is (= {:op :deliver :payload [0 255]}
+           (:input (second (first @calls)))))
+    (is (= 1 (count @calls)))))
+
+(deftest command-cell-browser-wire-rejects-extra-form-and-metadata-input
+  (let [calls (atom [])
+        handler (viewer/make-handler (config)
+                                     (command-cell-test-services calls))
+        trailing
+        (handler
+         (command-cell-post-request
+          "/api/command-cell-prepare"
+          {"version" 1 "revision" "0" "cellHandle" "0"
+           "inputEdn" "{:op :deliver} :second-form"}))
+        metadata
+        (handler
+         (command-cell-post-request
+          "/api/command-cell-prepare"
+          {"version" 1 "revision" "0" "cellHandle" "0"
+           "inputEdn" "^{:browser true} {:op :deliver}"}))]
+    (is (= [400 400] (mapv :status [trailing metadata])))
+    (is (empty? @calls))))
+
+(deftest command-cell-browser-wire-restores-fresh-canonical-byte-inputs
+  (let [calls (atom [])
+        handler (viewer/make-handler (config)
+                                     (command-cell-test-services calls))
+        input-edn
+        (trace/canonical-edn
+         (trace/canonical-value {:op :deliver :payload (byte-array [0 255])}
+                                [:test :canonical-input]))
+        request {"version" 1 "revision" "0" "cellHandle" "0"
+                 "inputCanonicalEdn" input-edn}
+        first-response (handler (command-cell-post-request "/api/command-cell-prepare"
+                                                   request))
+        second-response (handler (command-cell-post-request "/api/command-cell-prepare"
+                                                    request))
+        first-bytes (get-in @calls [0 1 :input :payload])
+        second-bytes (get-in @calls [1 1 :input :payload])]
+    (is (= [200 200] (mapv :status [first-response second-response])))
+    (is (not (identical? first-bytes second-bytes)))
+    (aset-byte first-bytes 0 (byte 42))
+    (is (= [0 255]
+           (mapv #(bit-and (long %) 0xff) (seq second-bytes))))))
+
+(deftest command-cell-committed-ack-is-exempt-from-tiny-presentation-cap
+  (let [handler (viewer/make-handler
+                 (assoc (config) :max-document-bytes 1)
+                 (command-cell-test-services (atom [])))
+        response
+        (handler
+         (command-cell-post-request
+          "/api/command-cell-step"
+          {"version" 1 "revision" "1"
+           "branchEdn" "{:revision 0 :action [:run 0]}"}))
+        wire (json/read-str (:body response))]
+    (is (= 200 (:status response)))
+    (is (true? (get wire "committed")))
+    (is (= #{"version" "operation" "outcome" "committed" "revision"
+             "frameStatus" "branchCount" "choices" "truncated"}
+           (set (keys wire))))
+    (is (= "unavailable" (get wire "frameStatus")))
+    (is (true? (get wire "truncated")))
+    (is (<= (alength (.getBytes ^String (:body response) "UTF-8")) 512))))
+
+(deftest command-cell-browser-wire-rejects-malformed-or-overbound-frames
+  (let [calls (atom [])
+        services (command-cell-test-services calls)
+        frame (command-cell-test-frame)
+        malformed (assoc frame :branches [{:status :ready}])
+        overbound (assoc frame :branches
+                         (vec (repeat 257
+                                      (first (:branches frame)))))
+        malformed-handler
+        (viewer/make-handler
+         (config) (assoc services :read-command-cell-frame (fn [] malformed)))
+        overbound-handler
+        (viewer/make-handler
+         (config) (assoc services :read-command-cell-frame (fn [] overbound)))]
+    (is (= 500 (:status (malformed-handler (get-request "/api/command-cell-frame")))))
+    (is (= 500 (:status (overbound-handler (get-request "/api/command-cell-frame")))))
+    (is (empty? @calls))))
+
 (deftest command-cell-wire-failures-stop-before-trusted-mutation
   (let [calls (atom [])
         handler (viewer/make-handler (config)
                                      (command-cell-test-services calls))
         malformed
         (handler
-         (json-post-request
+         (command-cell-post-request
           "/api/command-cell-prepare"
-          {"version" 1 "revision" "0" "cellId" "test/deliver"
+          {"version" 1 "revision" "0" "cellHandle" "0"
            "inputCanonicalEdn" "{:op :deliver}"}))
         extra
         (handler
-         (json-post-request "/api/command-cell-close"
+         (command-cell-post-request "/api/command-cell-close"
                             {"version" 1 "extra" true}))]
     (is (= [400 400] (mapv :status [malformed extra])))
     (is (empty? @calls))))
@@ -5796,7 +6085,7 @@
                     (assoc-in base [:result :opaque] (Object.))))))
         response
         (handler
-         (json-post-request
+         (command-cell-post-request
           "/api/command-cell-step"
           {"version" 1 "revision" "1"
            "branchEdn" "{:revision 0 :action [:run 0]}"}))
@@ -5820,7 +6109,7 @@
                     (assoc-in base [:frame :catalog :opaque] (Object.))))))
         response
         (handler
-         (json-post-request
+         (command-cell-post-request
           "/api/command-cell-step"
           {"version" 1 "revision" "1"
            "branchEdn" "{:revision 0 :action [:run 0]}"}))
@@ -5832,6 +6121,32 @@
     (is (string? (get wire "resultEdn")))
     (is (= "unavailable" (get wire "frameStatus")))
     (is (nil? (get wire "frameEdn")))))
+
+(deftest command-cell-definite-result-keeps-a-bad-refreshed-choice-secondary
+  (let [calls (atom [])
+        services (command-cell-test-services calls)
+        handler
+        (viewer/make-handler
+         (config)
+         (assoc services :step-command-cell!
+                (fn [coordinate]
+                  (swap! calls conj [:step coordinate])
+                  (assoc-in ((:step-command-cell! services) coordinate)
+                            [:frame :branches] [{:status :ready}]))))
+        response
+        (handler
+         (command-cell-post-request
+          "/api/command-cell-step"
+          {"version" 1 "revision" "1"
+           "branchEdn" "{:revision 0 :action [:run 0]}"}))
+        wire (json/read-str (:body response))]
+    (is (= 200 (:status response)))
+    (is (= "uncertain" (get wire "outcome")))
+    (is (true? (get wire "committed")))
+    (is (= "unavailable" (get wire "frameStatus")))
+    (is (= "0" (get wire "branchCount")))
+    (is (= [] (get wire "choices")))
+    (is (true? (get wire "truncated")))))
 
 (deftest command-cell-services-are-all-or-nothing
   (let [data
@@ -5873,13 +6188,49 @@
                             :reconcile-command-cell! :close-command-cell!])))
       (is (= :prepared
              ((:prepare-command-cell! @installed)
-              {:revision 0 :cell-id-text "test/deliver"
+              {:evidence-stream-id "opaque-test"
+               :revision 0 :cell-handle "0"
                :input {:op :deliver}})))
       (is (= [:opaque-session
               {:revision 0 :cell-id :test/deliver :input {:op :deliver}}]
              @prepared))
       (is (not-any? #(identical? :opaque-session %)
                     (vals @installed))))))
+
+(deftest command-cell-stale-evidence-is-rejected-before-any-trusted-mutation
+  (let [catalog {:jolt.sim.command-cell-view/type :catalog-frame
+                 :kind :jolt.sim.kind/command-cell-catalog
+                 :version 1 :evidence-stream-id "current-incarnation"
+                 :count 1 :cells [{:id :test/deliver}]}
+        installed (atom nil)
+        mutations (atom [])]
+    (with-redefs [command-cell-view/catalog-frame (fn [_] catalog)
+                  command-cell-view/prepare-frame!
+                  (fn [& _] (swap! mutations conj :prepare))
+                  command-cell-view/step-frame!
+                  (fn [& _] (swap! mutations conj :step))
+                  command-cell-view/reconcile-frame!
+                  (fn [& _] (swap! mutations conj :reconcile))
+                  command-cell-view/close-frame!
+                  (fn [& _] (swap! mutations conj :close))
+                  viewer/start! (fn [_ services]
+                                  (reset! installed services) :server)]
+      (viewer/start-workbench! (config) {:command-cell-session :opaque})
+      (doseq [[service argument]
+              [[:prepare-command-cell!
+                {:evidence-stream-id "stale-incarnation"
+                 :revision 0 :cell-handle "0" :input {:op :deliver}}]
+               [:step-command-cell!
+                {:evidence-stream-id "stale-incarnation"
+                 :revision 0 :branch {:revision 0 :action [:run 0]}}]
+               [:reconcile-command-cell!
+                {:evidence-stream-id "stale-incarnation"}]
+               [:close-command-cell!
+                {:evidence-stream-id "stale-incarnation"}]]]
+        (let [data (caught-data #((get @installed service) argument))]
+          (is (= :jolt.sim.command-cell-session/rejected (:type data)))
+          (is (= :stale-evidence-stream (:reason data)))))
+      (is (empty? @mutations)))))
 
 (deftest command-cell-routes-share-one-dedicated-single-flight-gate
   (let [calls (atom [])
