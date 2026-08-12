@@ -15,11 +15,11 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # Broadcast retries must be able to publish while Maelstrom leaves stdin idle.
-  # This pin includes the reviewed cooperative-stdin runtime fix and persistent
-  # evaluator namespace semantics; do not replace either with jolt-sim-side
-  # transport or source-text workarounds.
-  JOLT_CORE_SHA: 615e52517042d62d0f92fb55f78a24e89bfe7af8
+  # Upstream v0.7.3 plus the reviewed simulation controller, exact FFI,
+  # evaluator, fiber, timer, and image hooks required by the gates below.
+  # Do not replace this with a release binary: the simulation ABI is an exact
+  # source/seed contract and the public release does not provide these hooks.
+  JOLT_CORE_SHA: 4773b2d22281485f1f99b53c09f565b52d875591
   CHEZ_RELEASE_TAG: chez-ci-10.4.1.1
   MAELSTROM_RELEASE: v0.2.4
   MAELSTROM_ARCHIVE_SHA256: 301ec71d6b12af0d765edb413f5cf5aa1046b5609bd4e31376a0b549548e5799
