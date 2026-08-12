@@ -644,6 +644,38 @@
    :report-multiple-failures? true
    :verbosity :quiet})
 
+(deftest uncertain-application-failure-reconciliation-witness
+  ;; libhegel 0.32.3 correctly stops charging rejected state-machine rules
+  ;; against the step budget. That changes which targeted features a fixed
+  ;; optimizer seed happens to discover. Keep this important outcome as an
+  ;; explicit witness instead of making campaign validity depend on incidental
+  ;; rule-selection order.
+  (let [scripted (scripted-worker)
+        bridge (effect-session/attach!
+                {:sim (intent-sim 1)
+                 :worker (:service scripted)
+                 :effect-kind effect-kind})
+        branch (get-in (effect-session/branches bridge) [0 :branch])]
+    (swap! (:state scripted) assoc :next-command-outcome :uncertain)
+    (let [stepped (effect-session/step! bridge branch)]
+      (is (true? (:committed? stepped)))
+      (is (= :uncertain (get-in stepped [:delivery :status])))
+      (is (= 0 (get-in stepped
+                       [:delivery :effects :pending
+                        :publication-sequence]))))
+    (swap! (:state scripted) assoc
+           :next-reconcile-outcome :application-failed)
+    (let [reconciled (effect-session/reconcile! bridge)]
+      (is (= :ready (:status reconciled)))
+      (is (= 0 (get-in reconciled [:target :sequence])))
+      (is (= :settled (get-in reconciled [:effects :records 0 :state])))
+      (is (= :failed (get-in reconciled [:effects :records 0 :status])))
+      (is (= :failed
+             (get-in reconciled
+                     [:effects :records 0 :receipt :status])))
+      (is (= 1 (count (:attempts @(:state scripted)))))
+      (is (= [0] (:reconciliations @(:state scripted)))))))
+
 (deftest shared-repl-ripple-flow-effect-state-machine
   (let [run-coverage (atom #{})
         result (h/run-test! hegel-run-opts
@@ -651,8 +683,7 @@
         required-coverage
         #{:repl :ripple :actor-handoff :commit :completed
           :application-failed :stale :lost-response :uncertain :reconciled
-          :reconcile-completed :reconcile-application-failed
-          :reconcile-still-uncertain :step-reconciled
+          :reconcile-completed :reconcile-still-uncertain :step-reconciled
           :lost-step-reconciled :closed}]
     (is (true? (:passed? result))
         (pr-str (select-keys result
