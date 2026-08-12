@@ -36,10 +36,11 @@ const readyNodeIds = (page) => page.locator("[data-node-detail-id]").evaluateAll
 
 const drainReadyMailboxes = async (page, maximum = 32) => {
   let steps = 0;
+  let lastReceipt = null;
   while (steps < maximum) {
     const ready = await readyNodeIds(page);
-    if (ready.length === 0) return steps;
-    await clickTopologyAction(page, "node", ready[0], "step");
+    if (ready.length === 0) return {steps, lastReceipt};
+    lastReceipt = await clickTopologyAction(page, "node", ready[0], "step");
     steps += 1;
   }
   throw new Error(`Ripple Broadcast drain exceeded ${maximum} visible steps`);
@@ -52,6 +53,12 @@ const selectCommandCell = async (page, displayId) => {
   const handle = await option.getAttribute("value");
   expect(handle).not.toBeNull();
   await page.getByTestId("command-cell-select").selectOption(handle);
+};
+
+const openCommandCellResult = async (page) => {
+  await page.getByTestId("command-cell-result").evaluate(
+    (result) => { result.closest("details").open = true; }
+  );
 };
 
 test("controls the real retained Broadcast worker from Ripple and its shared REPL",
@@ -106,6 +113,7 @@ test("controls the real retained Broadcast worker from Ripple and its shared REP
     await page.getByTestId("retained-refresh").click();
     await expect(page.getByTestId("retained-status"))
       .toContainText("Worker is ready; next command sequence is 1.");
+    await openCommandCellResult(page);
     await page.locator("#command-cell-panel").screenshot({
       path: testInfo.outputPath("ripple-real-broadcast-command-cell-prepared.png")
     });
@@ -122,11 +130,22 @@ test("controls the real retained Broadcast worker from Ripple and its shared REP
     await page.getByTestId("retained-refresh").click();
     await expect(page.getByTestId("retained-status"))
       .toContainText("Worker is ready; next command sequence is 2.");
+
+    // Command Cell and retained-value presentation are independent generic
+    // surfaces. Read one explicit application snapshot to refresh the existing
+    // topology view; this is observation after the definite bootstrap, not a
+    // retry or a second bootstrap.
+    const afterBootstrap = await sendRetained(page, "{:op :inspect}");
+    expect(afterBootstrap).toContain(":sequence 2");
+    expect(afterBootstrap).toContain(":status :running");
+    expect(afterBootstrap)
+      .toContain(":ready-mailboxes [\"n1\" \"n2\" \"n3\"]");
     await expect(page.locator('[data-node-id="n1"]'))
       .toContainText("jolt.sim.status/ready");
     await expect(page.locator(
       '[data-node-detail-id="n2"] [data-field-label="Mailbox count"] + dd'
     )).not.toHaveText("0");
+    await openCommandCellResult(page);
     await page.locator("#command-cell-panel").screenshot({
       path: testInfo.outputPath("ripple-real-broadcast-command-cell-running.png")
     });
@@ -143,7 +162,7 @@ test("controls the real retained Broadcast worker from Ripple and its shared REP
     const dropped = await clickTopologyAction(
       page, "edge", "n2--n3", "drop"
     );
-    expect(dropped).toContain(":sequence 2");
+    expect(dropped).toContain(":sequence 3");
     expect(dropped).toContain(":operation :set-connection-regime");
     expect(dropped).toContain(":regime-revision 1");
     await expect(page.locator('[data-edge-id="n2--n3"] title'))
@@ -159,11 +178,11 @@ test("controls the real retained Broadcast worker from Ripple and its shared REP
         ":expected-revision 0 :regime :drop}",
       "failed"
     );
-    expect(stale).toContain(":sequence 3");
+    expect(stale).toContain(":sequence 4");
     expect(stale).toContain(":status :failed");
 
     const afterStale = await sendRetained(page, "{:op :inspect}");
-    expect(afterStale).toContain(":sequence 4");
+    expect(afterStale).toContain(":sequence 5");
     expect(afterStale).toContain(":regime-revision 1");
     expect(afterStale).toContain("[\"n2\" \"n3\"] :drop");
 
@@ -186,19 +205,20 @@ test("controls the real retained Broadcast worker from Ripple and its shared REP
 
     await page.getByTestId("retained-refresh").click();
     await expect(page.getByTestId("retained-status"))
-      .toContainText("next command sequence is 6");
+      .toContainText("next command sequence is 7");
 
     const afterReplStep = await sendRetained(page, "{:op :inspect}");
-    expect(afterReplStep).toContain(":sequence 6");
+    expect(afterReplStep).toContain(":sequence 7");
     expect(afterReplStep).toContain(":step-count 1");
     expect(afterReplStep).toContain(":last-step");
     expect(afterReplStep).toContain(":node-id \"n2\"");
     await expect(page.locator('[data-node-id="n2"]'))
       .toContainText("jolt.sim.status/ready");
 
-    const partitionSteps = await drainReadyMailboxes(page);
+    const {steps: partitionSteps, lastReceipt: partitioned}
+      = await drainReadyMailboxes(page);
     expect(partitionSteps).toBeGreaterThan(0);
-    const partitioned = await sendRetained(page, "{:op :inspect}");
+    expect(partitioned).not.toBeNull();
     expect(partitioned).toContain('"n1" {:messages [42]');
     expect(partitioned).toContain('"n2" {:messages [42]');
     expect(partitioned).toContain('"n3" {:messages []');
@@ -223,9 +243,10 @@ test("controls the real retained Broadcast worker from Ripple and its shared REP
 
     const retried = await sendRetained(page, "{:op :retry}");
     expect(retried).toContain(":operation :retry");
-    const retrySteps = await drainReadyMailboxes(page);
+    const {steps: retrySteps, lastReceipt: converged}
+      = await drainReadyMailboxes(page);
     expect(retrySteps).toBeGreaterThan(0);
-    const converged = await sendRetained(page, "{:op :inspect}");
+    expect(converged).not.toBeNull();
     expect(converged).toContain('"n1" {:messages [42]');
     expect(converged).toContain('"n2" {:messages [42]');
     expect(converged).toContain('"n3" {:messages [42]');
