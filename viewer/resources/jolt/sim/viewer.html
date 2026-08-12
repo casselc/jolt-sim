@@ -53,9 +53,12 @@
     .workbench-item > header { border: 0; padding: 0; display: flex; gap: .7rem; align-items: center; flex-wrap: wrap; }
     .workbench-item > header h3 { margin: 0 auto 0 0; }
     .workbench-item-meta { font-family: ui-monospace, monospace; font-size: .85rem; opacity: .8; }
+    #command-cell-panel { min-width: 0; max-width: 100%; overflow: hidden; }
     #command-cell-controls { display: flex; gap: .5rem; align-items: end; flex-wrap: wrap; }
     #command-cell-controls label { min-width: min(24rem, 100%); }
+    #command-cell-controls select { max-width: 100%; }
     #command-cell-input { width: min(100%, 70rem); min-height: 7rem; box-sizing: border-box; font-family: ui-monospace, monospace; }
+    #command-cell-panel pre { max-width: 100%; box-sizing: border-box; overflow-wrap: anywhere; }
     #command-cell-branches { list-style: none; margin: .7rem 0; padding: 0; display: grid; gap: .55rem; }
     .command-cell-branch { border-left: .3rem solid #678; background: #8881; padding: .55rem .7rem; }
     .command-cell-branch button { width: 100%; text-align: left; }

@@ -17,6 +17,13 @@ const openCommandCellResult = async (page) => {
   );
 };
 
+const expectCommandCellPanelContained = async (page) => {
+  const contained = await page.locator("#command-cell-panel").evaluate(
+    (panel) => panel.scrollWidth <= panel.clientWidth
+  );
+  expect(contained).toBe(true);
+};
+
 const expectNextSequence = async (page, sequence) => {
   await page.getByTestId("retained-refresh").click();
   await expect(page.getByTestId("retained-status"))
@@ -80,6 +87,7 @@ test("commits real Outbox submit and delivery independently through Command Cell
     expect(submitWire.resultEdn).toMatch(/:receiver-requests 0(?:\s|,|}|$)/);
     await expectNextSequence(page, 1);
     await openCommandCellResult(page);
+    await expectCommandCellPanelContained(page);
     await page.locator("#command-cell-panel").screenshot({
       path: testInfo.outputPath("ripple-real-outbox-command-cell-pending.png")
     });
@@ -100,6 +108,7 @@ test("commits real Outbox submit and delivery independently through Command Cell
     expect(deliveryWire.resultEdn).toMatch(/:receiver-requests 1(?:\s|,|}|$)/);
     await expectNextSequence(page, 2);
     await openCommandCellResult(page);
+    await expectCommandCellPanelContained(page);
     await page.locator("#command-cell-panel").screenshot({
       path: testInfo.outputPath("ripple-real-outbox-command-cell-delivered.png")
     });
