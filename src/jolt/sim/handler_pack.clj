@@ -22,8 +22,9 @@
 (defn foreign-function-key
   "Builds and validates one canonical foreign-function handler key. capture?
   defaults to false and varargs-after defaults to nil. argument-types is a
-  vector of primitive scalar keywords; the runtime validates each entry and
-  rejects recursive by-value aggregate shapes. varargs-after, when supplied,
+  vector of scalar keywords or literal [:by-value [:struct ...]] descriptors;
+  the runtime validates each descriptor structurally without attaching native
+  semantics. varargs-after, when supplied,
   must be nil (fixed arity) or a positive integer no greater than the
   argument-type count, naming the first variadic position."
   ([symbol argument-types return-type blocking?]

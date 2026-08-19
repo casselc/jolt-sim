@@ -5,7 +5,7 @@
             [jolt.sim.fixtures.ffi-pointer-loan :as fixture]
             [jolt.sim.runtime :as runtime]))
 
-;; Descriptor-version 8 makes the scoped byte-array loan lifecycle
+;; Descriptor-version 9 keeps the scoped byte-array loan lifecycle
 ;; runtime-owned: no borrow or release operation ever crosses the controller
 ;; boundary, and jolt-sim deliberately does not recreate loans in its
 ;; deterministic memory world. Its array-transfer handlers may copy through
@@ -46,7 +46,7 @@
   ;; route. Core Jolt, not a handler pack, remains responsible for unlock
   ;; ownership; the recorded boundary contains only the enclosed operations.
   (is (= 6 (:abi-version (runtime/capabilities))))
-  (is (= 8
+  (is (= 9
          (get-in (runtime/capabilities)
                  [:ffi-interception :descriptor-version])))
   (let [controlled
@@ -97,7 +97,7 @@
   ;; latch must still reject the enclosing run, and the recorded boundary
   ;; contains no loan descriptor at all.
   (is (= 6 (:abi-version (runtime/capabilities))))
-  (is (= 8
+  (is (= 9
          (get-in (runtime/capabilities)
                  [:ffi-interception :descriptor-version])))
   (let [world (memory/world)

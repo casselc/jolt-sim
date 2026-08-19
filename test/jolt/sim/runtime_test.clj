@@ -23,7 +23,7 @@
     :future-controller-arity 3
     :ffi-controller-arity 2
     :clock-controller-arity 2}
-   :ffi-interception {:descriptor-version 8
+   :ffi-interception {:descriptor-version 9
                       :kinds [:foreign-function :native-operation]
                       :arguments :live
                       :task-identity :future-lifecycle
@@ -1042,12 +1042,17 @@
     (is (= :variadic (controller variadic-descriptor ignored-proceed)))
     (is (empty? (:ffi-errors @state)))))
 
-;; ---- Scalar-only foreign argument types (descriptor-version 8) ----------
-;;
-;; A public foreign argument type is a primitive keyword only; recursive
-;; by-value aggregate argument types are rejected. Variadic calls are
-;; identified by an exact :varargs-after boundary, not by aggregate types.
-;; These are pure structural tests, independent of the running image.
+;; ---- Generic aggregate signature types (descriptor-version 9) -----------
+;; These are pure structural tests, independent of the running image. The sim
+;; retains literal descriptors and caller-owned pointer values but never derives
+;; ABI layout or attaches library-specific behavior.
+
+(def ^:private date-layout
+  [:struct [[:year :int32] [:month :uint8] [:day :uint8]]])
+(def ^:private nested-date-layout
+  [:struct [[:tag :uint8] [:date date-layout] [:tail :uint16]]])
+(def ^:private date-by-value [:by-value date-layout])
+(def ^:private nested-date-by-value [:by-value nested-date-layout])
 
 (deftest scalar-foreign-argument-types-are-valid-ffi-descriptors
   (let [descriptor (-> base-foreign-function-descriptor
@@ -1056,30 +1061,61 @@
                               :capture-native-error? false))]
     (is (= descriptor (validate-ffi-descriptor-var descriptor)))))
 
-(deftest aggregate-and-non-keyword-argument-types-are-rejected
-  (let [reject
-        (fn [argument-type]
-          (let [descriptor (-> base-foreign-function-descriptor
-                               (assoc :argument-types [argument-type]
-                                      :capture-native-error? false))
-                data (ex-data-of #(validate-ffi-descriptor-var descriptor))]
-            (is (= :jolt.sim.runtime/invalid-ffi-descriptor (:type data))
-                (pr-str argument-type))
-            (is (= :invalid-argument-types (:reason data))
-                (pr-str argument-type))))]
-    ;; recursive by-value aggregate (no longer accepted)
-    (reject [:by-value [:struct [[:x :int] [:y :pointer]]]])
-    ;; bare struct shape
-    (reject [:struct [[:x :int]]])
-    ;; non-keyword scalar
-    (reject "int")
-    ;; numeric type tag
-    (reject 7))
-  (let [bad-key [:foreign-function "make_point"
-                 [[:by-value [:struct [[:x :int]]]]] :pointer true false]
-        data (ex-data-of #(validate-ffi-handlers-var {bad-key (fn [_])}))]
-    (is (= :jolt.sim.runtime/invalid-config (:type data)))
-    (is (= bad-key (:handler-key data))))
+(deftest aggregate-arguments-and-returns-are-preserved-as-handler-identity
+  (doseq [aggregate [date-by-value nested-date-by-value]]
+    (let [descriptor (-> base-foreign-function-descriptor
+                         (assoc :argument-types [aggregate]
+                                :arguments [4096]
+                                :capture-native-error? false))]
+      (is (= descriptor (validate-ffi-descriptor-var descriptor)))
+      (is (= [:foreign-function "s" [aggregate] :int false false nil]
+             (descriptor-handler-key-var descriptor)))))
+  (let [descriptor (-> base-foreign-function-descriptor
+                       (assoc :argument-types []
+                              :arguments [8192]
+                              :return-type date-by-value
+                              :capture-native-error? false))
+        key [:foreign-function "s" [] date-by-value false false nil]
+        handler (fn [_] 8192)]
+    (is (= descriptor (validate-ffi-descriptor-var descriptor)))
+    (is (= key (descriptor-handler-key-var descriptor)))
+    (is (= {key handler} (validate-ffi-handlers-var {key handler})))))
+
+(deftest malformed-and-unsupported-aggregate-signatures-fail-closed
+  (let [invalid-types
+        [[:struct [[:x :int]]]
+         [:by-value [:struct []]]
+         [:by-value [:struct [[:x :string]]]]
+         [:by-value [:struct [[:x :int] [:x :uint]]]]
+         [:by-value [:struct [[:qualified/x :int]]]]
+         [:by-value [:struct [[:x [:array 4 :int]]]]]
+         "int" 7]]
+    (doseq [argument-type invalid-types]
+      (let [descriptor (-> base-foreign-function-descriptor
+                           (assoc :argument-types [argument-type]
+                                  :capture-native-error? false))
+            data (ex-data-of #(validate-ffi-descriptor-var descriptor))]
+        (is (= :invalid-argument-types (:reason data)) (pr-str argument-type)))))
+  (doseq [[reason descriptor]
+          [[:argument-count-mismatch
+            (-> base-foreign-function-descriptor
+                (assoc :argument-types [] :arguments []
+                       :return-type date-by-value :capture-native-error? false))]
+           [:aggregate-return-with-varargs
+            (-> base-foreign-function-descriptor
+                (assoc :argument-types [:int :int] :arguments [8192 1 2]
+                       :return-type date-by-value :capture-native-error? false
+                       :varargs-after 1))]
+           [:aggregate-return-with-native-error
+            (-> base-foreign-function-descriptor
+                (assoc :argument-types [] :arguments [8192]
+                       :return-type date-by-value :capture-native-error? true))]
+           [:aggregate-variadic-argument
+            (-> base-foreign-function-descriptor
+                (assoc :argument-types [:int date-by-value]
+                       :arguments [1 4096] :capture-native-error? false
+                       :varargs-after 1))]]]
+    (is (= reason (:reason (ex-data-of #(validate-ffi-descriptor-var descriptor))))))
   (let [descriptor (-> base-foreign-function-descriptor
                        (assoc :return-type :jolt.sim.test/int
                               :capture-native-error? false))
@@ -1185,7 +1221,7 @@
 (deftest current-nested-ffi-descriptor-version-is-exact
   (if (rt/available?)
     (do
-      (is (= 8 (get-in (rt/capabilities)
+      (is (= 9 (get-in (rt/capabilities)
                        [:ffi-interception :descriptor-version])))
       (is (= 1 (get-in (rt/capabilities)
                        [:clock-interception :descriptor-version])))
