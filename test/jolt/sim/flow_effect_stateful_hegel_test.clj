@@ -644,6 +644,38 @@
    :report-multiple-failures? true
    :verbosity :quiet})
 
+(deftest every-reconciliation-outcome-has-a-fixed-witness
+  ;; Targeting guides generated exploration; it is not a coverage guarantee,
+  ;; and libhegel improvements may legitimately change which traces a fixed
+  ;; seed visits. Keep the three outcome arms non-vacuous with exact witnesses
+  ;; while the state machine remains responsible for ordering combinations.
+  (doseq [[outcome expected-status expected-record]
+          [[:completed :ready [:settled :completed]]
+           [:application-failed :ready [:settled :failed]]
+           [:still-uncertain :uncertain [:uncertain nil]]]]
+    (let [scripted (scripted-worker)
+          bridge (effect-session/attach!
+                  {:sim (intent-sim 1)
+                   :worker (:service scripted)
+                   :effect-kind effect-kind})
+          branch (get-in (effect-session/branches bridge) [0 :branch])]
+      (swap! (:state scripted) assoc :next-command-outcome :uncertain)
+      (let [committed (effect-session/step! bridge branch)]
+        (is (true? (:committed? committed)))
+        (is (= :uncertain (get-in committed [:delivery :status]))))
+      (swap! (:state scripted) assoc :next-reconcile-outcome outcome)
+      (let [attempts-before (:attempts @(:state scripted))
+            reconciled (effect-session/reconcile! bridge)
+            record (get-in reconciled [:effects :records 0])]
+        (is (= expected-status (:status reconciled)))
+        (is (= 0 (get-in reconciled [:target :sequence])))
+        (is (= expected-record [(:state record) (:status record)]))
+        (is (= attempts-before (:attempts @(:state scripted))))
+        (is (= [0] (:reconciliations @(:state scripted))))
+        (when (= :still-uncertain outcome)
+          (swap! (:state scripted) assoc :next-reconcile-outcome :completed)
+          (is (= :ready (:status (effect-session/reconcile! bridge)))))))))
+
 (deftest shared-repl-ripple-flow-effect-state-machine
   (let [run-coverage (atom #{})
         result (h/run-test! hegel-run-opts
@@ -651,9 +683,7 @@
         required-coverage
         #{:repl :ripple :actor-handoff :commit :completed
           :application-failed :stale :lost-response :uncertain :reconciled
-          :reconcile-completed :reconcile-application-failed
-          :reconcile-still-uncertain :step-reconciled
-          :lost-step-reconciled :closed}]
+          :step-reconciled :lost-step-reconciled :closed}]
     (is (true? (:passed? result))
         (pr-str (select-keys result
                              [:status :seed :n-failures :flaky? :failures

@@ -98,7 +98,7 @@
    :extra-deps
    {io.github.chucklehead-dev/jolt-hegel
     {:git/url "https://github.com/chucklehead-dev/jolt-hegel.git"
-     :git/sha "ffe523023437862c7e474dc216346426318754c6"}}
+     :git/sha "54f2e2cf84d5b080c37ee546417b50c2e39e7ccd"}}
    :main-opts ["-m" "jolt.sim.flow-effect-stateful-hegel-test-main"]}
 
   ;; Focused persistent evaluation-session gate. This uses the socket-free
@@ -224,7 +224,7 @@
    :extra-deps
    {io.github.casselc/jolt-net
     {:git/url "https://github.com/casselc/jolt-net.git"
-     :git/sha "699b908ffb4eb79ad35055cdc20866bb504e6932"}}
+     :git/sha "875ad072b085340c6e1ea52ae39e67ccb68dd629"}}
    :main-opts ["-m" "jolt.sim.explore-worker"]}
 
   ;; Process-isolated integration gate for worker completion, timeout,
@@ -234,14 +234,14 @@
    :main-opts ["-m" "jolt.sim.explore-process-test"]}
 
   ;; Optional Hegel generator/shrinker adapter and its fresh-process
-  ;; exploration witness. Keep the released dependency out of the ordinary
-  ;; compatibility suite and pin the peeled v0.1.2 commit exactly.
+  ;; exploration witness. Keep the dependency out of the ordinary
+  ;; compatibility suite and pin the reviewed v0.2.1 candidate commit exactly.
   :hegel-explore-test
   {:extra-paths ["test"]
    :extra-deps
    {io.github.chucklehead-dev/jolt-hegel
     {:git/url "https://github.com/chucklehead-dev/jolt-hegel.git"
-     :git/sha "ffe523023437862c7e474dc216346426318754c6"}}
+     :git/sha "54f2e2cf84d5b080c37ee546417b50c2e39e7ccd"}}
    :main-opts ["-m" "jolt.sim.hegel-explore-test"]}
 
   ;; In-process Hegel property lane over the unchanged Maelstrom Echo
@@ -250,14 +250,14 @@
   ;; node/echo handlers and memory transport under the sim controller in
   ;; THIS process. There is no nested worker alias to preflight; run through
   ;; script/run-hegel-gates.sh so dependency and Hegel native preflight
-  ;; still happen before generation. Pinned to the same peeled v0.1.2
+  ;; still happen before generation. Pinned to the same reviewed v0.2.1
   ;; jolt-hegel commit as :hegel-explore-test.
   :maelstrom-echo-hegel-test
   {:extra-paths ["test"]
    :extra-deps
    {io.github.chucklehead-dev/jolt-hegel
     {:git/url "https://github.com/chucklehead-dev/jolt-hegel.git"
-     :git/sha "ffe523023437862c7e474dc216346426318754c6"}}
+     :git/sha "54f2e2cf84d5b080c37ee546417b50c2e39e7ccd"}}
    :main-opts ["-m" "jolt.maelstrom.echo-hegel-test"]}
 
   ;; In-process paired-regime property lane over the unchanged three-node
@@ -265,13 +265,13 @@
   ;; healthy line topology and the fixed n2--n3 partition/heal input, so the
   ;; fault cannot be omitted or shrunk away. There is no nested worker alias;
   ;; use script/run-hegel-gates.sh for dependency/native preflight and retained
-  ;; gate evidence. Pinned to the same peeled v0.1.2 jolt-hegel commit.
+  ;; gate evidence. Pinned to the same reviewed v0.2.1 jolt-hegel commit.
   :maelstrom-broadcast-hegel-test
   {:extra-paths ["test"]
    :extra-deps
    {io.github.chucklehead-dev/jolt-hegel
     {:git/url "https://github.com/chucklehead-dev/jolt-hegel.git"
-     :git/sha "ffe523023437862c7e474dc216346426318754c6"}}
+     :git/sha "54f2e2cf84d5b080c37ee546417b50c2e39e7ccd"}}
    :main-opts ["-m" "jolt.maelstrom.broadcast-hegel-test"]}
 
   ;; Hegel-owned, shrinkable capacities and poll-fault ordinals drive the
@@ -281,7 +281,7 @@
    :extra-deps
    {io.github.chucklehead-dev/jolt-hegel
     {:git/url "https://github.com/chucklehead-dev/jolt-hegel.git"
-     :git/sha "ffe523023437862c7e474dc216346426318754c6"}}
+     :git/sha "54f2e2cf84d5b080c37ee546417b50c2e39e7ccd"}}
    :main-opts ["-m" "jolt.sim.http-sqlite-hegel-test"]}
 
   ;; Child side of :http-sqlite-hegel-test. Loading db from source keeps the
@@ -301,7 +301,7 @@
      :git/sha "0ceaa900bfca11933d35831d7697c7e2c5b22f04"}
     io.github.casselc/jolt-net
     {:git/url "https://github.com/casselc/jolt-net.git"
-     :git/sha "699b908ffb4eb79ad35055cdc20866bb504e6932"}}
+     :git/sha "875ad072b085340c6e1ea52ae39e67ccb68dd629"}}
    :main-opts ["-m" "jolt.sim.explore-worker"]}
 
   ;; Real SQLite lane: use the complete public DB coordinate so its native
@@ -333,7 +333,7 @@
      :git/sha "0ceaa900bfca11933d35831d7697c7e2c5b22f04"}
     io.github.casselc/jolt-net
     {:git/url "https://github.com/casselc/jolt-net.git"
-     :git/sha "699b908ffb4eb79ad35055cdc20866bb504e6932"}
+     :git/sha "875ad072b085340c6e1ea52ae39e67ccb68dd629"}
     io.github.casselc/jolt-bencode
     {:git/url "https://github.com/casselc/jolt-bencode.git"
      :git/sha "6c68bf2a1dbd7e438923ce38252c2abbdcb1643f"}
@@ -357,7 +357,7 @@
      :git/sha "0ceaa900bfca11933d35831d7697c7e2c5b22f04"}
     io.github.casselc/jolt-net
     {:git/url "https://github.com/casselc/jolt-net.git"
-     :git/sha "699b908ffb4eb79ad35055cdc20866bb504e6932"}
+     :git/sha "875ad072b085340c6e1ea52ae39e67ccb68dd629"}
     io.github.casselc/jolt-bencode
     {:git/url "https://github.com/casselc/jolt-bencode.git"
      :git/sha "6c68bf2a1dbd7e438923ce38252c2abbdcb1643f"}
@@ -376,7 +376,7 @@
    :extra-deps
    {io.github.chucklehead-dev/jolt-hegel
     {:git/url "https://github.com/chucklehead-dev/jolt-hegel.git"
-     :git/sha "ffe523023437862c7e474dc216346426318754c6"}}
+     :git/sha "54f2e2cf84d5b080c37ee546417b50c2e39e7ccd"}}
    :main-opts ["-m" "jolt.sim.tcp-bencode-hegel-test"]}
 
   ;; Unchanged public jolt.net application code over the deterministic POSIX
@@ -387,7 +387,7 @@
    :extra-deps
    {io.github.casselc/jolt-net
     {:git/url "https://github.com/casselc/jolt-net.git"
-     :git/sha "699b908ffb4eb79ad35055cdc20866bb504e6932"}}
+     :git/sha "875ad072b085340c6e1ea52ae39e67ccb68dd629"}}
    :main-opts ["-m" "jolt.sim.posix-loopback-test-main"]}
 
   ;; Unchanged public jolt-http (README Hello World) application code over the
@@ -405,7 +405,7 @@
      :git/sha "0ceaa900bfca11933d35831d7697c7e2c5b22f04"}
     io.github.casselc/jolt-net
     {:git/url "https://github.com/casselc/jolt-net.git"
-     :git/sha "699b908ffb4eb79ad35055cdc20866bb504e6932"}}
+     :git/sha "875ad072b085340c6e1ea52ae39e67ccb68dd629"}}
    :main-opts ["-m" "jolt.sim.posix-loopback-http-test-main"]}
 
   ;; Ordinary jolt-http and db application code exercised first against real
@@ -425,7 +425,7 @@
      :git/sha "0ceaa900bfca11933d35831d7697c7e2c5b22f04"}
     io.github.casselc/jolt-net
     {:git/url "https://github.com/casselc/jolt-net.git"
-     :git/sha "699b908ffb4eb79ad35055cdc20866bb504e6932"}}
+     :git/sha "875ad072b085340c6e1ea52ae39e67ccb68dd629"}}
    :main-opts ["-m" "jolt.sim.http-sqlite-test-main"]}
 
   ;; Hermetic SQLite variant: load only db's source path so its native-library
@@ -445,7 +445,7 @@
      :git/sha "0ceaa900bfca11933d35831d7697c7e2c5b22f04"}
     io.github.casselc/jolt-net
     {:git/url "https://github.com/casselc/jolt-net.git"
-     :git/sha "699b908ffb4eb79ad35055cdc20866bb504e6932"}}
+     :git/sha "875ad072b085340c6e1ea52ae39e67ccb68dd629"}}
    :main-opts ["-m" "jolt.sim.http-sqlite-test-main" "--sim-only"]}
 
   ;; Simulator-free pure application core: the canonical HTTP command ->
@@ -497,7 +497,7 @@
      :git/sha "0ceaa900bfca11933d35831d7697c7e2c5b22f04"}
     io.github.casselc/jolt-net
     {:git/url "https://github.com/casselc/jolt-net.git"
-     :git/sha "699b908ffb4eb79ad35055cdc20866bb504e6932"}
+     :git/sha "875ad072b085340c6e1ea52ae39e67ccb68dd629"}
     io.github.casselc/data.json
     {:git/url "https://github.com/casselc/data.json.git"
      :git/sha "8a6dc9668e5c3596a335759defeb7ec80cd3b5f8"}
@@ -538,7 +538,7 @@
      :git/sha "0ceaa900bfca11933d35831d7697c7e2c5b22f04"}
     io.github.casselc/jolt-net
     {:git/url "https://github.com/casselc/jolt-net.git"
-     :git/sha "699b908ffb4eb79ad35055cdc20866bb504e6932"}
+     :git/sha "875ad072b085340c6e1ea52ae39e67ccb68dd629"}
     io.github.casselc/jolt-bencode
     {:git/url "https://github.com/casselc/jolt-bencode.git"
      :git/sha "6c68bf2a1dbd7e438923ce38252c2abbdcb1643f"}
@@ -581,7 +581,7 @@
      :git/sha "0ceaa900bfca11933d35831d7697c7e2c5b22f04"}
     io.github.casselc/jolt-net
     {:git/url "https://github.com/casselc/jolt-net.git"
-     :git/sha "699b908ffb4eb79ad35055cdc20866bb504e6932"}
+     :git/sha "875ad072b085340c6e1ea52ae39e67ccb68dd629"}
     io.github.casselc/jolt-bencode
     {:git/url "https://github.com/casselc/jolt-bencode.git"
      :git/sha "6c68bf2a1dbd7e438923ce38252c2abbdcb1643f"}
@@ -640,7 +640,7 @@
      :git/sha "0ceaa900bfca11933d35831d7697c7e2c5b22f04"}
     io.github.casselc/jolt-net
     {:git/url "https://github.com/casselc/jolt-net.git"
-     :git/sha "699b908ffb4eb79ad35055cdc20866bb504e6932"}
+     :git/sha "875ad072b085340c6e1ea52ae39e67ccb68dd629"}
     io.github.casselc/jolt-bencode
     {:git/url "https://github.com/casselc/jolt-bencode.git"
      :git/sha "6c68bf2a1dbd7e438923ce38252c2abbdcb1643f"}
@@ -667,7 +667,7 @@
      :git/sha "0ceaa900bfca11933d35831d7697c7e2c5b22f04"}
     io.github.casselc/jolt-net
     {:git/url "https://github.com/casselc/jolt-net.git"
-     :git/sha "699b908ffb4eb79ad35055cdc20866bb504e6932"}
+     :git/sha "875ad072b085340c6e1ea52ae39e67ccb68dd629"}
     io.github.casselc/jolt-bencode
     {:git/url "https://github.com/casselc/jolt-bencode.git"
      :git/sha "6c68bf2a1dbd7e438923ce38252c2abbdcb1643f"}
@@ -711,7 +711,7 @@
      :git/sha "0ceaa900bfca11933d35831d7697c7e2c5b22f04"}
     io.github.casselc/jolt-net
     {:git/url "https://github.com/casselc/jolt-net.git"
-     :git/sha "699b908ffb4eb79ad35055cdc20866bb504e6932"}
+     :git/sha "875ad072b085340c6e1ea52ae39e67ccb68dd629"}
     io.github.casselc/jolt-bencode
     {:git/url "https://github.com/casselc/jolt-bencode.git"
      :git/sha "6c68bf2a1dbd7e438923ce38252c2abbdcb1643f"}
@@ -740,7 +740,7 @@
      :git/sha "0ceaa900bfca11933d35831d7697c7e2c5b22f04"}
     io.github.casselc/jolt-net
     {:git/url "https://github.com/casselc/jolt-net.git"
-     :git/sha "699b908ffb4eb79ad35055cdc20866bb504e6932"}
+     :git/sha "875ad072b085340c6e1ea52ae39e67ccb68dd629"}
     io.github.casselc/jolt-bencode
     {:git/url "https://github.com/casselc/jolt-bencode.git"
      :git/sha "6c68bf2a1dbd7e438923ce38252c2abbdcb1643f"}
@@ -791,7 +791,7 @@
      :git/sha "0ceaa900bfca11933d35831d7697c7e2c5b22f04"}
     io.github.casselc/jolt-net
     {:git/url "https://github.com/casselc/jolt-net.git"
-     :git/sha "699b908ffb4eb79ad35055cdc20866bb504e6932"}
+     :git/sha "875ad072b085340c6e1ea52ae39e67ccb68dd629"}
     io.github.casselc/jolt-bencode
     {:git/url "https://github.com/casselc/jolt-bencode.git"
      :git/sha "6c68bf2a1dbd7e438923ce38252c2abbdcb1643f"}
@@ -837,7 +837,7 @@
      :git/sha "0ceaa900bfca11933d35831d7697c7e2c5b22f04"}
     io.github.casselc/jolt-net
     {:git/url "https://github.com/casselc/jolt-net.git"
-     :git/sha "699b908ffb4eb79ad35055cdc20866bb504e6932"}
+     :git/sha "875ad072b085340c6e1ea52ae39e67ccb68dd629"}
     io.github.casselc/jolt-bencode
     {:git/url "https://github.com/casselc/jolt-bencode.git"
      :git/sha "6c68bf2a1dbd7e438923ce38252c2abbdcb1643f"}
@@ -885,7 +885,7 @@
      :git/sha "0ceaa900bfca11933d35831d7697c7e2c5b22f04"}
     io.github.casselc/jolt-net
     {:git/url "https://github.com/casselc/jolt-net.git"
-     :git/sha "699b908ffb4eb79ad35055cdc20866bb504e6932"}
+     :git/sha "875ad072b085340c6e1ea52ae39e67ccb68dd629"}
     io.github.casselc/jolt-bencode
     {:git/url "https://github.com/casselc/jolt-bencode.git"
      :git/sha "6c68bf2a1dbd7e438923ce38252c2abbdcb1643f"}
@@ -917,7 +917,7 @@
    :extra-deps
    {io.github.chucklehead-dev/jolt-hegel
     {:git/url "https://github.com/chucklehead-dev/jolt-hegel.git"
-     :git/sha "ffe523023437862c7e474dc216346426318754c6"}}
+     :git/sha "54f2e2cf84d5b080c37ee546417b50c2e39e7ccd"}}
    :main-opts ["-m" "jolt.sim.outbox-delivery-hegel-test"
                "--http-webhook-only"]}
 
@@ -931,7 +931,7 @@
    :extra-deps
    {io.github.chucklehead-dev/jolt-hegel
     {:git/url "https://github.com/chucklehead-dev/jolt-hegel.git"
-     :git/sha "ffe523023437862c7e474dc216346426318754c6"}}
+     :git/sha "54f2e2cf84d5b080c37ee546417b50c2e39e7ccd"}}
    :main-opts ["-m" "jolt.sim.outbox-delivery-hegel-test"]}}
 
  :tasks

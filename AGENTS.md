@@ -10,8 +10,9 @@ root merely because a later rerun passes.
 
 Do not construct an isolated HOME by copying selected entries from `.jolt`.
 Git dependency pins change between branches, and a partial copy can make every
-fresh exploration worker attempt a network fetch. Keep `JOLT_GITLIBS` pointed
-at one complete cache and pre-resolve the exact parent and worker aliases.
+fresh exploration worker attempt a network fetch. Keep `JOLT_GITLIBS_DIR`
+pointed at one complete Git cache and `JOLT_MAVEN_REPOSITORY` pointed at one
+complete Maven cache, then pre-resolve the exact parent and worker aliases.
 
 For Hegel/process-explorer campaigns, use the checked-in runner rather than
 invoking the aliases individually:
