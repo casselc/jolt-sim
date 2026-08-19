@@ -4,7 +4,7 @@
 
   This unreleased adapter supports one exact current controller contract: ABI
   v6, a single composite install/restore over future, FFI, and clock callbacks,
-  descriptor-version 8 FFI interception, descriptor-version 1 clock
+  descriptor-version 9 FFI interception, descriptor-version 1 clock
   interception, and scoped native proceed routing. Until jolt-sim has a public
   release, a future ABI bump replaces this contract in place; intermediate
   development ABIs remain in Git history rather than accumulating compatibility
@@ -86,7 +86,7 @@
     :ffi-controller-arity 2
     :clock-controller-arity 2}
    :ffi-interception
-   {:descriptor-version 8
+   {:descriptor-version 9
     :kinds [:foreign-function :native-operation]
     :arguments :live
     :task-identity :future-lifecycle
@@ -529,20 +529,51 @@
 (def ^:private native-operation-keys
   #{:kind :task :arguments :operation})
 
-;; Exact scalar foreign argument types (descriptor-version 8). Current Jolt
-;; scalar metadata is exact, so a public foreign argument type is a primitive
-;; keyword only. Recursive by-value aggregate argument types remain rejected;
-;; variadic calls are instead identified by an exact :varargs-after boundary
-;; (nil for fixed-arity calls, or a positive integer no greater than the
-;; argument-type count naming the first variadic position). Exact scalar widths
-;; and :capture-native-error? are retained unchanged.
-(defn- valid-argument-type? [argument-type]
-  (and (keyword? argument-type)
-       (nil? (namespace argument-type))))
+;; Descriptor-version 9 preserves the literal, data-only aggregate descriptors
+;; emitted by Jolt. The simulator validates and keys them structurally; it does
+;; not calculate ABI layout, dereference caller-owned pointers, or attach native
+;; library semantics to a descriptor.
+(def ^:private ffi-layout-scalars
+  #{:int :uint :int8 :i8 :uint8 :u8 :byte :char
+    :int16 :short :uint16 :ushort :int32 :uint32
+    :long :ulong :int64 :uint64 :size_t :ssize_t :iptr :uptr
+    :double :float :pointer :void*})
+
+(defn- unqualified-keyword? [value]
+  (and (keyword? value) (nil? (namespace value))))
+
+(declare valid-layout-descriptor?)
+
+(defn- valid-layout-field? [field]
+  (and (vector? field)
+       (= 2 (count field))
+       (unqualified-keyword? (nth field 0))
+       (let [type (nth field 1)]
+         (or (contains? ffi-layout-scalars type)
+             (valid-layout-descriptor? type)))))
+
+(defn- valid-layout-descriptor? [descriptor]
+  (and (vector? descriptor)
+       (= 2 (count descriptor))
+       (= :struct (nth descriptor 0))
+       (let [fields (nth descriptor 1)]
+         (and (vector? fields)
+              (pos? (count fields))
+              (every? valid-layout-field? fields)
+              (= (count fields) (count (set (map first fields))))))))
+
+(defn- by-value-type? [type]
+  (and (vector? type)
+       (= 2 (count type))
+       (= :by-value (nth type 0))
+       (valid-layout-descriptor? (nth type 1))))
+
+(defn- valid-signature-type? [type]
+  (or (unqualified-keyword? type) (by-value-type? type)))
 
 (defn- valid-argument-types? [argument-types]
   (and (vector? argument-types)
-       (every? valid-argument-type? argument-types)))
+       (every? valid-signature-type? argument-types)))
 
 (defn- valid-varargs-boundary?
   "True when varargs-after is nil (a fixed-arity call) or a positive integer no
@@ -557,7 +588,7 @@
 
 (defn- validate-ffi-descriptor!
   "Validates one intercepted call against the exact current descriptor-version
-  7 shape. Every foreign descriptor carries Boolean :capture-native-error?
+  9 shape. Every foreign descriptor carries Boolean :capture-native-error?
   and an exact :varargs-after boundary (nil or a positive integer no greater
   than the argument-type count); native descriptors admit the current
   15-operation set."
@@ -580,10 +611,11 @@
           (invalid-ffi-descriptor! :invalid-symbol descriptor))
         (when-not (valid-argument-types? (:argument-types descriptor))
           (invalid-ffi-descriptor! :invalid-argument-types descriptor))
-        (when-not (= (count (:argument-types descriptor))
+        (when-not (= (+ (count (:argument-types descriptor))
+                        (if (by-value-type? (:return-type descriptor)) 1 0))
                      (count arguments))
           (invalid-ffi-descriptor! :argument-count-mismatch descriptor))
-        (when-not (valid-argument-type? (:return-type descriptor))
+        (when-not (valid-signature-type? (:return-type descriptor))
           (invalid-ffi-descriptor! :invalid-return-type descriptor))
         (when-not (boolean? (:blocking? descriptor))
           (invalid-ffi-descriptor! :invalid-blocking descriptor))
@@ -591,7 +623,18 @@
           (invalid-ffi-descriptor! :invalid-capture-native-error descriptor))
         (when-not (valid-varargs-boundary? (:argument-types descriptor)
                                           (:varargs-after descriptor))
-          (invalid-ffi-descriptor! :invalid-varargs-after descriptor)))
+          (invalid-ffi-descriptor! :invalid-varargs-after descriptor))
+        (when (and (:varargs-after descriptor)
+                   (by-value-type? (:return-type descriptor)))
+          (invalid-ffi-descriptor! :aggregate-return-with-varargs descriptor))
+        (when (and (:capture-native-error? descriptor)
+                   (by-value-type? (:return-type descriptor)))
+          (invalid-ffi-descriptor! :aggregate-return-with-native-error descriptor))
+        (when (and (:varargs-after descriptor)
+                   (some by-value-type?
+                         (subvec (:argument-types descriptor)
+                                 (:varargs-after descriptor))))
+          (invalid-ffi-descriptor! :aggregate-variadic-argument descriptor)))
       :native-operation
       (do
         (when-not (= native-operation-keys (set (keys descriptor)))
@@ -1433,7 +1476,7 @@
          (= :foreign-function (nth key 0))
          (string? (nth key 1))
          (valid-argument-types? (nth key 2))
-         (valid-argument-type? (nth key 3))
+         (valid-signature-type? (nth key 3))
          (boolean? (nth key 4)))
     nil
 
@@ -1443,9 +1486,10 @@
          (= :foreign-function (nth key 0))
          (string? (nth key 1))
          (valid-argument-types? (nth key 2))
-         (valid-argument-type? (nth key 3))
+         (valid-signature-type? (nth key 3))
          (boolean? (nth key 4))
-         (boolean? (nth key 5)))
+         (boolean? (nth key 5))
+         (not (and (nth key 5) (by-value-type? (nth key 3)))))
     nil
 
     ;; Canonical seven-element :foreign-function key. The boundary must be nil
@@ -1455,10 +1499,15 @@
          (= :foreign-function (nth key 0))
          (string? (nth key 1))
          (valid-argument-types? (nth key 2))
-         (valid-argument-type? (nth key 3))
+         (valid-signature-type? (nth key 3))
          (boolean? (nth key 4))
          (boolean? (nth key 5))
-         (valid-varargs-boundary? (nth key 2) (nth key 6)))
+         (valid-varargs-boundary? (nth key 2) (nth key 6))
+         (not (and (nth key 6) (by-value-type? (nth key 3))))
+         (not (and (nth key 5) (by-value-type? (nth key 3))))
+         (not (and (nth key 6)
+                   (some by-value-type?
+                         (subvec (nth key 2) (nth key 6))))))
     nil
 
     :else

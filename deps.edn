@@ -199,7 +199,7 @@
   {:extra-paths ["test"]
    :main-opts ["-m" "jolt.sim.runtime-poison-test"]}
 
-  ;; Custom-image integration gate for the descriptor-v8 scoped byte-array
+  ;; Custom-image integration gate for the descriptor-v9 scoped byte-array
   ;; pointer loan: the loan lifecycle is runtime-owned, only its enclosed
   ;; read/write operations are intercepted, and the deterministic memory
   ;; handlers fail closed on the real loan pointer rather than recreating a
@@ -207,6 +207,14 @@
   :ffi-pointer-loan-test
   {:extra-paths ["test"]
    :main-opts ["-m" "jolt.sim.ffi-pointer-loan-test-main"]}
+
+  ;; Custom-image integration gate for descriptor-v9 aggregate calls. The
+  ;; declared ghost bindings must be intercepted before native resolution,
+  ;; preserve literal nested layouts, and pass caller-owned argument and
+  ;; destination pointers through the generic controller unchanged.
+  :ffi-aggregate-test
+  {:extra-paths ["test"]
+   :main-opts ["-m" "jolt.sim.ffi-aggregate-test-main"]}
 
   ;; Process-isolated because the scheduler makes no deadlock-recovery claim:
   ;; this deliberately leaves a thread blocked forever and relies on process

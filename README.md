@@ -245,16 +245,18 @@ new `:spawn`/`:start` events fail closed. Body exceptions are rethrown unchanged
 only after drainage and restoration succeed.
 
 Every controlled run installs one composite controller covering FFI and clock
-interception. Exact nested descriptor version 8 requires Boolean
+interception. Exact nested descriptor version 9 requires Boolean
 `:capture-native-error?` and an exact `:varargs-after` boundary on foreign
 calls and admits all 15 current native operations, including the `:null?`
 predicate and the mutating `:read-array!`. Scoped byte-array loans are a
 runtime-owned lifecycle: no borrow or release operation crosses the
 controller boundary, and only the read, write, and foreign-call operations
 enclosed in a loan scope are intercepted.
-A foreign argument type is a primitive keyword only: recursive by-value
-aggregate argument types are not accepted, because current Jolt scalar
-metadata is exact. Variadic calls are instead identified by `:varargs-after`:
+A foreign signature type is either an unqualified scalar keyword or the same
+literal `[:by-value [:struct ...]]` descriptor accepted by Jolt. The simulator
+validates and retains descriptors as data and treats aggregate arguments and
+returns as caller-owned pointer values; it does not derive ABI layout or attach
+native-library semantics. Variadic calls are identified by `:varargs-after`:
 nil for fixed-arity calls, or a positive integer no greater than the
 argument-type count naming the first variadic position. Handlers are
 configured via `:ffi-handlers`, keyed by `[:native-operation operation]` or
@@ -734,7 +736,7 @@ path is independent of history length.
 ### Deterministic native memory
 
 `jolt.sim.ffi-memory` supplies handlers for all 15 operations in the current
-descriptor-version 8 FFI contract. Owned allocations use aligned fake addresses
+descriptor-version 9 FFI contract. Owned allocations use aligned fake addresses
 backed by immutable byte vectors, so an intercepted pointer can never reach
 Chez or the operating system. `:read-array!` copies modeled bytes directly into
 the caller's live destination byte array, mirroring the same fail-closed

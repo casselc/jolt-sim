@@ -3,7 +3,7 @@
 
   This namespace deliberately has no dependency on jolt.sim. Its caller
   chooses whether the standard jolt.ffi operations reach real native memory or
-  the installed current controller with FFI descriptor-version 8. In the
+  the installed current controller with FFI descriptor-version 9. In the
   current contract the scoped loan lifecycle itself is runtime-owned and
   never crosses the controller boundary; only the read/write operations
   enclosed in the loan scope are intercepted."

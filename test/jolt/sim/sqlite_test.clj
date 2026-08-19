@@ -2703,7 +2703,7 @@
 ;; [:foreign-function symbol argument-types return-type blocking?
 ;; capture-native-error? varargs-after] identity, with capture-native-error?
 ;; false and varargs-after nil. That is this repo's exact current ABI6
-;; :foreign-function descriptor identity (descriptor-version 8). Comparisons
+;; :foreign-function descriptor identity (descriptor-version 9). Comparisons
 ;; below are against jolt.sim.runtime's own public substitute/modeled-resource
 ;; constructors -- the exact wire-format values a hybrid handler returns -- so
 ;; no private decode or validation var is ever resolved.

@@ -47,17 +47,16 @@
                   bad-varargs-zero bad-varargs-range bad-varargs-type]]
       (is (= :jolt.sim.runtime/invalid-config (:type data))))))
 
-;; ---- scalar-only foreign argument-type keys -----------------------------
-;;
-;; The current contract accepts primitive keyword argument types only;
-;; recursive by-value aggregate argument types are rejected. Variadic calls
-;; are identified by an exact varargs-after boundary, not aggregate types.
+;; ---- generic aggregate foreign keys -------------------------------------
 
-(deftest foreign-function-key-rejects-aggregate-argument-types
-  (doseq [bad-type [[:by-value [:struct [[:x :int] [:y :pointer]]]]
-                    [:struct [[:x :int]]]
+(deftest foreign-function-key-validates-aggregate-types
+  (let [aggregate [:by-value [:struct [[:x :int32] [:y :pointer]]]]]
+    (is (= [:foreign-function "f" [aggregate] aggregate true false nil]
+           (hp/foreign-function-key "f" [aggregate] aggregate true))))
+  (doseq [bad-type [[:struct [[:x :int]]]
                     [:by-value [:struct []]]
-                    [:by-value [:struct [[:ns/x :int]]]]]]
+                    [:by-value [:struct [[:ns/x :int]]]]
+                    [:by-value [:struct [[:x :string]]]]]]
     (let [data (ex-data-of
                 #(hp/foreign-function-key "f" [bad-type] :int false))]
       (is (= :jolt.sim.runtime/invalid-config (:type data)) (pr-str bad-type))
@@ -65,9 +64,17 @@
              (:handler-key data))
           (pr-str bad-type))))
 
-  ;; Scalar keyword argument types coexist within one key.
+  ;; Scalar and aggregate fixed arguments coexist within one key.
   (is (= [:foreign-function "f" [:int :pointer] :int false false nil]
          (hp/foreign-function-key "f" [:int :pointer] :int false))))
+
+(deftest foreign-function-key-rejects-unsupported-aggregate-combinations
+  (let [aggregate [:by-value [:struct [[:x :int32]]]]]
+    (doseq [key [[:foreign-function "f" [] aggregate false true]
+                 [:foreign-function "f" [:int] aggregate false false 1]
+                 [:foreign-function "f" [:int aggregate] :int false false 1]]]
+      (let [data (ex-data-of #(runtime/normalize-ffi-handlers {key nil}))]
+        (is (= :jolt.sim.runtime/invalid-config (:type data)) (pr-str key))))))
 
 (deftest foreign-function-key-varargs-boundary-distinguishes-fixed-from-variadic
   ;; Two otherwise-identical signatures differing only in the boundary
