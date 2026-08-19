@@ -46,26 +46,39 @@ exec > >(tee -a "$transcript") 2>&1
 echo "retained gate root: $gate_root"
 
 original_home="${HOME:-}"
-if [[ -n "${JOLT_GITLIBS:-}" ]]; then
-  gitlibs_dir="$JOLT_GITLIBS"
+if [[ -n "${JOLT_GITLIBS_DIR:-}" ]]; then
+  gitlibs_dir="$JOLT_GITLIBS_DIR"
 elif [[ -n "$original_home" ]]; then
   gitlibs_dir="$original_home/.jolt/gitlibs"
 else
   gitlibs_dir="$gate_root/gitlibs"
 fi
+if [[ -n "${JOLT_MAVEN_REPOSITORY:-}" ]]; then
+  maven_repository="$JOLT_MAVEN_REPOSITORY"
+elif [[ -n "$original_home" ]]; then
+  maven_repository="$original_home/.m2/repository"
+else
+  maven_repository="$gate_root/m2/repository"
+fi
 if [[ "$gitlibs_dir" != /* ]]; then
-  echo "JOLT_GITLIBS must be absolute: $gitlibs_dir" >&2
+  echo "JOLT_GITLIBS_DIR must be absolute: $gitlibs_dir" >&2
+  exit 2
+fi
+if [[ "$maven_repository" != /* ]]; then
+  echo "JOLT_MAVEN_REPOSITORY must be absolute: $maven_repository" >&2
   exit 2
 fi
 
 export HOME="$gate_root/home"
 export XDG_CACHE_HOME="$gate_root/xdg-cache"
 export JOLT_CACHE_DIR="$gate_root/aot-cache"
-export JOLT_GITLIBS="$gitlibs_dir"
+export JOLT_GITLIBS_DIR="$gitlibs_dir"
+export JOLT_MAVEN_REPOSITORY="$maven_repository"
 export JOLT_AOT_CACHE=0
 export JOLT_NO_USER_DEPS=1
 export TMPDIR="$gate_root/tmp"
-mkdir -p "$HOME" "$XDG_CACHE_HOME" "$JOLT_CACHE_DIR" "$JOLT_GITLIBS" "$TMPDIR"
+mkdir -p "$HOME" "$XDG_CACHE_HOME" "$JOLT_CACHE_DIR" "$JOLT_GITLIBS_DIR" \
+  "$JOLT_MAVEN_REPOSITORY" "$TMPDIR"
 
 {
   printf 'maelstrom-release=%s\n' "${MAELSTROM_RELEASE:-unknown}"

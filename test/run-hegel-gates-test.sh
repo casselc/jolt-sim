@@ -68,7 +68,8 @@ run_case() {
   JOLT_SIM_BIN="$fake_sim" \
   JOLT_SIM_PROJECT_DIR="$project" \
   JOLT_SIM_GATE_PARENT="$case_root" \
-  JOLT_GITLIBS="$test_root/gitlibs" \
+  JOLT_GITLIBS_DIR="$test_root/gitlibs" \
+  JOLT_MAVEN_REPOSITORY="$test_root/m2/repository" \
     "$runner" hegel-explore-test > "$case_root/console.log" 2>&1
   status=$?
   set -e

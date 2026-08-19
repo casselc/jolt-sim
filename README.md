@@ -591,7 +591,7 @@ and coverage-guided sampling remain later work.
 
 The `jolt.sim.hegel` namespace is an optional adapter. Activate a
 `jolt-hegel` dependency before requiring it; the repository's
-`:hegel-explore-test` alias pins the peeled v0.1.2 commit and demonstrates the
+`:hegel-explore-test` alias pins the reviewed v0.2.1 candidate commit and demonstrates the
 setup. A property can let Hegel select one ordered plan, run it in the
 fresh-process supervisor, and shrink a failure:
 
@@ -975,12 +975,13 @@ export JOLT_SIM_PROJECT_DIR=/absolute/path/to/jolt-sim
 script/run-hegel-gates.sh tcp-bencode-hegel-test
 ```
 
-The runner keeps fresh HOME/cache/temp state separate from one complete
-`JOLT_GITLIBS` dependency cache, pre-resolves both the parent and nested-worker
-aliases, installs the pinned Hegel native library once, and retains its full
-gate root and transcript. This avoids turning a missing Git dependency into a
-generated counterexample. Set `JOLT_SIM_GATE_PARENT` to choose the parent of
-the never-overwritten gate directory.
+The runner keeps fresh HOME/cache/temp state separate from complete
+`JOLT_GITLIBS_DIR` and `JOLT_MAVEN_REPOSITORY` dependency caches, pre-resolves
+both the parent and nested-worker aliases, installs the pinned Hegel native
+library once, and retains its full gate root and transcript. This avoids
+turning a missing dependency into a generated counterexample. Set
+`JOLT_SIM_GATE_PARENT` to choose the parent of the never-overwritten gate
+directory.
 
 This is an unchanged-library integration witness, not a replacement TCP or
 bencode implementation. The current bencode profile carries UTF-8 text and

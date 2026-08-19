@@ -103,19 +103,28 @@ log "retained gate root: $gate_root"
 # state. Capture the caller's complete Git cache before replacing HOME. In CI
 # that cache starts empty and preflight fills it; locally it normally avoids a
 # sandboxed network fetch without copying a stale subset of pinned commits.
-if [[ -n "${JOLT_GITLIBS:-}" ]]; then
-  gitlibs_dir="$JOLT_GITLIBS"
+if [[ -n "${JOLT_GITLIBS_DIR:-}" ]]; then
+  gitlibs_dir="$JOLT_GITLIBS_DIR"
 elif [[ -n "$original_home" ]]; then
   gitlibs_dir="$original_home/.jolt/gitlibs"
 else
   gitlibs_dir="$gate_root/gitlibs"
+fi
+if [[ -n "${JOLT_MAVEN_REPOSITORY:-}" ]]; then
+  maven_repository="$JOLT_MAVEN_REPOSITORY"
+elif [[ -n "$original_home" ]]; then
+  maven_repository="$original_home/.m2/repository"
+else
+  maven_repository="$gate_root/m2/repository"
 fi
 
 case_temp_dir="${JOLT_SIM_CASE_TEMP_DIR:-$gate_root/case-runs}"
 case_artifact_dir="${JOLT_SIM_CASE_ARTIFACT_DIR:-$gate_root/case-artifacts}"
 
 run_step environment shared-path-contract require_absolute_path \
-  JOLT_GITLIBS "$gitlibs_dir"
+  JOLT_GITLIBS_DIR "$gitlibs_dir"
+run_step environment maven-path-contract require_absolute_path \
+  JOLT_MAVEN_REPOSITORY "$maven_repository"
 run_step environment case-temp-contract require_absolute_path \
   JOLT_SIM_CASE_TEMP_DIR "$case_temp_dir"
 run_step environment case-artifact-contract require_absolute_path \
@@ -124,7 +133,8 @@ run_step environment case-artifact-contract require_absolute_path \
 export HOME="$gate_root/home"
 export XDG_CACHE_HOME="$gate_root/xdg-cache"
 export JOLT_CACHE_DIR="$gate_root/aot-cache"
-export JOLT_GITLIBS="$gitlibs_dir"
+export JOLT_GITLIBS_DIR="$gitlibs_dir"
+export JOLT_MAVEN_REPOSITORY="$maven_repository"
 export JOLT_AOT_CACHE=0
 export JOLT_NO_USER_DEPS=1
 export TMPDIR="$gate_root/tmp"
@@ -137,7 +147,8 @@ run_step environment directory-setup mkdir -p \
   "$HOME" \
   "$XDG_CACHE_HOME" \
   "$JOLT_CACHE_DIR" \
-  "$JOLT_GITLIBS" \
+  "$JOLT_GITLIBS_DIR" \
+  "$JOLT_MAVEN_REPOSITORY" \
   "$TMPDIR" \
   "$JOLT_SIM_CASE_TEMP_DIR" \
   "$JOLT_SIM_CASE_ARTIFACT_DIR" \
@@ -212,7 +223,8 @@ for gate in "$@"; do
   fi
 done
 
-log "Git dependency cache: $JOLT_GITLIBS"
+log "Git dependency cache: $JOLT_GITLIBS_DIR"
+log "Maven dependency cache: $JOLT_MAVEN_REPOSITORY"
 cd "$project_dir"
 
 # Resolve every parent and nested-worker dependency before Hegel starts. A

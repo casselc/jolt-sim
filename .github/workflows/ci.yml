@@ -19,7 +19,7 @@ env:
   # This pin includes the reviewed cooperative-stdin runtime fix and persistent
   # evaluator namespace semantics; do not replace either with jolt-sim-side
   # transport or source-text workarounds.
-  JOLT_CORE_SHA: 615e52517042d62d0f92fb55f78a24e89bfe7af8
+  JOLT_CORE_SHA: 98d53b462c128cec34dd6eb387760cb50f1aae49
   CHEZ_RELEASE_TAG: chez-ci-10.4.1.1
   MAELSTROM_RELEASE: v0.2.4
   MAELSTROM_ARCHIVE_SHA256: 301ec71d6b12af0d765edb413f5cf5aa1046b5609bd4e31376a0b549548e5799
