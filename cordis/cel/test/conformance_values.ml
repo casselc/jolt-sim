@@ -2,6 +2,7 @@
    the conformance runner and the differential test. *)
 
 open Cordis_cel
+module J = Yojson.Safe.Util
 
 (* ---- decoding the corpus's value encoding ----------------------------------- *)
 
@@ -38,8 +39,14 @@ let rec decode (j : Yojson.Safe.t) : Value.t =
       match Ctime.parse_timestamp t with Ok (s, n) -> Value.Timestamp (s, n) | Error e -> raise (Unsupported e))
   | `Assoc [ ("duration", `String d) ] -> (
       match Ctime.parse_duration d with Ok (s, n) -> Value.Duration (s, n) | Error e -> raise (Unsupported e))
-  | `Assoc [ ("object", _) ] | `Assoc [ ("enum", _) ] ->
-      raise (Unsupported "protobuf messages and enums (out of scope)")
+  | `Assoc [ ("object", o) ] -> (
+      let url = J.to_string (J.member "type_url" o) in
+      let tname = match String.rindex_opt url '/' with Some i -> String.sub url (i + 1) (String.length url - i - 1) | None -> url in
+      match J.member "json" o with
+      | `Assoc [ ("unsupported", _) ] -> raise (Unsupported "protobuf message the converter could not decode")
+      | j -> (match Proto.of_json tname j with Value.Error e -> raise (Unsupported ("protobuf JSON: " ^ e)) | v -> v))
+  | `Assoc [ ("enum", e) ] ->
+      Value.Enum { tname = J.to_string (J.member "type" e); num = J.to_int (J.member "value" e) }
   | _ -> raise (Unsupported ("value " ^ Yojson.Safe.to_string j))
 
 (* Structural equality with exact types (int is not uint), NaN equal to NaN. *)

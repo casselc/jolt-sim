@@ -12,6 +12,9 @@ and kind =
   | Call of { fn : string; target : expr option; args : expr list }
   | List_lit of expr list
   | Map_lit of (expr * expr) list
+  | Struct_lit of { tname : string; fields : (string * expr * bool) list }
+      (** a message literal pkg.Msg{f: e, ?g: o}; the bool marks an optional
+          field initialiser *)
   | Comprehension of {
       iter_var : string;
       iter_var2 : string option;  (** two-variable comprehensions *)

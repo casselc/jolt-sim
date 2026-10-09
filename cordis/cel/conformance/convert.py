@@ -62,6 +62,91 @@ def load_modules(gen, proto_files):
 
 
 # --------------------------------------------------------------------------
+# descriptors
+
+TYPE_NAMES = {
+    1: "double", 2: "float", 3: "int64", 4: "uint64", 5: "int32", 6: "fixed64",
+    7: "fixed32", 8: "bool", 9: "string", 10: "group", 11: "message", 12: "bytes",
+    13: "uint32", 14: "enum", 15: "sfixed32", 16: "sfixed64", 17: "sint32", 18: "sint64",
+}
+
+
+def field_json(fd):
+    """One field (or extension) in the descriptor export."""
+    j = {
+        "name": fd.name,
+        "json_name": fd.json_name,
+        "number": fd.number,
+        "type": TYPE_NAMES[fd.type],
+        "repeated": fd.is_repeated,
+        "type_name": (fd.message_type.full_name if fd.message_type is not None
+                      else fd.enum_type.full_name if fd.enum_type is not None else None),
+        "oneof": fd.containing_oneof.name if fd.containing_oneof is not None else None,
+        "presence": bool(fd.has_presence),
+        "default": None,
+        "packed": bool(getattr(fd, "is_packed", False)),
+    }
+    if fd.has_default_value and not fd.is_repeated:
+        v = fd.default_value
+        if fd.type == fd.TYPE_ENUM:
+            v = fd.enum_type.values_by_number[v].number if isinstance(v, int) else v
+        if isinstance(v, bytes):
+            j["default"] = {"bytes": base64.b64encode(v).decode()}
+        elif isinstance(v, float):
+            j["default"] = {"double": enc_double(v)}
+        else:
+            j["default"] = v
+    mt = fd.message_type
+    if mt is not None and mt.GetOptions().map_entry:
+        j["map"] = {"key": field_json(mt.fields_by_name["key"]),
+                    "value": field_json(mt.fields_by_name["value"])}
+    if fd.is_extension:
+        j["extendee"] = fd.containing_type.full_name
+        j["full_name"] = fd.full_name
+    return j
+
+
+def export_descriptors(mods, path):
+    """Every message, enum and extension of the compiled protos, as JSON, for
+    the OCaml implementation's dynamic messages."""
+    out = {"messages": {}, "enums": {}, "extensions": []}
+
+    def message(d, syntax):
+        out["messages"][d.full_name] = {
+            "syntax": syntax,
+            "map_entry": d.GetOptions().map_entry,
+            "fields": [field_json(f) for f in d.fields],
+        }
+        for e in d.enum_types:
+            out["enums"][e.full_name] = {"values": [[v.name, v.number] for v in e.values]}
+        for n in d.nested_types:
+            message(n, syntax)
+        for x in d.extensions:
+            out["extensions"].append(field_json(x))
+
+    seen = set()
+    from google.protobuf import (any_pb2, duration_pb2, empty_pb2, field_mask_pb2,
+                                 struct_pb2, timestamp_pb2, wrappers_pb2)
+    files = [m.DESCRIPTOR for m in mods.values()] + [
+        m.DESCRIPTOR for m in (any_pb2, duration_pb2, empty_pb2, field_mask_pb2,
+                               struct_pb2, timestamp_pb2, wrappers_pb2)]
+    for fd in files:
+        if fd.name in seen:
+            continue
+        seen.add(fd.name)
+        syntax = getattr(fd, "syntax", None) or ("proto3" if "proto3" in fd.name else "proto2")
+        for d in fd.message_types_by_name.values():
+            message(d, syntax)
+        for e in fd.enum_types_by_name.values():
+            out["enums"][e.full_name] = {"values": [[v.name, v.number] for v in e.values]}
+        for x in fd.extensions_by_name.values():
+            out["extensions"].append(field_json(x))
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(out, f, indent=1, sort_keys=True)
+        f.write("\n")
+
+
+# --------------------------------------------------------------------------
 # encoders
 
 def which(msg):
@@ -298,6 +383,7 @@ def main():
     proto_files = compile_protos(cel_spec, gen)
     mods = load_modules(gen, proto_files)
     simple_pb2 = mods["cel/expr/conformance/test/simple.proto"]
+    export_descriptors(mods, os.path.join(os.path.dirname(os.path.abspath(a.out)), "descriptors.json"))
 
     from google.protobuf import text_format
     enc = Encoder()

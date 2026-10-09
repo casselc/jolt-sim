@@ -6,6 +6,7 @@
 (rule
  (alias runtest)
  (deps
+  %{project_root}/cel/conformance/descriptors.json
   (glob_files %{project_root}/cel/conformance/simple/*.json))
  (action
   (run %{exe:conformance.exe} %{project_root}/cel/conformance/simple --fail-on-fail)))

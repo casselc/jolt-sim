@@ -16,16 +16,13 @@ type outcome = Pass | Fail of string | Skip of string
 
 (* Whole files that exercise libraries this implementation does not have yet. *)
 let file_skips =
-  [ ("type_deduction", "type checker (RFC 0001 step 3)");
-    ("proto2", "protobuf messages (out of scope)");
-    ("proto2_ext", "protobuf messages (out of scope)");
-    ("proto3", "protobuf messages (out of scope)");
-    ("enums", "protobuf enums (out of scope)");
-    ("wrappers", "protobuf wrapper types (out of scope)") ]
+  [ ("type_deduction", "type checker (RFC 0001 step 3)") ]
 
 let no_skip = ref false
 
-let run_test file (t : Yojson.Safe.t) =
+let run_test file section (t : Yojson.Safe.t) =
+  (* cel-spec's enums file has a legacy (ints) and a strong (typed) half *)
+  Proto.strong_enums := String.length section >= 6 && String.sub section 0 6 = "strong";
   let str k = J.to_string (J.member k t) in
   let expr = str "expr" in
   match (if !no_skip then None else List.assoc_opt file file_skips) with
@@ -51,8 +48,6 @@ let run_test file (t : Yojson.Safe.t) =
                   | Error e -> Value.Error e
                 in
                 match want, got with
-                | _, Value.Error e when mentions e "message construction is not supported" ->
-                    Skip "protobuf messages (out of scope)"
                 | None, Value.Error _ -> Pass
                 | None, v -> Fail ("expected an error, got " ^ Value.to_string v)
                 | Some w, g -> if same w g then Pass else Fail (Printf.sprintf "expected %s, got %s" (Value.to_string w) (Value.to_string g)))))
@@ -66,6 +61,7 @@ let () =
       ("--no-skip", Arg.Set no_skip, "run the files skipped as a whole, to see how they fail") ]
     (fun d -> dir := d)
     "conformance.exe DIR";
+  Proto.load (Filename.concat (Filename.dirname !dir) "descriptors.json");
   let files =
     Sys.readdir !dir |> Array.to_list |> List.filter (fun f -> Filename.check_suffix f ".json") |> List.sort compare
   in
@@ -82,7 +78,7 @@ let () =
           (fun sec ->
             List.iter
               (fun t ->
-                match run_test name t with
+                match run_test name (J.to_string (J.member "name" sec)) t with
                 | Pass -> incr p
                 | Skip why ->
                     incr s;

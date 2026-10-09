@@ -16,6 +16,7 @@ let is_zero = function
   | List [||] | Map [] -> true
   | Timestamp (0L, 0) | Duration (0L, 0) -> true
   | Optional None -> true
+  | Message { fields = []; _ } -> true
   | _ -> false
 
 let register () =

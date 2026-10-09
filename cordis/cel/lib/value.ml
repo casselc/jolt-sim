@@ -54,6 +54,13 @@ type t =
   | Optional of t option
   | Error of string
   | Unknown of int list
+  | Message of { tname : string; fields : (string * t) list }
+      (** a protobuf message, by full type name; only present fields are
+          stored (proto3 scalars equal to their zero value and empty
+          repeated fields are absent), sorted by field name *)
+  | Enum of { tname : string; num : int }
+      (** a strongly typed enum value (cel-spec's strong enum mode; by
+          default enum values are ints) *)
   | Opaque of { tname : string; data : string }
       (** a value of an extension type (e.g. [net.IP]), held in a canonical
           string form; equal when type and form are equal *)
@@ -73,7 +80,7 @@ let type_of = function
   | Duration _ -> T_duration
   | Optional _ -> T_optional
   | Error _ | Unknown _ -> T_named "error"
-  | Opaque { tname; _ } -> T_named tname
+  | Opaque { tname; _ } | Message { tname; _ } | Enum { tname; _ } -> T_named tname
 
 let is_error = function Error _ -> true | _ -> false
 let is_unknown = function Unknown _ -> true | _ -> false
@@ -203,6 +210,11 @@ let rec equal a b =
   | Type x, Type y -> type_name x = type_name y
   | Timestamp (s, n), Timestamp (s', n') | Duration (s, n), Duration (s', n') -> s = s' && n = n'
   | Opaque a, Opaque b -> a.tname = b.tname && a.data = b.data
+  | Message a, Message b ->
+      a.tname = b.tname
+      && List.length a.fields = List.length b.fields
+      && List.for_all2 (fun (n, v) (n', v') -> n = n' && equal v v') a.fields b.fields
+  | Enum a, Enum b -> a.tname = b.tname && a.num = b.num
   | Optional x, Optional y -> (
       match x, y with None, None -> true | Some x, Some y -> equal x y | _ -> false)
   | _ -> false
@@ -238,3 +250,6 @@ let rec to_string = function
   | Error e -> "error(" ^ e ^ ")"
   | Unknown ids -> "unknown(" ^ String.concat "," (List.map string_of_int ids) ^ ")"
   | Opaque { tname; data } -> Printf.sprintf "%s(%S)" tname data
+  | Message { tname; fields } ->
+      tname ^ "{" ^ String.concat ", " (List.map (fun (n, v) -> n ^ ": " ^ to_string v) fields) ^ "}"
+  | Enum { tname; num } -> Printf.sprintf "%s(%d)" tname num

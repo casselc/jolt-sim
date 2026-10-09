@@ -285,8 +285,35 @@ and parse_member_suffix st e =
       let i = parse_expr st in
       expect st RBRACKET "']'";
       parse_member_suffix st (call st (if optional then op_opt_index else op_index) [ e; i ])
-  | LBRACE when (match e.kind with Ident _ | Select _ -> true | _ -> false) ->
-      fail "message construction is not supported"
+  | LBRACE when (match e.kind with Ident _ | Select { test_only = false; _ } -> true | _ -> false) ->
+      (* a message literal: the receiver is the (qualified) type name *)
+      let rec name (e : expr) =
+        match e.kind with
+        | Ident n -> n
+        | Select { operand; field; _ } -> name operand ^ "." ^ field
+        | _ -> fail "bad message type name"
+      in
+      let tname = name e in
+      advance st;
+      let rec go acc =
+        if peek st = RBRACE then (advance st; List.rev acc)
+        else begin
+          let optional = peek st = QUESTION in
+          if optional then advance st;
+          let field =
+            match peek st with
+            | IDENT f | QUOTED_IDENT f -> advance st; f
+            | _ -> fail "expected a field name"
+          in
+          expect st COLON "':'";
+          let v = parse_expr st in
+          match peek st with
+          | COMMA -> advance st; go ((field, v, optional) :: acc)
+          | RBRACE -> advance st; List.rev ((field, v, optional) :: acc)
+          | _ -> fail "expected ',' or '}'"
+        end
+      in
+      parse_member_suffix st (mk st (Struct_lit { tname; fields = go [] }))
   | _ -> e
 
 and parse_args st close =

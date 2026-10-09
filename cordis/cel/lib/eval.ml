@@ -46,7 +46,14 @@ let resolve_absolute act name =
   | None -> (
       match List.assoc_opt name type_idents with
       | Some t -> Some (Type t)
-      | None -> Option.map (fun t -> Type t) (Registry.find_type name))
+      | None -> (
+          match Registry.find_type name with
+          | Some t -> Some (Type t)
+          | None -> (
+              (* protobuf message types and enum constants *)
+              match Proto.find_message name with
+              | Some _ -> Some (Type (T_named name))
+              | None -> Proto.enum_constant name)))
 
 (* Comprehension variables shadow everything; then the container's
    candidates, most qualified first. *)
@@ -309,6 +316,11 @@ let call_function fn args =
   | "_?._", [ a; String f ] -> (
       match a with
       | Map m | Optional (Some (Map m)) -> Optional (map_find m (String f))
+      | Message { tname; fields } | Optional (Some (Message { tname; fields })) -> (
+          match Proto.select tname fields f ~test_only:true with
+          | Bool true -> Optional (Some (Proto.select tname fields f ~test_only:false))
+          | Bool false -> Optional None
+          | e -> e)
       | Optional None -> Optional None
       | _ -> err "type %s does not support optional field selection" (type_name (type_of a)))
   | "size", [ x ] -> size_of x
@@ -319,6 +331,7 @@ let call_function fn args =
       match compile_regex p with
       | Some r -> Bool (Re.execp r s)
       | None -> err "invalid regular expression: %s" p)
+  | "int", [ Enum { num; _ } ] -> Int (Int64.of_int num)
   | ("int" | "uint" | "double" | "string" | "bytes" | "bool"), [ (Opaque _ as v) ] -> (
       (* an extension type converts through its library's overload *)
       match Registry.call fn args with Some r -> r | None -> convert fn v)
@@ -379,6 +392,7 @@ let rec ident_path (e : Ast.expr) =
 
 let rec select v field ~test_only =
   match v with
+  | Message { tname; fields } -> Proto.select tname fields field ~test_only
   | Optional None -> if test_only then Bool false else Optional None
   | Optional (Some x) -> (
       (* selecting from an optional chains: a missing key is none *)
@@ -402,6 +416,15 @@ let rec is_attribute_root (e : Ast.expr) =
   | Ast.Select { operand; test_only = false; _ } -> is_attribute_root operand
   | Ast.Call { fn; target = None; args = [ operand; _ ] } when fn = Ast.op_index -> is_attribute_root operand
   | _ -> false
+
+(* The enum type a call names, if any: GlobalEnum(...) or TestAllTypes.NestedEnum(...),
+   resolved in the container. *)
+let enum_named act target fn =
+  let name = match target with None -> Some fn | Some t -> Option.map (fun p -> String.concat "." (p @ [ fn ])) (ident_path t) in
+  match name with
+  | Some n when not (List.mem_assoc (List.hd (String.split_on_char '.' n)) act.locals) ->
+      List.find_opt Proto.enum_exists (candidates act.container n)
+  | _ -> None
 
 let rec eval c act (e : Ast.expr) : Value.t =
   match e.kind with
@@ -455,6 +478,33 @@ let rec eval c act (e : Ast.expr) : Value.t =
       in
       let all = List.concat_map (fun (k, v) -> [ k; v ]) pairs in
       strict all (fun _ -> make_map pairs)
+  | Ast.Struct_lit { tname; fields } -> (
+      charge c 40;
+      (* the type name resolves in the container, most qualified first *)
+      match List.find_opt (fun n -> Proto.find_message n <> None) (candidates act.container tname) with
+      | None -> err "unknown type: %s" tname
+      | Some full -> (
+          let assigns =
+            List.filter_map
+              (fun (f, (e : Ast.expr), optional) ->
+                match eval c act e, optional with
+                | Optional None, true -> None
+                | Optional (Some v), true -> Some (f, v)
+                | v, true when is_error v || is_unknown v -> Some (f, v)
+                | _, true -> Some (f, Error "optional field initialiser needs an optional value")
+                | v, false -> Some (f, v))
+              fields
+          in
+          match List.find_opt (fun (_, v) -> is_error v || is_unknown v) assigns with
+          | Some (_, v) -> v
+          | None -> Proto.make full assigns))
+  | Ast.Call { fn; target; args = [ arg ] }
+    when (match target with None -> true | Some t -> ident_path t <> None)
+         && enum_named act target fn <> None -> (
+      (* a strong enum's constructor: pkg.Enum(2) or pkg.Enum('NAME') *)
+      match eval c act arg with
+      | (Error _ | Unknown _) as v -> v
+      | v -> Proto.make_enum (Option.get (enum_named act target fn)) v)
   | Ast.Call { fn; target = Some t; args } -> (
       (* a namespaced function: math.greatest(x) when math is not a value *)
       match ident_path t with
