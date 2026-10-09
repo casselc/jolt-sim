@@ -126,7 +126,25 @@ let sort_by_macro : Registry.expander =
    are left to other libraries. *)
 let on_list name f = Registry.register name (function [ List xs ] -> Some (f xs) | _ -> None)
 
+(* Signatures, as cel-go's ext.Lists declares them (first and last as its
+   optional library does). sort and @sortByAssociatedKeys take lists of
+   the comparable types; sortBy expands to @sortByAssociatedKeys. *)
+let declare () =
+  let m params result = (true, params, result) in
+  let d = Registry.declare in
+  let comparable = [ "int"; "uint"; "double"; "bool"; "google.protobuf.Duration"; "google.protobuf.Timestamp"; "string"; "bytes" ] in
+  d "slice" [ m [ "list(T)"; "int"; "int" ] "list(T)" ];
+  d "flatten" [ m [ "list(list(T))" ] "list(T)"; m [ "list(dyn)"; "int" ] "list(dyn)" ];
+  d "distinct" [ m [ "list(T)" ] "list(T)" ];
+  d "reverse" [ m [ "list(T)" ] "list(T)" ];
+  d "sort" (List.map (fun t -> m [ "list(" ^ t ^ ")" ] ("list(" ^ t ^ ")")) comparable);
+  d "first" [ m [ "list(T)" ] "optional_type(T)" ];
+  d "last" [ m [ "list(T)" ] "optional_type(T)" ];
+  d "@sortByAssociatedKeys" (List.map (fun u -> (false, [ "list(T)"; "list(" ^ u ^ ")" ], "list(T)")) comparable);
+  d "lists.range" [ (false, [ "int" ], "list(int)") ]
+
 let register () =
+  declare ();
   Registry.register "slice" (function [ List xs; Int s; Int e ] -> Some (slice xs s e) | _ -> None);
   Registry.register "flatten" (function
     | [ List xs ] -> Some (flatten xs 1L)

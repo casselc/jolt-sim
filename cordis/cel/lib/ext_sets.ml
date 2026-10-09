@@ -13,6 +13,9 @@ let on_lists name f =
   Registry.register name (function [ List a; List b ] -> Some (Bool (f a b)) | _ -> None)
 
 let register () =
+  List.iter
+    (fun n -> Registry.declare n [ (false, [ "list(T)"; "list(T)" ], "bool") ])
+    [ "sets.contains"; "sets.equivalent"; "sets.intersects" ];
   on_lists "sets.contains" contains;
   on_lists "sets.equivalent" (fun a b -> contains a b && contains b a);
   on_lists "sets.intersects" (fun a b -> Array.exists (mem b) a)

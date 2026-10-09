@@ -71,6 +71,8 @@ let decode s =
       | exception Corrupt at -> Result.Error (Printf.sprintf "illegal base64 data at input byte %d" at))
 
 let register () =
+  Registry.declare "base64.encode" [ (false, [ "bytes" ], "string") ];
+  Registry.declare "base64.decode" [ (false, [ "string" ], "bytes") ];
   Registry.register "base64.encode" (function [ Bytes b ] -> Some (String (encode b)) | _ -> None);
   Registry.register "base64.decode" (function
     | [ String s ] -> Some (match decode s with Ok b -> Bytes b | Result.Error e -> Error e)

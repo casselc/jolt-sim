@@ -120,7 +120,31 @@ let shift name op = function
         Some (match v with Int x -> Int (r x) | Uint x -> Uint (r x) | _ -> assert false)
   | _ -> None
 
+(* Signatures, as cel-go's ext.Math declares them; math.greatest and
+   math.least expand to math.@max and math.@min with one argument, two, or
+   a list of them all. *)
+let declare () =
+  let f params result = (false, params, result) in
+  let d = Registry.declare in
+  let nums = [ "int"; "uint"; "double" ] in
+  let extremum =
+    List.map (fun t -> f [ t ] t) nums
+    @ List.concat_map (fun a -> List.map (fun b -> f [ a; b ] (if a = b then a else "dyn")) nums) nums
+    @ List.map (fun t -> f [ "list(" ^ t ^ ")" ] t) nums
+  in
+  d "math.@max" extremum;
+  d "math.@min" extremum;
+  List.iter (fun n -> d n [ f [ "double" ] "double" ]) [ "math.ceil"; "math.floor"; "math.round"; "math.trunc" ];
+  List.iter (fun n -> d n [ f [ "double" ] "bool" ]) [ "math.isInf"; "math.isNaN"; "math.isFinite" ];
+  d "math.abs" (List.map (fun t -> f [ t ] t) nums);
+  d "math.sign" (List.map (fun t -> f [ t ] t) nums);
+  d "math.sqrt" (List.map (fun t -> f [ t ] "double") nums);
+  List.iter (fun n -> d n [ f [ "int"; "int" ] "int"; f [ "uint"; "uint" ] "uint" ]) [ "math.bitAnd"; "math.bitOr"; "math.bitXor" ];
+  d "math.bitNot" [ f [ "int" ] "int"; f [ "uint" ] "uint" ];
+  List.iter (fun n -> d n [ f [ "int"; "int" ] "int"; f [ "uint"; "int" ] "uint" ]) [ "math.bitShiftLeft"; "math.bitShiftRight" ]
+
 let register () =
+  declare ();
   Registry.register_macro "math.greatest" (extremum_macro ~macro:"math.greatest()" ~fn:"math.@max");
   Registry.register_macro "math.least" (extremum_macro ~macro:"math.least()" ~fn:"math.@min");
   Registry.register "math.@max" (extremum_function ~fn:"math.@max" ~better:(fun c -> c < 0));

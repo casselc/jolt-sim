@@ -118,7 +118,26 @@ let register_cidr () =
     | [ String s ] -> Some (or_error (fun child -> Bool (contains_cidr c child)) (parse_cidr s))
     | _ -> None)
 
+(* Signatures, as cel-go's ext.Network declares them. *)
+let declare () =
+  let d = Registry.declare in
+  let f params result = (false, params, result) and m params result = (true, params, result) in
+  d "ip" [ f [ "string" ] ip_type; m [ cidr_type ] ip_type ];
+  d "cidr" [ f [ "string" ] cidr_type ];
+  d "string" [ f [ ip_type ] "string"; f [ cidr_type ] "string" ];
+  List.iter (fun n -> d n [ f [ "string" ] "bool" ]) [ "isIP"; "isCIDR"; "ip.isCanonical" ];
+  d "family" [ m [ ip_type ] "int" ];
+  List.iter
+    (fun n -> d n [ m [ ip_type ] "bool" ])
+    [ "isUnspecified"; "isLoopback"; "isGlobalUnicast"; "isLinkLocalMulticast"; "isLinkLocalUnicast" ];
+  d "prefixLength" [ m [ cidr_type ] "int" ];
+  d "masked" [ m [ cidr_type ] cidr_type ];
+  d "isMask" [ m [ cidr_type ] "bool" ];
+  d "containsIP" [ m [ cidr_type; ip_type ] "bool"; m [ cidr_type; "string" ] "bool" ];
+  d "containsCIDR" [ m [ cidr_type; cidr_type ] "bool"; m [ cidr_type; "string" ] "bool" ]
+
 let register () =
+  declare ();
   Registry.register_type ip_type (T_named ip_type);
   Registry.register_type cidr_type (T_named cidr_type);
   register_ip ();
