@@ -1,0 +1,3 @@
+// expect: stream s holds up to 8 values, but f's parameter xs takes at most 3
+cell f(xs : list(int)<max 3>) : int = { size(xs); }
+graph g { stream s : int up to 8; asset a = f(s); }

@@ -77,7 +77,7 @@ let gen_graph tc =
     List.init (pick tc 7) (fun _ ->
         match pick tc 7 with
         | 0 -> Input (choose tc assets, gen_ty tc 1)
-        | 1 -> Stream ("notes", gen_ty tc 1)
+        | 1 -> Stream ("notes", gen_ty tc 1, 1 + pick tc 20)
         | 2 ->
             Asset
               { name = choose tc assets; cell = choose tc cells;

@@ -117,6 +117,15 @@ sim assets.qnt receiptsByCell receiptBacked VIOLATED
 sim assets.qnt noMemo atMostOnce VIOLATED
 sim assets.qnt noCutoff safety ok
 
+# ---- routes.qnt (RFC 0002: guarded assets, stream appends, feedback loops) -------------
+for inv in consistent appendOnce bounded; do sim routes.qnt design "$inv" ok; done
+# a loop reaches its cap in about ten steps, so check deeper than the default
+VERIFY_STEPS=${ROUTES_VERIFY_STEPS:-14} verify routes.qnt design safety ok
+for w in loopPassed capReachedAtRest withdrawn refusedWhenFull; do sim routes.qnt design "not($w)" VIOLATED; done
+sim routes.qnt keepGuarded consistent VIOLATED
+sim routes.qnt appendEveryRun appendOnce VIOLATED
+sim routes.qnt noCap bounded VIOLATED
+
 # conformance: simulator runs replayed in the model
 conform() { # label scenario mutant expect(pass|fail) extra-args...
   local label=$1 scenario=$2 mutant=$3 expect=$4; shift 4

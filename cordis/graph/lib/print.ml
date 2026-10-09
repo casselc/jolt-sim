@@ -61,7 +61,7 @@ let action = function Enable a -> a | Append (s, e) -> s ^ " <~ " ^ expr e | Not
 
 let gitem = function
   | Input (n, t) -> Printf.sprintf "input %s : %s;" n (ty t)
-  | Stream (n, t) -> Printf.sprintf "stream %s : %s;" n (ty t)
+  | Stream (n, t, cap) -> Printf.sprintf "stream %s : %s up to %d;" n (ty t) cap
   | Asset { name; cell; args; fresh = f } ->
       Printf.sprintf "asset %s = %s(%s)%s;" name cell (String.concat ", " args)
         (match f with None -> "" | Some f -> " ~fresh:" ^ fresh f)
@@ -132,7 +132,7 @@ let refs = function
   | Graph (_, items) ->
       List.concat_map
         (function
-          | Input (_, t) | Stream (_, t) -> ty_refs t
+          | Input (_, t) | Stream (_, t, _) -> ty_refs t
           | Asset { cell; _ } -> [ cell ]
           | Route (_, cs) -> List.concat_map (fun (_, acts) -> List.concat_map (function Append (_, e) -> expr_refs e | _ -> []) acts) cs
           | Before (a, b) -> [ a; b ]

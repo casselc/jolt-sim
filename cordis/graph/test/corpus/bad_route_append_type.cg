@@ -1,4 +1,4 @@
 // expect: the value for log has type int, not string
 type V = A(int) | B;
 cell f(x : int) : V = { V.B; }
-graph g { input x : int; stream log : string; asset v = f(x); route v { A(n) -> log <~ n; B -> none }; }
+graph g { input x : int; stream log : string up to 4; asset v = f(x); route v { A(n) -> log <~ n; B -> none }; }

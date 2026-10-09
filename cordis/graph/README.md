@@ -33,5 +33,12 @@ and storage in a content-addressed store (Irmin) in place of a file.
 
 Size bounds (`<max N>`) in a cell's parameter types are what its turns'
 cost estimates assume; the runtime must enforce them at the cell's
-boundary (phase 3, with the rest of the turn runtime). Until then a bound
-is a promise the checker relies on.
+boundary (phase 3, with the rest of the turn runtime). Where a bound can be
+checked statically it is: every stream declares its capacity (`stream
+notes : string up to 8;`), and a stream may feed only a parameter whose
+bound covers it.
+
+What routes and streams do at run time (guards that compute or withdraw,
+appends keyed by the scrutinee's revision, full streams refusing, a new
+input emptying the streams) is specified in RFC 0002 revision 2 and checked
+in `quint/routes.qnt`, ahead of the turn runtime that will implement it.

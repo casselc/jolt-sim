@@ -1,0 +1,3 @@
+// expect: ok
+cell f(xs : list(string<max 10>)<max 8>) : int = { xs.fold(n, 0, x, n + size(x)); }
+graph g { stream s : string<max 10> up to 8; asset a = f(s); }

@@ -1,0 +1,3 @@
+// expect: expected 'up'
+cell f(xs : list(int)) : int = { size(xs); }
+graph g { stream s : int; asset a = f(s); }

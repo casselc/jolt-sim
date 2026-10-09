@@ -4,7 +4,7 @@ cell pick(x : int) : V = { x > 0 ? V.A(x) : V.C; }
 cell use_a(v : V) : int = { match v { A(n) -> n; _ -> 0 }; }
 graph g {
   input x : int;
-  stream log : int;
+  stream log : int up to 4;
   asset v = pick(x);
   asset y = use_a(v);
   route v { A(n) -> y, log <~ n; _ -> none };

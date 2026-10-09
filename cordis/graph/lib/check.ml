@@ -54,6 +54,7 @@ type graph_info = {
   streams : (string * C.t) list;
   assets : asset_info list;  (** in dependency order *)
   appends : (string * string * string) list;  (** (scrutinee, case, stream) *)
+  capacities : (string * int) list;  (** each stream's capacity *)
   befores : (string * string) list;  (** invariant c1 before c2 *)
   effect_row : string list;
 }
@@ -333,11 +334,12 @@ let check_graph env ?(broken = []) cells name items =
   let define n what = if Hashtbl.mem decl n then fail "%s is defined twice" n else Hashtbl.add decl n what in
   List.iter
     (function
-      | Input (n, _) -> define n `Input | Stream (n, _) -> define n `Stream | Asset { name; _ } -> define name `Asset
+      | Input (n, _) -> define n `Input | Stream (n, _, _) -> define n `Stream | Asset { name; _ } -> define name `Asset
       | _ -> ())
     items;
   let inputs = List.filter_map (function Input (n, t) -> Some (n, resolve env t) | _ -> None) items in
-  let streams = List.filter_map (function Stream (n, t) -> Some (n, resolve env t) | _ -> None) items in
+  let streams = List.filter_map (function Stream (n, t, _) -> Some (n, resolve env t) | _ -> None) items in
+  let capacities = List.filter_map (function Stream (n, _, c) -> Some (n, c) | _ -> None) items in
   let asset_items = List.filter_map (function Asset a -> Some a | _ -> None) items in
   (* dependency order, with streams removed; a cycle is an error *)
   let deps_of (a : asset) = List.filter (fun x -> Hashtbl.find_opt decl x <> Some `Stream) a.args in
@@ -376,6 +378,19 @@ let check_graph env ?(broken = []) cells name items =
         let cenv = C.empty () in
         let inst = instantiate cenv (ci.result :: List.map snd ci.params) in
         let result, ps = (List.hd inst, List.tl inst) in
+        (* a stream's capacity must fit the bound of the parameter it feeds
+           (declared, or the default the parameter's cost was estimated with) *)
+        let cell_def = List.find_map (fun (_, i) -> match i with Cell c when c.name = a.cell -> Some c | _ -> None) env.defs in
+        List.iteri
+          (fun i x ->
+            match List.assoc_opt x capacities, cell_def with
+            | Some cap, Some cd -> (
+                let p, pt = List.nth cd.params i in
+                let bound = match pt with List (_, b) -> Option.value b ~default:env.options.default_size | _ -> env.options.default_size in
+                if cap > bound then
+                  fail "asset %s: stream %s holds up to %d values, but %s's parameter %s takes at most %d" a.name x cap a.cell p bound)
+            | _ -> ())
+          a.args;
         List.iter2
           (fun x p ->
             let t = Hashtbl.find types x in
@@ -472,7 +487,7 @@ let check_graph env ?(broken = []) cells name items =
     List.sort_uniq compare (List.concat_map (fun a -> (List.find (fun c -> c.cname = a.acell) cells).effects) assets)
   in
   let befores = List.filter_map (function Before (a, b) -> Some (a, b) | _ -> None) items in
-  { gname = name; inputs; streams; assets; appends = List.rev !appends; befores; effect_row }
+  { gname = name; inputs; streams; assets; appends = List.rev !appends; capacities; befores; effect_row }
 
 (* ---- files ----------------------------------------------------------------------------------- *)
 

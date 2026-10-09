@@ -338,8 +338,14 @@ let graph st =
       let n = ident st in
       expect st ":";
       let t = ty st in
+      (* a capacity is required: a full stream refuses, so a feedback loop
+         comes to rest (routes.qnt) *)
+      expect_word st "up";
+      expect_word st "to";
+      let cap = int_lit st in
+      if cap < 1 then fail st "a stream holds at least one value";
       expect st ";";
-      items (Stream (n, t) :: acc)
+      items (Stream (n, t, cap) :: acc)
     end
     else if accept_word st "asset" then begin
       let n = ident st in

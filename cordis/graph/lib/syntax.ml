@@ -41,7 +41,7 @@ type asset = { name : string; cell : string; args : string list; fresh : fresh o
 
 type gitem =
   | Input of string * ty
-  | Stream of string * ty
+  | Stream of string * ty * int  (** element type, capacity: up to N *)
   | Asset of asset
   | Route of string * (pattern * action list) list
   | Before of string * string

@@ -34,7 +34,7 @@ cell gate(v : Verdict) : bool = {
 
 graph review_loop {
   input  request : Diff;
-  stream notes : string<max 500>;
+  stream notes : string<max 500> up to 8;
   asset  draft   = write(request, notes) ~fresh:on_change;
   asset  verdict = critic(draft);
   asset  shipped = gate(verdict);
