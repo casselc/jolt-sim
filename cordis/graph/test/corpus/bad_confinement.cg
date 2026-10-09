@@ -1,0 +1,2 @@
+// expect: undeclared reference to 'secret'
+cell f(x : int) : int = { x + secret; }

@@ -1,0 +1,2 @@
+// expect: the result has type string, not int
+cell f(x : int) : int = { string(x); }

@@ -306,7 +306,7 @@ let cell st =
 let duration st =
   skip st;
   let start = st.pos in
-  while match cur st with '0' .. '9' | 'h' | 'm' | 's' | '.' -> true | _ -> false do st.pos <- st.pos + 1 done;
+  while is_ident_char (cur st) || cur st = '.' do st.pos <- st.pos + 1 done;
   let d = String.sub st.src start (st.pos - start) in
   if d = "" then fail st "expected a duration";
   d

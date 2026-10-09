@@ -1,0 +1,3 @@
+// expect: bad duration
+cell a(x : int) : int = { x; }
+graph g { input x : int; asset p = a(x) ~fresh:every 5q; }

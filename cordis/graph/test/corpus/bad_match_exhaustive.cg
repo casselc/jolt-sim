@@ -1,0 +1,3 @@
+// expect: not exhaustive: no case for B
+type V = A(int) | B;
+cell f(v : V) : int = { match v { A(n) -> n }; }

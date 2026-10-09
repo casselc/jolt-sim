@@ -1,0 +1,4 @@
+// expect: ok
+uses text = LIBHASH;
+cell shout(s : string<max 100>) : string = { text.shout(s); }
+graph g { input s : string<max 100>; asset loud = shout(s); }

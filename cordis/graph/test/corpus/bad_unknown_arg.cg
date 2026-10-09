@@ -1,0 +1,3 @@
+// expect: unknown input nope
+cell f(x : int) : int = { x; }
+graph g { asset y = f(nope); }

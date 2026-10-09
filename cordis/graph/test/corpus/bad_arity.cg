@@ -1,0 +1,3 @@
+// expect: f takes 1 inputs, not 2
+cell f(x : int) : int = { x; }
+graph g { input x : int; asset y = f(x, x); }

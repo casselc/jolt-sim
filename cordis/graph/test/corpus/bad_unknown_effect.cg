@@ -1,0 +1,2 @@
+// expect: unknown effect nope
+cell f(x : int) : int ! { nope } = { x; }

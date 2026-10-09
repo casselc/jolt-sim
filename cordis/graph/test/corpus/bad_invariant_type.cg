@@ -1,0 +1,3 @@
+// expect: an invariant has type int, not bool
+cell a(x : int) : int = { x; }
+graph g { input x : int; asset p = a(x); invariant always p + 1; }

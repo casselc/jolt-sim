@@ -1,0 +1,7 @@
+// expect: ok
+effect llm.complete(string) : string;
+cell draft(topic : string) : string ! { llm.complete } = {
+  use text = llm.complete(?prompt);
+  ?todo;
+}
+graph g { input t : string; asset d = draft(t); }

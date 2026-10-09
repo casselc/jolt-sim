@@ -1,0 +1,5 @@
+// expect: does not depend on v
+type V = A | B;
+cell f(x : int) : V = { V.A; }
+cell h(x : int) : int = { x; }
+graph g { input x : int; asset v = f(x); asset y = h(x); route v { A -> y; B -> none }; }

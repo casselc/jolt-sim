@@ -1,0 +1,4 @@
+// expect: but path_of's parameter takes
+type R = { name : string };
+cell path_of(d : { path : string; .. }) : string = { d.path; }
+graph g { input r : R; asset p = path_of(r); }

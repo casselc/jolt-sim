@@ -1,0 +1,3 @@
+// expect: needs field 'b'
+type R = { a : int; b : int };
+cell f(x : int) : R = { R{a: x}; }

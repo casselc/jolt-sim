@@ -1,0 +1,3 @@
+// expect: not a variant
+cell f(x : int) : int = { x; }
+graph g { input x : int; asset v = f(x); route v { A -> none }; }

@@ -1,0 +1,10 @@
+// expect: ok
+cell id(x : 'a) : 'a = { x; }
+cell both(a : int, b : string) : string = { string(a) + b; }
+graph g {
+  input n : int;
+  input s : string;
+  asset n2 = id(n);
+  asset s2 = id(s);
+  asset out = both(n2, s2);
+}

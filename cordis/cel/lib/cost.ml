@@ -371,14 +371,20 @@ and accumulator step init n =
 type estimate = { min : int; max : int }
 
 (* Estimate an expression's cost in a checker environment: its declared
-   variables are the inputs, each bounded by [sizes] or [default_size]. *)
-let estimate ?(default_size = 1000) ?(sizes = []) (env : Checker.env) (e : expr) =
+   variables are the inputs, each given a [shapes] entry, or else bounded
+   at every depth by its [sizes] entry or [default_size]. *)
+let estimate ?(default_size = 1000) ?(sizes = []) ?(shapes = []) (env : Checker.env) (e : expr) =
   match Checker.check_types env e with
   | Error m -> Error m
   | Ok (_, types) ->
       let inputs name =
         if name = "" then Some (bounded default_size)
         else
+          (* a shape given for an input (its type's bounds, level by level)
+             wins over a single size bound *)
+          match List.assoc_opt name shapes with
+          | Some sh -> Some sh
+          | None ->
           match List.assoc_opt name env.Checker.idents with
           | Some t ->
               let d = Option.value (List.assoc_opt name sizes) ~default:default_size in

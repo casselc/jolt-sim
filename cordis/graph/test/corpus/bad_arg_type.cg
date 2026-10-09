@@ -1,0 +1,3 @@
+// expect: x has type string, but f's parameter takes int
+cell f(x : int) : int = { x; }
+graph g { input x : string; asset y = f(x); }

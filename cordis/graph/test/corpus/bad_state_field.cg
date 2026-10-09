@@ -1,0 +1,2 @@
+// expect: no such state field
+cell f(x : int) : int state { n : int = 0; } = { x with state.m := 1; }

@@ -1,0 +1,2 @@
+// expect: unknown cell nope
+graph g { input x : int; asset y = nope(x); }

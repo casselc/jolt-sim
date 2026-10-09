@@ -1,0 +1,3 @@
+// expect: but pair's parameter takes
+cell pair(a : 'a, b : 'a) : list('a) = { [a, b]; }
+graph g { input i : int; input s : string; asset p = pair(i, s); }

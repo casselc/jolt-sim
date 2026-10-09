@@ -1,0 +1,3 @@
+// expect: a dependency cycle
+cell f(x : int) : int = { x; }
+graph g { asset a = f(b); asset b = f(a); }

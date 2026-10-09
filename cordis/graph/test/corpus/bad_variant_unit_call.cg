@@ -1,0 +1,3 @@
+// expect: carries no value
+type V = A(int) | B;
+cell f(x : int) : V = { V.B(x); }

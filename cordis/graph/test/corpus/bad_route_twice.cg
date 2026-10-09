@@ -1,0 +1,4 @@
+// expect: routed twice
+type V = A | B;
+cell f(x : int) : V = { V.A; }
+graph g { input x : int; asset v = f(x); route v { _ -> none }; route v { _ -> none }; }

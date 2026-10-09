@@ -1,0 +1,2 @@
+// expect: duplicate parameter x
+cell f(x : int, x : int) : int = { x; }

@@ -1,0 +1,3 @@
+// expect: case V.A takes 'int'
+type V = A(int) | B;
+cell f(x : string) : V = { V.A(x); }

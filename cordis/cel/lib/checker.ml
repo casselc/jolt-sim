@@ -40,6 +40,10 @@ type t =
   | Variant of (string * t option) list
       (** variant(Pass(T), Fail(U), Skipped): tagged cases, each with an
           optional payload. A value is a map {'tag': 'Pass', 'value': x}. *)
+  | Record of (string * t) list * bool
+      (** the graph language's records (RFC 0002): fields, and whether the
+          record is open (at least these fields). A value is a map with a
+          string key per field. *)
   | Param of string  (** a type parameter in a signature *)
   | Var of int  (** a type variable during inference *)
 
@@ -68,6 +72,8 @@ let rec to_string = function
   | Message n -> n
   | Opaque (n, []) -> n
   | Opaque (n, ps) -> n ^ "(" ^ String.concat ", " (List.map to_string ps) ^ ")"
+  | Record (fs, open_) ->
+      "{" ^ String.concat ", " (List.map (fun (f, t) -> f ^ ": " ^ to_string t) fs @ if open_ then [ ".." ] else []) ^ "}"
   | Variant cs ->
       "variant("
       ^ String.concat ", " (List.map (fun (n, t) -> match t with None -> n | Some t -> n ^ "(" ^ to_string t ^ ")") cs)
@@ -146,6 +152,7 @@ type env = {
   subst : (int, t) Hashtbl.t;
   mutable next : int;
   types : (int, t) Hashtbl.t;  (** expression id -> inferred type, for the cost estimator *)
+  named : (string * t) list;  (** the graph language's declared records and variants, by name *)
 }
 
 let fresh env =
@@ -167,6 +174,7 @@ let rec substitute env t =
   | Opt t -> Opt (substitute env t)
   | Opaque (n, ps) -> Opaque (n, List.map (substitute env) ps)
   | Variant cs -> Variant (List.map (fun (n, t) -> (n, Option.map (substitute env) t)) cs)
+  | Record (fs, o) -> Record (List.map (fun (f, t) -> (f, substitute env t)) fs, o)
   | t -> t
 
 (* Unbound variables become dyn when a type is reported. *)
@@ -180,6 +188,7 @@ let rec finalize env t =
   | Opt t -> Opt (finalize env t)
   | Opaque (n, ps) -> Opaque (n, List.map (finalize env) ps)
   | Variant cs -> Variant (List.map (fun (n, t) -> (n, Option.map (finalize env) t)) cs)
+  | Record (fs, o) -> Record (List.map (fun (f, t) -> (f, finalize env t)) fs, o)
   | t -> t
 
 let rec occurs env i t =
@@ -189,6 +198,7 @@ let rec occurs env i t =
   | Map (k, v) -> occurs env i k || occurs env i v
   | Opaque (_, ps) -> List.exists (occurs env i) ps
   | Variant cs -> List.exists (fun (_, t) -> match t with Some t -> occurs env i t | None -> false) cs
+  | Record (fs, _) -> List.exists (fun (_, t) -> occurs env i t) fs
   | _ -> false
 
 let bind env i t = if not (occurs env i t) then Hashtbl.replace env.subst i t
@@ -236,6 +246,11 @@ let rec assignable env p a =
      says string keys and dyn (or, for unit cases only, string) values, and
      its tag is checked when matched *)
   | Variant _, Map (k, v) -> assignable env String k && (match resolve env v with Dyn | String | Var _ -> true | _ -> false)
+  (* width subtyping at boundaries: an open record accepts any record with
+     at least its fields; a closed one exactly its fields *)
+  | Record (ps, open_), Record (fs, _) ->
+      (open_ || List.length ps = List.length fs)
+      && List.for_all (fun (f, t) -> match List.assoc_opt f fs with Some u -> assignable env t u | None -> false) ps
   | Variant cs, Variant ds ->
       (* the same cases, by name, with assignable payloads *)
       List.length cs = List.length ds
@@ -260,6 +275,7 @@ let instantiate env (params, result) =
     | Opt t -> Opt (go t)
     | Opaque (n, ps) -> Opaque (n, List.map go ps)
     | Variant cs -> Variant (List.map (fun (n, t) -> (n, Option.map go t)) cs)
+    | Record (fs, o) -> Record (List.map (fun (f, t) -> (f, go t)) fs, o)
     | t -> t
   in
   (List.map go params, go result)
@@ -389,11 +405,15 @@ let standard : (string * (bool * t list * t) list) list Lazy.t =
 (* ---- declarations ------------------------------------------------------------------------ *)
 
 let empty ?(container = "") () =
-  { idents = []; functions = []; container; subst = Hashtbl.create 16; next = 0; types = Hashtbl.create 64 }
+  { idents = []; functions = []; container; subst = Hashtbl.create 16; next = 0; types = Hashtbl.create 64; named = [] }
 
 let declare_ident env name ty = { env with idents = (name, ty) :: env.idents }
 
 let declare_function env name overloads = { env with functions = (name, overloads) :: env.functions }
+
+(* A named record or variant type: Name{f: e} builds a record, and
+   Name.Case(x) or Name.Case a variant. *)
+let declare_type env name ty = { env with named = (name, ty) :: env.named }
 
 (* ---- types of protobuf fields ---------------------------------------------------------------- *)
 
@@ -537,6 +557,28 @@ and infer_kind env locals (e : Ast.expr) : t =
       | _ -> Dyn)
   | Ast.Ident n -> (
       match lookup_ident env locals n with Some t -> t | None -> fail "undeclared reference to '%s'" n)
+  | Ast.Select { operand = { kind = Ast.Ident n; _ }; field; test_only = false }
+    when (not (List.mem_assoc n locals)) && (match List.assoc_opt n env.named with Some (Variant _) -> true | _ -> false) -> (
+      match List.assoc_opt n env.named with
+      | Some (Variant cs as vt) -> (
+          match List.assoc_opt field cs with
+          | Some None -> vt
+          | Some (Some _) -> fail "case %s.%s carries a value: %s.%s(x)" n field n field
+          | None -> fail "no case '%s' in %s" field n)
+      | _ -> assert false)
+  | Ast.Call { fn; target = Some { kind = Ast.Ident n; _ }; args }
+    when (not (List.mem_assoc n locals)) && (match List.assoc_opt n env.named with Some (Variant _) -> true | _ -> false) -> (
+      match List.assoc_opt n env.named, args with
+      | Some (Variant cs as vt), [ x ] -> (
+          match List.assoc_opt fn cs with
+          | Some (Some pt) ->
+              let at = infer env locals x in
+              if not (assignable env pt at) then
+                fail "case %s.%s takes '%s', not '%s'" n fn (to_string pt) (to_string (finalize env at));
+              vt
+          | Some None -> fail "case %s.%s carries no value" n fn
+          | None -> fail "no case '%s' in %s" fn n)
+      | _ -> fail "a variant case takes one argument")
   | Ast.Select { operand; field; test_only } -> (
       (* a qualified name (a.b.c) resolves as a whole first *)
       let qualified =
@@ -566,6 +608,26 @@ and infer_kind env locals (e : Ast.expr) : t =
           (fresh env, fresh env) kvs
       in
       Map (k, v)
+  | Ast.Struct_lit { tname; fields } when (match List.assoc_opt tname env.named with Some (Record _) -> true | _ -> false) -> (
+      match List.assoc_opt tname env.named with
+      | Some (Record (fs, _) as rt) ->
+          List.iter
+            (fun (f, fe, optional) ->
+              if optional then fail "a record field cannot be optional ('?%s')" f;
+              match List.assoc_opt f fs with
+              | None -> fail "record %s has no field '%s'" tname f
+              | Some ft ->
+                  let at = infer env locals fe in
+                  if not (assignable env ft at) then
+                    fail "expected type of field '%s' is '%s' but provided type is '%s'" f (to_string ft) (to_string (finalize env at)))
+            fields;
+          (match List.find_opt (fun (f, _) -> not (List.exists (fun (g, _, _) -> g = f) fields)) fs with
+           | Some (f, _) -> fail "record %s needs field '%s'" tname f
+           | None -> ());
+          let given = List.map (fun (g, _, _) -> g) fields in
+          List.iter (fun g -> if List.length (List.filter (( = ) g) given) > 1 then fail "field '%s' given twice" g) given;
+          rt
+      | _ -> assert false)
   | Ast.Struct_lit { tname; fields } -> (
       match List.find_opt (fun n -> Proto.find_message n <> None) (candidates env tname) with
       | None -> fail "undeclared reference to '%s'" tname
@@ -689,6 +751,8 @@ and select_type env ot field =
       | None -> fail "undefined field '%s'" field)
   | Opt t -> Opt (select_type env t field)
   | Variant _ -> (match field with "tag" -> String | "value" -> Dyn | f -> fail "undefined field '%s'" f)
+  | Record (fs, _) -> (
+      match List.assoc_opt field fs with Some t -> t | None -> fail "undefined field '%s' in %s" field (to_string (resolve env ot)))
   | t -> fail "type '%s' does not support field selection" (to_string (finalize env t))
 
 (* The checked type of an expression, or the first error. Each check is a

@@ -1,0 +1,2 @@
+// expect: state.n's update has type string
+cell f(x : int) : int state { n : int = 0; } = { x with state.n := 'a'; }

@@ -1,0 +1,4 @@
+// expect: carries no value
+type V = A(int) | B;
+cell f(x : int) : V = { V.B; }
+graph g { input x : int; asset v = f(x); route v { A(n) -> none; B(z) -> none }; }

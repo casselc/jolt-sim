@@ -1,0 +1,4 @@
+// expect: not exhaustive: no case for C
+type V = A | B | C;
+cell f(x : int) : V = { V.A; }
+graph g { input x : int; asset v = f(x); route v { A -> none; B -> none }; }

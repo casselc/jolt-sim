@@ -37,10 +37,12 @@ type pattern = Case of string * string option  (** Tag, Tag(x), Tag(_) *) | Wild
 
 type action = Enable of string | Append of string * expr | Nothing
 
+type asset = { name : string; cell : string; args : string list; fresh : fresh option }
+
 type gitem =
   | Input of string * ty
   | Stream of string * ty
-  | Asset of { name : string; cell : string; args : string list; fresh : fresh option }
+  | Asset of asset
   | Route of string * (pattern * action list) list
   | Before of string * string
   | Always_inv of expr

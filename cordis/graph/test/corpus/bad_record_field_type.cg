@@ -1,0 +1,3 @@
+// expect: expected type of field 'a'
+type R = { a : int };
+cell f(x : string) : R = { R{a: x}; }

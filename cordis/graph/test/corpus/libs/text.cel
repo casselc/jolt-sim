@@ -1,0 +1,2 @@
+// a library the corpus's ok_library imports
+shout(s: string): string = s.upperAscii() + '!';

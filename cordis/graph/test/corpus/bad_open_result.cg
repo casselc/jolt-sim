@@ -1,0 +1,2 @@
+// expect: allowed only as a cell parameter
+cell f(x : int) : { a : int; .. } = { 1; }

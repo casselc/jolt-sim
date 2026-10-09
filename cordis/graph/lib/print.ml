@@ -29,7 +29,7 @@ let tdef = function
   | Alias t -> ty t
   | Variant cs -> String.concat " | " (List.map (fun (c, p) -> match p with None -> c | Some t -> c ^ "(" ^ ty t ^ ")") cs)
 
-let cell c =
+let cell (c : cell) =
   let b = Buffer.create 256 in
   let add = Buffer.add_string b in
   add (Printf.sprintf "cell %s(%s) : %s" c.name

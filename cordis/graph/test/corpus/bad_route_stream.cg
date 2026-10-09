@@ -1,0 +1,4 @@
+// expect: is not a stream
+type V = A(int) | B;
+cell f(x : int) : V = { V.B; }
+graph g { input x : int; asset v = f(x); route v { A(n) -> x <~ n; B -> none }; }

@@ -1,0 +1,2 @@
+// expect: x is defined twice
+graph g { input x : int; input x : int; }

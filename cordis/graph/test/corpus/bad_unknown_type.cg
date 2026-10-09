@@ -1,0 +1,2 @@
+// expect: unknown type Nope
+cell f(x : Nope) : int = { 1; }

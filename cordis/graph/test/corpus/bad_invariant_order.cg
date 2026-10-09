@@ -1,0 +1,4 @@
+// expect: cannot hold
+cell a(x : int) : int = { x; }
+cell b(x : int) : int = { x; }
+graph g { input x : int; asset p = a(x); asset q = b(x); invariant a before b; }

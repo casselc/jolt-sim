@@ -1,5 +1,33 @@
+(library
+ (name graph_testlib)
+ (wrapped false)
+ (modules str_replace))
+
 ; Hegel properties of the syntax: round trip, formatting, hashes
 (test
  (name props)
  (modules props)
  (libraries cordis_graph cordis_cel cel_testgen hegel alcotest))
+
+; The checker's corpus of accepted and rejected programs
+(test
+ (name corpus_test)
+ (modules corpus_test)
+ (libraries cordis_graph cordis_cel graph_testlib alcotest)
+ (deps
+  (glob_files corpus/*.cg)
+  (glob_files corpus/libs/*.cel))
+ (action
+  (run %{test} corpus)))
+
+; Soundness: turn costs within estimates, results of their declared types
+(test
+ (name soundness)
+ (modules soundness)
+ (libraries cordis_graph cordis_cel cel_testgen graph_testlib hegel alcotest)
+ (deps
+  (glob_files corpus/*.cg)
+  (glob_files corpus/libs/*.cel)
+  %{project_root}/graph/examples/review.cg)
+ (action
+  (run %{test} corpus %{project_root}/graph/examples/review.cg)))

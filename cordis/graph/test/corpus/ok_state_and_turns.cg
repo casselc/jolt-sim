@@ -1,0 +1,10 @@
+// expect: ok
+type Req = { url : string<max 2048> };
+effect http.get(Req) : { status : int; body : string<max 4096> };
+cell fetch(url : string<max 2048>) : int ! { http.get } state { calls : int = 0; } = {
+  let r = Req{url: url};
+  use first = http.get(r);
+  use second = http.get(Req{url: url + '?again'});
+  first.status + second.status with state.calls := state.calls + 2;
+}
+graph g { input u : string<max 2048>; asset s = fetch(u); }

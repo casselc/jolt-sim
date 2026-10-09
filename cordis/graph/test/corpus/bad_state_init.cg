@@ -1,0 +1,2 @@
+// expect: state.n's initial value has type string
+cell f(x : int) : int state { n : int = 'a'; } = { x; }

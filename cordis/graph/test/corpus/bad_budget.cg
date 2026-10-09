@@ -1,0 +1,2 @@
+// expect: over the budget
+cell f(xs : list(string)) : string = { xs.fold(a, '', x, a + x + a); }

@@ -1,0 +1,3 @@
+// expect: defined twice
+type T = { a : int };
+type T = { b : int };

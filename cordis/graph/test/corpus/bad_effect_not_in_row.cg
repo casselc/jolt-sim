@@ -1,0 +1,3 @@
+// expect: is not in the cell's effect row
+effect k(int) : int;
+cell f(x : int) : int = { use r = k(x); r; }

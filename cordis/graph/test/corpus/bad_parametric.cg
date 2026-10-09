@@ -1,0 +1,2 @@
+// expect: no matching overload
+cell f(x : 'a) : int = { x + 1; }

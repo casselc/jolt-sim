@@ -1,0 +1,3 @@
+// expect: undefined field 'c'
+type R = { a : int };
+cell f(r : R) : int = { r.c; }

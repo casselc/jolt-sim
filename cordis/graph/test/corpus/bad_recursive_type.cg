@@ -1,0 +1,3 @@
+// expect: refers to itself
+type T = { next : T };
+cell f(x : T) : int = { 1; }

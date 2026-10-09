@@ -1,0 +1,2 @@
+// expect: y is already defined
+cell f(x : int) : int = { let y = 1; let y = 2; y; }

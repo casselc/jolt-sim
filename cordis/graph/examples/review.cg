@@ -3,11 +3,16 @@
 type Diff    = { path : string; patch : string<max 65536> };
 type Review  = { passed : bool; notes : string };
 type Verdict = Pass(Review) | Fail(Review);
+type Prompt  = { prompt : list(string); max_tokens : int };
+type Text    = { text : string<max 65536> };
 
-effect repo.read(string) : { text : string };
-effect llm.complete({ prompt : list(string); max_tokens : int }) : { text : string };
+effect repo.read(string) : Text;
+effect llm.complete(Prompt) : Text;
 
-cell write(request : Diff, notes : list(string)) : Diff = {
+// The bounds are what keep the fold's cost finite: without them the notes
+// stream would be estimated at the default ceiling, and the turn would be
+// over its budget.
+cell write(request : Diff, notes : list(string<max 500>)<max 8>) : Diff = {
   // a revision folds the notes into the patch
   Diff{path: request.path, patch: notes.fold(p, request.patch, n, p + '\n// ' + n)};
 }
@@ -17,7 +22,7 @@ cell critic(diff : Diff) : Verdict
   state { attempts : int = 0; }
 = {
   use ctx  = repo.read(diff.path);
-  use resp = llm.complete({'prompt': [ctx.text, diff.patch], 'max_tokens': 4000});
+  use resp = llm.complete(Prompt{prompt: [ctx.text, diff.patch], max_tokens: 4000});
   let r    = Review{passed: resp.text.startsWith('LGTM'), notes: resp.text};
   r.passed ? Verdict.Pass(r) : Verdict.Fail(r)
     with state.attempts := state.attempts + 1;
@@ -29,7 +34,7 @@ cell gate(v : Verdict) : bool = {
 
 graph review_loop {
   input  request : Diff;
-  stream notes : string;
+  stream notes : string<max 500>;
   asset  draft   = write(request, notes) ~fresh:on_change;
   asset  verdict = critic(draft);
   asset  shipped = gate(verdict);

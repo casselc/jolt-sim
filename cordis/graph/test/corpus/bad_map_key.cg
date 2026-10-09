@@ -1,0 +1,2 @@
+// expect: a map key must be
+cell f(x : map(double, int)) : int = { 1; }

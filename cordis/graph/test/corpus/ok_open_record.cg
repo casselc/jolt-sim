@@ -1,0 +1,7 @@
+// expect: ok
+type Diff = { path : string; patch : string };
+cell path_of(d : { path : string; .. }) : string = { d.path; }
+graph g {
+  input d : Diff;
+  asset p = path_of(d);
+}

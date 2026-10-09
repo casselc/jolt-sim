@@ -127,8 +127,12 @@ state and the receipts of turns before it; it re-binds the earlier `let`s
 (pure, so recomputing them is safe) and evaluates to the intent it emits,
 or, for the last turn, to the result and the state updates. The cost of
 every turn is estimated (RFC 0001) with size bounds from the parameter
-types (`<max N>`) and a configured default, and a turn over its budget is
-an admission error.
+types (`<max N>`, each level of a type bounded by its own) and a configured
+default, and a turn over its budget is an admission error. The bounds are
+promises the runtime enforces at the cell's boundary. A record value
+always comes from a named record type's literal: a CEL map literal has
+type `map(string, dyn)`, which is not a record, so an effect's request is a
+named record (`Prompt{...}`).
 
 ### Graphs
 
