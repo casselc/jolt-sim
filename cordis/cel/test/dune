@@ -1,7 +1,24 @@
+; The type-directed expression generator, shared by props and differential
+(library
+ (name cel_testgen)
+ (wrapped false)
+ (modules typed_gen)
+ (libraries cordis_cel yojson hegel))
+
 (executables
  (names conformance differential)
  (modules conformance differential conformance_values base64_decode)
- (libraries cordis_cel yojson hegel unix))
+ (libraries cordis_cel cel_testgen yojson hegel unix re))
+
+; Hegel properties: the checker's algebra and soundness, syntax, values,
+; time and protobuf messages
+(test
+ (name props)
+ (modules props)
+ (libraries cordis_cel cel_testgen yojson hegel alcotest)
+ (deps %{project_root}/cel/conformance/descriptors.json)
+ (action
+  (run %{test} %{project_root}/cel/conformance/descriptors.json)))
 
 (rule
  (alias runtest)

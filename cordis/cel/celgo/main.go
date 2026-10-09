@@ -18,8 +18,12 @@
 // cel-go-only results are additionally encoded as {"optional": <value>|null}
 // and {"unknown": [ids]}.
 //
-// Every binding is declared as cel.Variable(name, cel.DynType). Map entries
-// in the output are sorted by the JSON encoding of their key.
+// Every binding is declared as cel.Variable(name, cel.DynType), unless the
+// request's "types" gives it a type in CEL's text form ("list(int)"); a
+// variable in "types" need not be bound. The response carries the checked
+// output type ("type") or the checker's error ("check_error") even when the
+// program runs unchecked. Map entries in the output are sorted by the JSON
+// encoding of their key.
 package main
 
 import (
@@ -51,6 +55,9 @@ type request struct {
 	Bindings      map[string]json.RawMessage `json:"bindings"`
 	DisableMacros bool                       `json:"disable_macros"`
 	DisableCheck  bool                       `json:"disable_check"`
+	// Types declares variables with a type, in CEL's text form ("int",
+	// "list(string)", "map(string, int)"); other bindings are dyn.
+	Types map[string]string `json:"types,omitempty"`
 }
 
 type estimate struct {
@@ -65,6 +72,10 @@ type response struct {
 	Stage    string          `json:"stage,omitempty"`
 	Cost     *uint64         `json:"cost,omitempty"`
 	Estimate *estimate       `json:"estimate,omitempty"`
+	// Type is the checked output type; CheckError is the checker's error
+	// when the expression was evaluated unchecked (disable_check).
+	Type       string `json:"type,omitempty"`
+	CheckError string `json:"check_error,omitempty"`
 }
 
 // nilEstimator provides no size hints: dyn inputs get cel-go's default bounds.
@@ -82,6 +93,9 @@ func baseOptions(profile string) []cel.EnvOption {
 		ext.Lists(),
 		ext.Sets(),
 		ext.TwoVarComprehensions(),
+		// cel-spec's heterogeneous numeric comparisons (1 < 1.5, 0u < 1);
+		// cel-go's checker declares them only with this option.
+		cel.CrossTypeNumericComparisons(true),
 	}
 	if profile == "conformance" {
 		// Closer to cel-go's own conformance runner, for the extra corpus files.
@@ -99,7 +113,7 @@ func baseOptions(profile string) []cel.EnvOption {
 
 func main() {
 	profile := flag.String("profile", "default",
-		"default: stdlib + ext.Strings/Math/Lists/Sets/TwoVarComprehensions; "+
+		"default: stdlib + cross-type numeric comparisons + ext.Strings/Math/Lists/Sets/TwoVarComprehensions; "+
 			"conformance: also OptionalTypes, Bindings, Encoders, Network, identifier escapes, error on bad presence test")
 	flag.Parse()
 	if *profile != "default" && *profile != "conformance" {
@@ -163,10 +177,23 @@ func run(base *cel.Env, req *request) response {
 	for k := range req.Bindings {
 		names = append(names, k)
 	}
+	for k := range req.Types {
+		if _, ok := req.Bindings[k]; !ok {
+			names = append(names, k)
+		}
+	}
 	sort.Strings(names)
 	decls := make([]cel.EnvOption, 0, len(names))
 	for _, n := range names {
-		decls = append(decls, cel.Variable(n, cel.DynType))
+		t := cel.DynType
+		if txt, ok := req.Types[n]; ok {
+			pt, err := parseType(txt)
+			if err != nil {
+				return errResp("input", fmt.Sprintf("type of %q: %v", n, err))
+			}
+			t = pt
+		}
+		decls = append(decls, cel.Variable(n, t))
 	}
 	env, err := base.Extend(decls...)
 	if err != nil {
@@ -174,6 +201,9 @@ func run(base *cel.Env, req *request) response {
 	}
 	act := make(map[string]any, len(names))
 	for _, n := range names {
+		if _, ok := req.Bindings[n]; !ok {
+			continue
+		}
 		v, err := decodeValue(env, req.Bindings[n])
 		if err != nil {
 			return errResp("input", fmt.Sprintf("binding %q: %v", n, err))
@@ -188,6 +218,13 @@ func run(base *cel.Env, req *request) response {
 	var est *estimate
 	ast := parsed
 	checked, iss := env.Check(parsed)
+	checkErr := ""
+	outType := ""
+	if iss.Err() == nil {
+		outType = cel.FormatCELType(checked.OutputType())
+	} else {
+		checkErr = iss.Err().Error()
+	}
 	if iss.Err() == nil {
 		if e, err := env.EstimateCost(checked, nilEstimator{}); err == nil {
 			est = &estimate{Min: e.Min, Max: e.Max}
@@ -203,6 +240,8 @@ func run(base *cel.Env, req *request) response {
 	if err != nil {
 		r := errResp("program", err.Error())
 		r.Estimate = est
+		r.Type = outType
+		r.CheckError = checkErr
 		return r
 	}
 	val, det, err := prg.Eval(act)
@@ -223,6 +262,8 @@ func run(base *cel.Env, req *request) response {
 		resp.Cost = det.ActualCost()
 	}
 	resp.Estimate = est
+	resp.Type = outType
+	resp.CheckError = checkErr
 	return resp
 }
 
@@ -505,4 +546,76 @@ func encodeValue(v ref.Val) (any, error) {
 		}}, nil
 	}
 	return nil, fmt.Errorf("cannot encode value of type %s", v.Type().TypeName())
+}
+
+// parseType reads CEL's text form of a type: int, uint, double, bool,
+// string, bytes, null_type, dyn, list(T), map(K, V), optional_type(T),
+// google.protobuf.Timestamp, google.protobuf.Duration.
+func parseType(s string) (*cel.Type, error) {
+	s = strings.TrimSpace(s)
+	switch s {
+	case "int":
+		return cel.IntType, nil
+	case "uint":
+		return cel.UintType, nil
+	case "double":
+		return cel.DoubleType, nil
+	case "bool":
+		return cel.BoolType, nil
+	case "string":
+		return cel.StringType, nil
+	case "bytes":
+		return cel.BytesType, nil
+	case "null_type":
+		return cel.NullType, nil
+	case "dyn":
+		return cel.DynType, nil
+	case "google.protobuf.Timestamp", "timestamp":
+		return cel.TimestampType, nil
+	case "google.protobuf.Duration", "duration":
+		return cel.DurationType, nil
+	}
+	open := strings.Index(s, "(")
+	if open < 0 || !strings.HasSuffix(s, ")") {
+		return nil, fmt.Errorf("unknown type %q", s)
+	}
+	name, inner := s[:open], s[open+1:len(s)-1]
+	args := splitTop(inner)
+	parsed := make([]*cel.Type, len(args))
+	for i, a := range args {
+		t, err := parseType(a)
+		if err != nil {
+			return nil, err
+		}
+		parsed[i] = t
+	}
+	switch {
+	case name == "list" && len(parsed) == 1:
+		return cel.ListType(parsed[0]), nil
+	case name == "map" && len(parsed) == 2:
+		return cel.MapType(parsed[0], parsed[1]), nil
+	case name == "optional_type" && len(parsed) == 1:
+		return cel.OptionalType(parsed[0]), nil
+	}
+	return nil, fmt.Errorf("unknown type %q", s)
+}
+
+// splitTop splits "a, map(b, c)" at top-level commas.
+func splitTop(s string) []string {
+	var out []string
+	depth, start := 0, 0
+	for i, c := range s {
+		switch c {
+		case '(':
+			depth++
+		case ')':
+			depth--
+		case ',':
+			if depth == 0 {
+				out = append(out, s[start:i])
+				start = i + 1
+			}
+		}
+	}
+	return append(out, s[start:])
 }

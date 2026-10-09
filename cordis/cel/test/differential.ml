@@ -4,6 +4,13 @@
    semantics). They must agree on the value, or both report an error. A
    disagreement shrinks to a minimal expression.
 
+   The type checkers are compared too. Every expression above is also
+   checked on both sides: both must accept or both reject it, and where both
+   accept, the checked types must print the same. A second property draws
+   well-typed expressions over typed variables (Typed_gen), declares the
+   variables' types to both checkers, and compares the checked type and the
+   value of the checked program.
+
      differential.exe CELGO [--cases N] *)
 
 open Cordis_cel
@@ -96,12 +103,43 @@ let celgo path =
       celgo_proc := Some p;
       p
 
-let ask path expr =
+let request path (req : Yojson.Safe.t) =
   let ic, oc = celgo path in
-  output_string oc (Yojson.Safe.to_string (`Assoc [ ("expr", `String expr); ("disable_check", `Bool true) ]));
+  output_string oc (Yojson.Safe.to_string req);
   output_char oc '\n';
   flush oc;
   Yojson.Safe.from_string (input_line ic)
+
+let ask path expr = request path (`Assoc [ ("expr", `String expr); ("disable_check", `Bool true) ])
+
+let field name = function `Assoc kv -> List.assoc_opt name kv | _ -> None
+let str name j = match field name j with Some (`String s) -> Some s | _ -> None
+
+(* cel-go's FormatCELType spells a few types differently from cel-spec's
+   type names, which this checker prints. *)
+let normalise_type s =
+  Re.replace (Re.compile (Re.Perl.re {|[A-Za-z_][A-Za-z0-9_.]*|})) s ~f:(fun g ->
+      match Re.Group.get g 0 with "null" -> "null_type" | w -> w)
+
+(* The checked type of [ast] here, as text, or the checker's error. *)
+let our_type env ast = Result.map Checker.to_string (Checker.check env ast)
+
+(* Both checkers accept or both reject; where both accept, the types agree.
+   cel-go reports the checked type with disable_check set, so this rides on
+   the same request as the value comparison. *)
+let compare_types tc ours theirs =
+  match ours, str "check_error" theirs, Option.map normalise_type (str "type" theirs) with
+  | Result.Ok t, None, Some t' ->
+      Hegel.note tc (Printf.sprintf "type: ours %s, cel-go %s" t t');
+      Hegel.require tc ~msg:"checked types differ" (t = t')
+  | Result.Error _, Some _, _ -> ()
+  | Result.Ok t, Some e, _ ->
+      Hegel.note tc (Printf.sprintf "ours: %s; cel-go: %s" t e);
+      Hegel.require tc ~msg:"this checker accepts what cel-go's rejects" false
+  | Result.Error e, None, t' ->
+      Hegel.note tc (Printf.sprintf "ours: %s; cel-go: %s" e (Option.value t' ~default:"?"));
+      Hegel.require tc ~msg:"this checker rejects what cel-go's accepts" false
+  | Result.Ok _, None, None -> ()
 
 let decode = Conformance_values.decode
 
@@ -140,6 +178,11 @@ let () =
       in
       let theirs = ask !path src in
       incr checked;
+      (match Cel.parse src with
+       | Result.Ok ast when str "stage" theirs <> Some "parse" ->
+           Hegel.note tc ("expr: " ^ src);
+           compare_types tc (our_type (Checker.empty ()) ast) theirs
+       | _ -> ());
       if known_divergence ours theirs then incr known
       else begin
         Hegel.note tc (Printf.sprintf "expr: %s\nours: %s\ncel-go: %s" src (Value.to_string ours) (Yojson.Safe.to_string theirs));
@@ -152,4 +195,34 @@ let () =
             Hegel.require tc ~msg:"cost differs from cel-go" (mine = cg)
         | _ -> ()
       end);
-  Printf.printf "%d expressions checked against cel-go; %d were known cel-go divergences (duplicate map keys, planning-time rejections)\n" !checked !known
+  Printf.printf "%d expressions checked against cel-go; %d were known cel-go divergences (duplicate map keys, planning-time rejections)\n" !checked !known;
+  (* well-typed expressions over typed variables, checked on both sides *)
+  let typed = ref 0 in
+  Hegel.run_hegel_test ~settings ~database_key:"cordis:cel:differential-typed" (fun tc ->
+      let c = Typed_gen.case (Typed_gen.of_hegel tc) in
+      let req =
+        `Assoc
+          [ ("expr", `String c.src);
+            ("types", `Assoc (List.map (fun (n, t, _) -> (n, `String (Typed_gen.ty_text t))) c.vars));
+            ("bindings", `Assoc (List.map (fun (n, _, v) -> (n, Typed_gen.encode v)) c.vars)) ]
+      in
+      let theirs = request !path req in
+      incr typed;
+      Hegel.note tc (Printf.sprintf "expr: %s\nvars: %s\ncel-go: %s" c.src
+        (String.concat ", " (List.map (fun (n, t, v) -> Printf.sprintf "%s: %s = %s" n (Typed_gen.ty_text t) (Value.to_string v)) c.vars))
+        (Yojson.Safe.to_string theirs));
+      match Cel.parse c.src with
+      | Result.Error e -> Hegel.require tc ~msg:("generated expression does not parse: " ^ e) false
+      | Result.Ok ast ->
+          let ours = our_type (Typed_gen.checker_env c) ast in
+          (match ours, str "stage" theirs with
+           | Result.Ok _, Some "check" -> Hegel.require tc ~msg:"cel-go's checker rejects a well-typed expression" false
+           | Result.Ok t, _ -> (
+               (match Option.map normalise_type (str "type" theirs) with
+                | Some t' -> Hegel.note tc ("type: ours " ^ t ^ ", cel-go " ^ t'); Hegel.require tc ~msg:"checked types differ" (t = t')
+                | None -> ());
+               let v = match Cel.eval ~vars:(Typed_gen.bindings c) c.src with Result.Ok r -> r.value | Result.Error e -> Value.Error e in
+               Hegel.note tc ("ours: " ^ Value.to_string v);
+               if not (known_divergence v theirs) then Hegel.require tc ~msg:"cel-go disagrees" (agree v theirs))
+           | Result.Error e, _ -> Hegel.require tc ~msg:("this checker rejects a well-typed expression: " ^ e) false));
+  Printf.printf "%d typed expressions checked against cel-go's checker\n" !typed

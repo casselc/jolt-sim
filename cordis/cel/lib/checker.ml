@@ -6,12 +6,14 @@
    - assignable p a: may an argument of type a be passed where p is
      expected? It unifies type variables as it goes. dyn is compatible with
      everything; a wrapper type and its primitive are interchangeable; null
-     fits any nullable type. A type parameter already bound to an
-     incompatible type is widened to the join of the two (cel-spec's
-     "flexible type parameter assignment").
-   - join a b: the most general type of two, for list elements, map values
-     and the branches of ?:. It is structural (type(int) and type(bool)
-     join to type(dyn), not dyn), and anything else that disagrees is dyn.
+     fits any nullable type. A type parameter already bound takes the more
+     general of its binding and a compatible argument (cel-go's flexible
+     type parameter assignment); an incompatible argument does not fit.
+   - join a b: the most general type of two, structural (type(int) and
+     type(bool) join to type(dyn), not dyn); anything else that disagrees
+     is dyn. List and map literals use cel-go's aggregate join instead: the
+     more general of two compatible types, else dyn, so {1: {1: 0}, 1: {1:
+     []}} is map(int, dyn).
 
    Function signatures are written in the same text form as conformance
    declarations ("list(A)", "map(K, V)", "type(T)"); single capital letters
@@ -206,7 +208,9 @@ let rec assignable env p a =
   | Wrapper x, y when is_primitive y -> assignable env x y
   | x, Wrapper y when is_primitive x -> assignable env x y
   | (Message _ | Timestamp | Duration | Opt _), Null -> true
-  | List x, List y | Type x, Type y | Opt x, Opt y -> assignable env x y
+  | List x, List y | Opt x, Opt y -> assignable env x y
+  (* any type value fits type(T), as in cel-go: type(1) == type(1u) is bool *)
+  | Type x, Type y -> ignore (assignable env x y); true
   | Map (k1, v1), Map (k2, v2) -> assignable env k1 k2 && assignable env v1 v2
   | Opaque (n, ps), Opaque (m, qs) -> n = m && List.length ps = List.length qs && List.for_all2 (assignable env) ps qs
   | x, y -> x = y
@@ -226,27 +230,48 @@ let instantiate env (params, result) =
   in
   (List.map go params, go result)
 
-(* Flexible assignment of an argument to a parameter: when a variable the
-   parameter mentions is already bound to something the argument does not
-   fit, widen the binding to their join. *)
+(* The more general of two compatible types: dyn wins, structurally. *)
+let rec most_general env a b =
+  match resolve env a, resolve env b with
+  | Dyn, _ | _, Dyn -> Dyn
+  (* a wrapper is more general than its primitive, and a nullable type
+     than null: [msg.single_int64, msg.single_int64_wrapper] is
+     list(wrapper(int)) *)
+  | x, (Wrapper _ as w) when is_primitive x -> w
+  | Null, t when nullable t -> t
+  | List x, List y -> List (most_general env x y)
+  (* differing types of types widen to type(dyn), as cel-spec's
+     type_free_param_list_concat expects *)
+  | Type x, Type y -> Type (join env x y)
+  | Opt x, Opt y -> Opt (most_general env x y)
+  | Map (k1, v1), Map (k2, v2) -> Map (most_general env k1 k2, most_general env v1 v2)
+  | Opaque (n, ps), Opaque (m, qs) when n = m && List.length ps = List.length qs ->
+      Opaque (n, List.map2 (most_general env) ps qs)
+  | x, _ -> x
+
+(* Flexible assignment of an argument to a parameter (cel-go's
+   isValidTypeSubstitution): when a variable the parameter mentions is
+   already bound and the argument fits the binding, the binding becomes the
+   more general of the two, so [1] + [dyn(2)] is list(dyn). An argument that
+   does not fit is a mismatch, not a widening: [] == 0 has no overload. *)
 let rec flexible env p a =
-  match resolve env p with
-  | _ when assignable env p a -> true
-  | _ -> (
-      match p with
-      | Var i -> (
-          match Hashtbl.find_opt env.subst i with
-          | Some bound -> Hashtbl.replace env.subst i (join env bound a); true
-          | None -> false)
-      | List x -> (match resolve env a with List y -> flexible env x y | _ -> false)
-      | Type x -> (match resolve env a with Type y -> flexible env x y | _ -> false)
-      | Opt x -> (match resolve env a with Opt y -> flexible env x y | _ -> false)
-      | Map (k, v) -> (match resolve env a with Map (k', v') -> flexible env k k' && flexible env v v' | _ -> false)
-      | Opaque (n, ps) -> (
-          match resolve env a with
-          | Opaque (m, qs) when n = m && List.length ps = List.length qs -> List.for_all2 (flexible env) ps qs
-          | _ -> false)
-      | _ -> false)
+  match p with
+  | Var i when Hashtbl.mem env.subst i ->
+      let bound = Hashtbl.find env.subst i in
+      (match bound with
+       | Var _ -> assignable env p a
+       | _ ->
+           assignable env bound a
+           && (Hashtbl.replace env.subst i (most_general env bound a); true))
+  | List x -> (match resolve env a with List y -> flexible env x y | _ -> assignable env p a)
+  | Type x -> (match resolve env a with Type y -> flexible env x y | _ -> assignable env p a)
+  | Opt x -> (match resolve env a with Opt y -> flexible env x y | _ -> assignable env p a)
+  | Map (k, v) -> (match resolve env a with Map (k', v') -> flexible env k k' && flexible env v v' | _ -> assignable env p a)
+  | Opaque (n, ps) -> (
+      match resolve env a with
+      | Opaque (m, qs) when n = m && List.length ps = List.length qs -> List.for_all2 (flexible env) ps qs
+      | _ -> assignable env p a)
+  | _ -> assignable env p a
 
 (* ---- the standard library's signatures ---------------------------------------------------- *)
 
@@ -456,6 +481,9 @@ let enum_called env target fn =
   in
   Option.bind name (fun n -> List.find_opt Proto.enum_exists (candidates env n))
 
+(* cel-go's joinTypes for the elements of a list or map literal. *)
+let aggregate_join env prev cur = if assignable env prev cur then most_general env prev cur else Dyn
+
 let rec infer env locals (e : Ast.expr) : t =
   match e.kind with
   | Ast.Const v -> (
@@ -480,7 +508,7 @@ let rec infer env locals (e : Ast.expr) : t =
           let ft = select_type env ot field in
           if test_only then Bool else ft)
   | Ast.List_lit es ->
-      let elem = List.fold_left (fun acc e -> join env acc (element env locals e)) (fresh env) es in
+      let elem = List.fold_left (fun acc e -> aggregate_join env acc (element env locals e)) (fresh env) es in
       List elem
   | Ast.Map_lit kvs ->
       let k, v =
@@ -490,7 +518,7 @@ let rec infer env locals (e : Ast.expr) : t =
             let vt = infer env locals ve in
             (* {?k: o} contributes the optional's content *)
             let vt = if optional then (match resolve env vt with Opt t -> t | t -> t) else vt in
-            (join env k (infer env locals ke), join env v vt))
+            (aggregate_join env k (infer env locals ke), aggregate_join env v vt))
           (fresh env, fresh env) kvs
       in
       Map (k, v)
@@ -513,7 +541,13 @@ let rec infer env locals (e : Ast.expr) : t =
   | Ast.Call { fn; target = None; args = [ c; t; f ] } when fn = Ast.op_cond ->
       let ct = infer env locals c in
       if not (assignable env Bool ct) then fail "conditional must be bool";
-      join env (infer env locals t) (infer env locals f)
+      (* the overload (bool, A, A) -> A, as cel-go declares it: the branches
+         must be compatible, so true ? [] : 0 is rejected *)
+      let tt = infer env locals t and ft = infer env locals f and a = fresh env in
+      if flexible env a tt && flexible env a ft then a
+      else
+        fail "found no matching overload for '_?_:_' applied to (bool, %s, %s)" (to_string (finalize env tt))
+          (to_string (finalize env ft))
   | Ast.Call { fn; target = None; args = [ x; field ] } when fn = Ast.op_opt_select ->
       let xt = infer env locals x in
       let name = match field.kind with Ast.Const (Value.String s) -> s | _ -> "" in

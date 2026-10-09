@@ -221,16 +221,22 @@ let rec equal a b =
 
 (* ---- printing (for errors and tests) ---------------------------------------- *)
 
+(* Go's strconv.FormatFloat(d, 'g', -1, 64), which cel-go's string(double)
+   uses: the shortest digits that round-trip, in exponent form only when the
+   decimal exponent is below -4 or at least 6. *)
 let format_double d =
   if Float.is_nan d then "NaN"
   else if d = Float.infinity then "+Inf"
   else if d = Float.neg_infinity then "-Inf"
+  else if d = 0.0 then (if 1.0 /. d < 0.0 then "-0" else "0")
   else
-    let rec go p =
-      let s = Printf.sprintf "%.*g" p d in
-      if p >= 17 || float_of_string s = d then s else go (p + 1)
+    let rec shortest nd =
+      let s = Printf.sprintf "%.*e" (nd - 1) d in
+      if nd >= 17 || float_of_string s = d then (nd, s) else shortest (nd + 1)
     in
-    go 1
+    let nd, e = shortest 1 in
+    let exp = int_of_string (String.sub e (String.index e 'e' + 1) (String.length e - String.index e 'e' - 1)) in
+    if exp < -4 || exp >= 6 then e else Printf.sprintf "%.*f" (max (nd - (exp + 1)) 0) d
 
 let rec to_string = function
   | Null -> "null"
