@@ -1,0 +1,3 @@
+(executable
+ (name cimport)
+ (libraries cordis_import cordis_graph cordis_cel yojson))

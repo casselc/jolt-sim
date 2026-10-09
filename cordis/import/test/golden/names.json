@@ -1,0 +1,93 @@
+{
+  "acme_shop_v1_Money": {
+    "message": ".acme.shop.v1.Money",
+    "fields": {
+      "currency": { "json": "currency" },
+      "units": { "json": "units" },
+      "nanos": { "json": "nanos" }
+    }
+  },
+  "Line": {
+    "message": ".acme.shop.v1.Line",
+    "fields": {
+      "sku": { "json": "sku" },
+      "quantity": { "json": "quantity" },
+      "price": { "json": "price" },
+      "discounts": { "json": "discounts" }
+    }
+  },
+  "Order_payment": {
+    "oneof_of": "Order",
+    "cases": {
+      "CardToken": { "field": "card_token", "json": "cardToken" },
+      "Credit": { "field": "credit", "json": "credit" },
+      "Points": { "field": "points", "json": "points" }
+    }
+  },
+  "Order": {
+    "message": ".acme.shop.v1.Order",
+    "fields": {
+      "id": { "json": "id" },
+      "status": { "json": "status" },
+      "lines": { "json": "lines" },
+      "counters": { "json": "counters" },
+      "labels": { "json": "labels" },
+      "note": { "json": "note" },
+      "placed": { "json": "placed" },
+      "ttl": { "json": "ttl" },
+      "priority": { "json": "priority" },
+      "extra": { "json": "extra" },
+      "audit": { "json": "audit" },
+      "in": { "json": "in" },
+      "payment": { "json": "payment" }
+    }
+  },
+  "Order_Audit": {
+    "message": ".acme.shop.v1.Order.Audit",
+    "fields": {
+      "who": { "json": "who" },
+      "score": { "json": "score" },
+      "weight": { "json": "weight" },
+      "ok": { "json": "ok" },
+      "blob": { "json": "blob" },
+      "delta": { "json": "delta" },
+      "check": { "json": "check" },
+      "big": { "json": "big" }
+    }
+  },
+  "Category": {
+    "message": ".acme.shop.v1.Category",
+    "fields": {
+      "name": { "json": "name" },
+      "children": { "json": "children" }
+    }
+  },
+  "UsesSingle": {
+    "message": ".acme.shop.v1.UsesSingle",
+    "fields": { "s": { "json": "s" } }
+  },
+  "Status": {
+    "enum": ".acme.shop.v1.Status",
+    "values": {
+      "STATUS_UNSPECIFIED": 0,
+      "STATUS_OPEN": 1,
+      "STATUS_CLOSED": 2
+    }
+  },
+  "Single": { "enum": ".acme.shop.v1.Single", "values": { "ONLY": 0 } },
+  "legacy_Money": {
+    "message": ".legacy.Money",
+    "fields": {
+      "cents": { "json": "cents" },
+      "currency": { "json": "currency" },
+      "history": { "json": "history" }
+    }
+  },
+  "Ledger": {
+    "message": ".legacy.Ledger",
+    "fields": {
+      "balance": { "json": "balance" },
+      "by_account": { "json": "byAccount" }
+    }
+  }
+}

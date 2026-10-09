@@ -1,0 +1,32 @@
+; Agreement with protobuf's own parser. Needs python3 with protobuf:
+;   dune build @import/test/agreement
+(executable
+ (name agreement)
+ (modules agreement)
+ (libraries cordis_import cordis_graph cordis_cel cel_testgen hegel alcotest unix yojson))
+
+(rule
+ (alias agreement)
+ (deps protos/corpus.binpb pbcheck.py)
+ (action
+  (run %{exe:agreement.exe} protos/corpus.binpb pbcheck.py)))
+
+; The codec, by example
+(test
+ (name codec_test)
+ (modules codec_test)
+ (libraries cordis_import cordis_cel alcotest)
+ (deps protos/corpus.binpb)
+ (action
+  (run %{test} protos/corpus.binpb)))
+
+; Golden files: the corpus's import, as checked in
+(rule
+ (with-stdout-to types.cg.out (run %{exe:../bin/cimport.exe} protobuf %{dep:protos/corpus.binpb} --print types)))
+(rule
+ (with-stdout-to report.txt.out (run %{exe:../bin/cimport.exe} protobuf %{dep:protos/corpus.binpb} --print report)))
+(rule
+ (with-stdout-to names.json.out (run %{exe:../bin/cimport.exe} protobuf %{dep:protos/corpus.binpb} --print names)))
+(rule (alias runtest) (action (diff golden/types.cg types.cg.out)))
+(rule (alias runtest) (action (diff golden/report.txt report.txt.out)))
+(rule (alias runtest) (action (diff golden/names.json names.json.out)))

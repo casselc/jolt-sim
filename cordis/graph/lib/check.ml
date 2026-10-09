@@ -137,19 +137,20 @@ let rec shape env ?(visiting = []) (t : ty) : Cordis_cel.Cost.shape =
   | Scalar (("string" | "bytes"), n) -> K.sized 0 (b n)
   | Scalar ("dyn", _) | Var _ -> K.bounded d
   | Scalar _ -> K.scalar
-  | List (t, n) -> { K.lo = 0; hi = b n; elem = lazy (sh t); key = lazy K.scalar }
-  | Map (k, v, n) -> { K.lo = 0; hi = b n; elem = lazy (sh v); key = lazy (sh k) }
+  | List (t, n) -> { K.lo = 0; hi = b n; elem = lazy (sh t); key = lazy K.scalar; fields = [] }
+  | Map (k, v, n) -> { K.lo = 0; hi = b n; elem = lazy (sh v); key = lazy (sh k); fields = [] }
   | Option t -> { K.scalar with elem = lazy (sh t) }
   | Record (fs, _) ->
       let n = List.length fs in
-      { K.lo = n; hi = n; elem = lazy (join_all (List.map (fun (_, t) -> sh t) fs)); key = lazy (names (List.map fst fs)) }
+      { K.lo = n; hi = n; elem = lazy (join_all (List.map (fun (_, t) -> sh t) fs)); key = lazy (names (List.map fst fs));
+        fields = List.map (fun (f, t) -> (f, lazy (sh t))) fs }
   | Named n when List.mem n visiting -> K.bounded d
   | Named n -> (
       match List.assoc_opt n env.defs with
       | Some (Type_def (_, Alias t)) -> shape env ~visiting:(n :: visiting) t
       | Some (Type_def (_, Variant cs)) ->
           let payloads = List.filter_map snd cs in
-          { K.lo = 1; hi = 2;
+          { K.fields = []; lo = 1; hi = 2;
             elem = lazy (join_all (names (List.map fst cs) :: List.map (shape env ~visiting:(n :: visiting)) payloads));
             key = lazy (names [ "tag"; "value" ]) }
       | _ -> K.bounded d)

@@ -433,9 +433,11 @@ let item st =
     expect st "=";
     (* a variant: Case | Case(T) | ...; anything else is a type *)
     let save = st.pos in
+    (* a leading '|' always opens a variant: type E = | Only; *)
+    let forced = accept st "|" in
     let variant =
       skip st;
-      if is_ident_start (cur st) && (match cur st with 'A' .. 'Z' -> true | _ -> false) then begin
+      if forced || (is_ident_start (cur st) && (match cur st with 'A' .. 'Z' -> true | _ -> false)) then begin
         let rec cases acc =
           let c = ident st in
           let payload = if accept st "(" then (let t = ty st in expect st ")"; Some t) else None in
@@ -443,7 +445,7 @@ let item st =
           if accept st "|" then cases acc else List.rev acc
         in
         let cs = cases [] in
-        if List.length cs > 1 || (looking st ";" && (match cs with [ (_, Some _) ] -> true | _ -> false)) then Some cs
+        if forced || List.length cs > 1 || (looking st ";" && (match cs with [ (_, Some _) ] -> true | _ -> false)) then Some cs
         else None
       end
       else None

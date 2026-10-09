@@ -1,0 +1,15 @@
+// proto2: required and optional presence, and a name that collides with
+// one in shop.proto's package.
+syntax = "proto2";
+package legacy;
+
+message Money {
+  required int64 cents = 1;
+  optional string currency = 2 [default = "USD"];
+  repeated sint32 history = 3;
+}
+
+message Ledger {
+  optional Money balance = 1;
+  map<uint32, Money> by_account = 2;
+}

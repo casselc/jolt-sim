@@ -175,8 +175,53 @@ let test_generated_cells () =
           | Error es -> Hegel.require tc ~msg:("a well-typed cell was rejected: " ^ String.concat "; " es) false
           | Ok r -> check_cells tc f r))
 
+(* ---- records whose fields differ in size ------------------------------------------------------ *)
+
+(* Each field's own bound must drive the estimate: values filled to their
+   bounds, in expressions whose cost follows each field's size. *)
+let test_record_shapes () =
+  run "record-shapes" (fun tc ->
+      let d = Typed_gen.of_hegel tc in
+      let a = d.pick 41 and b = d.pick 41 and c = d.pick 9 and e = d.pick 41 in
+      let text =
+        Printf.sprintf "type R = { a : string<max %d>; b : list(string<max %d>)<max %d>; c : string<max %d> };\n" a b c e
+      in
+      let body =
+        Typed_gen.choose d
+          [ "x.b.fold(s, x.a, y, s + y + x.c).size()"; "size(x.a + x.c) + size(x.b)"; "x.b.filter(y, y.contains(x.a)).size()";
+            "x.b.map(y, y + x.c).fold(n, 0, y, n + size(y))"; "x.b.exists(y, y.startsWith(x.c)) ? 1 : 0";
+            "x.b.fold(n, 0, y, n + (y == x.a ? 1 : 0))"; "size(x.c + x.a + x.c)" ]
+      in
+      let text = text ^ Printf.sprintf "cell probe(x : R) : int = { %s; }\n" body in
+      Hegel.note tc text;
+      match Parse.file text with
+      | Error m -> Hegel.require tc ~msg:("does not parse: " ^ m) false
+      | Ok f -> (
+          match Check.check ~options:{ Check.default_options with budget = max_int } f with
+          | Error es -> Hegel.require tc ~msg:("rejected: " ^ String.concat "; " es) false
+          | Ok r ->
+              (* fill each field to its bound, with characters the predicates may match *)
+              let fill n = V.String (String.init n (fun _ -> Typed_gen.choose d [ 'q'; 'q'; 'r' ])) in
+              let x =
+                V.make_map
+                  [ (V.String "a", fill (if d.pick 2 = 0 then a else d.pick (a + 1)));
+                    (V.String "b", V.List (Array.init c (fun _ -> fill b)));
+                    (V.String "c", fill e) ]
+              in
+              let ci = List.hd r.cells in
+              List.iter
+                (fun (t : Check.turn) ->
+                  match t.program, t.cost with
+                  | Some p, Some est ->
+                      let res = Cordis_cel.Eval.run ~vars:[ ("x", x); ("state", V.make_map []) ] p in
+                      Hegel.note tc (Printf.sprintf "actual %d, estimate [%d, %d]" res.cost est.min est.max);
+                      Hegel.require tc ~msg:"a turn cost more than its estimate" (res.cost <= est.max)
+                  | _ -> ())
+                ci.turns))
+
 let () =
   Alcotest.run ~argv:[| Sys.argv.(0) |] "graph-soundness"
     [ ( "cells",
         [ Alcotest.test_case "corpus cells: cost within the estimate, results of their type" `Quick test_corpus_cells;
-          Alcotest.test_case "generated cells: accepted, cost within the estimate, results of their type" `Quick test_generated_cells ] ) ]
+          Alcotest.test_case "generated cells: accepted, cost within the estimate, results of their type" `Quick test_generated_cells;
+          Alcotest.test_case "record fields of different sizes: each bound drives the estimate" `Quick test_record_shapes ] ) ]

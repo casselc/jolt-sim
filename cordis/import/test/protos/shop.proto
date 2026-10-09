@@ -1,0 +1,67 @@
+// A proto3 corpus for the importer: scalars of every width, presence,
+// repeated and map fields, oneofs, nested types, enums, well-known types,
+// and a recursive message.
+syntax = "proto3";
+package acme.shop.v1;
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/duration.proto";
+import "google/protobuf/wrappers.proto";
+import "google/protobuf/struct.proto";
+
+enum Status {
+  STATUS_UNSPECIFIED = 0;
+  STATUS_OPEN = 1;
+  STATUS_CLOSED = 2;
+}
+
+message Money {
+  string currency = 1;
+  int64 units = 2;
+  int32 nanos = 3;
+}
+
+message Line {
+  string sku = 1;
+  uint32 quantity = 2;
+  Money price = 3;
+  repeated int32 discounts = 4;
+}
+
+message Order {
+  string id = 1;
+  Status status = 2;
+  repeated Line lines = 3;
+  map<string, int32> counters = 4;
+  map<int32, string> labels = 5;
+  optional string note = 6;
+  google.protobuf.Timestamp placed = 7;
+  google.protobuf.Duration ttl = 8;
+  google.protobuf.Int32Value priority = 9;
+  google.protobuf.Struct extra = 10;
+  oneof payment {
+    string card_token = 11;
+    Money credit = 12;
+    int32 points = 13;
+  }
+  message Audit {
+    string who = 1;
+    double score = 2;
+    float weight = 3;
+    bool ok = 4;
+    bytes blob = 5;
+    sint64 delta = 6;
+    fixed32 check = 7;
+    uint64 big = 8;
+  }
+  Audit audit = 14;
+  bool in = 15;          // a CEL reserved word as a field name
+}
+
+message Category {
+  string name = 1;
+  repeated Category children = 2;   // recursive
+}
+
+enum Single { ONLY = 0; }
+message UsesSingle { Single s = 1; }

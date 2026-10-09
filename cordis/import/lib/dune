@@ -1,0 +1,3 @@
+(library
+ (name cordis_import)
+ (libraries cordis_graph cordis_cel yojson))

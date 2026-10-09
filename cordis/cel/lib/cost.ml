@@ -44,13 +44,22 @@ let traversal = scaled 0.1
 
 (* ---- shapes ----------------------------------------------------------------------------- *)
 
-type shape = { lo : int; hi : int; elem : shape Lazy.t; key : shape Lazy.t }
+type shape = {
+  lo : int;
+  hi : int;
+  elem : shape Lazy.t;  (** every element, value or field *)
+  key : shape Lazy.t;
+  fields : (string * shape Lazy.t) list;  (** a record's (or a map literal's) shape per known key; selection prefers it *)
+}
 
-let rec unknown = { lo = 0; hi = inf; elem = lazy unknown; key = lazy unknown }
-let scalar = { lo = 1; hi = 1; elem = lazy unknown; key = lazy unknown }
+let rec unknown = { lo = 0; hi = inf; elem = lazy unknown; key = lazy unknown; fields = [] }
 
 (* the shape of the elements of an empty container: the identity of join *)
-let rec bottom = { lo = inf; hi = 0; elem = lazy bottom; key = lazy bottom }
+let rec bottom = { lo = inf; hi = 0; elem = lazy bottom; key = lazy bottom; fields = [] }
+
+(* a scalar has no elements and no keys: joining its (absent) elements with
+   a container's must not widen them *)
+let scalar = { lo = 1; hi = 1; elem = lazy bottom; key = lazy bottom; fields = [] }
 
 let rec join a b =
   if a == b then a
@@ -60,17 +69,26 @@ let rec join a b =
     { lo = min a.lo b.lo;
       hi = max a.hi b.hi;
       elem = lazy (join (Lazy.force a.elem) (Lazy.force b.elem));
-      key = lazy (join (Lazy.force a.key) (Lazy.force b.key)) }
+      key = lazy (join (Lazy.force a.key) (Lazy.force b.key));
+      (* a field known on both sides; otherwise selection falls back to elem *)
+      fields =
+        List.filter_map
+          (fun (n, x) -> Option.map (fun y -> (n, lazy (join (Lazy.force x) (Lazy.force y)))) (List.assoc_opt n b.fields))
+          a.fields }
 
 let elem s = Lazy.force s.elem
 let key s = Lazy.force s.key
 let lo s = if s.lo > s.hi then 0 else s.lo
 
-let sized lo hi = { lo; hi; elem = lazy unknown; key = lazy unknown }
+(* strings and bytes: a size, and no elements *)
+let sized lo hi = { lo; hi; elem = lazy bottom; key = lazy bottom; fields = [] }
+
+(* the shape of selecting [f]: the field's own, else every element's *)
+let field s f = match List.assoc_opt f s.fields with Some x -> Lazy.force x | None -> Lazy.force s.elem
 
 (* Every size at most d, at every depth. *)
 let bounded d =
-  let rec s = { lo = 0; hi = d; elem = lazy s; key = lazy s } in
+  let rec s = { lo = 0; hi = d; elem = lazy s; key = lazy s; fields = [] } in
   s
 
 (* Equal to a depth: for detecting that a comprehension's accumulator has
@@ -87,8 +105,8 @@ let rec of_type d (t : Checker.t) =
   | Checker.Type _ ->
       scalar
   | Checker.String | Checker.Bytes -> sized 0 d
-  | Checker.List e -> { lo = 0; hi = d; elem = lazy (of_type d e); key = lazy scalar }
-  | Checker.Map (k, v) -> { lo = 0; hi = d; elem = lazy (of_type d v); key = lazy (of_type d k) }
+  | Checker.List e -> { lo = 0; hi = d; elem = lazy (of_type d e); key = lazy scalar; fields = [] }
+  | Checker.Map (k, v) -> { lo = 0; hi = d; elem = lazy (of_type d v); key = lazy (of_type d k); fields = [] }
   | Checker.Opt t -> { scalar with elem = lazy (of_type d t) }
   | Checker.Wrapper t -> { (of_type d t) with lo = 0 }
   | _ -> bounded d
@@ -179,7 +197,7 @@ let call_shape ctx fn (arg_ids : int list) (args : shape list) =
   let ty i = ctx.types (List.nth arg_ids i) in
   match fn, args with
   | "_+_", [ l; r ] ->
-      { lo = lo l + lo r; hi = l.hi +! r.hi; elem = lazy (join (elem l) (elem r)); key = lazy (join (key l) (key r)) }
+      { lo = lo l + lo r; hi = l.hi +! r.hi; elem = lazy (join (elem l) (elem r)); key = lazy (join (key l) (key r)); fields = [] }
   | "_[_]", [ c; _ ] -> elem c
   | "value", [ o ] -> elem o
   | "@match_value", [ v; _ ] -> elem v
@@ -220,7 +238,7 @@ and walk_kind ctx locals (e : expr) : est =
       match List.assoc_opt n locals with
       | Some s -> const_cost 1 s
       | None -> const_cost 1 (Option.value (ctx.inputs n) ~default:unknown))
-  | Select { operand; field = _; test_only } -> (
+  | Select { operand; field = fld; test_only } -> (
       let base = if Eval.is_attribute_root operand then 1 else 2 in
       match Eval.ident_path e with
       | Some (root :: _ as path) when (not test_only) && not (List.mem_assoc root locals) ->
@@ -230,13 +248,13 @@ and walk_kind ctx locals (e : expr) : est =
             if k = 0 then unknown
             else
               match ctx.inputs (String.concat "." (List.filteri (fun i _ -> i < k) path)) with
-              | Some s -> List.fold_left (fun s _ -> elem s) s (List.filteri (fun i _ -> i >= k) path)
+              | Some s -> List.fold_left field s (List.filteri (fun i _ -> i >= k) path)
               | None -> prefix (k - 1)
           in
           const_cost (base + n - 1) (prefix n)
       | _ ->
           let o = walk ctx locals operand in
-          { cmin = o.cmin + base; cmax = o.cmax +! base; shape = (if test_only then scalar else elem o.shape) })
+          { cmin = o.cmin + base; cmax = o.cmax +! base; shape = (if test_only then scalar else field o.shape fld) })
   | List_lit es ->
       let parts =
         List.map
@@ -252,7 +270,7 @@ and walk_kind ctx locals (e : expr) : est =
       { cmin = List.fold_left (fun a (r, _, _) -> a + r.cmin) 10 parts;
         cmax = List.fold_left (fun a (r, _, _) -> a +! r.cmax) 10 parts;
         shape =
-          { lo = n - opt; hi = n;
+          { fields = []; lo = n - opt; hi = n;
             elem = lazy (List.fold_left (fun a (_, s, _) -> join a s) bottom parts);
             key = lazy scalar } }
   | Map_lit kvs ->
@@ -272,7 +290,13 @@ and walk_kind ctx locals (e : expr) : est =
       { cmin = List.fold_left (fun a (m, _, _, _, _) -> a + m) 30 parts;
         cmax = List.fold_left (fun a (_, m, _, _, _) -> a +! m) 30 parts;
         shape =
-          { lo = (if n - opt > 0 then 1 else 0); hi = n;
+          { fields =
+              (* a literal's constant string keys, as a lowered record's *)
+              List.filter_map
+                (fun (((k : expr), _), (_, _, _, vs, o)) ->
+                  match k.kind with Const (Value.String f) when not o -> Some (f, lazy vs) | _ -> None)
+                (List.combine kvs parts);
+            lo = (if n - opt > 0 then 1 else 0); hi = n;
             elem = lazy (List.fold_left (fun a (_, _, _, s, _) -> join a s) bottom parts);
             key = lazy (List.fold_left (fun a (_, _, s, _, _) -> join a s) bottom parts) } }
   | Struct_lit { fields; _ } ->
@@ -309,10 +333,15 @@ and walk_kind ctx locals (e : expr) : est =
   | Comprehension { iter_var; iter_var2; range; accu_var; accu_init; loop_cond; loop_step; result } ->
       let r = walk ctx locals range in
       let n_lo = lo r.shape and n_hi = r.shape.hi in
+      (* a list iterates its elements (and indices), a map its keys (and
+         values); when the type does not say, both are possible *)
       let iter_locals =
-        match iter_var2 with
-        | None -> [ (iter_var, join (elem r.shape) (key r.shape)) ]
-        | Some v2 -> [ (iter_var, join scalar (key r.shape)); (v2, elem r.shape) ]
+        match iter_var2, ctx.types range.id with
+        | None, Some (Checker.List _) -> [ (iter_var, elem r.shape) ]
+        | None, Some (Checker.Map _) -> [ (iter_var, key r.shape) ]
+        | None, _ -> [ (iter_var, join (elem r.shape) (key r.shape)) ]
+        | Some v2, Some (Checker.List _) -> [ (iter_var, scalar); (v2, elem r.shape) ]
+        | Some v2, _ -> [ (iter_var, join scalar (key r.shape)); (v2, elem r.shape) ]
       in
       let init = walk ctx locals accu_init in
       let with_accu a = iter_locals @ ((accu_var, a) :: locals) in

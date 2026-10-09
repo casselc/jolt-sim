@@ -103,9 +103,8 @@ let gen_item tc =
       let def =
         if pick tc 2 = 0 then Alias (gen_ty tc 2)
         else
-          (* a single unit case would read back as a type name *)
           let n = 1 + pick tc 3 in
-          Variant (List.init n (fun i -> (List.nth [ "Pass"; "Fail"; "Skipped" ] i, if n = 1 || pick tc 2 = 0 then Some (gen_ty tc 1) else None)))
+          Variant (List.init n (fun i -> (List.nth [ "Pass"; "Fail"; "Skipped" ] i, if pick tc 2 = 0 then Some (gen_ty tc 1) else None)))
       in
       { tree = Type_def (choose tc type_names, def); sources = [] }
   | 2 -> { tree = Effect (choose tc effects, gen_ty tc 1, gen_ty tc 1); sources = [] }

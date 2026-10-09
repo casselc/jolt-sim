@@ -90,7 +90,7 @@ comments, so the CEL inside is never re-lexed by the outer grammar.
 file     := item*
 item     := 'uses' IDENT '=' HASH ';'
           | 'type' NAME '=' type ';'
-          | 'type' NAME '=' case ('|' case)* ';'
+          | 'type' NAME '=' '|'? case ('|' case)* ';'
           | 'effect' DOTTED '(' type ')' ':' type ';'
           | 'cell' NAME '(' params ')' ':' type effects? state? '=' '{' body '}'
           | 'graph' NAME '{' gitem* '}'
@@ -119,8 +119,8 @@ bound    := '<' 'max' INT '>'
 ```
 
 `?name` in any CEL position is a typed hole: it type-checks as whatever the
-position needs and makes its turn pending. A one-case variant needs a
-payload (`type T = Only(int);`): a lone unit case reads as a type name.
+position needs and makes its turn pending. A leading `|` makes a variant
+(`type E = | Only;`): without it a lone unit case reads as a type name.
 
 ## Types
 

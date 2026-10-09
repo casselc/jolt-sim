@@ -1,8 +1,9 @@
 # RFC 0003: The type IR, importers and scaffolds
 
-Status: revision 2. The protobuf importer is specified here for
-implementation (phase 2, build order item 6); the JSON Schema, OpenAPI and
-AsyncAPI importers and the scaffolders remain as designed in revision 1.
+Status: revision 2. The protobuf importer is specified here and
+implemented in `cordis/import` (phase 2, build order item 6); the JSON
+Schema, OpenAPI and AsyncAPI importers and the scaffolders remain as
+designed in revision 1.
 Design context: [DESIGN.md](../DESIGN.md) "Schemas" and "Scaffolding".
 
 ## Revision history
@@ -41,7 +42,11 @@ the Hegel generators and the scaffolders all read one thing.
 
 1. **A types file** (`.cg`): one `type` definition per imported type, and
    one pure cell `check_T(x : T) : bool` per type that has residue. The file
-   must pass `cgraph check` on its own.
+   must pass the graph checker on its own, with no cost budget: a `check_`
+   cell whose estimate exceeds the default budget is reported, not refused,
+   since the budget belongs to the graph that uses it (nested repeated
+   fields under protobuf's missing bounds make checks quadratic in the
+   default ceiling, and the remedy is to bound them).
 2. **Residue**: the constraints the types cannot express, as the CEL body of
    `check_T`; the runtime evaluates it at the trust boundary, and a graph
    may also gate on it as an asset.
@@ -91,7 +96,7 @@ directly.
 | `Struct`, `Value`, `ListValue` | `map(string, dyn)`, `dyn`, `list(dyn)` | |
 | `Empty`, `FieldMask` | `{}`, `string` | |
 | `Any` | `dyn` | report: the type URL is not checked |
-| a field whose type leads back to a message being defined | `dyn` | report: recursion is not representable yet |
+| a reference that leads back to a message being defined | that reference becomes `dyn` (`repeated Category` stays a list, of `dyn`) | report: recursion is not representable yet, and the residue does not check beneath it |
 
 **Presence.** A proto3 singular scalar without `optional` is always present
 (absent means its default), so it is `T`. A field with explicit presence
@@ -159,5 +164,17 @@ person.
   protobuf prints back decodes to the same value; the residue accepts every
   such value; and a value protobuf rejects (a 32-bit field out of range) is
   rejected by the residue.
+- **The codec by example:** what protobuf JSON may say that a generated
+  value never does (`null` for absent, JSON names, enum numbers, `int64`
+  as numbers), and what reading must refuse (unknown fields, two members of
+  a oneof, unknown enum names or numbers, 32-bit values out of range, a
+  missing proto2 `required` field).
 - **Round trip** (later): descriptor to types to descriptor, where the
   format allows.
+
+The agreement property draws 32-bit values at both sides of their bounds,
+in a minority of cases, so most generated messages are entirely valid and
+everything else about them is tested too. Mutants of the importer and
+codec (a dropped or off-by-one range, a wrong field width, a misnamed oneof
+member, a broken bytes encoding, ignored proto3 presence) are each caught
+by it, the codec examples or the golden files.

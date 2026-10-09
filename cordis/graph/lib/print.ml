@@ -27,7 +27,17 @@ let expr = function Cel { text; _ } -> text | Hole h -> "?" ^ h
 
 let tdef = function
   | Alias t -> ty t
-  | Variant cs -> String.concat " | " (List.map (fun (c, p) -> match p with None -> c | Some t -> c ^ "(" ^ ty t ^ ")") cs)
+  | Variant cs ->
+      let body = String.concat " | " (List.map (fun (c, p) -> match p with None -> c | Some t -> c ^ "(" ^ ty t ^ ")") cs) in
+      (* a lone unit case, or a first case in lower case, would read back as
+         a type name: a leading '|' keeps it a variant *)
+      let needs_bar =
+        match cs with
+        | [ (_, None) ] -> true
+        | (c, _) :: _ -> not (c.[0] >= 'A' && c.[0] <= 'Z')
+        | [] -> false
+      in
+      if needs_bar then "| " ^ body else body
 
 let cell (c : cell) =
   let b = Buffer.create 256 in
