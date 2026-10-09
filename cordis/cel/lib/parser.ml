@@ -263,7 +263,13 @@ and parse_member_suffix st e =
       if peek st = LPAREN then begin
         advance st;
         let args = parse_args st RPAREN in
-        let expanded = if st.macros then expand_receiver_macro st e field args else None in
+        let expanded =
+          if not st.macros then None
+          else
+            match expand_receiver_macro st e field args with
+            | Some m -> Some m
+            | None -> library_macro st (Some e) field args
+        in
         match expanded with
         | Some m -> parse_member_suffix st m
         | None -> parse_member_suffix st (mk st (Call { fn = field; target = Some e; args }))
@@ -351,9 +357,30 @@ and primary_ident st n =
     | "has", [ { kind = Select { operand; field; _ }; _ } ] when st.macros ->
         mk st (Select { operand; field; test_only = true })
     | "has", _ when st.macros -> fail "has() requires a field selection"
-    | _ -> mk st (Call { fn = n; target = None; args })
+    | _ -> (
+        match if st.macros then library_macro st None n args else None with
+        | Some m -> m
+        | None -> mk st (Call { fn = n; target = None; args }))
   end
   else mk st (Ident n)
+
+(* A library macro: by name for a global or receiver call, or by the full
+   name when the receiver is an identifier path (math.greatest). *)
+and library_macro st target name args =
+  let mkk k = mk st k in
+  let rec path (e : expr) =
+    match e.kind with
+    | Ident n -> Some n
+    | Select { operand; field; test_only = false } -> Option.map (fun p -> p ^ "." ^ field) (path operand)
+    | _ -> None
+  in
+  let qualified = match target with Some t -> Option.map (fun p -> p ^ "." ^ name) (path t) | None -> None in
+  match Option.bind qualified Registry.find_macro with
+  | Some ex -> ex ~mk:mkk ~target:None args
+  | None -> (
+      match Registry.find_macro name with
+      | Some ex -> ex ~mk:mkk ~target args
+      | None -> None)
 
 let parse ?(macros = true) src =
   match Lexer.tokenize src with

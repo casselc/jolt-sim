@@ -5,7 +5,9 @@ module Ast = Ast
 module Parser = Parser
 module Eval = Eval
 
-let parse = Parser.parse
+let parse ?macros src =
+  Extensions.load ();
+  Parser.parse ?macros src
 
 let eval ?limit ?(vars = []) ?(macros = true) src =
   Extensions.load ();

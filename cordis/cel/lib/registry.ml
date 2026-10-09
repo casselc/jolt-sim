@@ -26,3 +26,15 @@ let call name args =
   match Hashtbl.find_opt functions name with
   | None -> None
   | Some fs -> List.find_map (fun f -> f args) fs
+
+(* Macros contributed by libraries. An expander gets a node builder, the
+   receiver (for x.m(...)) and the arguments, and returns the expansion, or
+   [None] when the arguments are not its shape (the call is then an ordinary
+   call). A namespaced macro such as [math.greatest] is registered under its
+   full name and found when the receiver is that identifier path. *)
+type expander =
+  mk:(Ast.kind -> Ast.expr) -> target:Ast.expr option -> Ast.expr list -> Ast.expr option
+
+let macros : (string, expander) Hashtbl.t = Hashtbl.create 16
+let register_macro name (e : expander) = Hashtbl.replace macros name e
+let find_macro name = Hashtbl.find_opt macros name
