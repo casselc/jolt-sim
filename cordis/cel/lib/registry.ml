@@ -38,3 +38,16 @@ type expander =
 let macros : (string, expander) Hashtbl.t = Hashtbl.create 16
 let register_macro name (e : expander) = Hashtbl.replace macros name e
 let find_macro name = Hashtbl.find_opt macros name
+
+(* Type signatures for the checker, in the text form the checker parses
+   ("list(A)", "map(K, V)", "optional_type(A)"; single capitals are type
+   parameters): (receiver style?, parameter types, result type). *)
+type signature = bool * string list * string
+
+let signatures : (string, signature list) Hashtbl.t = Hashtbl.create 64
+
+let declare name (sigs : signature list) =
+  let existing = Option.value (Hashtbl.find_opt signatures name) ~default:[] in
+  Hashtbl.replace signatures name (existing @ sigs)
+
+let find_signatures name = Option.value (Hashtbl.find_opt signatures name) ~default:[]
