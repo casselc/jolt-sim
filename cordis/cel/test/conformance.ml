@@ -22,8 +22,7 @@ let file_skips =
     ("proto2_ext", "protobuf messages (out of scope)");
     ("proto3", "protobuf messages (out of scope)");
     ("enums", "protobuf enums (out of scope)");
-    ("wrappers", "protobuf wrapper types (out of scope)");
-    ("namespace", "containers") ]
+    ("wrappers", "protobuf wrapper types (out of scope)") ]
 
 let no_skip = ref false
 
@@ -34,7 +33,6 @@ let run_test file (t : Yojson.Safe.t) =
   | Some why -> Skip why
   | None -> (
       if J.to_bool (J.member "check_only" t) then Skip "check only (type checker, RFC 0001 step 3)"
-      else if str "container" <> "" then Skip "containers"
       else
         let expect = J.member "expect" t in
         match expect with
@@ -49,7 +47,7 @@ let run_test file (t : Yojson.Safe.t) =
             | vars, want -> (
                 let macros = not (J.to_bool (J.member "disable_macros" t)) in
                 let got =
-                  match Cel.eval ~vars ~macros expr with
+                  match Cel.eval ~vars ~macros ~container:(str "container") expr with
                   | Ok r -> r.value
                   | Error e -> Value.Error e
                 in

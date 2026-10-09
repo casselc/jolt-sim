@@ -9,8 +9,8 @@ let parse ?macros src =
   Extensions.load ();
   Parser.parse ?macros src
 
-let eval ?limit ?(vars = []) ?(macros = true) src =
+let eval ?limit ?(vars = []) ?(macros = true) ?container src =
   Extensions.load ();
   match Parser.parse ~macros src with
   | Error e -> Error e
-  | Ok ast -> Ok (Eval.run ?limit ~vars ast)
+  | Ok ast -> Ok (Eval.run ?limit ~vars ?container ast)

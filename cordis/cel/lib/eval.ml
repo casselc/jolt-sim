@@ -9,9 +9,21 @@ open Value
 type activation = {
   vars : (string * Value.t) list;  (** declared inputs *)
   locals : (string * Value.t) list;  (** comprehension variables, innermost first *)
+  container : string;  (** the namespace names are resolved in, e.g. "com.example" *)
 }
 
-let activation vars = { vars; locals = [] }
+let activation ?(container = "") vars = { vars; locals = []; container }
+
+(* The names an identifier may mean inside a container, most qualified first:
+   in "com.example", y is com.example.y, then com.y, then y. A leading dot
+   names the root only. *)
+let candidates container name =
+  if String.length name > 0 && name.[0] = '.' then [ String.sub name 1 (String.length name - 1) ]
+  else if container = "" then [ name ]
+  else
+    let parts = String.split_on_char '.' container in
+    let n = List.length parts in
+    List.init n (fun k -> String.concat "." (List.filteri (fun i _ -> i < n - k) parts) ^ "." ^ name) @ [ name ]
 
 type counter = { mutable cost : int; limit : int option }
 
@@ -27,17 +39,20 @@ let type_idents =
     ("null_type", T_null); ("type", T_type);
     ("google.protobuf.Timestamp", T_timestamp); ("google.protobuf.Duration", T_duration) ]
 
+let resolve_absolute act name =
+  match List.assoc_opt name act.vars with
+  | Some v -> Some v
+  | None -> (
+      match List.assoc_opt name type_idents with
+      | Some t -> Some (Type t)
+      | None -> Option.map (fun t -> Type t) (Registry.find_type name))
+
+(* Comprehension variables shadow everything; then the container's
+   candidates, most qualified first. *)
 let resolve act name =
   match List.assoc_opt name act.locals with
   | Some v -> Some v
-  | None -> (
-      let name = if String.length name > 0 && name.[0] = '.' then String.sub name 1 (String.length name - 1) else name in
-      match List.assoc_opt name act.vars with
-      | Some v -> Some v
-      | None -> (
-          match List.assoc_opt name type_idents with
-          | Some t -> Some (Type t)
-          | None -> Option.map (fun t -> Type t) (Registry.find_type name)))
+  | None -> List.find_map (resolve_absolute act) (candidates act.container name)
 
 (* ---- helpers ------------------------------------------------------------------------ *)
 
@@ -491,8 +506,8 @@ and eval_call c act fn target args =
 
 type result = { value : Value.t; cost : int }
 
-let run ?limit ?(vars = []) (e : Ast.expr) =
+let run ?limit ?(vars = []) ?container (e : Ast.expr) =
   let c = { cost = 0; limit } in
-  match eval c (activation vars) e with
+  match eval c (activation ?container vars) e with
   | v -> { value = v; cost = c.cost }
   | exception Cost_exceeded -> { value = Error "cost limit exceeded"; cost = c.cost }
