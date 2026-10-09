@@ -180,6 +180,18 @@ hashing input changes.)
 Signatures and functors, pass-through rows and holes inside larger CEL
 expressions follow once these stand.
 
+All three stages are built (`cordis/graph`). Compilation produces the
+kernel's shape (keys, turns, emissions); since the kernel has no
+conditionals, a route's guard and an asset's freshness are carried as
+metadata for the turn runtime. Each compiled graph is run under the kernel
+in random interleavings and must reach quiet with every asset provided,
+only its cells' effect kinds emitted, and every `before` invariant the
+checker accepted held, which tests the static check against runs.
+Admission refuses a whole patch whose expected hash for any definition is
+not the live one, and holds a checked revision that needs approval until
+it is approved; a Hegel property replays `admission.qnt`'s scenario of two
+agents patching from one snapshot.
+
 ## Types
 
 - **Scalars:** `int`, `uint`, `double`, `string`, `bytes`, `bool`,

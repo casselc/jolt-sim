@@ -54,6 +54,7 @@ type graph_info = {
   streams : (string * C.t) list;
   assets : asset_info list;  (** in dependency order *)
   appends : (string * string * string) list;  (** (scrutinee, case, stream) *)
+  befores : (string * string) list;  (** invariant c1 before c2 *)
   effect_row : string list;
 }
 
@@ -470,7 +471,8 @@ let check_graph env ?(broken = []) cells name items =
   let effect_row =
     List.sort_uniq compare (List.concat_map (fun a -> (List.find (fun c -> c.cname = a.acell) cells).effects) assets)
   in
-  { gname = name; inputs; streams; assets; appends = List.rev !appends; effect_row }
+  let befores = List.filter_map (function Before (a, b) -> Some (a, b) | _ -> None) items in
+  { gname = name; inputs; streams; assets; appends = List.rev !appends; befores; effect_row }
 
 (* ---- files ----------------------------------------------------------------------------------- *)
 

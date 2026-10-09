@@ -31,3 +31,15 @@
   %{project_root}/graph/examples/review.cg)
  (action
   (run %{test} corpus %{project_root}/graph/examples/review.cg)))
+
+; Compilation to the kernel, replacement compatibility, admission
+(test
+ (name stage3)
+ (modules stage3)
+ (libraries cordis_graph cordis_cel cel_testgen graph_testlib hegel alcotest)
+ (deps
+  (glob_files corpus/*.cg)
+  (glob_files corpus/libs/*.cel)
+  %{project_root}/graph/examples/review.cg)
+ (action
+  (run %{test} corpus %{project_root}/graph/examples/review.cg)))
