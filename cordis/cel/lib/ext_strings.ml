@@ -193,7 +193,26 @@ let quote s =
 
 (* ---- registration --------------------------------------------------------------------- *)
 
+(* Signatures, as cel-go's ext.Strings declares them. *)
+let declare () =
+  let m params result = (true, params, result) in
+  let d = Registry.declare in
+  d "charAt" [ m [ "string"; "int" ] "string" ];
+  d "indexOf" [ m [ "string"; "string" ] "int"; m [ "string"; "string"; "int" ] "int" ];
+  d "lastIndexOf" [ m [ "string"; "string" ] "int"; m [ "string"; "string"; "int" ] "int" ];
+  d "lowerAscii" [ m [ "string" ] "string" ];
+  d "upperAscii" [ m [ "string" ] "string" ];
+  d "replace" [ m [ "string"; "string"; "string" ] "string"; m [ "string"; "string"; "string"; "int" ] "string" ];
+  d "split" [ m [ "string"; "string" ] "list(string)"; m [ "string"; "string"; "int" ] "list(string)" ];
+  d "substring" [ m [ "string"; "int" ] "string"; m [ "string"; "int"; "int" ] "string" ];
+  d "trim" [ m [ "string" ] "string" ];
+  d "reverse" [ m [ "string" ] "string" ];
+  d "join" [ m [ "list(string)" ] "string"; m [ "list(string)"; "string" ] "string" ];
+  d "strings.quote" [ (false, [ "string" ], "string") ];
+  d "format" [ m [ "string"; "list(dyn)" ] "string" ]
+
 let register () =
+  declare ();
   let reg = Registry.register in
   reg "charAt" (function [ String s; Int i ] -> Some (char_at s i) | _ -> None);
   reg "indexOf" (function

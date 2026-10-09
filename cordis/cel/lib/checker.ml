@@ -396,13 +396,17 @@ let lookup_ident env locals name =
               match List.assoc_opt n Eval.type_idents with
               | Some ty -> Some (Type (parse_type (Value.type_name ty)))
               | None -> (
+                  (* a type an extension library registered (net.IP), as the evaluator resolves it *)
+                  match Registry.find_type n with
+                  | Some ty -> Some (Type (parse_type (Value.type_name ty)))
+                  | None -> (
                   match Proto.find_message n with
                   | Some _ -> Some (Type (message_type n))
                   | None -> (
                       (* an enum constant's type is its enum's (int unless strong) *)
                       match Proto.enum_constant n with
                       | Some _ -> Some (enum_type (String.sub n 0 (String.rindex n '.')))
-                      | None -> None))))
+                      | None -> None)))))
         (candidates env name)
 
 let overloads env name =
