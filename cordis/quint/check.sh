@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # The model gate for cordis (docs/cordis/DESIGN.md, build order items 2 and
-# 3a-3d): simulate each model's design, witnesses and mutants; check each design
-# with Apalache to VERIFY_STEPS (default 8); replay simulator runs in the
+# 3a-3d, and the phase 2 models of docs/cordis/rfc/0002): simulate each
+# model's design, witnesses and mutants; check each design with Apalache to
+# VERIFY_STEPS (default 8); replay simulator runs in the
 # model with quintgo (conformance); and hand the report to model-verdict.sh,
 # whose fail and warn rules decide the exit.
 #
@@ -99,6 +100,22 @@ verify caps.qnt design safety ok
 for w in narrowedTwice emptyRights; do sim caps.qnt design "not($w)" VIOLATED; done
 sim caps.qnt uncoveredCaveats noWidening VIOLATED
 sim caps.qnt unionCaveats noWidening VIOLATED
+
+# ---- admission.qnt (RFC 0002: concurrent patches to a live graph) ----------------------
+for inv in liveAdmitted noLostUpdate narrowingApproved; do sim admission.qnt design "$inv" ok; done
+verify admission.qnt design safety ok
+for w in staleRefused rolledBackThenAdmitted narrowingLive; do sim admission.qnt design "not($w)" VIOLATED; done
+sim admission.qnt lastWriterWins noLostUpdate VIOLATED
+sim admission.qnt approvalByAgent narrowingApproved VIOLATED
+
+# ---- assets.qnt (RFC 0002: memoised assets, freshness, early cutoff) -------------------
+for inv in consistent receiptBacked atMostOnce; do sim assets.qnt design "$inv" ok; done
+verify assets.qnt design safety ok
+for w in cutoffSaved memoHit sentTwoValues; do sim assets.qnt design "not($w)" VIOLATED; done
+sim assets.qnt memoByCell consistent VIOLATED
+sim assets.qnt receiptsByCell receiptBacked VIOLATED
+sim assets.qnt noMemo atMostOnce VIOLATED
+sim assets.qnt noCutoff safety ok
 
 # conformance: simulator runs replayed in the model
 conform() { # label scenario mutant expect(pass|fail) extra-args...
