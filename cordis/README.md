@@ -1,0 +1,72 @@
+# cordis: phase 1
+
+Phase 1 of the harness in [docs/cordis/DESIGN.md](../docs/cordis/DESIGN.md)
+(build order, "Phase 1: pure core and simulator"): the Cordis lifecycle
+calculus as pure OCaml, a hand-written Quint model of it, and a deterministic
+simulator that checks one against the other.
+
+| Directory | What it is | Design item |
+| --- | --- | --- |
+| `kernel/` | `Kernel`: the calculus (`target`, `relied`, `next`, `apply`, `orchestrate`) with Uncertain, turns, compensation, failure and episodes, as total functions with no IO. `Order`: ensemble's `restart-plan` and `intensity`, ported. | 1 |
+| `quint/` | `lifecycle.qnt`: the calculus and the outbox's answers, with a `design` instance, two mutants (`noGuard`, `blindRetry`) and five witnesses. `check.sh` runs the model gate; `model-verdict.sh` holds casselc/observability's fail and warn rules. | 2 |
+| `sim/` | The simulator: one entropy `Oracle` makes every choice; `Assertions` speaks the Antithesis vocabulary; `Itf` writes runs as model-level ITF traces for `quintgo validate`. | 3 |
+| `hegel/` | The oracle over a Hegel test case, so failing runs shrink. | 3 |
+| `bin/` | `cordis-sim`: run a campaign, print its verdict, write ITF traces. | 3 |
+| `test/` | Alcotest suites: kernel and `Order` units, simulator campaigns, confluence, replay; Hegel properties with a negative control. | |
+
+## Running it
+
+```sh
+opam switch create cordis 5.4.0
+opam install dune yojson alcotest hegel
+npm i -g @informalsystems/quint           # 0.33
+# quintgo, from casselc/observability:
+(cd observability/quintgo && go build -o "$HOME/bin/quintgo" ./cmd/quintgo)
+
+dune build && dune test                    # 18 tests, about a second
+dune exec -- cordis-sim --runs 500         # a campaign over the chain scenario
+dune exec -- cordis-sim --scenario random --fibers 6 --runs 1000
+dune exec -- cordis-sim --mutant blind-retry   # exits 1: at most once is violated
+QUINTGO=$HOME/bin/quintgo quint/check.sh   # the model gate, a few minutes
+```
+
+`quint run` here uses `--backend typescript` (`QUINT_BACKEND` overrides it):
+the Rust backend is fetched from GitHub on first use, which some sandboxes
+refuse.
+
+## What is checked, and how strongly
+
+Every result is graded as in the design's evidence table; nothing that did
+not run counts as a pass.
+
+| Property | Simulator (`always`) | Quint | Grade |
+| --- | --- | --- | --- |
+| The guard: an installed fiber's view names only installed providers (Cordis Thm 70) | every state | `guardHolds`; mutant `noGuard` breaks it | `:sampled` |
+| At most once: no emission takes effect twice | every state; mutant `blind-retry` breaks it, Hegel finds it | `atMostOnce`; mutant `blindRetry` breaks it | `:sampled` |
+| Terminal recovery: a fiber not installed holds no bindings; an unconsumed binding holds its provided value (Cordis Thm 68) | every state | `boundOnlyWhenRun` | `:sampled` |
+| Progress: every run quiesces, and a run with nothing left to do is quiet (Thm 73) | end of every run | not modelled (no liveness) | `:sampled` |
+| Confluence: every schedule quiesces to the same tables when shared operations commute (Thm 80) | 60 schedules of a fan-in; with `Put` instead of `Add`, schedules disagree, as they should | not modelled | `:sampled` |
+| Conformance: a simulator run is a run of the model | — | `quintgo validate` replays ITF traces; a blind-retry run claiming to be the design is rejected | `:monitored` |
+
+## What the simulator found
+
+Restarting a fiber after a failed receipt re-ran its iterations and re-sent
+their intents under the same idempotency key, so a restart read as a
+duplicate emission. Each activation is now an episode (Cordis's own term):
+the fiber's episode counter is part of every released intent's key, and the
+model counts emissions per episode.
+
+## Deviations from the design sketch
+
+- `Reloading` carries `awaiting`, and `Uncertain` carries `rest`: an
+  iteration's intent is in flight between `Iter` and its receipt, and the
+  iterations left must survive a reconcile.
+- `Finish` is its own step after the last `Iter` rather than landing with
+  it, so `Divert` may also fall after the last iteration.
+- Instantiation (Cordis Definition 52: a component inserting a child) is not
+  built yet; the `parent` field and `Remove`'s check are in place for it.
+- The simulator is a scheduler over the pure kernel, not yet a seeded Picos
+  scheduler with an Eio mock: no effect handlers run cell code yet, because
+  there are no cells until phase 2.
+- Supervision restarts one fiber at a time (`One_for_one`); `restart_plan`
+  for the other strategies is ported and tested but not wired in.

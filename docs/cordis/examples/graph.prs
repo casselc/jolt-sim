@@ -1,0 +1,15 @@
+version 1 .
+embeddedType Cap.Ref .
+Graph     = <graph @name symbol @body GraphBody> .
+GraphBody = {params: [Param ...] assets: { symbol: Asset ...:... }
+             routes: [Route ...] invariants: [Invariant ...]} .
+Param     = <param @name symbol @sig symbol> .
+Asset     = <asset @expr Expr @opts { symbol: any ...:... }> .
+Expr      = <call @fn symbol @args [symbol ...]> .
+Route     = <route @on symbol @cases [Case ...]> .
+Case      = <case @pat any @then Target> .
+Target    = @to <to @asset symbol> / @feed <feed @asset symbol @from symbol> .
+Invariant = <before @a symbol @b symbol> .
+Intent    = <intent @kind symbol @meta IntentMeta @cap #:any> .
+IntentMeta = {key: bytes class: IntentClass compensation: any args: any} .
+IntentClass = =internal / =acquisition / =emission .

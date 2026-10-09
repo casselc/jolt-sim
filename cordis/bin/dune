@@ -1,0 +1,4 @@
+(executable
+ (name cordis_sim)
+ (public_name cordis-sim)
+ (libraries cordis_kernel cordis_sim))

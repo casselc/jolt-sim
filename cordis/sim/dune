@@ -1,0 +1,3 @@
+(library
+ (name cordis_sim)
+ (libraries cordis_kernel yojson))

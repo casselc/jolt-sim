@@ -1,0 +1,93 @@
+name: cordis
+
+# Phase 1 of docs/cordis/DESIGN.md: the OCaml kernel and simulator tests,
+# then the Quint model gate (design, witnesses, mutants, and simulator runs
+# replayed in the model by quintgo), judged by cordis/quint/model-verdict.sh.
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "cordis/**"
+      - ".github/workflows/cordis.yml"
+  pull_request:
+    paths:
+      - "cordis/**"
+      - ".github/workflows/cordis.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  QUINT_VERSION: 0.33.0
+  # quintgo, the ITF replayer, lives in casselc/observability.
+  OBSERVABILITY_SHA: ca7ae8a6250f2af3623d0c0cad26c9710a6bbc4d
+
+jobs:
+  cordis:
+    name: kernel, simulator and model
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: cordis
+    steps:
+      - name: Check out jolt-sim
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+
+      - name: Set up OCaml 5.4
+        uses: ocaml/setup-ocaml@93303b622b2522e4411e295f9e77411a24912ac7 # v3
+        with:
+          ocaml-compiler: "5.4"
+
+      - name: Install OCaml dependencies
+        run: opam install -y dune yojson alcotest hegel
+
+      - name: Build and test
+        run: |
+          opam exec -- dune build
+          opam exec -- dune test
+
+      - name: Set up Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "22"
+
+      - name: Install Quint
+        run: npm i -g "@informalsystems/quint@${QUINT_VERSION}"
+
+      - name: Check out casselc/observability (quintgo)
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          repository: casselc/observability
+          ref: ${{ env.OBSERVABILITY_SHA }}
+          path: observability
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: observability/quintgo/go.mod
+
+      - name: Build quintgo
+        working-directory: observability/quintgo
+        run: go build -o "$RUNNER_TEMP/quintgo" ./cmd/quintgo
+
+      - name: Model gate
+        env:
+          QUINTGO: ${{ runner.temp }}/quintgo
+          OUT: ${{ runner.temp }}/cordis-model.txt
+        run: opam exec -- quint/check.sh
+
+      - name: Upload the model report
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: cordis-model-report
+          path: ${{ runner.temp }}/cordis-model.txt
+          if-no-files-found: warn

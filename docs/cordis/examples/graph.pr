@@ -1,0 +1,9 @@
+@<source "review_loop.sz" 12>
+<graph review_loop
+  {params: [<param Author AUTHOR>]
+   assets: {draft:   <asset <call Author.write []> {}>
+            verdict: <asset <call critic [draft]> {fresh: on-change}>
+            shipped: <asset <call gate [verdict]> {}>}
+   routes: [<route verdict [<case <Pass _> <to shipped>>
+                            <case <Fail r> <feed draft r.notes>>]>]
+   invariants: [<before critic gate>]}>

@@ -1,0 +1,12 @@
+(lang dune 3.16)
+(name cordis)
+
+(package
+ (name cordis)
+ (synopsis "Cordis harness, phase 1: pure lifecycle kernel, simulator and Quint model")
+ (depends
+  (ocaml (>= 5.4))
+  (dune (>= 3.16))
+  yojson
+  (alcotest :with-test)
+  (hegel (and :with-test (>= 0.25.0)))))

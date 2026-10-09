@@ -1,0 +1,5 @@
+<cell critic
+  {in:  {diff: Diff.t state: {attempts: int}}
+   out: Verdict.t
+   effects: #{llm.complete repo.read}
+   body: <cel-ref #x"9f3c00aa">}>

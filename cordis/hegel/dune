@@ -1,0 +1,3 @@
+(library
+ (name cordis_hegel)
+ (libraries cordis_sim hegel))

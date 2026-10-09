@@ -1,0 +1,9 @@
+(test
+ (name test_cordis)
+ (modules test_cordis astring_contains)
+ (libraries cordis_kernel cordis_sim alcotest))
+
+(test
+ (name test_hegel)
+ (modules test_hegel)
+ (libraries cordis_sim cordis_hegel hegel alcotest))

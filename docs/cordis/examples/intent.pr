@@ -1,0 +1,7 @@
+@<provenance {fiber: review_loop/critic turn: 41}>
+<intent llm.complete
+  {key: #x"5a1e9c0d8b7f2e11"
+   class: emission
+   compensation: none
+   args: {prompt: "..." max_tokens: 4000}}
+  #:<cap 7>>
