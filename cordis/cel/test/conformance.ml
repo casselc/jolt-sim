@@ -17,7 +17,6 @@ type outcome = Pass | Fail of string | Skip of string
 (* Whole files that exercise libraries this implementation does not have yet. *)
 let file_skips =
   [ ("type_deduction", "type checker (RFC 0001 step 3)");
-    ("optionals", "optional types");
     ("proto2", "protobuf messages (out of scope)");
     ("proto2_ext", "protobuf messages (out of scope)");
     ("proto3", "protobuf messages (out of scope)");
@@ -54,8 +53,6 @@ let run_test file (t : Yojson.Safe.t) =
                 match want, got with
                 | _, Value.Error e when mentions e "message construction is not supported" ->
                     Skip "protobuf messages (out of scope)"
-                | _, Value.Error e when mentions e "optional" && mentions e "not supported" ->
-                    Skip "optional types"
                 | None, Value.Error _ -> Pass
                 | None, v -> Fail ("expected an error, got " ^ Value.to_string v)
                 | Some w, g -> if same w g then Pass else Fail (Printf.sprintf "expected %s, got %s" (Value.to_string w) (Value.to_string g)))))

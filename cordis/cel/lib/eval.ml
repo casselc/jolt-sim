@@ -37,7 +37,8 @@ let type_idents =
   [ ("int", T_int); ("uint", T_uint); ("double", T_double); ("bool", T_bool);
     ("string", T_string); ("bytes", T_bytes); ("list", T_list); ("map", T_map);
     ("null_type", T_null); ("type", T_type);
-    ("google.protobuf.Timestamp", T_timestamp); ("google.protobuf.Duration", T_duration) ]
+    ("google.protobuf.Timestamp", T_timestamp); ("google.protobuf.Duration", T_duration);
+    ("optional_type", T_optional) ]
 
 let resolve_absolute act name =
   match List.assoc_opt name act.vars with
@@ -274,6 +275,20 @@ let index a i =
           else no_overload "_[_]")
   | _ -> no_overload "_[_]"
 
+(* x[?k] and x.?f: the element or entry as an optional, none when absent;
+   on an optional, chained. *)
+let rec opt_index a i =
+  match a, i with
+  | Optional None, _ -> Optional None
+  | Optional (Some v), _ -> opt_index v i
+  | List xs, (Int k | Uint k) ->
+      if Int64.compare k 0L >= 0 && Int64.compare k (Int64.of_int (Array.length xs)) < 0 then
+        Optional (Some xs.(Int64.to_int k))
+      else Optional None
+  | List _, _ -> no_overload "_[?_]"
+  | Map m, k -> Optional (lookup_key m k)
+  | _ -> no_overload "_[?_]"
+
 let call_function fn args =
   match fn, args with
   | ("_+_" | "_-_" | "_*_" | "_/_" | "_%_"), [ a; b ] -> arith fn a b
@@ -285,7 +300,17 @@ let call_function fn args =
   | ("_<_" | "_<=_" | "_>_" | "_>=_"), [ a; b ] -> compare_values fn a b
   | "@in", [ x; List xs ] -> Bool (Array.exists (equal x) xs)
   | "@in", [ k; Map m ] -> Bool (lookup_key m k <> None)
+  | "_[_]", [ Optional None; _ ] -> Optional None
+  | "_[_]", [ Optional (Some v); i ] -> (
+      (* indexing an optional chains: a missing entry is none *)
+      match v with Map _ | List _ -> opt_index v i | _ -> index v i)
   | "_[_]", [ a; i ] -> index a i
+  | "_[?_]", [ a; i ] -> opt_index a i
+  | "_?._", [ a; String f ] -> (
+      match a with
+      | Map m | Optional (Some (Map m)) -> Optional (map_find m (String f))
+      | Optional None -> Optional None
+      | _ -> err "type %s does not support optional field selection" (type_name (type_of a)))
   | "size", [ x ] -> size_of x
   | "contains", [ String s; String p ] -> Bool (contains s p)
   | "startsWith", [ String s; String p ] -> Bool (starts_with s p)
@@ -349,8 +374,14 @@ let rec ident_path (e : Ast.expr) =
       Option.map (fun p -> p @ [ field ]) (ident_path operand)
   | _ -> None
 
-let select v field ~test_only =
+let rec select v field ~test_only =
   match v with
+  | Optional None -> if test_only then Bool false else Optional None
+  | Optional (Some x) -> (
+      (* selecting from an optional chains: a missing key is none *)
+      match x, test_only with
+      | Map m, false -> Optional (map_find m (String field))
+      | _ -> select x field ~test_only)
   | Map m -> (
       match map_find m (String field), test_only with
       | Some _, true -> Bool true
@@ -401,11 +432,24 @@ let rec eval c act (e : Ast.expr) : Value.t =
       | _ -> select (eval c act operand) field ~test_only)
   | Ast.List_lit es ->
       charge c 10;
-      let vs = List.map (eval c act) es in
-      strict vs (fun vs -> List (Array.of_list vs))
+      let vs = List.map (eval_element c act) es in
+      strict (List.filter_map Fun.id vs) (fun vs -> List (Array.of_list vs))
   | Ast.Map_lit kvs ->
       charge c 30;
-      let pairs = List.map (fun (k, v) -> (eval c act k, eval c act v)) kvs in
+      let pairs =
+        List.filter_map
+          (fun ((k : Ast.expr), v) ->
+            match k.kind with
+            | Ast.Call { fn; args = [ k ]; _ } when fn = Ast.op_opt_elem -> (
+                (* {?k: v}: the entry exists only when v has a value *)
+                match eval c act v with
+                | Optional None -> None
+                | Optional (Some v) -> Some (eval c act k, v)
+                | (Error _ | Unknown _) as e -> Some (eval c act k, e)
+                | _ -> Some (eval c act k, Error "optional map entry needs an optional value"))
+            | _ -> Some (eval c act k, eval c act v))
+          kvs
+      in
       let all = List.concat_map (fun (k, v) -> [ k; v ]) pairs in
       strict all (fun _ -> make_map pairs)
   | Ast.Call { fn; target = Some t; args } -> (
@@ -446,6 +490,17 @@ let rec eval c act (e : Ast.expr) : Value.t =
           in
           loop items;
           eval c { act with locals = (accu_var, !accu) :: act.locals } result)
+
+(* A list element; [?e] is present only when the optional e has a value. *)
+and eval_element c act (e : Ast.expr) =
+  match e.kind with
+  | Ast.Call { fn; args = [ x ]; _ } when fn = Ast.op_opt_elem -> (
+      match eval c act x with
+      | Optional None -> None
+      | Optional (Some v) -> Some v
+      | (Error _ | Unknown _) as v -> Some v
+      | _ -> Some (Error "optional list element needs an optional value"))
+  | _ -> Some (eval c act e)
 
 and eval_call c act fn target args =
   let open Ast in

@@ -32,3 +32,9 @@ let op_cond = "_?_:_"
 let op_index = "_[_]"
 let op_in = "@in"
 let op_not_strictly_false = "@not_strictly_false"
+
+(* Optional syntax, encoded as reserved calls so the tree keeps its shape:
+   x.?f, x[?k], and the ?e marker on a list element or map key. *)
+let op_opt_select = "_?._"
+let op_opt_index = "_[?_]"
+let op_opt_elem = "@optional_elem"

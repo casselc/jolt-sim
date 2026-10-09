@@ -253,14 +253,17 @@ and parse_member_suffix st e =
   match peek st with
   | DOT -> (
       advance st;
+      (* x.?f: optional selection, encoded as the reserved call _?._ *)
+      let optional = peek st = QUESTION in
+      if optional then advance st;
       let field =
         match peek st with
         | IDENT f -> advance st; f
         | QUOTED_IDENT f -> advance st; f
-        | QUESTION -> fail "optional field selection is not supported"
         | _ -> fail "expected a field name after '.'"
       in
-      if peek st = LPAREN then begin
+      if optional then parse_member_suffix st (call st op_opt_select [ e; const st (Value.String field) ])
+      else if peek st = LPAREN then begin
         advance st;
         let args = parse_args st RPAREN in
         let expanded =
@@ -277,10 +280,11 @@ and parse_member_suffix st e =
       else parse_member_suffix st (mk st (Select { operand = e; field; test_only = false })))
   | LBRACKET ->
       advance st;
-      if peek st = QUESTION then fail "optional index is not supported";
+      let optional = peek st = QUESTION in
+      if optional then advance st;
       let i = parse_expr st in
       expect st RBRACKET "']'";
-      parse_member_suffix st (call st op_index [ e; i ])
+      parse_member_suffix st (call st (if optional then op_opt_index else op_index) [ e; i ])
   | LBRACE when (match e.kind with Ident _ | Select _ -> true | _ -> false) ->
       fail "message construction is not supported"
   | _ -> e
@@ -316,15 +320,31 @@ and parse_primary st =
       e
   | LBRACKET ->
       advance st;
-      if peek st = QUESTION then fail "optional list elements are not supported";
-      mk st (List_lit (parse_args st RBRACKET))
+      (* [?e]: an element present only when the optional e has a value *)
+      let rec go acc =
+        if peek st = RBRACKET then (advance st; List.rev acc)
+        else begin
+          let optional = peek st = QUESTION in
+          if optional then advance st;
+          let e = parse_expr st in
+          let e = if optional then call st op_opt_elem [ e ] else e in
+          match peek st with
+          | COMMA -> advance st; go (e :: acc)
+          | RBRACKET -> advance st; List.rev (e :: acc)
+          | _ -> fail "expected ',' or ']'"
+        end
+      in
+      mk st (List_lit (go []))
   | LBRACE ->
       advance st;
       let rec go acc =
         if peek st = RBRACE then (advance st; List.rev acc)
         else begin
-          if peek st = QUESTION then fail "optional map entries are not supported";
+          (* {?k: v}: an entry present only when the optional v has a value *)
+          let optional = peek st = QUESTION in
+          if optional then advance st;
           let k = parse_expr st in
+          let k = if optional then call st op_opt_elem [ k ] else k in
           expect st COLON "':'";
           let v = parse_expr st in
           match peek st with
