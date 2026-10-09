@@ -99,7 +99,21 @@ let record file outcome =
   Hashtbl.replace check_stats file
     (match outcome with `Ok -> (ok + 1, rej, mis) | `Rejected -> (ok, rej + 1, mis) | `Mismatch -> (ok, rej, mis + 1))
 
-let check_consistency file t (value : Value.t) =
+(* The largest size anywhere in a value: the input bound the estimator is
+   given for a binding. *)
+let rec max_size (v : Value.t) =
+  match v with
+  | Value.String s -> Eval.utf8_length s
+  | Value.Bytes b -> String.length b
+  | Value.List xs -> Array.fold_left (fun a x -> max a (max_size x)) (Array.length xs) xs
+  | Value.Map m -> List.fold_left (fun a (k, x) -> max a (max (max_size k) (max_size x))) (List.length m) m
+  | Value.Message { fields; _ } -> List.fold_left (fun a (_, x) -> max a (max_size x)) 1 fields
+  | Value.Optional (Some x) -> max_size x
+  | _ -> 1
+
+let cost_failures = ref 0
+
+let check_consistency file t (value : Value.t) cost =
   let str k = J.to_string (J.member k t) in
   match Cel.parse ~macros:(not (J.to_bool (J.member "disable_macros" t))) (str "expr") with
   | Error _ -> ()
@@ -115,6 +129,19 @@ let check_consistency file t (value : Value.t) =
       match Checker.check env ast with
       | Error e -> record file `Rejected; check_failures := (file, str "expr", "rejected: " ^ e) :: !check_failures
       | Ok ty ->
+          (* cost soundness: the actual cost is within the static estimate *)
+          let sizes =
+            List.filter_map
+              (fun (k, v) -> match decode v with v -> Some (k, max 1 (max_size v)) | exception _ -> None)
+              (J.to_assoc (J.member "bindings" t))
+          in
+          (match Cost.estimate ~sizes env ast with
+           | Ok est when cost > est.max ->
+               incr cost_failures;
+               check_failures :=
+                 (file, str "expr", Printf.sprintf "actual cost %d exceeds the estimate [%d, %d]" cost est.min est.max)
+                 :: !check_failures
+           | _ -> ());
           if admits ty value then record file `Ok
           else (
             record file `Mismatch;
@@ -143,15 +170,15 @@ let run_test file section (t : Yojson.Safe.t) =
             | exception Unsupported why -> Skip why
             | vars, want -> (
                 let macros = not (J.to_bool (J.member "disable_macros" t)) in
-                let got =
+                let got, cost =
                   match Cel.eval ~vars ~macros ~container:(str "container") expr with
-                  | Ok r -> r.value
-                  | Error e -> Value.Error e
+                  | Ok r -> (r.value, r.cost)
+                  | Error e -> (Value.Error e, 0)
                 in
                 (match want, got with
                  | Some w, g
                    when !check_all && same w g && (not (Value.is_error g)) && not (J.to_bool (J.member "disable_check" t)) ->
-                     check_consistency file t g
+                     check_consistency file t g cost
                  | _ -> ());
                 match want, got with
                 | None, Value.Error _ -> Pass
@@ -210,6 +237,7 @@ let () =
     Printf.printf "\ntype-checking tests that evaluate to a value (accepted and consistent / rejected / inconsistent):\n";
     Hashtbl.fold (fun k v acc -> (k, v) :: acc) check_stats [] |> List.sort compare
     |> List.iter (fun (f, (ok, rej, mis)) -> Printf.printf "  %-16s %5d %5d %5d\n" f ok rej mis);
+    Printf.printf "  actual cost above the static estimate: %d\n" !cost_failures;
     if !verbose then
       List.iter (fun (f, e, why) -> Printf.printf "  CHECK %s: %s\n    %s\n" f e why) (List.rev !check_failures)
   end;

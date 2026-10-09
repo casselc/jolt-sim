@@ -10,28 +10,33 @@ expression, against cel-go.
 | `lib/value.ml` | Values; CEL's heterogeneous numeric equality and ordering; maps kept in CEL key order so iteration is deterministic |
 | `lib/lexer.ml`, `lib/parser.ml` | The grammar, with the standard macros, the two-variable comprehension macros, optional syntax and message literals |
 | `lib/eval.ml` | The evaluator: error and short-circuit rules, containers, the standard library, and the actual-cost counter |
-| `lib/checker.ml` | The type checker: inference with type variables, assignability and join, standard-library signatures |
+| `lib/checker.ml` | The type checker: inference with type variables, cel-go's overload resolution and flexible type-parameter assignment, standard-library signatures; records every subexpression's type |
+| `lib/cost.ml` | The static cost estimator: an abstract interpretation of the cost counter over size shapes, bounded by input sizes |
 | `lib/ctime.ml` | Timestamps and durations, RFC 3339 and Go-style parsing, calendar accessors in any IANA zone |
 | `lib/proto.ml` | Protobuf messages from descriptors: construction, presence, defaults, well-known types, protobuf JSON and binary decoding |
 | `lib/registry.ml`, `lib/extensions.ml` | Extension functions, macros and checker signatures, registered by library |
 | `lib/ext_*.ml` | Libraries: strings, math, lists, sets, network, encoders, optionals, `cel.bind`/`cel.block`, proto extensions |
 | `conformance/` | cel-spec's `tests/simple` suite and the descriptors of its protos as JSON (Apache-2.0; see its README) |
 | `celgo/` | A JSON-lines front end to cel-go v0.30.0, the reference for the differential test |
-| `test/conformance.ml` | Runs the suite; `--check-all` also type-checks every test that evaluates to a value |
-| `test/differential.ml` | Hegel draws expressions; each must give the same value (or both an error) and the same actual cost as cel-go |
+| `test/conformance.ml` | Runs the suite; `--check-all` also type-checks every test that evaluates to a value and checks its actual cost against the static estimate |
+| `test/differential.ml` | Hegel draws expressions; each must give the same value (or both an error), the same checked type and the same actual cost as cel-go |
+| `test/typed_gen.ml` | A type-directed generator: well-typed expressions over typed, bound variables |
+| `test/props.ml` | Hegel properties: checker algebra and soundness, cost soundness, determinism, syntax round trips, values, time, protobuf |
 
 ## Status
 
 **Every cel-spec conformance test runs, and all 2527 pass.** Nothing is
-skipped. The differential test agrees with cel-go on value and cost for
-thousands of generated expressions.
+skipped. The differential test agrees with cel-go on value, checked type
+and actual cost for tens of thousands of generated expressions, and the
+static estimate bounds the actual cost of every generated expression and
+every conformance test.
 
 | RFC 0001 step | State |
 | --- | --- |
 | 1. Parser, macros, evaluator, standard library | done |
-| 2. Actual cost | done for unchecked evaluation: equal to cel-go's |
-| 3. Type checker | done: all type-deduction tests pass, and every core test that evaluates checks to a type that admits its value; extension-library signatures in progress |
-| 4. Static estimator and the Hegel cost-soundness property | next |
+| 2. Actual cost | done: equal to cel-go's for checked programs |
+| 3. Type checker | done: all type-deduction tests pass, every test that evaluates checks to a type that admits its value, and the checked type matches cel-go's |
+| 4. Static estimator and the Hegel cost-soundness property | done |
 | 5. Timestamps and durations | done |
 | 6. Harness extensions | two-variable comprehensions, `cel.bind`, `cel.block` in; `fold`, `match`, libraries next |
 
@@ -45,6 +50,7 @@ cells, so the runtime half is done.
 dune build @cel/test/runtest                       # the conformance suite (also part of dune test)
 (cd cel/celgo && go build -o /tmp/celgo .)
 CELGO=/tmp/celgo dune build @cel/test/differential # 2000 cases by default (CEL_DIFF_CASES)
+CEL_PROPS_CASES=20000 dune exec ./cel/test/props.exe -- cel/conformance/descriptors.json  # longer property run
 ```
 
 ## Decisions and cel-go differences
@@ -77,7 +83,24 @@ CELGO=/tmp/celgo dune build @cel/test/differential # 2000 cases by default (CEL_
 - **Pairs of `!` or `-` cancel** (`!!x` is `x`), as in cel-go's parser;
   cel-spec's tests do not cover it, and the differential test found it.
 - **Cost rules taken from cel-go** (`interpreter/runtimecost.go`): an
-  identifier and each qualifier 1, a list 10, a map 30, a call 1 unless
-  overload-specific, `&&` `||` `?:` nothing, equality
-  `ceil(min(size l, size r) / 10)`; a strict call stops at its first error
-  argument, and is charged only if every argument was evaluated.
+  attribute 1 and each qualifier 1 as it is applied (none after one fails),
+  a list 10, a map 30, a message 40, `&&` `||` `?:` nothing, and a call 1
+  unless its overload is size-proportional: equality and string or bytes
+  ordering `ceil(min(size l, size r) * 0.1)`, string or bytes `+`
+  `ceil((size l + size r) * 0.1)`, `startsWith`/`endsWith` on the prefix,
+  `contains` and `matches` on both sides, `in` a list its size. A strict
+  call or a literal stops at its first error, and a call is charged only if
+  every argument was evaluated. A conditional's attribute branch is not
+  charged its attribute's first 1.
+- **Cost is charged by the overload the values select**, checked or not.
+  cel-go's unchecked programs charge every call 1, since they do not know
+  the overload; its checked programs charge as here. The differential test
+  compares cost only when cel-go's checker accepts the expression.
+- **The static estimate's maximum is sound; its minimum assumes no error.**
+  An error ends evaluation early, so an absorbed error (`false && (1/0 >
+  0)`) can cost less than the minimum. Input bounds are per variable and
+  cover every size reachable inside it; a comprehension's accumulator is
+  bounded by the loop step's growth (linear growth extrapolates, anything
+  faster is unbounded). On constant expressions the estimate's maximum
+  equals cel-go's almost everywhere; the few differences are cel-go
+  estimating more coarsely or more finely than its own runtime charges.

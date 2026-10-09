@@ -128,7 +128,8 @@ let our_type env ast = Result.map Checker.to_string (Checker.check env ast)
    cel-go reports the checked type with disable_check set, so this rides on
    the same request as the value comparison. *)
 let compare_types tc ours theirs =
-  match ours, str "check_error" theirs, Option.map normalise_type (str "type" theirs) with
+  let check_error = match str "stage" theirs with Some "check" -> str "error" theirs | _ -> str "check_error" theirs in
+  match ours, check_error, Option.map normalise_type (str "type" theirs) with
   | Result.Ok t, None, Some t' ->
       Hegel.note tc (Printf.sprintf "type: ours %s, cel-go %s" t t');
       Hegel.require tc ~msg:"checked types differ" (t = t')
@@ -164,6 +165,35 @@ let known_divergence ours theirs =
   | _, `Assoc kv -> List.assoc_opt "stage" kv = Some (`String "program")
   | _ -> false
 
+(* The static estimates, side by side with cel-go's: ours must bound our
+   actual cost (the soundness property); how it compares with cel-go's
+   estimate is reported, not required, since the two estimators differ
+   (cel-go has no input bounds and treats some calls more coarsely).
+   CEL_DIFF_VERBOSE=1 prints each expression whose estimates differ. *)
+let estimate_stats = Hashtbl.create 4
+let tally k = Hashtbl.replace estimate_stats k (1 + Option.value (Hashtbl.find_opt estimate_stats k) ~default:0)
+
+let compare_estimates tc src ast theirs our_cost =
+  match Cost.estimate (Checker.empty ()) ast, field "estimate" theirs with
+  | Result.Ok est, Some e -> (
+      (match our_cost with
+       | Some c ->
+           Hegel.note tc (Printf.sprintf "actual %d, estimate [%d, %d]" c est.min est.max);
+           Hegel.require tc ~msg:"actual cost exceeds the static estimate" (c <= est.max)
+       | None -> ());
+      match field "max" e with
+      | Some (`Int m) ->
+          if Sys.getenv_opt "CEL_DIFF_VERBOSE" <> None && est.max <> m then
+            Printf.eprintf "estimate: ours %d, cel-go %d: %s\n" est.max m src;
+          tally
+            (if est.max = Cost.inf then "ours unbounded"
+             else if est.max = m then "equal"
+             else if est.max < m then "ours tighter"
+             else "ours looser")
+      | Some (`Intlit _) -> tally (if est.max = Cost.inf then "both unbounded" else "ours tighter (cel-go unbounded)")
+      | _ -> ())
+  | _ -> ()
+
 let () =
   let path = ref "" and cases = ref 500 in
   Arg.parse [ ("--cases", Arg.Set_int cases, "test cases") ] (fun p -> path := p) "differential.exe CELGO";
@@ -176,12 +206,18 @@ let () =
       let ours, our_cost =
         match Cel.eval src with Ok r -> (r.value, Some r.cost) | Error e -> (Value.Error e, None)
       in
-      let theirs = ask !path src in
+      (* checked first: cel-go's checked program charges by overload, as
+         this implementation always does; cel-go's unchecked programs charge
+         1 for every call, so their cost is not compared *)
+      let checked_resp = request !path (`Assoc [ ("expr", `String src) ]) in
+      let was_checked = str "stage" checked_resp <> Some "check" in
+      let theirs = if was_checked then checked_resp else ask !path src in
       incr checked;
       (match Cel.parse src with
        | Result.Ok ast when str "stage" theirs <> Some "parse" ->
            Hegel.note tc ("expr: " ^ src);
-           compare_types tc (our_type (Checker.empty ()) ast) theirs
+           compare_types tc (our_type (Checker.empty ()) ast) theirs;
+           if was_checked then compare_estimates tc src ast theirs our_cost
        | _ -> ());
       if known_divergence ours theirs then incr known
       else begin
@@ -190,12 +226,14 @@ let () =
         (* actual cost must match wherever both evaluated to a value *)
         match ours, theirs, our_cost, cost_of theirs with
         | v, `Assoc kv, Some mine, Some cg
-          when (not (Value.is_error v)) && List.mem_assoc "value" kv && not !iterates_map ->
+          when was_checked && (not (Value.is_error v)) && List.mem_assoc "value" kv && not !iterates_map ->
             Hegel.note tc (Printf.sprintf "cost: ours %d, cel-go %d" mine cg);
             Hegel.require tc ~msg:"cost differs from cel-go" (mine = cg)
         | _ -> ()
       end);
   Printf.printf "%d expressions checked against cel-go; %d were known cel-go divergences (duplicate map keys, planning-time rejections)\n" !checked !known;
+  Printf.printf "static estimate maximum against cel-go's: %s\n"
+    (String.concat ", " (Hashtbl.fold (fun k v acc -> Printf.sprintf "%s %d" k v :: acc) estimate_stats [] |> List.sort compare));
   (* well-typed expressions over typed variables, checked on both sides *)
   let typed = ref 0 in
   Hegel.run_hegel_test ~settings ~database_key:"cordis:cel:differential-typed" (fun tc ->
@@ -221,8 +259,15 @@ let () =
                (match Option.map normalise_type (str "type" theirs) with
                 | Some t' -> Hegel.note tc ("type: ours " ^ t ^ ", cel-go " ^ t'); Hegel.require tc ~msg:"checked types differ" (t = t')
                 | None -> ());
-               let v = match Cel.eval ~vars:(Typed_gen.bindings c) c.src with Result.Ok r -> r.value | Result.Error e -> Value.Error e in
+               let v, cost = match Cel.eval ~vars:(Typed_gen.bindings c) c.src with Result.Ok r -> (r.value, Some r.cost) | Result.Error e -> (Value.Error e, None) in
                Hegel.note tc ("ours: " ^ Value.to_string v);
-               if not (known_divergence v theirs) then Hegel.require tc ~msg:"cel-go disagrees" (agree v theirs))
+               if not (known_divergence v theirs) then begin
+                 Hegel.require tc ~msg:"cel-go disagrees" (agree v theirs);
+                 match cost, cost_of theirs with
+                 | Some mine, Some cg when not (Value.is_error v) ->
+                     Hegel.note tc (Printf.sprintf "cost: ours %d, cel-go %d" mine cg);
+                     Hegel.require tc ~msg:"cost differs from cel-go" (mine = cg)
+                 | _ -> ()
+               end)
            | Result.Error e, _ -> Hegel.require tc ~msg:("this checker rejects a well-typed expression: " ^ e) false));
   Printf.printf "%d typed expressions checked against cel-go's checker\n" !typed

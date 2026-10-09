@@ -41,7 +41,9 @@ let rec gen_ty d depth =
 let int_lits = [ "0"; "1"; "-1"; "2"; "7"; "-13"; "42"; "9223372036854775807"; "-9223372036854775808"; "0x1f" ]
 let uint_lits = [ "0u"; "1u"; "3u"; "100u"; "18446744073709551615u" ]
 let double_lits = [ "0.0"; "1.5"; "-2.25"; "1e10"; "-0.0"; "3.0"; "0.1" ]
-let string_lits = [ "''"; "'a'"; "'abc'"; "'héllo'"; "\"\\u00e9\""; "'a\\nb'"; "r'\\d+'" ]
+let string_lits =
+  [ "''"; "'a'"; "'abc'"; "'héllo'"; "\"\\u00e9\""; "'a\\nb'"; "r'\\d+'"; "'abcdefghijklmnopqrstuvwxyz'";
+    "'the quick brown fox jumps over the lazy dog'" ]
 let bytes_lits = [ "b''"; "b'ab'"; "b'\\x00\\xff'"; "b'z'" ]
 
 let rec value d ty : Value.t =
@@ -50,8 +52,8 @@ let rec value d ty : Value.t =
   | Uint -> Value.Uint (Int64.of_int (d.pick 2001))
   | Double -> Value.Double (float_of_int (d.pick 2001 - 1000) /. 4.0)
   | Bool -> Value.Bool (d.pick 2 = 0)
-  | String -> Value.String (choose d [ ""; "a"; "abc"; "héllo"; "xyz" ])
-  | Bytes -> Value.Bytes (choose d [ ""; "a"; "\000\255" ])
+  | String -> Value.String (choose d [ ""; "a"; "abc"; "héllo"; "xyz"; "abcdefghijklmnopqrstuvwxyz"; String.make (d.pick 60) 'q' ])
+  | Bytes -> Value.Bytes (choose d [ ""; "a"; "\000\255"; String.make (d.pick 40) 'b' ])
   | List t -> Value.List (Array.init (d.pick 4) (fun _ -> value d t))
   | Map (k, v) -> (
       let n = d.pick 4 in
@@ -74,6 +76,9 @@ let rec encode (v : Value.t) : Yojson.Safe.t =
 (* ---- expressions ---------------------------------------------------------------------- *)
 
 type scope = (string * ty) list
+
+(* A macro's variable shadows any outer one of the same name. *)
+let bind n t (scope : scope) = (n, t) :: List.filter (fun (m, _) -> m <> n) scope
 
 let rec expr d (scope : scope) ty depth : string =
   let sub t = expr d scope t (depth - 1) in
@@ -108,7 +113,15 @@ let rec expr d (scope : scope) ty depth : string =
         | 2 -> Printf.sprintf "double(%s)" (sub (choose d [ Int; Uint ]))
         | _ -> Printf.sprintf "-(%s)" (sub Double))
     | Bool -> (
-        match d.pick 8 with
+        match d.pick 12 with
+        | 8 -> Printf.sprintf "%s.matches(%s)" (sub String) (choose d [ "'a+'"; "'^h.*o$'"; "'[a-z]+b?c*'"; "''" ])
+        | 9 -> Printf.sprintf "(%s in %s)" (sub String) (sub (List String))
+        | 10 ->
+            let t = choose d [ List Int; List String; Map (String, Int); String; Bytes ] in
+            Printf.sprintf "(%s %s %s)" (sub t) (choose d [ "=="; "!=" ]) (sub t)
+        | 11 ->
+            let m = choose d [ "all"; "exists"; "exists_one" ] in
+            Printf.sprintf "%s.%s(w, %s)" (sub (List String)) m (expr d (bind "w" String scope) Bool (depth - 1))
         | 0 -> leaf d scope Bool
         | 1 ->
             let t = choose d [ Int; Uint; Double; String; Bytes; Bool ] in
@@ -123,7 +136,7 @@ let rec expr d (scope : scope) ty depth : string =
         | 6 -> Printf.sprintf "%s.%s(%s)" (sub String) (choose d [ "contains"; "startsWith"; "endsWith" ]) (sub String)
         | _ ->
             let m = choose d [ "all"; "exists"; "exists_one" ] in
-            Printf.sprintf "%s.%s(x, %s)" (list_of d scope Int (depth - 1)) m (expr d (("x", Int) :: scope) Bool (depth - 1)))
+            Printf.sprintf "%s.%s(x, %s)" (list_of d scope Int (depth - 1)) m (expr d (bind "x" Int scope) Bool (depth - 1)))
     | String -> (
         match d.pick 3 with
         | 0 -> leaf d scope String
@@ -138,10 +151,12 @@ let rec expr d (scope : scope) ty depth : string =
         match d.pick 4 with
         | 0 -> list_of d scope t (depth - 1)
         | 1 -> Printf.sprintf "(%s + %s)" (sub ty) (sub ty)
-        | 2 -> Printf.sprintf "%s.filter(y, %s)" (sub ty) (expr d (("y", t) :: scope) Bool (depth - 1))
+        | 2 -> Printf.sprintf "%s.filter(y, %s)" (sub ty) (expr d (bind "y" t scope) Bool (depth - 1))
         | _ ->
+            (* over a literal or any list-valued expression, inputs included *)
             let s = choose d [ Int; String ] in
-            Printf.sprintf "%s.map(z, %s)" (list_of d scope s (depth - 1)) (expr d (("z", s) :: scope) t (depth - 1)))
+            let range = if d.pick 2 = 0 then list_of d scope s (depth - 1) else sub (List s) in
+            Printf.sprintf "%s.map(z, %s)" range (expr d (bind "z" s scope) t (depth - 1)))
     | Map (k, v) ->
         let n = d.pick 3 in
         "{" ^ String.concat ", " (List.init n (fun _ -> sub k ^ ": " ^ sub v)) ^ "}"

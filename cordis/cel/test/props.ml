@@ -4,7 +4,9 @@
 
 open Cordis_cel
 
-let settings = Hegel.Settings.create ~test_cases:300 ~seed:11 ()
+(* CEL_PROPS_CASES raises the case count for a longer run. *)
+let cases = match Sys.getenv_opt "CEL_PROPS_CASES" with Some n -> int_of_string n | None -> 300
+let settings = Hegel.Settings.create ~test_cases:cases ~seed:11 ()
 let run name f = Hegel.run_hegel_test ~settings ~database_key:("cordis:cel:" ^ name) f
 let pick tc n = (Typed_gen.of_hegel tc).pick n
 let choose tc l = List.nth l (pick tc (List.length l))
@@ -89,6 +91,38 @@ let test_soundness () =
                   note tc ("value: " ^ Value.to_string r.value);
                   Hegel.require tc ~msg:"the value inhabits the checked type"
                     (Value.is_error r.value || admits t r.value))))
+
+(* ---- cost soundness -------------------------------------------------------------------------- *)
+
+(* The largest size anywhere in a value, as the estimator's input bound. *)
+let rec max_size (v : Value.t) =
+  match v with
+  | Value.String s -> Eval.utf8_length s
+  | Value.Bytes b -> String.length b
+  | Value.List xs -> Array.fold_left (fun a x -> max a (max_size x)) (Array.length xs) xs
+  | Value.Map m -> List.fold_left (fun a (k, x) -> max a (max (max_size k) (max_size x))) (List.length m) m
+  | _ -> 1
+
+(* RFC 0001's soundness property: for every checked expression and every
+   input within its declared size bounds, actual cost <= estimated maximum. *)
+let test_cost_soundness () =
+  run "cost-soundness" (fun tc ->
+      let c = Typed_gen.case (Typed_gen.of_hegel tc) in
+      let sizes = List.map (fun (n, _, v) -> (n, max 1 (max_size v))) c.vars in
+      note tc (Printf.sprintf "%s\nvars: %s" c.src
+        (String.concat ", " (List.map (fun (n, _, v) -> n ^ " = " ^ Value.to_string v) c.vars)));
+      match Cel.parse c.src with
+      | Error e -> Hegel.require tc ~msg:("generated expression does not parse: " ^ e) false
+      | Ok ast -> (
+          match Cost.estimate ~sizes (Typed_gen.checker_env c) ast with
+          | Error e -> Hegel.require tc ~msg:("a well-typed expression was rejected: " ^ e) false
+          | Ok est -> (
+              match Cel.eval ~vars:(Typed_gen.bindings c) c.src with
+              | Error e -> Hegel.require tc ~msg:("evaluation failed to start: " ^ e) false
+              | Ok r ->
+                  note tc (Printf.sprintf "actual %d, estimate [%d, %d]" r.cost est.min est.max);
+                  Hegel.require tc ~msg:"the estimate's minimum exceeds its maximum" (est.min <= est.max);
+                  Hegel.require tc ~msg:"actual cost exceeds the estimated maximum" (r.cost <= est.max))))
 
 let test_determinism () =
   run "determinism" (fun tc ->
@@ -273,6 +307,7 @@ let () =
           Alcotest.test_case "the most general of compatible types accepts both" `Quick test_most_general;
           Alcotest.test_case "well-typed expressions evaluate within their type" `Quick test_soundness ] );
       ("evaluation", [ Alcotest.test_case "deterministic" `Quick test_determinism ]);
+      ("cost", [ Alcotest.test_case "actual cost is within the estimate" `Quick test_cost_soundness ]);
       ( "syntax",
         [ Alcotest.test_case "string literals round-trip" `Quick test_string_literals;
           Alcotest.test_case "number literals round-trip" `Quick test_number_literals;

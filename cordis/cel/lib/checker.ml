@@ -130,6 +130,7 @@ type env = {
   container : string;
   subst : (int, t) Hashtbl.t;
   mutable next : int;
+  types : (int, t) Hashtbl.t;  (** expression id -> inferred type, for the cost estimator *)
 }
 
 let fresh env =
@@ -279,16 +280,18 @@ let sig_ ?(receiver = false) params result = (receiver, List.map parse_type para
 
 let standard : (string * (bool * t list * t) list) list Lazy.t =
   lazy
-    (let num = [ "int"; "uint"; "double" ] in
-     let cmp_pairs =
+    (let cmp_pairs =
        List.map (fun t -> [ t; t ]) [ "int"; "uint"; "double"; "string"; "bytes"; "bool"; "timestamp"; "duration" ]
        @ [ [ "int"; "uint" ]; [ "int"; "double" ]; [ "uint"; "int" ]; [ "uint"; "double" ]; [ "double"; "int" ]; [ "double"; "uint" ] ]
      in
      let cmp = List.map (fun ps -> sig_ ps "bool") cmp_pairs in
      let arith ts = List.map (fun t -> sig_ [ t; t ] t) ts in
+     (* Overloads are listed in cel-go's declaration order: when an argument's
+        type is still a variable, the first overload that fits decides the
+        result (-([][0]) is double), as in cel-go's resolveOverload. *)
      let time_parts = [ "getFullYear"; "getMonth"; "getDate"; "getDayOfMonth"; "getDayOfYear"; "getDayOfWeek"; "getHours"; "getMinutes"; "getSeconds"; "getMilliseconds" ] in
      [ ("!_", [ sig_ [ "bool" ] "bool" ]);
-       ("-_", [ sig_ [ "int" ] "int"; sig_ [ "double" ] "double" ]);
+       ("-_", [ sig_ [ "double" ] "double"; sig_ [ "int" ] "int" ]);
        ("_&&_", [ sig_ [ "bool"; "bool" ] "bool" ]);
        ("_||_", [ sig_ [ "bool"; "bool" ] "bool" ]);
        ("@not_strictly_false", [ sig_ [ "bool" ] "bool" ]);
@@ -296,14 +299,15 @@ let standard : (string * (bool * t list * t) list) list Lazy.t =
        ("_!=_", [ sig_ [ "A"; "A" ] "bool" ]);
        ("_<_", cmp); ("_<=_", cmp); ("_>_", cmp); ("_>=_", cmp);
        ( "_+_",
-         arith (num @ [ "string"; "bytes" ])
-         @ [ sig_ [ "list(A)"; "list(A)" ] "list(A)"; sig_ [ "timestamp"; "duration" ] "timestamp";
-             sig_ [ "duration"; "timestamp" ] "timestamp"; sig_ [ "duration"; "duration" ] "duration" ] );
+         arith [ "bytes"; "double"; "duration" ]
+         @ [ sig_ [ "duration"; "timestamp" ] "timestamp"; sig_ [ "timestamp"; "duration" ] "timestamp" ]
+         @ arith [ "int" ] @ [ sig_ [ "list(A)"; "list(A)" ] "list(A)" ] @ arith [ "string"; "uint" ] );
        ( "_-_",
-         arith num
-         @ [ sig_ [ "timestamp"; "timestamp" ] "duration"; sig_ [ "timestamp"; "duration" ] "timestamp";
-             sig_ [ "duration"; "duration" ] "duration" ] );
-       ("_*_", arith num); ("_/_", arith num); ("_%_", arith [ "int"; "uint" ]);
+         arith [ "double"; "duration"; "int" ]
+         @ [ sig_ [ "timestamp"; "duration" ] "timestamp"; sig_ [ "timestamp"; "timestamp" ] "duration" ]
+         @ arith [ "uint" ] );
+       ("_*_", arith [ "double"; "int"; "uint" ]); ("_/_", arith [ "double"; "int"; "uint" ]);
+       ("_%_", arith [ "int"; "uint" ]);
        ( "_[_]",
          [ sig_ [ "list(A)"; "int" ] "A"; sig_ [ "map(K, V)"; "K" ] "V";
            (* indexing an optional chains *)
@@ -325,16 +329,16 @@ let standard : (string * (bool * t list * t) list) list Lazy.t =
        ("startsWith", [ sig_ ~receiver:true [ "string"; "string" ] "bool" ]);
        ("endsWith", [ sig_ ~receiver:true [ "string"; "string" ] "bool" ]);
        ("matches", [ sig_ [ "string"; "string" ] "bool"; sig_ ~receiver:true [ "string"; "string" ] "bool" ]);
-       ("int", List.map (fun t -> sig_ [ t ] "int") [ "int"; "uint"; "double"; "string"; "timestamp" ]);
-       ("uint", List.map (fun t -> sig_ [ t ] "uint") [ "int"; "uint"; "double"; "string" ]);
-       ("double", List.map (fun t -> sig_ [ t ] "double") [ "int"; "uint"; "double"; "string" ]);
-       ("string", List.map (fun t -> sig_ [ t ] "string") [ "int"; "uint"; "double"; "bool"; "bytes"; "string"; "timestamp"; "duration" ]);
-       ("bytes", List.map (fun t -> sig_ [ t ] "bytes") [ "string"; "bytes" ]);
+       ("int", List.map (fun t -> sig_ [ t ] "int") [ "int"; "double"; "duration"; "string"; "timestamp"; "uint" ]);
+       ("uint", List.map (fun t -> sig_ [ t ] "uint") [ "uint"; "double"; "int"; "string" ]);
+       ("double", List.map (fun t -> sig_ [ t ] "double") [ "double"; "int"; "string"; "uint" ]);
+       ("string", List.map (fun t -> sig_ [ t ] "string") [ "string"; "bool"; "bytes"; "double"; "duration"; "int"; "timestamp"; "uint" ]);
+       ("bytes", List.map (fun t -> sig_ [ t ] "bytes") [ "bytes"; "string" ]);
        ("bool", List.map (fun t -> sig_ [ t ] "bool") [ "bool"; "string" ]);
        ("dyn", [ sig_ [ "A" ] "dyn" ]);
        ("type", [ sig_ [ "A" ] "type(A)" ]);
-       ("timestamp", List.map (fun t -> sig_ [ t ] "timestamp") [ "string"; "timestamp"; "int" ]);
-       ("duration", List.map (fun t -> sig_ [ t ] "duration") [ "string"; "duration" ]);
+       ("timestamp", List.map (fun t -> sig_ [ t ] "timestamp") [ "timestamp"; "int"; "string" ]);
+       ("duration", List.map (fun t -> sig_ [ t ] "duration") [ "duration"; "string" ]);
        ("optional.of", [ sig_ [ "A" ] "optional_type(A)" ]);
        ("optional.ofNonZeroValue", [ sig_ [ "A" ] "optional_type(A)" ]);
        ("optional.none", [ sig_ [] "optional_type(A)" ]);
@@ -352,7 +356,7 @@ let standard : (string * (bool * t list * t) list) list Lazy.t =
 (* ---- declarations ------------------------------------------------------------------------ *)
 
 let empty ?(container = "") () =
-  { idents = []; functions = []; container; subst = Hashtbl.create 16; next = 0 }
+  { idents = []; functions = []; container; subst = Hashtbl.create 16; next = 0; types = Hashtbl.create 64 }
 
 let declare_ident env name ty = { env with idents = (name, ty) :: env.idents }
 
@@ -439,37 +443,34 @@ let overloads env name =
   @ (match List.assoc_opt name (Lazy.force standard) with Some o -> o | None -> [])
   @ List.map (fun (r, ps, res) -> sig_ ~receiver:r ps res) (Registry.find_signatures name)
 
-(* Resolve a call: the overloads whose parameters accept the arguments. With
-   one match its bindings stand; with several (typically from dyn
-   arguments) the result is the join of their results. *)
+(* Resolve a call as cel-go's resolveOverload does: try the overloads in
+   order, keeping the bindings of each that fits. The first fitting overload
+   decides the result; a later fit with a different result makes it dyn
+   (several overloads fit dyn arguments). *)
 let resolve_call env name ~receiver args =
   let candidates =
     List.filter (fun (r, ps, _) -> r = receiver && List.length ps = List.length args) (overloads env name)
   in
-  let attempt (_, ps, res) =
-    let saved = Hashtbl.copy env.subst in
-    let ps, res = instantiate env (ps, res) in
-    if List.for_all2 (flexible env) ps args then Some (substitute env res, Hashtbl.copy env.subst)
-    else (Hashtbl.reset env.subst; Hashtbl.iter (Hashtbl.replace env.subst) saved; None)
-  in
-  let saved = Hashtbl.copy env.subst in
   let restore s = Hashtbl.reset env.subst; Hashtbl.iter (Hashtbl.replace env.subst) s in
-  let matches =
-    List.filter_map
-      (fun o ->
-        restore saved;
-        attempt o)
-      candidates
+  let result =
+    List.fold_left
+      (fun result o ->
+        let saved = Hashtbl.copy env.subst in
+        let ps, res = instantiate env (let _, ps, res = o in (ps, res)) in
+        if List.for_all2 (flexible env) ps args then
+          let r = substitute env res in
+          match result with
+          | None -> Some r
+          | Some Dyn -> result
+          | Some r0 -> if r0 = r then result else Some Dyn
+        else (restore saved; result))
+      None candidates
   in
-  match matches with
-  | [] ->
-      restore saved;
+  match result with
+  | Some r -> r
+  | None ->
       fail "found no matching overload for '%s' applied to (%s)" name
         (String.concat ", " (List.map (fun a -> to_string (finalize env a)) args))
-  | [ (res, s) ] -> restore s; res
-  | (res, s) :: rest ->
-      restore s;
-      List.fold_left (fun acc (r, _) -> if acc = r then acc else Dyn) res rest
 
 (* The enum type a call names (GlobalEnum(...), TestAllTypes.NestedEnum(...)),
    resolved in the container. *)
@@ -484,7 +485,17 @@ let enum_called env target fn =
 (* cel-go's joinTypes for the elements of a list or map literal. *)
 let aggregate_join env prev cur = if assignable env prev cur then most_general env prev cur else Dyn
 
+(* Every inferred type is recorded against its expression id. A node a
+   macro expansion shares between two contexts records dyn if its types
+   differ. *)
 let rec infer env locals (e : Ast.expr) : t =
+  let t = infer_kind env locals e in
+  (match Hashtbl.find_opt env.types e.id with
+   | Some t' when t' <> t -> Hashtbl.replace env.types e.id Dyn
+   | _ -> Hashtbl.replace env.types e.id t);
+  t
+
+and infer_kind env locals (e : Ast.expr) : t =
   match e.kind with
   | Ast.Const v -> (
       match v with
@@ -617,4 +628,14 @@ and select_type env ot field =
 let check env (e : Ast.expr) =
   match infer env [] e with
   | t -> Ok (finalize env t)
+  | exception Check_error m -> Error m
+
+(* The checked type and the type of every subexpression, by id. *)
+let check_types env (e : Ast.expr) =
+  Hashtbl.reset env.types;
+  match infer env [] e with
+  | t ->
+      let types = Hashtbl.create (Hashtbl.length env.types) in
+      Hashtbl.iter (fun id u -> Hashtbl.replace types id (finalize env u)) env.types;
+      Ok (finalize env t, fun id -> Hashtbl.find_opt types id)
   | exception Check_error m -> Error m

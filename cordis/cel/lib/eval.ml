@@ -25,7 +25,14 @@ let candidates container name =
     let n = List.length parts in
     List.init n (fun k -> String.concat "." (List.filteri (fun i _ -> i < n - k) parts) ^ "." ^ name) @ [ name ]
 
-type counter = { mutable cost : int; limit : int option }
+(* [skip_attr]: the next attribute evaluated is a conditional's branch,
+   whose base attribute cost cel-go does not charge. *)
+type counter = { mutable cost : int; limit : int option; mutable skip_attr : bool }
+
+let take_skip c =
+  let s = c.skip_attr in
+  c.skip_attr <- false;
+  s
 
 exception Cost_exceeded
 
@@ -408,13 +415,15 @@ let rec select v field ~test_only =
   | Error _ | Unknown _ -> v
   | _ -> err "type %s does not support field selection" (type_name (type_of v))
 
-(* Selection and indexing on an identifier or on another selection or index
-   form one cel-go attribute; on anything else they start a new one. *)
-let rec is_attribute_root (e : Ast.expr) =
+(* An identifier, selection or index is a cel-go attribute. Selecting or
+   indexing an attribute adds a qualifier to it (cost 1); selecting or
+   indexing anything else starts a relative attribute (cost 2: the attribute
+   and its first qualifier), so {'a': [1]}.a[0] costs 2 + 1 beyond its
+   literals. *)
+let is_attribute_root (e : Ast.expr) =
   match e.kind with
-  | Ast.Ident _ -> true
-  | Ast.Select { operand; test_only = false; _ } -> is_attribute_root operand
-  | Ast.Call { fn; target = None; args = [ operand; _ ] } when fn = Ast.op_index -> is_attribute_root operand
+  | Ast.Ident _ | Ast.Select { test_only = false; _ } -> true
+  | Ast.Call { fn; target = None; args = [ _; _ ] } when fn = Ast.op_index -> true
   | _ -> false
 
 (* The enum type a call names, if any: GlobalEnum(...) or TestAllTypes.NestedEnum(...),
@@ -426,78 +435,140 @@ let enum_named act target fn =
       List.find_opt Proto.enum_exists (candidates act.container n)
   | _ -> None
 
+(* ---- the cost of a call -------------------------------------------------------------- *)
+
+(* cel-go's actualSize: code points of a string, bytes, list and map
+   entries; every other value is 1. *)
+let actual_size = function
+  | String s -> utf8_length s
+  | Bytes b -> String.length b
+  | List xs -> Array.length xs
+  | Map m -> List.length m
+  | _ -> 1
+
+(* ceil(n * 0.1), computed in floating point exactly as cel-go does. *)
+let traversal n = int_of_float (Float.ceil (float_of_int n *. 0.1))
+
+(* cel-go's costCall for a checked program, keyed by the overload the
+   arguments select: size-proportional for string and byte traversals,
+   list membership and regex matching, 1 for everything else. A cell's cost
+   is charged by the overload its values select, so it does not depend on
+   whether the expression was checked. *)
+let call_cost fn vs =
+  match fn, vs with
+  | ("_==_" | "_!=_"), [ l; r ] -> traversal (min (actual_size l) (actual_size r))
+  | ("_<_" | "_<=_" | "_>_" | "_>=_"), [ (String _ as l); (String _ as r) ]
+  | ("_<_" | "_<=_" | "_>_" | "_>=_"), [ (Bytes _ as l); (Bytes _ as r) ] ->
+      traversal (min (actual_size l) (actual_size r))
+  | "_+_", [ (String _ as l); (String _ as r) ] | "_+_", [ (Bytes _ as l); (Bytes _ as r) ] ->
+      traversal (actual_size l + actual_size r)
+  | ("startsWith" | "endsWith"), [ String _; (String _ as p) ] -> traversal (actual_size p)
+  | "bytes", [ (String _ as x) ] | "string", [ (Bytes _ as x) ] | "strings.quote", [ (String _ as x) ] ->
+      traversal (actual_size x)
+  | "format", [ (String _ as f); _ ] -> traversal (actual_size f)
+  | "@in", [ _; (List _ as l) ] -> actual_size l
+  | "matches", [ (String _ as x); (String _ as re) ] ->
+      int_of_float (Float.ceil ((1.0 +. float_of_int (actual_size x)) *. 0.1))
+      * int_of_float (Float.ceil (float_of_int (actual_size re) *. 0.25))
+  | "contains", [ (String _ as x); (String _ as sub) ] -> traversal (actual_size x) * traversal (actual_size sub)
+  | _ -> 1
+
 let rec eval c act (e : Ast.expr) : Value.t =
   match e.kind with
   | Ast.Const v -> v
   | Ast.Ident n -> (
-      charge c 1;
+      charge c (if take_skip c then 0 else 1);
       match resolve act n with Some v -> v | None -> err "undeclared reference to '%s'" n)
   | Ast.Select { operand; field; test_only } -> (
-      (* cel-go's attribute cost: 1 for the attribute, 1 per qualifier; an
-         attribute rooted at an identifier counts the identifier as the 1 *)
-      charge c (if is_attribute_root operand then 1 else 2);
+      (* cel-go's attribute cost: 1 for the attribute, then 1 for each
+         qualifier as it is applied (the one that fails included, none
+         after it). An attribute rooted at an identifier counts the
+         identifier as the 1; selecting off anything else starts a relative
+         attribute, which pays its 1 even when its operand is an error. A
+         conditional's attribute branch is not charged its first 1. *)
+      let discount = ref (take_skip c) in
+      let pay n =
+        if n > 0 && !discount then (discount := false; charge c (n - 1)) else charge c n
+      in
+      let qualify v f = if is_error v || is_unknown v then v else (pay 1; select v f ~test_only) in
       (* qualified names: try the longest declared prefix of a.b.c first *)
       match ident_path e with
       | Some (root :: _ as path) when (not test_only) && not (List.mem_assoc root act.locals) ->
           let n = List.length path in
-          (* the identifier and the inner selections, resolved together *)
-          charge c (n - 1);
           let rec try_prefix k =
-            if k = 0 then err "undeclared reference to '%s'" (String.concat "." path)
+            if k = 0 then (pay n; err "undeclared reference to '%s'" (String.concat "." path))
             else
               let name = String.concat "." (List.filteri (fun i _ -> i < k) path) in
               match resolve act name with
               | Some v ->
-                  List.fold_left
-                    (fun v f -> select v f ~test_only:false)
-                    v
-                    (List.filteri (fun i _ -> i >= k) path)
+                  (* the identifier and the name's other parts *)
+                  pay k;
+                  List.fold_left qualify v (List.filteri (fun i _ -> i >= k) path)
               | None -> try_prefix (k - 1)
           in
           try_prefix n
-      | _ -> select (eval c act operand) field ~test_only)
+      | _ ->
+          let relative = not (is_attribute_root operand) in
+          let v = eval c act operand in
+          if relative then pay 1;
+          qualify v field)
+  (* Literals evaluate left to right and stop at the first error, as
+     cel-go's evalList, evalMap and evalObj do; unknowns are merged. *)
   | Ast.List_lit es ->
       charge c 10;
-      let vs = List.map (eval_element c act) es in
-      strict (List.filter_map Fun.id vs) (fun vs -> List (Array.of_list vs))
+      let rec go acc = function
+        | [] -> strict acc (fun vs -> List (Array.of_list (List.rev vs)))
+        | e :: rest -> (
+            match eval_element c act e with
+            | Some (Error _ as v) -> v
+            | Some v -> go (v :: acc) rest
+            | None -> go acc rest)
+      in
+      go [] es
   | Ast.Map_lit kvs ->
       charge c 30;
-      let pairs =
-        List.filter_map
-          (fun ((k : Ast.expr), v) ->
-            match k.kind with
-            | Ast.Call { fn; args = [ k ]; _ } when fn = Ast.op_opt_elem -> (
-                (* {?k: v}: the entry exists only when v has a value *)
-                match eval c act v with
-                | Optional None -> None
-                | Optional (Some v) -> Some (eval c act k, v)
-                | (Error _ | Unknown _) as e -> Some (eval c act k, e)
-                | _ -> Some (eval c act k, Error "optional map entry needs an optional value"))
-            | _ -> Some (eval c act k, eval c act v))
-          kvs
+      (* each entry's key, then its value; {?k: v} exists only when the
+         optional v has a value *)
+      let rec go acc = function
+        | [] ->
+            let pairs = List.rev acc in
+            strict (List.concat_map (fun (k, v) -> [ k; v ]) pairs) (fun _ -> make_map pairs)
+        | ((k : Ast.expr), v) :: rest -> (
+            let optional, k = match k.kind with Ast.Call { fn; args = [ k ]; _ } when fn = Ast.op_opt_elem -> (true, k) | _ -> (false, k) in
+            match eval c act k with
+            | Error _ as e -> e
+            | kv -> (
+                match eval c act v, optional with
+                | (Error _ as e), _ -> e
+                | Optional None, true -> go acc rest
+                | Optional (Some x), true -> go ((kv, x) :: acc) rest
+                | (Unknown _ as u), _ -> go ((kv, u) :: acc) rest
+                | _, true -> Error "optional map entry needs an optional value"
+                | x, false -> go ((kv, x) :: acc) rest))
       in
-      let all = List.concat_map (fun (k, v) -> [ k; v ]) pairs in
-      strict all (fun _ -> make_map pairs)
+      go [] kvs
   | Ast.Struct_lit { tname; fields } -> (
       charge c 40;
       (* the type name resolves in the container, most qualified first *)
       match List.find_opt (fun n -> Proto.find_message n <> None) (candidates act.container tname) with
       | None -> err "unknown type: %s" tname
-      | Some full -> (
-          let assigns =
-            List.filter_map
-              (fun (f, (e : Ast.expr), optional) ->
+      | Some full ->
+          let rec go acc = function
+            | [] -> (
+                let assigns = List.rev acc in
+                match List.find_opt (fun (_, v) -> is_unknown v) assigns with
+                | Some _ -> Unknown (merge_unknowns (List.map snd assigns))
+                | None -> Proto.make full assigns)
+            | (f, (e : Ast.expr), optional) :: rest -> (
                 match eval c act e, optional with
-                | Optional None, true -> None
-                | Optional (Some v), true -> Some (f, v)
-                | v, true when is_error v || is_unknown v -> Some (f, v)
-                | _, true -> Some (f, Error "optional field initialiser needs an optional value")
-                | v, false -> Some (f, v))
-              fields
+                | (Error _ as v), _ -> v
+                | Optional None, true -> go acc rest
+                | Optional (Some v), true -> go ((f, v) :: acc) rest
+                | (Unknown _ as v), _ -> go ((f, v) :: acc) rest
+                | _, true -> Error "optional field initialiser needs an optional value"
+                | v, false -> go ((f, v) :: acc) rest)
           in
-          match List.find_opt (fun (_, v) -> is_error v || is_unknown v) assigns with
-          | Some (_, v) -> v
-          | None -> Proto.make full assigns))
+          go [] fields)
   | Ast.Call { fn; target; args = [ arg ] }
     when (match target with None -> true | Some t -> ident_path t <> None)
          && enum_named act target fn <> None -> (
@@ -560,7 +631,11 @@ and eval_call c act fn target args =
   (* cel-go: logical operators and the conditional cost nothing themselves;
      every other call costs once its arguments are values (a call whose
      argument is already an error does not run, and is not charged) *)
-  let own = if fn = op_index && not (is_attribute_root (List.hd args)) then 2 else 1 in
+  (* an index off a non-attribute starts a relative attribute, whose 1 is
+     paid even when the operand is an error *)
+  let relative = if fn = op_index && not (is_attribute_root (List.hd args)) then 1 else 0 in
+  let skip = if fn = op_index && take_skip c then 1 else 0 in
+  let own = relative + 1 - skip in
   if fn = op_not_strictly_false then charge c 1;
   match fn, target, args with
   | f, None, [ l; r ] when f = op_and || f = op_or ->
@@ -568,11 +643,14 @@ and eval_call c act fn target args =
       let lv = eval c act l in
       if lv = Bool (not is_and) then lv else logic ~is_and lv (eval c act r)
   | f, None, [ cond; t; e ] when f = op_cond -> (
-      (* cel-go charges nothing for an identifier chosen by a conditional *)
+      (* cel-go plans an attribute branch (an identifier, a selection, an
+         index) into the conditional, and does not charge its base cost *)
       let branch (b : Ast.expr) =
-        match b.kind with
-        | Ident n -> (match resolve act n with Some v -> v | None -> err "undeclared reference to '%s'" n)
-        | _ -> eval c act b
+        (match b.kind with
+         | Ident _ | Select { test_only = false; _ } -> c.skip_attr <- true
+         | Call { fn; target = None; args = [ _; _ ] } when fn = op_index -> c.skip_attr <- true
+         | _ -> ());
+        eval c act b
       in
       match eval c act cond with
       | Bool true -> branch t
@@ -591,7 +669,8 @@ and eval_call c act fn target args =
             match eval c act a with
             | Error _ as e ->
                 (* every argument was evaluated when the error is the last *)
-                if rest = [] then charge c own;
+                if rest = [] then charge c own
+                else if acc = [] && relative = 1 then charge c (relative - skip);
                 Result.Error e
             | v -> eval_args (v :: acc) rest)
       in
@@ -599,23 +678,14 @@ and eval_call c act fn target args =
       | Result.Error e -> e
       | Ok vs ->
       strict vs (fun vs ->
-          charge c own;
-          (* equality costs ceil(min(size l, size r) / 10) in place of 1, as
-             in cel-go; scalars have size 1, strings count code points *)
-          (match fn, vs with
-           | ("_==_" | "_!=_"), [ l; r ] ->
-               let size = function
-                 | String s -> utf8_length s | Bytes b -> String.length b
-                 | List xs -> Array.length xs | Map m -> List.length m | _ -> 1
-               in
-               charge c (((min (size l) (size r) + 9) / 10) - 1)
-           | _ -> ());
+          (* an index off a non-attribute costs the attribute too *)
+          charge c (own - 1 + call_cost fn vs);
           call_function fn vs)
 
 type result = { value : Value.t; cost : int }
 
 let run ?limit ?(vars = []) ?container (e : Ast.expr) =
-  let c = { cost = 0; limit } in
+  let c = { cost = 0; limit; skip_attr = false } in
   match eval c (activation ?container vars) e with
   | v -> { value = v; cost = c.cost }
   | exception Cost_exceeded -> { value = Error "cost limit exceeded"; cost = c.cost }
