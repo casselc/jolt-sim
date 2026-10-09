@@ -1,0 +1,2897 @@
+{
+ "source": "cel-spec tests/simple/testdata/math_ext.textproto @ 40a3c9007a9305d1f2638d5f538a4e011732cace",
+ "name": "math_ext",
+ "sections": [
+  {
+   "name": "greatest_int_result",
+   "tests": [
+    {
+     "name": "unary_negative",
+     "expr": "math.greatest(-5)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "-5"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "unary_positive",
+     "expr": "math.greatest(5)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "5"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "binary_same_args",
+     "expr": "math.greatest(1, 1)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "1"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "binary_with_decimal",
+     "expr": "math.greatest(1, 1.0) == 1",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "binary_with_uint",
+     "expr": "math.greatest(1, 1u) == 1",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "binary_first_arg_greater",
+     "expr": "math.greatest(3, -3)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "3"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "binary_second_arg_greater",
+     "expr": "math.greatest(-7, 5)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "5"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "binary_first_arg_int_max",
+     "expr": "math.greatest(9223372036854775807, 1)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "9223372036854775807"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "binary_second_arg_int_max",
+     "expr": "math.greatest(1, 9223372036854775807)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "9223372036854775807"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "binary_first_arg_int_min",
+     "expr": "math.greatest(-9223372036854775808, 1)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "1"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "binary_second_arg_int_min",
+     "expr": "math.greatest(1, -9223372036854775808)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "1"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ternary_same_args",
+     "expr": "math.greatest(1, 1, 1) == 1",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ternary_with_decimal",
+     "expr": "math.greatest(1, 1.0, 1.0) == 1",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ternary_with_uint",
+     "expr": "math.greatest(1, 1u, 1u) == 1",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ternary_first_arg_greatest",
+     "expr": "math.greatest(10, 1, 3) == 10",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ternary_third_arg_greatest",
+     "expr": "math.greatest(1, 3, 10) == 10",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ternary_with_negatives",
+     "expr": "math.greatest(-1, -2, -3) == -1",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ternary_int_max",
+     "expr": "math.greatest(9223372036854775807, 1, 5) == 9223372036854775807",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ternary_int_min",
+     "expr": "math.greatest(-9223372036854775807, -1, -5) == -1",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "quaternary_mixed",
+     "expr": "math.greatest(5.4, 10, 3u, -5.0, 9223372036854775807) == 9223372036854775807",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "quaternary_mixed_array",
+     "expr": "math.greatest([5.4, 10, 3u, -5.0, 3.5]) == 10",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "quaternary_mixed_dyn_array",
+     "expr": "math.greatest([dyn(5.4), dyn(10), dyn(3u), dyn(-5.0), dyn(3.5)]) == 10",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "greatest_double_result",
+   "tests": [
+    {
+     "name": "unary_negative",
+     "expr": "math.greatest(-5.0)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "double": -5.0
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "unary_positive",
+     "expr": "math.greatest(5.0)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "double": 5.0
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "binary_same_args",
+     "expr": "math.greatest(1.0, 1.0)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "double": 1.0
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "binary_with_int",
+     "expr": "math.greatest(1.0, 1) == 1.0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "binary_with_uint",
+     "expr": "math.greatest(1.0, 1u) == 1.0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "binary_first_arg_greater",
+     "expr": "math.greatest(5.0, -7.0)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "double": 5.0
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "binary_second_arg_greater",
+     "expr": "math.greatest(-3.0, 3.0)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "double": 3.0
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "binary_first_arg_double_max",
+     "expr": "math.greatest(1.797693e308, 1)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "double": 1.797693e+308
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "binary_second_arg_double_max",
+     "expr": "math.greatest(1, 1.797693e308)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "double": 1.797693e+308
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "binary_first_arg_double_min",
+     "expr": "math.greatest(-1.797693e308, 1.5)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "double": 1.5
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "binary_second_arg_double_min",
+     "expr": "math.greatest(1.5, -1.797693e308)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "double": 1.5
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ternary_same_args",
+     "expr": "math.greatest(1.0, 1.0, 1.0) == 1.0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ternary_with_int",
+     "expr": "math.greatest(1.0, 1, 1) == 1.0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ternary_with_uint",
+     "expr": "math.greatest(1.0, 1u, 1u) == 1.0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ternary_first_arg_greatest",
+     "expr": "math.greatest(10.5, 1.5, 3.5) == 10.5",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ternary_third_arg_greatest",
+     "expr": "math.greatest(1.5, 3.5, 10.5) == 10.5",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ternary_with_negatives",
+     "expr": "math.greatest(-1.5, -2.5, -3.5) == -1.5",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ternary_double_max",
+     "expr": "math.greatest(1.797693e308, 1, 5) == 1.797693e308",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ternary_double_min",
+     "expr": "math.greatest(-1.797693e308, -1, -5) == -1",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "quaternary_mixed",
+     "expr": "math.greatest(5.4, 10, 3u, -5.0, 1.797693e308) == 1.797693e308",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "quaternary_mixed_array",
+     "expr": "math.greatest([5.4, 10.5, 3u, -5.0, 3.5]) == 10.5",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "quaternary_mixed_dyn_array",
+     "expr": "math.greatest([dyn(5.4), dyn(10.5), dyn(3u), dyn(-5.0), dyn(3.5)]) == 10.5",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "greatest_uint_result",
+   "tests": [
+    {
+     "name": "unary",
+     "expr": "math.greatest(5u)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "uint": "5"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "binary_same_args",
+     "expr": "math.greatest(1u, 1u)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "uint": "1"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "binary_with_decimal",
+     "expr": "math.greatest(1u, 1.0) == 1",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "binary_with_int",
+     "expr": "math.greatest(1u, 1) == 1u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "binary_first_arg_greater",
+     "expr": "math.greatest(5u, -7)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "uint": "5"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "binary_second_arg_greater",
+     "expr": "math.greatest(-3, 3u)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "uint": "3"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "binary_first_arg_uint_max",
+     "expr": "math.greatest(18446744073709551615u, 1u)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "uint": "18446744073709551615"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "binary_second_arg_uint_max",
+     "expr": "math.greatest(1u, 18446744073709551615u)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "uint": "18446744073709551615"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ternary_same_args",
+     "expr": "math.greatest(1u, 1u, 1u) == 1u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ternary_with_decimal",
+     "expr": "math.greatest(1u, 1.0, 1.0) == 1u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ternary_with_int",
+     "expr": "math.greatest(1u, 1, 1) == 1u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ternary_first_arg_greatest",
+     "expr": "math.greatest(10u, 1u, 3u) == 10u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ternary_third_arg_greatest",
+     "expr": "math.greatest(1u, 3u, 10u) == 10u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ternary_int_max",
+     "expr": "math.greatest(18446744073709551615u, 1u, 5u) == 18446744073709551615u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "quaternary_mixed",
+     "expr": "math.greatest(5.4, 10, 3u, -5.0, 18446744073709551615u) == 18446744073709551615u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "quaternary_mixed_array",
+     "expr": "math.greatest([5.4, 10u, 3u, -5.0, 3.5]) == 10u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "quaternary_mixed_dyn_array",
+     "expr": "math.greatest([dyn(5.4), dyn(10u), dyn(3u), dyn(-5.0), dyn(3.5)]) == 10u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "least_int_result",
+   "tests": [
+    {
+     "name": "unary_negative",
+     "expr": "math.least(-5)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "-5"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "unary_positive",
+     "expr": "math.least(5)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "5"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "binary_same_args",
+     "expr": "math.least(1, 1)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "1"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "binary_with_decimal",
+     "expr": "math.least(1, 1.0) == 1",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "binary_with_uint",
+     "expr": "math.least(1, 1u) == 1",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "binary_first_arg_least",
+     "expr": "math.least(-3, 3)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "-3"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "binary_second_arg_least",
+     "expr": "math.least(5, -7)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "-7"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "binary_first_arg_int_max",
+     "expr": "math.least(9223372036854775807, 1)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "1"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "binary_second_arg_int_max",
+     "expr": "math.least(1, 9223372036854775807)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "1"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "binary_first_arg_int_min",
+     "expr": "math.least(-9223372036854775808, 1)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "-9223372036854775808"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "binary_second_arg_int_min",
+     "expr": "math.least(1, -9223372036854775808)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "-9223372036854775808"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ternary_same_args",
+     "expr": "math.least(1, 1, 1) == 1",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ternary_with_decimal",
+     "expr": "math.least(1, 1.0, 1.0) == 1",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ternary_with_uint",
+     "expr": "math.least(1, 1u, 1u) == 1",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ternary_first_arg_least",
+     "expr": "math.least(0, 1, 3) == 0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ternary_third_arg_least",
+     "expr": "math.least(1, 3, 0) == 0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ternary_with_negatives",
+     "expr": "math.least(-1, -2, -3) == -3",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ternary_int_max",
+     "expr": "math.least(9223372036854775807, 1, 5) == 1",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ternary_int_min",
+     "expr": "math.least(-9223372036854775808, -1, -5) == -9223372036854775808",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "quaternary_mixed",
+     "expr": "math.least(5.4, 10, 3u, -5.0, 9223372036854775807) == -5.0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "quaternary_mixed_array",
+     "expr": "math.least([5.4, 10, 3u, -5.0, 3.5]) == -5.0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "quaternary_mixed_dyn_array",
+     "expr": "math.least([dyn(5.4), dyn(10), dyn(3u), dyn(-5.0), dyn(3.5)]) == -5.0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "least_double_result",
+   "tests": [
+    {
+     "name": "unary_negative",
+     "expr": "math.least(-5.5)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "double": -5.5
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "unary_positive",
+     "expr": "math.least(5.5)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "double": 5.5
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "binary_same_args",
+     "expr": "math.least(1.5, 1.5)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "double": 1.5
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "binary_with_int",
+     "expr": "math.least(1.0, 1) == 1",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "binary_with_uint",
+     "expr": "math.least(1, 1u) == 1",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "binary_first_arg_least",
+     "expr": "math.least(-3.5, 3.5)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "double": -3.5
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "binary_second_arg_least",
+     "expr": "math.least(5.5, -7.5)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "double": -7.5
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "binary_first_arg_double_max",
+     "expr": "math.least(1.797693e308, 1.5)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "double": 1.5
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "binary_second_arg_double_max",
+     "expr": "math.least(1.5, 1.797693e308)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "double": 1.5
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "binary_first_arg_double_min",
+     "expr": "math.least(-1.797693e308, 1.5)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "double": -1.797693e+308
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "binary_second_arg_double_min",
+     "expr": "math.least(1.5, -1.797693e308)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "double": -1.797693e+308
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ternary_same_args",
+     "expr": "math.least(1.5, 1.5, 1.5) == 1.5",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ternary_with_int",
+     "expr": "math.least(1.0, 1, 1) == 1.0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ternary_with_uint",
+     "expr": "math.least(1.0, 1u, 1u) == 1",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ternary_first_arg_least",
+     "expr": "math.least(0.5, 1.5, 3.5) == 0.5",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ternary_third_arg_least",
+     "expr": "math.least(1.5, 3.5, 0.5) == 0.5",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ternary_with_negatives",
+     "expr": "math.least(-1.5, -2.5, -3.5) == -3.5",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ternary_double_max",
+     "expr": "math.least(1.797693e308, 1, 5) == 1",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ternary_double_min",
+     "expr": "math.least(-1.797693e308, -1, -5) == -1.797693e308",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "quaternary_mixed",
+     "expr": "math.least(5.4, 10, 3u, -5.0, 1.797693e308) == -5.0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "quaternary_mixed_array",
+     "expr": "math.least([5.4, 10.5, 3u, -5.0, 3.5]) == -5.0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "quaternary_mixed_dyn_array",
+     "expr": "math.least([dyn(5.4), dyn(10.5), dyn(3u), dyn(-5.0), dyn(3.5)]) == -5.0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "least_uint_result",
+   "tests": [
+    {
+     "name": "unary",
+     "expr": "math.least(5u)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "uint": "5"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "binary_same_args",
+     "expr": "math.least(1u, 1u)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "uint": "1"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "binary_with_decimal",
+     "expr": "math.least(1u, 1.0) == 1u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "binary_with_int",
+     "expr": "math.least(1u, 1) == 1u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "binary_first_arg_least",
+     "expr": "math.least(1u, 3u)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "uint": "1"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "binary_second_arg_least",
+     "expr": "math.least(5u, 2u)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "uint": "2"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "binary_first_arg_uint_max",
+     "expr": "math.least(18446744073709551615u, 1u)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "uint": "1"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "binary_second_arg_uint_max",
+     "expr": "math.least(1u, 18446744073709551615u)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "uint": "1"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ternary_same_args",
+     "expr": "math.least(1u, 1u, 1u) == 1u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ternary_with_decimal",
+     "expr": "math.least(1u, 1.0, 1.0) == 1u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ternary_with_int",
+     "expr": "math.least(1u, 1, 1) == 1u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ternary_first_arg_least",
+     "expr": "math.least(1u, 10u, 3u) == 1u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ternary_third_arg_least",
+     "expr": "math.least(10u, 3u, 1u) == 1u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ternary_uint_max",
+     "expr": "math.least(18446744073709551615u, 1u, 5u) == 1u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "quaternary_mixed",
+     "expr": "math.least(5.4, 10, 3u, 1u, 18446744073709551615u) == 1u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "quaternary_mixed_array",
+     "expr": "math.least([5.4, 10u, 3u, 1u, 3.5]) == 1u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "quaternary_mixed_dyn_array",
+     "expr": "math.least([dyn(5.4), dyn(10u), dyn(3u), dyn(1u), dyn(3.5)]) == 1u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "ceil",
+   "tests": [
+    {
+     "name": "negative",
+     "expr": "math.ceil(-1.2)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "double": -1.0
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "positive",
+     "expr": "math.ceil(1.2)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "double": 2.0
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "dyn_error",
+     "expr": "math.ceil(dyn(1))",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "no such overload"
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "floor",
+   "tests": [
+    {
+     "name": "negative",
+     "expr": "math.floor(-1.2)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "double": -2.0
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "positive",
+     "expr": "math.floor(1.2)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "double": 1.0
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "dyn_error",
+     "expr": "math.floor(dyn(1))",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "no such overload"
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "round",
+   "tests": [
+    {
+     "name": "negative_down",
+     "expr": "math.round(-1.6)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "double": -2.0
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "negative_up",
+     "expr": "math.round(-1.4)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "double": -1.0
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "negative_mid",
+     "expr": "math.round(-1.5)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "double": -2.0
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "positive_down",
+     "expr": "math.round(1.2)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "double": 1.0
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "positive_up",
+     "expr": "math.round(1.5)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "double": 2.0
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "nan",
+     "expr": "math.isNaN(math.round(0.0/0.0))",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "dyn_error",
+     "expr": "math.round(dyn(1))",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "no such overload"
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "trunc",
+   "tests": [
+    {
+     "name": "negative",
+     "expr": "math.trunc(-1.2)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "double": -1.0
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "positive",
+     "expr": "math.trunc(1.2)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "double": 1.0
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "nan",
+     "expr": "math.isNaN(math.trunc(0.0/0.0))",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "dyn_error",
+     "expr": "math.trunc(dyn(1))",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "no such overload"
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "abs",
+   "tests": [
+    {
+     "name": "uint",
+     "expr": "math.abs(1u)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "uint": "1"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "positive_int",
+     "expr": "math.abs(1)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "1"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "negative_int",
+     "expr": "math.abs(-11)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "11"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "positive_double",
+     "expr": "math.abs(1.5)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "double": 1.5
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "negative_double",
+     "expr": "math.abs(-11.5)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "double": 11.5
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "int_overflow",
+     "expr": "math.abs(-9223372036854775808)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "overflow"
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "sign",
+   "tests": [
+    {
+     "name": "positive_uint",
+     "expr": "math.sign(100u)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "uint": "1"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "zero_uint",
+     "expr": "math.sign(0u)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "uint": "0"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "positive_int",
+     "expr": "math.sign(100)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "1"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "negative_int",
+     "expr": "math.sign(-11)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "-1"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "zero_int",
+     "expr": "math.sign(0)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "0"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "positive_double",
+     "expr": "math.sign(100.5)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "double": 1.0
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "negative_double",
+     "expr": "math.sign(-32.0)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "double": -1.0
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "zero_double",
+     "expr": "math.sign(0.0)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "double": 0.0
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "dyn_error",
+     "expr": "math.sign(dyn(true))",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "no such overload"
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "isNaN",
+   "tests": [
+    {
+     "name": "true",
+     "expr": "math.isNaN(0.0/0.0)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "false",
+     "expr": "!math.isNaN(1.0/0.0)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "dyn_error",
+     "expr": "math.isNaN(dyn(true))",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "no such overload"
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "isInf",
+   "tests": [
+    {
+     "name": "true",
+     "expr": "math.isInf(1.0/0.0)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "false",
+     "expr": "!math.isInf(0.0/0.0)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "dyn_error",
+     "expr": "math.isInf(dyn(true))",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "no such overload"
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "isFinite",
+   "tests": [
+    {
+     "name": "true",
+     "expr": "math.isFinite(1.0/1.5)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "false_nan",
+     "expr": "!math.isFinite(0.0/0.0)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "false_inf",
+     "expr": "!math.isFinite(-1.0/0.0)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "dyn_error",
+     "expr": "math.isFinite(dyn(true))",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "no such overload"
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "bit_and",
+   "tests": [
+    {
+     "name": "int_int_non_intersect",
+     "expr": "math.bitAnd(1, 2)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "0"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "int_int_intersect",
+     "expr": "math.bitAnd(1, 3)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "1"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "int_int_intersect_neg",
+     "expr": "math.bitAnd(1, -1)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "1"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "uint_uint_non_intersect",
+     "expr": "math.bitAnd(1u, 2u)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "uint": "0"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "uint_uint_intersect",
+     "expr": "math.bitAnd(1u, 3u)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "uint": "1"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "int_dyn_error",
+     "expr": "math.bitAnd(2u, dyn(''))",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "no such overload"
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "bit_or",
+   "tests": [
+    {
+     "name": "int_int_positive",
+     "expr": "math.bitOr(1, 2)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "3"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "int_int_positive_negative",
+     "expr": "math.bitOr(4, -2)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "-2"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "uint_uint",
+     "expr": "math.bitOr(1u, 4u)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "uint": "5"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "dyn_int_error",
+     "expr": "math.bitOr(dyn(1.2), 1)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "no such overload"
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "bit_xor",
+   "tests": [
+    {
+     "name": "int_int_positive",
+     "expr": "math.bitXor(1, 3)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "2"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "int_int_positive_negative",
+     "expr": "math.bitXor(4, -2)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "-6"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "uint_uint",
+     "expr": "math.bitXor(1u, 3u)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "uint": "2"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "dyn_dyn_error",
+     "expr": "math.bitXor(dyn([]), dyn([1]))",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "no such overload"
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "bit_not",
+   "tests": [
+    {
+     "name": "int_positive",
+     "expr": "math.bitNot(1)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "-2"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "int_negative",
+     "expr": "math.bitNot(-1)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "0"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "int_zero",
+     "expr": "math.bitNot(0)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "-1"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "uint_positive",
+     "expr": "math.bitNot(1u)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "uint": "18446744073709551614"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "uint_zero",
+     "expr": "math.bitNot(0u)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "uint": "18446744073709551615"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "dyn_error",
+     "expr": "math.bitNot(dyn(''))",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "no such overload"
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "bit_shift_left",
+   "tests": [
+    {
+     "name": "int",
+     "expr": "math.bitShiftLeft(1, 2)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "4"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "int_large_shift",
+     "expr": "math.bitShiftLeft(1, 200)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "0"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "int_negative_large_shift",
+     "expr": "math.bitShiftLeft(-1, 200)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "0"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "uint",
+     "expr": "math.bitShiftLeft(1u, 2)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "uint": "4"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "uint_large_shift",
+     "expr": "math.bitShiftLeft(1u, 200)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "uint": "0"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "bad_shift",
+     "expr": "math.bitShiftLeft(1u, -1)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "negative offset"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "dyn_int_error",
+     "expr": "math.bitShiftLeft(dyn(4.3), 1)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "no such overload"
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "bit_shift_right",
+   "tests": [
+    {
+     "name": "int",
+     "expr": "math.bitShiftRight(1024, 2)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "256"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "int_large_shift",
+     "expr": "math.bitShiftRight(1024, 64)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "0"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "int_negative",
+     "expr": "math.bitShiftRight(-1024, 3)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "2305843009213693824"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "int_negative_large_shift",
+     "expr": "math.bitShiftRight(-1024, 64)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "0"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "uint",
+     "expr": "math.bitShiftRight(1024u, 2)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "uint": "256"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "uint_large_shift",
+     "expr": "math.bitShiftRight(1024u, 200)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "uint": "0"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "bad_shift",
+     "expr": "math.bitShiftRight(1u, -1)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "negative offset"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "dyn_int_error",
+     "expr": "math.bitShiftRight(dyn(b'123'), 1)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "no such overload"
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  }
+ ]
+}

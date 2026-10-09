@@ -1,0 +1,5849 @@
+{
+ "source": "cel-spec tests/simple/testdata/comparisons.textproto @ 40a3c9007a9305d1f2638d5f538a4e011732cace",
+ "name": "comparisons",
+ "sections": [
+  {
+   "name": "eq_literal",
+   "tests": [
+    {
+     "name": "eq_int",
+     "expr": "1 == 1",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_eq_int",
+     "expr": "-1 == 1",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_int_uint",
+     "expr": "dyn(1) == 1u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_eq_int_uint",
+     "expr": "dyn(2) == 1u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_int_double",
+     "expr": "dyn(1) == 1.0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_eq_int_double",
+     "expr": "dyn(2) == 1.0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_uint",
+     "expr": "2u == 2u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_eq_uint",
+     "expr": "1u == 2u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_uint_int",
+     "expr": "dyn(1u) == 1",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_eq_uint_int",
+     "expr": "dyn(2u) == 1",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_uint_double",
+     "expr": "dyn(1u) == 1.0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_eq_uint_double",
+     "expr": "dyn(2u) == 1.0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_double",
+     "expr": "1.0 == 1.0e+0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_eq_double",
+     "expr": "-1.0 == 1.0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_eq_double_nan",
+     "expr": "0.0/0.0 == 0.0/0.0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_eq_int_double_nan",
+     "expr": "dyn(1) == 0.0/0.0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_eq_uint_double_nan",
+     "expr": "dyn(1u) == 0.0/0.0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_double_int",
+     "expr": "dyn(1.0) == 1",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_eq_double_int",
+     "expr": "dyn(2.0) == 1",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_double_uint",
+     "expr": "dyn(1.0) == 1u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_eq_double_uint",
+     "expr": "dyn(2.0) == 1u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_string",
+     "expr": "'' == \"\"",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_eq_string",
+     "expr": "'a' == 'b'",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_raw_string",
+     "expr": "'abc' == r'abc'",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_eq_string_case",
+     "expr": "'abc' == 'ABC'",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_string_unicode",
+     "expr": "'ίσος' == 'ίσος'",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_eq_string_unicode_ascii",
+     "expr": "'a' == 'à'",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "no_string_normalization",
+     "expr": "'Am\\u00E9lie' == 'Ame\\u0301lie'",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_null",
+     "expr": "null == null",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_bool",
+     "expr": "true == true",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_eq_bool",
+     "expr": "false == true",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_bytes",
+     "expr": "b'ÿ' == b'\\303\\277'",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_eq_bytes",
+     "expr": "b'abc' == b'abcd'",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_list_empty",
+     "expr": "[] == []",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_list_null",
+     "expr": "[null] == [null]",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_eq_list_null",
+     "expr": "['1', '2', null] == ['1', '2', '3']",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_list_numbers",
+     "expr": "[1, 2, 3] == [1, 2, 3]",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_list_mixed_type_numbers",
+     "expr": "[1.0, 2.0, 3] == [1u, 2, 3u]",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_eq_list_mixed_type_numbers",
+     "expr": "[1.0, 2.1] == [1u, 2]",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_eq_list_order",
+     "expr": "[1, 2, 3] == [1, 3, 2]",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_eq_list_string_case",
+     "expr": "['case'] == ['cAse']",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_eq_list_length",
+     "expr": "['one'] == [2, 3]",
+     "disable_macros": false,
+     "disable_check": true,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_eq_list_false_vs_types",
+     "expr": "[1, 'dos', 3] == [1, 2, 4]",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_map_empty",
+     "expr": "{} == {}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_map_null",
+     "expr": "{'k': null} == {'k': null}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_eq_map_null",
+     "expr": "{'k': 1, 'j': 2} == {'k': 1, 'j': null}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_map_onekey",
+     "expr": "{'k':'v'} == {\"k\":\"v\"}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_map_double_value",
+     "expr": "{'k':1.0} == {'k':1e+0}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_map_mixed_type_numbers",
+     "expr": "{1: 1.0, 2u: 3u} == {1u: 1, 2: 3.0}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_eq_map_value",
+     "expr": "{'k':'v'} == {'k':'v1'}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_eq_map_extra_key",
+     "expr": "{'k':'v','k1':'v1'} == {'k':'v'}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_map_key_order",
+     "expr": "{'k1':'v1','k2':'v2'} == {'k2':'v2','k1':'v1'}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_eq_map_key_casing",
+     "expr": "{'key':'value'} == {'Key':'value'}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_eq_map_false_vs_types",
+     "expr": "{'k1': 1, 'k2': 'dos', 'k3': 3} == {'k1': 1, 'k2': 2, 'k3': 4}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_mixed_types",
+     "expr": "1.0 == 1",
+     "disable_macros": false,
+     "disable_check": true,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_list_elem_mixed_types",
+     "expr": "[1] == [1.0]",
+     "disable_macros": false,
+     "disable_check": true,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_map_value_mixed_types",
+     "expr": "{'k':'v', 1:1} == {'k':'v', 1:'v1'}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_dyn_json_null",
+     "expr": "dyn(google.protobuf.Value{}) == null",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_eq_dyn_bool_null",
+     "expr": "dyn(false) == null",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_eq_dyn_bytes_null",
+     "expr": "dyn(b'') == null",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_eq_dyn_double_null",
+     "expr": "dyn(2.1) == null",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_eq_dyn_duration_null",
+     "expr": "dyn(duration('0s')) == null",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_eq_dyn_int_null",
+     "expr": "dyn(1) == null",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_eq_dyn_list_null",
+     "expr": "dyn([]) == null",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_eq_dyn_map_null",
+     "expr": "dyn({}) == null",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_eq_dyn_proto2_msg_null",
+     "expr": "dyn(TestAllTypes{}) == null",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_eq_dyn_proto3_msg_null",
+     "expr": "dyn(TestAllTypes{}) == null",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_eq_dyn_string_null",
+     "expr": "dyn('') == null",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_eq_dyn_timestamp_null",
+     "expr": "dyn(timestamp(0)) == null",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_eq_list_elem_null",
+     "expr": "[1, 2, null] == [1, null, 3]",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_eq_map_value_null",
+     "expr": "{1:'hello', 2:'world'} == {1:'goodbye', 2:null}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_dyn_int_uint",
+     "expr": "dyn(1) == 1u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_dyn_int_double",
+     "expr": "dyn(1) == 1.0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_dyn_uint_int",
+     "expr": "dyn(1u) == 1",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_dyn_uint_double",
+     "expr": "dyn(1u) == 1.0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_dyn_double_int",
+     "expr": "dyn(1.0) == 1",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_dyn_double_uint",
+     "expr": "dyn(1.0) == 1u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_eq_dyn_int_uint",
+     "expr": "dyn(1) == 2u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_eq_dyn_int_double",
+     "expr": "dyn(1) == 2.0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_eq_dyn_uint_int",
+     "expr": "dyn(1u) == 2",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_eq_dyn_uint_double",
+     "expr": "dyn(1u) == 120",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_eq_dyn_double_int",
+     "expr": "dyn(1.0) == 2",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_eq_dyn_double_uint",
+     "expr": "dyn(1.0) == 2u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "eq_wrapper",
+   "tests": [
+    {
+     "name": "eq_bool",
+     "expr": "google.protobuf.BoolValue{value: true} == true",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_bool_empty",
+     "expr": "google.protobuf.BoolValue{} == false",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_bool_not_null",
+     "expr": "google.protobuf.BoolValue{} != null",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_bool_proto2_null",
+     "expr": "TestAllTypes{}.single_bool_wrapper == null",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_bool_proto3_null",
+     "expr": "TestAllTypes{}.single_bool_wrapper == null",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_bytes",
+     "expr": "google.protobuf.BytesValue{value: b'set'} == b'set'",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_bytes_empty",
+     "expr": "google.protobuf.BytesValue{} == b''",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_bytes_not_null",
+     "expr": "google.protobuf.BytesValue{} != null",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_bytes_proto2_null",
+     "expr": "TestAllTypes{}.single_bytes_wrapper == null",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_bytes_proto3_null",
+     "expr": "TestAllTypes{}.single_bytes_wrapper == null",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_double",
+     "expr": "google.protobuf.DoubleValue{value: -1.175494e-40} == -1.175494e-40",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_double_empty",
+     "expr": "google.protobuf.DoubleValue{} == 0.0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_double_not_null",
+     "expr": "google.protobuf.DoubleValue{} != null",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_double_proto2_null",
+     "expr": "TestAllTypes{}.single_double_wrapper == null",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_double_proto3_null",
+     "expr": "TestAllTypes{}.single_double_wrapper == null",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_float",
+     "expr": "google.protobuf.FloatValue{value: -1.5} == -1.5",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_float_empty",
+     "expr": "google.protobuf.FloatValue{} == 0.0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_float_not_null",
+     "expr": "google.protobuf.FloatValue{} != null",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_float_proto2_null",
+     "expr": "TestAllTypes{}.single_float_wrapper == null",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_float_proto3_null",
+     "expr": "TestAllTypes{}.single_float_wrapper == null",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_int32",
+     "expr": "google.protobuf.Int32Value{value: 123} == 123",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_int32_empty",
+     "expr": "google.protobuf.Int32Value{} == 0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_int32_not_null",
+     "expr": "google.protobuf.Int32Value{} != null",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_int32_proto2_null",
+     "expr": "TestAllTypes{}.single_int32_wrapper == null",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_int32_proto3_null",
+     "expr": "TestAllTypes{}.single_int32_wrapper == null",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_int64",
+     "expr": "google.protobuf.Int64Value{value: 2147483650} == 2147483650",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_int64_empty",
+     "expr": "google.protobuf.Int64Value{} == 0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_int64_not_null",
+     "expr": "google.protobuf.Int64Value{} != null",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_int64_proto2_null",
+     "expr": "TestAllTypes{}.single_int64_wrapper == null",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_int64_proto3_null",
+     "expr": "TestAllTypes{}.single_int64_wrapper == null",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_string",
+     "expr": "google.protobuf.StringValue{value: 'set'} == 'set'",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_string_empty",
+     "expr": "google.protobuf.StringValue{} == ''",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_string_not_null",
+     "expr": "google.protobuf.StringValue{} != null",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_string_proto2_null",
+     "expr": "TestAllTypes{}.single_string_wrapper == null",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_string_proto3_null",
+     "expr": "TestAllTypes{}.single_string_wrapper == null",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_uint32",
+     "expr": "google.protobuf.UInt32Value{value: 42u} == 42u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_uint32_empty",
+     "expr": "google.protobuf.UInt32Value{} == 0u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_uint32_not_null",
+     "expr": "google.protobuf.UInt32Value{} != null",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_uint32_proto2_null",
+     "expr": "TestAllTypes{}.single_uint32_wrapper == null",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_uint32_proto3_null",
+     "expr": "TestAllTypes{}.single_uint32_wrapper == null",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_uint64",
+     "expr": "google.protobuf.UInt64Value{value: 4294967296u} == 4294967296u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_uint64_empty",
+     "expr": "google.protobuf.UInt64Value{} == 0u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_uint64_not_null",
+     "expr": "google.protobuf.UInt64Value{} != null",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_uint64_proto2_null",
+     "expr": "TestAllTypes{}.single_uint64_wrapper == null",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_uint64_proto3_null",
+     "expr": "TestAllTypes{}.single_uint64_wrapper == null",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_proto2",
+     "expr": "TestAllTypes{single_int64: 1234, single_string: '1234'} == TestAllTypes{single_int64: 1234, single_string: '1234'}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_proto3",
+     "expr": "TestAllTypes{single_int64: 1234, single_string: '1234'} == TestAllTypes{single_int64: 1234, single_string: '1234'}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_proto2_missing_fields_neq",
+     "expr": "TestAllTypes{single_int64: 1234} == TestAllTypes{single_string: '1234'}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_proto3_missing_fields_neq",
+     "expr": "TestAllTypes{single_int64: 1234} == TestAllTypes{single_string: '1234'}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_proto_nan_equal",
+     "expr": "TestAllTypes{single_double: double('NaN')} == TestAllTypes{single_double: double('NaN')}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_proto_different_types",
+     "expr": "dyn(TestAllTypes{}) == dyn(NestedTestAllTypes{})",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_proto2_any_unpack_equal",
+     "expr": "TestAllTypes{single_any: google.protobuf.Any{type_url: 'type.googleapis.com/cel.expr.conformance.proto2.TestAllTypes', value: b'\\020\\256\\366\\377\\377\\377\\377\\377\\377\\377\\001r\\0041234'}} == TestAllTypes{single_any: google.protobuf.Any{type_url: 'type.googleapis.com/cel.expr.conformance.proto2.TestAllTypes', value: b'r\\0041234\\020\\256\\366\\377\\377\\377\\377\\377\\377\\377\\001'}}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_proto2_any_unpack_not_equal",
+     "expr": "TestAllTypes{single_any: google.protobuf.Any{type_url: 'type.googleapis.com/cel.expr.conformance.proto2.TestAllTypes', value: b'a\\000\\000\\000\\000\\000H\\223\\300r\\0041234'}} == TestAllTypes{single_any: google.protobuf.Any{type_url: 'type.googleapis.com/cel.expr.conformance.proto2.TestAllTypes', value: b'r\\0041234\\020\\256\\366\\377\\377\\377\\377\\377\\377\\377\\001'}}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_proto2_any_unpack_bytewise_fallback_not_equal",
+     "expr": "TestAllTypes{single_any: google.protobuf.Any{type_url: 'type.googleapis.com/cel.expr.conformance.proto2.TestAllTypes', value: b'\\242\\006\\023\\022\\021\\020\\256\\366\\377\\377\\377\\377\\377\\377\\377\\001r\\0041234'}} == TestAllTypes{single_any: google.protobuf.Any{type_url: 'type.googleapis.com/cel.expr.conformance.proto2.TestAllTypes', value: b'\\242\\006\\023\\022\\021r\\0041234\\020\\256\\366\\377\\377\\377\\377\\377\\377\\377\\001'}}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_proto2_any_unpack_bytewise_fallback_equal",
+     "expr": "TestAllTypes{single_any: google.protobuf.Any{type_url: 'type.googleapis.com/cel.expr.conformance.proto2.TestAllTypes', value: b'\\242\\006\\023\\022\\021\\020\\256\\366\\377\\377\\377\\377\\377\\377\\377\\001r\\0041234'}} == TestAllTypes{single_any: google.protobuf.Any{type_url: 'type.googleapis.com/cel.expr.conformance.proto2.TestAllTypes', value: b'\\242\\006\\023\\022\\021\\020\\256\\366\\377\\377\\377\\377\\377\\377\\377\\001r\\0041234'}}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_proto3_any_unpack_equal",
+     "expr": "TestAllTypes{single_any: google.protobuf.Any{type_url: 'type.googleapis.com/cel.expr.conformance.proto2.TestAllTypes', value: b'\\020\\256\\366\\377\\377\\377\\377\\377\\377\\377\\001r\\0041234'}} == TestAllTypes{single_any: google.protobuf.Any{type_url: 'type.googleapis.com/cel.expr.conformance.proto2.TestAllTypes', value: b'r\\0041234\\020\\256\\366\\377\\377\\377\\377\\377\\377\\377\\001'}}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_proto3_any_unpack_not_equal",
+     "expr": "TestAllTypes{single_any: google.protobuf.Any{type_url: 'type.googleapis.com/cel.expr.conformance.proto2.TestAllTypes', value: b'a\\000\\000\\000\\000\\000H\\223\\300r\\0041234'}} == TestAllTypes{single_any: google.protobuf.Any{type_url: 'type.googleapis.com/cel.expr.conformance.proto2.TestAllTypes', value: b'r\\0041234\\020\\256\\366\\377\\377\\377\\377\\377\\377\\377\\001'}}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_proto3_any_unpack_bytewise_fallback_not_equal",
+     "expr": "TestAllTypes{single_any: google.protobuf.Any{type_url: 'type.googleapis.com/cel.expr.conformance.proto2.TestAllTypes', value: b'\\242\\006\\023\\022\\021\\020\\256\\366\\377\\377\\377\\377\\377\\377\\377\\001r\\0041234'}} == TestAllTypes{single_any: google.protobuf.Any{type_url: 'type.googleapis.com/cel.expr.conformance.proto2.TestAllTypes', value: b'\\242\\006\\023\\022\\021r\\0041234\\020\\256\\366\\377\\377\\377\\377\\377\\377\\377\\001'}}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_proto3_any_unpack_bytewise_fallback_equal",
+     "expr": "TestAllTypes{single_any: google.protobuf.Any{type_url: 'type.googleapis.com/cel.expr.conformance.proto2.TestAllTypes', value: b'\\242\\006\\023\\022\\021\\020\\256\\366\\377\\377\\377\\377\\377\\377\\377\\001r\\0041234'}} == TestAllTypes{single_any: google.protobuf.Any{type_url: 'type.googleapis.com/cel.expr.conformance.proto2.TestAllTypes', value: b'\\242\\006\\023\\022\\021\\020\\256\\366\\377\\377\\377\\377\\377\\377\\377\\001r\\0041234'}}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "ne_literal",
+   "tests": [
+    {
+     "name": "ne_int",
+     "expr": "24 != 42",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_ne_int",
+     "expr": "1 != 1",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ne_int_double",
+     "expr": "dyn(24) != 24.1",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_ne_int_double",
+     "expr": "dyn(1) != 1.0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ne_int_uint",
+     "expr": "dyn(24) != 42u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_ne_int_uint",
+     "expr": "dyn(1) != 1u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ne_uint",
+     "expr": "1u != 2u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_ne_uint",
+     "expr": "99u != 99u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ne_uint_double",
+     "expr": "dyn(1u) != 2.0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_ne_uint_double",
+     "expr": "dyn(99u) != 99.0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ne_double",
+     "expr": "9.0e+3 != 9001.0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_ne_double_nan",
+     "expr": "0.0/0.0 != 0.0/0.0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_ne_int_double_nan",
+     "expr": "dyn(1) != 0.0/0.0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_ne_uint_double_nan",
+     "expr": "dyn(1u) != 0.0/0.0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_ne_double",
+     "expr": "1.0 != 1e+0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ne_double_int",
+     "expr": "dyn(9000) != 9001.0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_ne_double_int",
+     "expr": "dyn(1) != 1e+0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ne_double_uint",
+     "expr": "dyn(9000u) != 9001.0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_ne_double_uint",
+     "expr": "dyn(1u) != 1e+0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ne_double_nan",
+     "expr": "0.0/0.0 != 0.0/0.0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ne_string",
+     "expr": "'abc' != ''",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_ne_string",
+     "expr": "'abc' != 'abc'",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ne_string_unicode",
+     "expr": "'résumé' != 'resume'",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_ne_string_unicode",
+     "expr": "'ίδιο' != 'ίδιο'",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ne_bytes",
+     "expr": "b'\\x00\\xFF' != b'ÿ'",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_ne_bytes",
+     "expr": "b'\\303\\277' != b'ÿ'",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ne_bool",
+     "expr": "false != true",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_ne_bool",
+     "expr": "true != true",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_ne_null",
+     "expr": "null != null",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ne_list_empty",
+     "expr": "[] != [1]",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_ne_list_empty",
+     "expr": "[] != []",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ne_list_bool",
+     "expr": "[true, false, true] != [true, true, false]",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_ne_list_bool",
+     "expr": "[false, true] != [false, true]",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_ne_list_of_list",
+     "expr": "[[]] != [[]]",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ne_map_by_value",
+     "expr": "{'k':'v'} != {'k':'v1'}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ne_map_by_key",
+     "expr": "{'k':true} != {'k1':true}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_ne_map_int_to_float",
+     "expr": "{1:1.0} != {1:1.0}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_ne_map_key_order",
+     "expr": "{'a':'b','c':'d'} != {'c':'d','a':'b'}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ne_mixed_types",
+     "expr": "2u != 2",
+     "disable_macros": false,
+     "disable_check": true,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ne_proto2",
+     "expr": "TestAllTypes{single_int64: 1234, single_string: '1234'} != TestAllTypes{single_int64: 1234, single_string: '1234'}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ne_proto3",
+     "expr": "TestAllTypes{single_int64: 1234, single_string: '1234'} != TestAllTypes{single_int64: 1234, single_string: '1234'}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ne_proto2_missing_fields_neq",
+     "expr": "TestAllTypes{single_int64: 1234} != TestAllTypes{single_string: '1234'}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ne_proto3_missing_fields_neq",
+     "expr": "TestAllTypes{single_int64: 1234} != TestAllTypes{single_string: '1234'}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ne_proto_nan_not_equal",
+     "expr": "TestAllTypes{single_double: double('NaN')} != TestAllTypes{single_double: double('NaN')}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ne_proto_different_types",
+     "expr": "dyn(TestAllTypes{}) != dyn(NestedTestAllTypes{})",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ne_proto2_any_unpack",
+     "expr": "TestAllTypes{single_any: google.protobuf.Any{type_url: 'type.googleapis.com/cel.expr.conformance.proto2.TestAllTypes', value: b'\\020\\256\\366\\377\\377\\377\\377\\377\\377\\377\\001r\\0041234'}} != TestAllTypes{single_any: google.protobuf.Any{type_url: 'type.googleapis.com/cel.expr.conformance.proto2.TestAllTypes', value: b'r\\0041234\\020\\256\\366\\377\\377\\377\\377\\377\\377\\377\\001'}}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ne_proto2_any_unpack_bytewise_fallback",
+     "expr": "TestAllTypes{single_any: google.protobuf.Any{type_url: 'type.googleapis.com/cel.expr.conformance.proto2.TestAllTypes', value: b'\\242\\006\\023\\022\\021\\020\\256\\366\\377\\377\\377\\377\\377\\377\\377\\001r\\0041234'}} != TestAllTypes{single_any: google.protobuf.Any{type_url: 'type.googleapis.com/cel.expr.conformance.proto2.TestAllTypes', value: b'\\242\\006\\023\\022\\021r\\0041234\\020\\256\\366\\377\\377\\377\\377\\377\\377\\377\\001'}}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ne_proto3_any_unpack",
+     "expr": "TestAllTypes{single_any: google.protobuf.Any{type_url: 'type.googleapis.com/cel.expr.conformance.proto2.TestAllTypes', value: b'\\020\\256\\366\\377\\377\\377\\377\\377\\377\\377\\001r\\0041234'}} != TestAllTypes{single_any: google.protobuf.Any{type_url: 'type.googleapis.com/cel.expr.conformance.proto2.TestAllTypes', value: b'r\\0041234\\020\\256\\366\\377\\377\\377\\377\\377\\377\\377\\001'}}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ne_proto3_any_unpack_bytewise_fallback",
+     "expr": "TestAllTypes{single_any: google.protobuf.Any{type_url: 'type.googleapis.com/cel.expr.conformance.proto2.TestAllTypes', value: b'\\242\\006\\023\\022\\021\\020\\256\\366\\377\\377\\377\\377\\377\\377\\377\\001r\\0041234'}} != TestAllTypes{single_any: google.protobuf.Any{type_url: 'type.googleapis.com/cel.expr.conformance.proto2.TestAllTypes', value: b'\\242\\006\\023\\022\\021r\\0041234\\020\\256\\366\\377\\377\\377\\377\\377\\377\\377\\001'}}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "lt_literal",
+   "tests": [
+    {
+     "name": "lt_int",
+     "expr": "-1 < 0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_lt_int",
+     "expr": "0 < 0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "lt_uint",
+     "expr": "0u < 1u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_lt_uint",
+     "expr": "2u < 2u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "lt_double",
+     "expr": "1.0 < 1.0000001",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_lt_double",
+     "expr": "-0.0 < 0.0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "lt_string",
+     "expr": "'a' < 'b'",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "lt_string_empty_to_nonempty",
+     "expr": "'' < 'a'",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "lt_string_case",
+     "expr": "'Abc' < 'aBC'",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "lt_string_length",
+     "expr": "'abc' < 'abcd'",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "lt_string_diacritical_mark_sensitive",
+     "expr": "'a' < '\\u00E1'",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_lt_string_empty",
+     "expr": "'' < ''",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_lt_string_same",
+     "expr": "'abc' < 'abc'",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_lt_string_case_length",
+     "expr": "'a' < 'AB'",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "unicode_order_lexical",
+     "expr": "'f' < '\\u1EBF'",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "lt_bytes",
+     "expr": "b'a' < b'b'",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_lt_bytes_same",
+     "expr": "b'abc' < b'abc'",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_lt_bytes_width",
+     "expr": "b'á' < b'b'",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "lt_bool_false_first",
+     "expr": "false < true",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_lt_bool_same",
+     "expr": "true < true",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_lt_bool_true_first",
+     "expr": "true < false",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "lt_list_unsupported",
+     "expr": "[0] < [1]",
+     "disable_macros": false,
+     "disable_check": true,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "no such overload"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "lt_map_unsupported",
+     "expr": "{0:'a'} < {1:'b'}",
+     "disable_macros": false,
+     "disable_check": true,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "no such overload"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "lt_null_unsupported",
+     "expr": "null < null",
+     "disable_macros": false,
+     "disable_check": true,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "no such overload"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "lt_mixed_types_error",
+     "expr": "'foo' < 1024",
+     "disable_macros": false,
+     "disable_check": true,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "no such overload"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "lt_dyn_int_uint",
+     "expr": "dyn(1) < 2u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "lt_dyn_int_double",
+     "expr": "dyn(1) < 2.0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "lt_dyn_uint_int",
+     "expr": "dyn(1u) < 2",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "lt_dyn_uint_double",
+     "expr": "dyn(1u) < 2.0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "lt_dyn_double_int",
+     "expr": "dyn(1.0) < 2",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "lt_dyn_double_uint",
+     "expr": "dyn(1.0) < 2u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_lt_dyn_int_uint",
+     "expr": "dyn(1) < 1u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_lt_dyn_int_double",
+     "expr": "dyn(1) < 1.0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_lt_dyn_uint_int",
+     "expr": "dyn(1u) < 1",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_lt_dyn_uint_double",
+     "expr": "dyn(1u) < 1.0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_lt_dyn_double_int",
+     "expr": "dyn(1.0) < 1",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_lt_dyn_double_uint",
+     "expr": "dyn(1.0) < 1u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "lt_dyn_int_big_uint",
+     "expr": "dyn(1) < 9223372036854775808u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "lt_dyn_small_int_uint",
+     "expr": "dyn(-1) < 0u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_lt_dyn_int_big_lossy_double",
+     "expr": "dyn(9223372036854775807) < 9223372036854775808.0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "lt_dyn_int_big_lossy_double",
+     "expr": "dyn(9223372036854775807) < 9223372036854777857.0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_lt_dyn_int_small_double",
+     "expr": "dyn(9223372036854775807) < -9223372036854777857.0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_lt_dyn_int_small_lossy_double",
+     "expr": "dyn(-9223372036854775808) < -9223372036854775809.0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_lt_dyn_uint_small_int",
+     "expr": "dyn(1u) < -9223372036854775808",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_lt_dyn_big_uint_int",
+     "expr": "dyn(9223372036854775808u) < 1",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_lt_dyn_uint_small_double",
+     "expr": "dyn(18446744073709551615u) < -1.0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "lt_dyn_uint_big_double",
+     "expr": "dyn(18446744073709551615u) < 18446744073709590000.0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_lt_dyn_big_double_uint",
+     "expr": "dyn(18446744073709553665.0) < 18446744073709551615u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_lt_dyn_big_double_int",
+     "expr": "dyn(9223372036854775808.0) < 9223372036854775807",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_lt_dyn_small_double_int",
+     "expr": "dyn(-9223372036854775809.0) < -9223372036854775808",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "gt_literal",
+   "tests": [
+    {
+     "name": "gt_int",
+     "expr": "42 > -42",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_gt_int",
+     "expr": "0 > 0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "gt_uint",
+     "expr": "48u > 46u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_gt_uint",
+     "expr": "0u > 999u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "gt_double",
+     "expr": "1e+1 > 1e+0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_gt_double",
+     "expr": ".99 > 9.9e-1",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "gt_string_case",
+     "expr": "'abc' > 'aBc'",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "gt_string_to_empty",
+     "expr": "'A' > ''",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_gt_string_empty_to_empty",
+     "expr": "'' > ''",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "gt_string_unicode",
+     "expr": "'α' > 'omega'",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "gt_bytes_one",
+     "expr": "b'\u0001' > b'\u0000'",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "gt_bytes_one_to_empty",
+     "expr": "b'\u0000' > b''",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_gt_bytes_sorting",
+     "expr": "b'\u0000\u0001' > b'\u0001'",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "gt_bool_true_false",
+     "expr": "true > false",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_gt_bool_false_true",
+     "expr": "false > true",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_gt_bool_same",
+     "expr": "true > true",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "gt_null_unsupported",
+     "expr": "null > null",
+     "disable_macros": false,
+     "disable_check": true,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "no such overload"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "gt_list_unsupported",
+     "expr": "[1] > [0]",
+     "disable_macros": false,
+     "disable_check": true,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "no such overload"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "gt_map_unsupported",
+     "expr": "{1:'b'} > {0:'a'}",
+     "disable_macros": false,
+     "disable_check": true,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "no such overload"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "gt_mixed_types_error",
+     "expr": "'foo' > 1024",
+     "disable_macros": false,
+     "disable_check": true,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "no such overload"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "gt_dyn_int_uint",
+     "expr": "dyn(2) > 1u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "gt_dyn_int_double",
+     "expr": "dyn(2) > 1.0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "gt_dyn_uint_int",
+     "expr": "dyn(2u) > 1",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "gt_dyn_uint_double",
+     "expr": "dyn(2u) > 1.0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "gt_dyn_double_int",
+     "expr": "dyn(2.0) > 1",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "gt_dyn_double_uint",
+     "expr": "dyn(2.0) > 1u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_gt_dyn_int_uint",
+     "expr": "dyn(1) > 1u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_gt_dyn_int_double",
+     "expr": "dyn(1) > 1.0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_gt_dyn_uint_int",
+     "expr": "dyn(1u) > 1",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_gt_dyn_uint_double",
+     "expr": "dyn(1u) > 1.0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_gt_dyn_double_int",
+     "expr": "dyn(1.0) > 1",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_gt_dyn_double_uint",
+     "expr": "dyn(1.0) > 1u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_gt_dyn_int_big_uint",
+     "expr": "dyn(1) > 9223372036854775808u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_gt_dyn_small_int_uint",
+     "expr": "dyn(-1) > 0u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_gt_dyn_int_big_double",
+     "expr": "dyn(9223372036854775807) > 9223372036854775808.0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_gt_dyn_int_small_lossy_double",
+     "expr": "dyn(-9223372036854775808) > -9223372036854775809.0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "gt_dyn_int_small_lossy_double_greater",
+     "expr": "dyn(-9223372036854775808) > -9223372036854777857.0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "gt_dyn_uint_small_int",
+     "expr": "dyn(1u) > -1",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "gt_dyn_big_uint_int",
+     "expr": "dyn(9223372036854775808u) > 1",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "gt_dyn_uint_small_double",
+     "expr": "dyn(9223372036854775807u) > -1.0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_gt_dyn_uint_big_double",
+     "expr": "dyn(18446744073709551615u) > 18446744073709590000.0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "gt_dyn_big_double_uint",
+     "expr": "dyn(18446744073709553665.0) > 18446744073709551615u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_gt_dyn_big_double_int",
+     "expr": "dyn(9223372036854775808.0) > 9223372036854775807",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_gt_dyn_small_double_int",
+     "expr": "dyn(-9223372036854775809.0) > -9223372036854775808",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "lte_literal",
+   "tests": [
+    {
+     "name": "lte_int_lt",
+     "expr": "0 <= 1",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "lte_int_eq",
+     "expr": "1 <= 1",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_lte_int_gt",
+     "expr": "1 <= -1",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "lte_uint_lt",
+     "expr": "0u <= 1u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "lte_uint_eq",
+     "expr": "1u <= 1u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_lte_uint_gt",
+     "expr": "1u <= 0u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "lte_double_lt",
+     "expr": "0.0 <= 0.1e-31",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "lte_double_eq",
+     "expr": "0.0 <= 0e-1",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_lte_double_gt",
+     "expr": "1.0 <= 0.99",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "lte_string_empty",
+     "expr": "'' <= ''",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "lte_string_from_empty",
+     "expr": "'' <= 'a'",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_lte_string_to_empty",
+     "expr": "'a' <= ''",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "lte_string_lexicographical",
+     "expr": "'aBc' <= 'abc'",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "lte_string_unicode_eq",
+     "expr": "'α' <= 'α'",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "lte_string_unicode_lt",
+     "expr": "'a' <= 'α'",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_lte_string_unicode",
+     "expr": "'α' <= 'a'",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "lte_bytes_empty",
+     "expr": "b'' <= b'\u0000'",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_lte_bytes_length",
+     "expr": "b'\u0001\u0000' <= b'\u0001'",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "lte_bool_false_true",
+     "expr": "false <= true",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "lte_bool_false_false",
+     "expr": "false <= false",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "lte_bool_true_false",
+     "expr": "true <= false",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "lte_null_unsupported",
+     "expr": "null <= null",
+     "disable_macros": false,
+     "disable_check": true,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "no such overload"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "lte_list_unsupported",
+     "expr": "[0] <= [0]",
+     "disable_macros": false,
+     "disable_check": true,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "no such overload"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "lte_map_unsupported",
+     "expr": "{0:'a'} <= {1:'b'}",
+     "disable_macros": false,
+     "disable_check": true,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "no such overload"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "lte_mixed_types_error",
+     "expr": "'foo' <= 1024",
+     "disable_macros": false,
+     "disable_check": true,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "no such overload"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "lte_dyn_int_uint",
+     "expr": "dyn(1) <= 2u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "lte_dyn_int_double",
+     "expr": "dyn(1) <= 2.0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "lte_dyn_uint_int",
+     "expr": "dyn(1u) <= 2",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "lte_dyn_uint_double",
+     "expr": "dyn(1u) <= 2.0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "lte_dyn_double_int",
+     "expr": "dyn(1.0) <= 2",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "lte_dyn_double_uint",
+     "expr": "dyn(1.0) <= 2u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_lte_dyn_int_uint",
+     "expr": "dyn(2) <= 1u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_lte_dyn_int_double",
+     "expr": "dyn(2) <= 1.0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_lte_dyn_uint_int",
+     "expr": "dyn(2u) <= 1",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_lte_dyn_uint_double",
+     "expr": "dyn(2u) <= 1.0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_lte_dyn_double_int",
+     "expr": "dyn(2.0) <= 1",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_lte_dyn_double_uint",
+     "expr": "dyn(2.0) <= 1u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "lte_dyn_int_big_uint",
+     "expr": "dyn(1) <= 9223372036854775808u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "lte_dyn_small_int_uint",
+     "expr": "dyn(-1) <= 0u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "lte_dyn_int_big_double",
+     "expr": "dyn(9223372036854775807) <= 9223372036854775808.0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "lte_dyn_int_small_lossy_double",
+     "expr": "dyn(-9223372036854775808) <= -9223372036854775809.0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_lte_dyn_int_small_lossy_double_less",
+     "expr": "dyn(-9223372036854775808) <= -9223372036854777857.0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_lte_dyn_uint_small_int",
+     "expr": "dyn(1u) <= -9223372036854775808",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_lte_dyn_big_uint_int",
+     "expr": "dyn(9223372036854775808u) <= 1",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_lte_dyn_uint_small_double",
+     "expr": "dyn(18446744073709551615u) <= -1.0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "lte_dyn_uint_big_double",
+     "expr": "dyn(18446744073709551615u) <= 18446744073709590000.0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_lte_dyn_big_double_uint",
+     "expr": "dyn(18446744073709553665.0) <= 18446744073709551615u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "lte_dyn_big_double_int",
+     "expr": "dyn(9223372036854775808.0) <= 9223372036854775807",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "lte_dyn_small_double_int",
+     "expr": "dyn(-9223372036854775809.0) <= -9223372036854775808",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "gte_literal",
+   "tests": [
+    {
+     "name": "gte_int_gt",
+     "expr": "0 >= -1",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "gte_int_eq",
+     "expr": "999 >= 999",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_gte_int_lt",
+     "expr": "999 >= 1000",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "gte_uint_gt",
+     "expr": "1u >= 0u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "gte_uint_eq",
+     "expr": "0u >= 0u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_gte_uint_lt",
+     "expr": "1u >= 10u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "gte_double_gt",
+     "expr": "1e+1 >= 1e+0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "gte_double_eq",
+     "expr": "9.80665 >= 9.80665e+0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_gte_double_lt",
+     "expr": "0.9999 >= 1.0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "gte_string_empty",
+     "expr": "'' >= ''",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "gte_string_to_empty",
+     "expr": "'a' >= ''",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "gte_string_empty_to_nonempty",
+     "expr": "'' >= 'a'",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "gte_string_length",
+     "expr": "'abcd' >= 'abc'",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_gte_string_lexicographical",
+     "expr": "'abc' >= 'abd'",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "gte_string_unicode_eq",
+     "expr": "'τ' >= 'τ'",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "gte_string_unicode_gt",
+     "expr": "'τ' >= 't'",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_get_string_unicode",
+     "expr": "'t' >= 'τ'",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "gte_bytes_to_empty",
+     "expr": "b'\u0000' >= b''",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_gte_bytes_empty_to_nonempty",
+     "expr": "b'' >= b'\u0000'",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "gte_bytes_samelength",
+     "expr": "b'\u0000\u0001' >= b'\u0001\u0000'",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "gte_bool_gt",
+     "expr": "true >= false",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "gte_bool_eq",
+     "expr": "true >= true",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_gte_bool_lt",
+     "expr": "false >= true",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "gte_null_unsupported",
+     "expr": "null >= null",
+     "disable_macros": false,
+     "disable_check": true,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "no such overload"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "gte_list_unsupported",
+     "expr": "['y'] >= ['x']",
+     "disable_macros": false,
+     "disable_check": true,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "no such overload"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "gte_map_unsupported",
+     "expr": "{1:'b'} >= {0:'a'}",
+     "disable_macros": false,
+     "disable_check": true,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "no such overload"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "gte_mixed_types_error",
+     "expr": "'foo' >= 1.0",
+     "disable_macros": false,
+     "disable_check": true,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "no such overload"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "gte_dyn_int_uint",
+     "expr": "dyn(2) >= 1u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "gte_dyn_int_double",
+     "expr": "dyn(2) >= 1.0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "gte_dyn_uint_int",
+     "expr": "dyn(2u) >= 1",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "gte_dyn_uint_double",
+     "expr": "dyn(2u) >= 1.0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "gte_dyn_double_int",
+     "expr": "dyn(2.0) >= 1",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "gte_dyn_double_uint",
+     "expr": "dyn(2.0) >= 1u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_gte_dyn_int_uint",
+     "expr": "dyn(0) >= 1u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_gte_dyn_int_double",
+     "expr": "dyn(0) >= 1.0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_gte_dyn_uint_int",
+     "expr": "dyn(0u) >= 1",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_gte_dyn_uint_double",
+     "expr": "dyn(0u) >= 1.0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_gte_dyn_double_int",
+     "expr": "dyn(0.0) >= 1",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_gte_dyn_double_uint",
+     "expr": "dyn(0.0) >= 1u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_gte_dyn_int_big_uint",
+     "expr": "dyn(1) >= 9223372036854775808u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_gte_dyn_small_int_uint",
+     "expr": "dyn(-1) >= 0u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "gte_dyn_int_big_lossy_double",
+     "expr": "dyn(9223372036854775807) >= 9223372036854775808.0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_gte_dyn_int_big_double",
+     "expr": "dyn(9223372036854775807) >= 9223372036854777857.0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "gte_dyn_int_small_lossy_double_equal",
+     "expr": "dyn(-9223372036854775808) >= -9223372036854775809.0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "gte_dyn_int_small_lossy_double_greater",
+     "expr": "dyn(-9223372036854775808) >= -9223372036854777857.0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "gte_dyn_uint_small_int",
+     "expr": "dyn(1u) >= -1",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "gte_dyn_big_uint_int",
+     "expr": "dyn(9223372036854775808u) >= 1",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "gte_dyn_uint_small_double",
+     "expr": "dyn(9223372036854775807u) >= -1.0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_gte_dyn_uint_big_double",
+     "expr": "dyn(18446744073709551615u) >= 18446744073709553665.0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "gte_dyn_big_double_uint",
+     "expr": "dyn(18446744073709553665.0) >= 18446744073709551615u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "gte_dyn_big_double_int",
+     "expr": "dyn(9223372036854775808.0) >= 9223372036854775807",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "gte_dyn_small_double_int",
+     "expr": "dyn(-9223372036854775809.0) >= -9223372036854775808",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "in_list_literal",
+   "tests": [
+    {
+     "name": "elem_not_in_empty_list",
+     "expr": "'empty' in []",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "elem_in_list",
+     "expr": "'elem' in ['elem', 'elemA', 'elemB']",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "elem_not_in_list",
+     "expr": "'not' in ['elem1', 'elem2', 'elem3']",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "elem_in_mixed_type_list",
+     "expr": "'elem' in [1, 'elem', 2]",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "elem_in_mixed_type_list_cross_type",
+     "expr": "'elem' in [1u, 'str', 2, b'bytes']",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "in_map_literal",
+   "tests": [
+    {
+     "name": "key_not_in_empty_map",
+     "expr": "'empty' in {}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "key_in_map",
+     "expr": "'key' in {'key':'1', 'other':'2'}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "key_not_in_map",
+     "expr": "'key' in {'lock':1, 'gate':2}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "key_in_mixed_key_type_map",
+     "expr": "'key' in {3:3.0, 'key':2u}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "key_in_mixed_key_type_map_cross_type",
+     "expr": "'key' in {1u:'str', 2:b'bytes'}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "bound",
+   "tests": [
+    {
+     "name": "bytes_gt_left_false",
+     "expr": "x > b'\u0000'",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {
+      "x": {
+       "bytes": "AA=="
+      }
+     },
+     "type_env": [
+      {
+       "ident": "x",
+       "type": "bytes"
+      }
+     ],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "int_lte_right_true",
+     "expr": "123 <= x",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {
+      "x": {
+       "int": "124"
+      }
+     },
+     "type_env": [
+      {
+       "ident": "x",
+       "type": "int"
+      }
+     ],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "bool_lt_right_true",
+     "expr": "false < x",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {
+      "x": {
+       "bool": true
+      }
+     },
+     "type_env": [
+      {
+       "ident": "x",
+       "type": "bool"
+      }
+     ],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "double_ne_left_false",
+     "expr": "x != 9.8",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {
+      "x": {
+       "double": 9.8
+      }
+     },
+     "type_env": [
+      {
+       "ident": "x",
+       "type": "double"
+      }
+     ],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "map_ne_right_false",
+     "expr": "{'a':'b','c':'d'} != x",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {
+      "x": {
+       "map": [
+        [
+         {
+          "string": "c"
+         },
+         {
+          "string": "d"
+         }
+        ],
+        [
+         {
+          "string": "a"
+         },
+         {
+          "string": "b"
+         }
+        ]
+       ]
+      }
+     },
+     "type_env": [
+      {
+       "ident": "x",
+       "type": "map(string, string)"
+      }
+     ],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "null_eq_left_true",
+     "expr": "x == null",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {
+      "x": {
+       "null": null
+      }
+     },
+     "type_env": [
+      {
+       "ident": "x",
+       "type": "null_type"
+      }
+     ],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "list_eq_right_false",
+     "expr": "[1, 2] == x",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {
+      "x": {
+       "list": [
+        {
+         "int": "2"
+        },
+        {
+         "int": "1"
+        }
+       ]
+      }
+     },
+     "type_env": [
+      {
+       "ident": "x",
+       "type": "list(int)"
+      }
+     ],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "string_gte_right_true",
+     "expr": "'abcd' >= x",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {
+      "x": {
+       "string": "abc"
+      }
+     },
+     "type_env": [
+      {
+       "ident": "x",
+       "type": "string"
+      }
+     ],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "uint_eq_right_false",
+     "expr": "999u == x",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {
+      "x": {
+       "uint": "1000"
+      }
+     },
+     "type_env": [
+      {
+       "ident": "x",
+       "type": "uint"
+      }
+     ],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "null_lt_right_no_such_overload",
+     "expr": "null < x",
+     "disable_macros": false,
+     "disable_check": true,
+     "container": "",
+     "bindings": {
+      "x": {
+       "null": null
+      }
+     },
+     "type_env": [],
+     "expect": {
+      "error": "no such overload"
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  }
+ ]
+}

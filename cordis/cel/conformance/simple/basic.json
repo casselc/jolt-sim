@@ -1,0 +1,682 @@
+{
+ "source": "cel-spec tests/simple/testdata/basic.textproto @ 40a3c9007a9305d1f2638d5f538a4e011732cace",
+ "name": "basic",
+ "sections": [
+  {
+   "name": "self_eval_zeroish",
+   "tests": [
+    {
+     "name": "self_eval_int_zero",
+     "expr": "0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "0"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "self_eval_uint_zero",
+     "expr": "0u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "uint": "0"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "self_eval_uint_alias_zero",
+     "expr": "0U",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "uint": "0"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "self_eval_float_zero",
+     "expr": "0.0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "double": 0.0
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "self_eval_float_zerowithexp",
+     "expr": "0e+0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "double": 0.0
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "self_eval_string_empty",
+     "expr": "''",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "string": ""
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "self_eval_string_empty_quotes",
+     "expr": "\"\"",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "string": ""
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "self_eval_string_raw_prefix",
+     "expr": "r\"\"",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "string": ""
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "self_eval_bytes_empty",
+     "expr": "b\"\"",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bytes": ""
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "self_eval_bool_false",
+     "expr": "false",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "self_eval_null",
+     "expr": "null",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "null": null
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "self_eval_empty_list",
+     "expr": "[]",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "list": []
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "self_eval_empty_map",
+     "expr": "{}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "map": []
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "self_eval_string_raw_prefix_triple_double",
+     "expr": "r\"\"\"\"\"\"",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "string": ""
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "self_eval_string_raw_prefix_triple_single",
+     "expr": "r''''''",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "string": ""
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "self_eval_nonzeroish",
+   "tests": [
+    {
+     "name": "self_eval_int_nonzero",
+     "expr": "42",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "42"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "self_eval_uint_nonzero",
+     "expr": "123456789u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "uint": "123456789"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "self_eval_uint_alias_nonzero",
+     "expr": "123456789U",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "uint": "123456789"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "self_eval_int_negative_min",
+     "expr": "-9223372036854775808",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "-9223372036854775808"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "self_eval_float_negative_exp",
+     "expr": "-2.3e+1",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "double": -23.0
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "self_eval_string_excl",
+     "expr": "\"!\"",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "string": "!"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "self_eval_string_escape",
+     "expr": "'\\''",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "string": "'"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "self_eval_bytes_escape",
+     "expr": "b'ÿ'",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bytes": "w78="
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "self_eval_bytes_invalid_utf8",
+     "expr": "b'\\000\\xff'",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bytes": "AP8="
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "self_eval_list_singleitem",
+     "expr": "[-1]",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "list": [
+       {
+        "int": "-1"
+       }
+      ]
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "self_eval_map_singleitem",
+     "expr": "{\"k\":\"v\"}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "map": [
+       [
+        {
+         "string": "k"
+        },
+        {
+         "string": "v"
+        }
+       ]
+      ]
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "self_eval_bool_true",
+     "expr": "true",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "self_eval_int_hex",
+     "expr": "0x55555555",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "1431655765"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "self_eval_int_hex_negative",
+     "expr": "-0x55555555",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "-1431655765"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "self_eval_uint_hex",
+     "expr": "0x55555555u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "uint": "1431655765"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "self_eval_uint_alias_hex",
+     "expr": "0x55555555U",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "uint": "1431655765"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "self_eval_unicode_escape_four",
+     "expr": "\"\\u270c\"",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "string": "✌"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "self_eval_unicode_escape_eight",
+     "expr": "\"\\U0001f431\"",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "string": "🐱"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "self_eval_ascii_escape_seq",
+     "expr": "\"\\a\\b\\f\\n\\r\\t\\v\\\"\\'\\\\\"",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "string": "\u0007\b\f\n\r\t\u000b\"'\\"
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "variables",
+   "tests": [
+    {
+     "name": "self_eval_bound_lookup",
+     "expr": "x",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {
+      "x": {
+       "int": "123"
+      }
+     },
+     "type_env": [
+      {
+       "ident": "x",
+       "type": "int"
+      }
+     ],
+     "expect": {
+      "int": "123"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "self_eval_unbound_lookup",
+     "expr": "x",
+     "disable_macros": false,
+     "disable_check": true,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "undeclared reference to 'x' (in container '')"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "unbound_is_runtime_error",
+     "expr": "x || true",
+     "disable_macros": false,
+     "disable_check": true,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "functions",
+   "tests": [
+    {
+     "name": "binop",
+     "expr": "1 + 1",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "2"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "unbound",
+     "expr": "f_unknown(17)",
+     "disable_macros": false,
+     "disable_check": true,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "unbound function"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "unbound_is_runtime_error",
+     "expr": "f_unknown(17) || true",
+     "disable_macros": false,
+     "disable_check": true,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "reserved_const",
+   "tests": [
+    {
+     "name": "false",
+     "expr": "false",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {
+      "false": {
+       "bool": true
+      }
+     },
+     "type_env": [
+      {
+       "ident": "false",
+       "type": "bool"
+      }
+     ],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "true",
+     "expr": "true",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {
+      "true": {
+       "bool": false
+      }
+     },
+     "type_env": [
+      {
+       "ident": "true",
+       "type": "bool"
+      }
+     ],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "null",
+     "expr": "null",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {
+      "null": {
+       "bool": true
+      }
+     },
+     "type_env": [
+      {
+       "ident": "null",
+       "type": "bool"
+      }
+     ],
+     "expect": {
+      "null": null
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  }
+ ]
+}

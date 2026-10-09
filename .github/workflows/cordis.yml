@@ -47,7 +47,7 @@ jobs:
           ocaml-compiler: "5.4"
 
       - name: Install OCaml dependencies
-        run: opam install -y dune yojson alcotest hegel
+        run: opam install -y dune yojson re alcotest hegel
 
       - name: Build and test
         run: |
@@ -77,6 +77,11 @@ jobs:
       - name: Build quintgo
         working-directory: observability/quintgo
         run: go build -o "$RUNNER_TEMP/quintgo" ./cmd/quintgo
+
+      - name: CEL differential test against cel-go
+        run: |
+          (cd cel/celgo && go build -o "$RUNNER_TEMP/celgo" .)
+          CELGO="$RUNNER_TEMP/celgo" opam exec -- dune build @cel/test/differential
 
       - name: Model gate
         env:

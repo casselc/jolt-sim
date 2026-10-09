@@ -1,0 +1,1162 @@
+{
+ "source": "cel-spec tests/simple/testdata/timestamps.textproto @ 40a3c9007a9305d1f2638d5f538a4e011732cace",
+ "name": "timestamps",
+ "sections": [
+  {
+   "name": "timestamp_conversions",
+   "tests": [
+    {
+     "name": "toInt_timestamp",
+     "expr": "int(timestamp('2009-02-13T23:31:30Z'))",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "1234567890"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "toString_timestamp",
+     "expr": "string(timestamp('2009-02-13T23:31:30Z'))",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "string": "2009-02-13T23:31:30Z"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "toString_timestamp_nanos",
+     "expr": "string(timestamp('9999-12-31T23:59:59.999999999Z'))",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "string": "9999-12-31T23:59:59.999999999Z"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "toType_timestamp",
+     "expr": "type(timestamp('2009-02-13T23:31:30Z'))",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "type": "google.protobuf.Timestamp"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "type_comparison",
+     "expr": "google.protobuf.Timestamp == type(timestamp('2009-02-13T23:31:30Z'))",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "duration_conversions",
+   "tests": [
+    {
+     "name": "toString_duration",
+     "expr": "string(duration('1000000s'))",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "string": "1000000s"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "toType_duration",
+     "expr": "type(duration('1000000s'))",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "type": "google.protobuf.Duration"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "type_comparison",
+     "expr": "google.protobuf.Duration == type(duration('1000000s'))",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "timestamp_selectors",
+   "tests": [
+    {
+     "name": "getDate",
+     "expr": "timestamp('2009-02-13T23:31:30Z').getDate()",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "13"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "getDayOfMonth",
+     "expr": "timestamp('2009-02-13T23:31:30Z').getDayOfMonth()",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "12"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "getDayOfWeek",
+     "expr": "timestamp('2009-02-13T23:31:30Z').getDayOfWeek()",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "5"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "getDayOfYear",
+     "expr": "timestamp('2009-02-13T23:31:30Z').getDayOfYear()",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "43"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "getFullYear",
+     "expr": "timestamp('2009-02-13T23:31:30Z').getFullYear()",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "2009"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "getHours",
+     "expr": "timestamp('2009-02-13T23:31:30Z').getHours()",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "23"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "getMilliseconds",
+     "expr": "timestamp('2009-02-13T23:31:20.123456789Z').getMilliseconds()",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "123"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "getMinutes",
+     "expr": "timestamp('2009-02-13T23:31:30Z').getMinutes()",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "31"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "getMonth",
+     "expr": "timestamp('2009-02-13T23:31:30Z').getMonth()",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "1"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "getSeconds",
+     "expr": "timestamp('2009-02-13T23:31:30Z').getSeconds()",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "30"
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "timestamp_selectors_tz",
+   "tests": [
+    {
+     "name": "getDate",
+     "expr": "timestamp('2009-02-13T23:31:30Z').getDate('Australia/Sydney')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "14"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "getDayOfMonth_name_pos",
+     "expr": "timestamp('2009-02-13T23:31:30Z').getDayOfMonth('US/Central')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "12"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "getDayOfMonth_numerical_pos",
+     "expr": "timestamp('2009-02-13T23:31:30Z').getDayOfMonth('+11:00')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "13"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "getDayOfMonth_numerical_neg",
+     "expr": "timestamp('2009-02-13T02:00:00Z').getDayOfMonth('-02:30')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "11"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "getDayOfMonth_name_neg",
+     "expr": "timestamp('2009-02-13T02:00:00Z').getDayOfMonth('America/St_Johns')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "11"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "getDayOfWeek",
+     "expr": "timestamp('2009-02-13T23:31:30Z').getDayOfWeek('UTC')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "5"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "getDayOfYear",
+     "expr": "timestamp('2009-02-13T23:31:30Z').getDayOfYear('US/Central')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "43"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "getFullYear",
+     "expr": "timestamp('2009-02-13T23:31:30Z').getFullYear('-09:30')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "2009"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "getHours",
+     "expr": "timestamp('2009-02-13T23:31:30Z').getHours('02:00')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "1"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "getMinutes",
+     "expr": "timestamp('2009-02-13T23:31:30Z').getMinutes('Asia/Kathmandu')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "16"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "getMonth",
+     "expr": "timestamp('2009-02-13T23:31:30Z').getMonth('UTC')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "1"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "getSeconds",
+     "expr": "timestamp('2009-02-13T23:31:30Z').getSeconds('-00:00')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "30"
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "timestamp_equality",
+   "tests": [
+    {
+     "name": "eq_same",
+     "expr": "timestamp('2009-02-13T23:31:30Z') == timestamp('2009-02-13T23:31:30Z')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_diff",
+     "expr": "timestamp('2009-02-13T23:31:29Z') == timestamp('2009-02-13T23:31:30Z')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "neq_same",
+     "expr": "timestamp('1945-05-07T02:41:00Z') != timestamp('1945-05-07T02:41:00Z')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "neq_diff",
+     "expr": "timestamp('2000-01-01T00:00:00Z') != timestamp('2001-01-01T00:00:00Z')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "duration_equality",
+   "tests": [
+    {
+     "name": "eq_same",
+     "expr": "duration('123s') == duration('123s')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eq_diff",
+     "expr": "duration('60s') == duration('3600s')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "neq_same",
+     "expr": "duration('604800s') != duration('604800s')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "neq_diff",
+     "expr": "duration('86400s') != duration('86164s')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "timestamp_arithmetic",
+   "tests": [
+    {
+     "name": "add_duration_to_time",
+     "expr": "timestamp('2009-02-13T23:00:00Z') + duration('240s') == timestamp('2009-02-13T23:04:00Z')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "add_time_to_duration",
+     "expr": "duration('120s') + timestamp('2009-02-13T23:01:00Z') == timestamp('2009-02-13T23:03:00Z')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "add_duration_to_duration",
+     "expr": "duration('600s') + duration('50s') == duration('650s')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "add_time_to_duration_nanos_negative",
+     "expr": "timestamp('0001-01-01T00:00:01.000000001Z') + duration('-999999999ns') == timestamp('0001-01-01T00:00:00.000000002Z')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "add_time_to_duration_nanos_positive",
+     "expr": "timestamp('0001-01-01T00:00:01.999999999Z') + duration('999999999ns') == timestamp('0001-01-01T00:00:02.999999998Z')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "subtract_duration_from_time",
+     "expr": "timestamp('2009-02-13T23:10:00Z') - duration('600s') == timestamp('2009-02-13T23:00:00Z')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "subtract_time_from_time",
+     "expr": "timestamp('2009-02-13T23:31:00Z') - timestamp('2009-02-13T23:29:00Z') == duration('120s')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "subtract_duration_from_duration",
+     "expr": "duration('900s') - duration('42s') == duration('858s')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "comparisons",
+   "tests": [
+    {
+     "name": "leq_timestamp_true",
+     "expr": "timestamp('2009-02-13T23:00:00Z') <= timestamp('2009-02-13T23:00:00Z')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "leq_timestamp_false",
+     "expr": "timestamp('2009-02-13T23:00:00Z') <= timestamp('2009-02-13T22:59:59Z')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "leq_duration_true",
+     "expr": "duration('200s') <= duration('200s')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "leq_duration_false",
+     "expr": "duration('300s') <= duration('200s')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "less_timestamp_true",
+     "expr": "timestamp('2009-02-13T23:00:00Z') < timestamp('2009-03-13T23:00:00Z')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "less_duration_true",
+     "expr": "duration('200s') < duration('300s')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "geq_timestamp_true",
+     "expr": "timestamp('2009-02-13T23:00:00Z') >= timestamp('2009-02-13T23:00:00Z')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "geq_timestamp_false",
+     "expr": "timestamp('2009-02-13T22:58:00Z') >= timestamp('2009-02-13T23:00:00Z')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "geq_duration_true",
+     "expr": "duration('200s') >= duration('200s')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "geq_duration_false",
+     "expr": "duration('120s') >= duration('200s')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "greater_timestamp_true",
+     "expr": "timestamp('2009-02-13T23:59:00Z') > timestamp('2009-02-13T23:00:00Z')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "greater_duration_true",
+     "expr": "duration('300s') > duration('200s')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "duration_converters",
+   "tests": [
+    {
+     "name": "get_hours",
+     "expr": "duration('10000s').getHours()",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "2"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "get_milliseconds",
+     "expr": "x.getMilliseconds()",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {
+      "x": {
+       "duration": "123.321456789s"
+      }
+     },
+     "type_env": [
+      {
+       "ident": "x",
+       "type": "google.protobuf.Duration"
+      }
+     ],
+     "expect": {
+      "int": "321"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "get_minutes",
+     "expr": "duration('3730s').getMinutes()",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "62"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "get_seconds",
+     "expr": "duration('3730s').getSeconds()",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "3730"
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "timestamp_range",
+   "tests": [
+    {
+     "name": "from_string_under",
+     "expr": "timestamp('0000-01-01T00:00:00Z')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "range"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "from_int_under",
+     "expr": "timestamp(-62135596801)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "range"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "from_string_over",
+     "expr": "timestamp('10000-01-01T00:00:00Z')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "range"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "from_int_over",
+     "expr": "timestamp(253402300800)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "range"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "add_duration_under",
+     "expr": "timestamp('0001-01-01T00:00:00Z') + duration('-1s')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "range"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "add_duration_over",
+     "expr": "timestamp('9999-12-31T23:59:59Z') + duration('1s')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "range"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "add_duration_nanos_over",
+     "expr": "timestamp('9999-12-31T23:59:59.999999999Z') + duration('1ns')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "range"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "add_duration_nanos_under",
+     "expr": "timestamp('0001-01-01T00:00:00Z') + duration('-1ns')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "range"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "sub_time_duration_over",
+     "expr": "timestamp('9999-12-31T23:59:59Z') - timestamp('0001-01-01T00:00:00Z')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "range"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "sub_time_duration_under",
+     "expr": "timestamp('0001-01-01T00:00:00Z') - timestamp('9999-12-31T23:59:59Z')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "range"
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "duration_range",
+   "tests": [
+    {
+     "name": "from_string_under",
+     "expr": "duration('-320000000000s')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "range"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "from_string_over",
+     "expr": "duration('320000000000s')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "range"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "add_under",
+     "expr": "duration('-200000000000s') + duration('-200000000000s')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "range"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "add_over",
+     "expr": "duration('200000000000s') + duration('200000000000s')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "range"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "sub_under",
+     "expr": "duration('-200000000000s') - duration('200000000000s')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "range"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "sub_over",
+     "expr": "duration('200000000000s') - duration('-200000000000s')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "range"
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  }
+ ]
+}

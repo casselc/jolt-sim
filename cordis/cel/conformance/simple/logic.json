@@ -1,0 +1,446 @@
+{
+ "source": "cel-spec tests/simple/testdata/logic.textproto @ 40a3c9007a9305d1f2638d5f538a4e011732cace",
+ "name": "logic",
+ "sections": [
+  {
+   "name": "conditional",
+   "tests": [
+    {
+     "name": "true_case",
+     "expr": "true ? 1 : 2",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "1"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "false_case",
+     "expr": "false ? 'foo' : 'bar'",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "string": "bar"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "error_case",
+     "expr": "2 / 0 > 4 ? 'baz' : 'quux'",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "division by zero"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "mixed_type",
+     "expr": "true ? 'cows' : 17",
+     "disable_macros": false,
+     "disable_check": true,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "string": "cows"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "bad_type",
+     "expr": "'cows' ? false : 17",
+     "disable_macros": false,
+     "disable_check": true,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "no matching overload"
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "AND",
+   "tests": [
+    {
+     "name": "all_true",
+     "expr": "true && true",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "all_false",
+     "expr": "false && false",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "false_left",
+     "expr": "false && true",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "false_right",
+     "expr": "true && false",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "short_circuit_type_left",
+     "expr": "false && 32",
+     "disable_macros": false,
+     "disable_check": true,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "short_circuit_type_right",
+     "expr": "'horses' && false",
+     "disable_macros": false,
+     "disable_check": true,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "short_circuit_error_left",
+     "expr": "false && (2 / 0 > 3 ? false : true)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "short_circuit_error_right",
+     "expr": "(2 / 0 > 3 ? false : true) && false",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "error_right",
+     "expr": "true && 1/0 != 0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "no matching overload"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "error_left",
+     "expr": "1/0 != 0 && true",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "no matching overload"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "no_overload",
+     "expr": "'less filling' && 'tastes great'",
+     "disable_macros": false,
+     "disable_check": true,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "no matching overload"
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "OR",
+   "tests": [
+    {
+     "name": "all_true",
+     "expr": "true || true",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "all_false",
+     "expr": "false || false",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "false_left",
+     "expr": "false || true",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "false_right",
+     "expr": "true || false",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "short_circuit_type_left",
+     "expr": "true || 32",
+     "disable_macros": false,
+     "disable_check": true,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "short_circuit_type_right",
+     "expr": "'horses' || true",
+     "disable_macros": false,
+     "disable_check": true,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "short_circuit_error_left",
+     "expr": "true || (2 / 0 > 3 ? false : true)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "short_circuit_error_right",
+     "expr": "(2 / 0 > 3 ? false : true) || true",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "error_right",
+     "expr": "false || 1/0 != 0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "no matching overload"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "error_left",
+     "expr": "1/0 != 0 || false",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "no matching overload"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "no_overload",
+     "expr": "'less filling' || 'tastes great'",
+     "disable_macros": false,
+     "disable_check": true,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "no matching overload"
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "NOT",
+   "tests": [
+    {
+     "name": "not_true",
+     "expr": "!true",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "not_false",
+     "expr": "!false",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "no_overload",
+     "expr": "!0",
+     "disable_macros": false,
+     "disable_check": true,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "no matching overload"
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  }
+ ]
+}

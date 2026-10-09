@@ -1,0 +1,18 @@
+(executables
+ (names conformance differential)
+ (modules conformance differential conformance_values base64_decode)
+ (libraries cordis_cel yojson hegel unix))
+
+(rule
+ (alias runtest)
+ (deps
+  (glob_files %{project_root}/cel/conformance/simple/*.json))
+ (action
+  (run %{exe:conformance.exe} %{project_root}/cel/conformance/simple --fail-on-fail)))
+
+; The differential test needs the cel-go reference evaluator (cel/celgo):
+;   CELGO=/path/to/celgo dune build @cel/test/differential
+(rule
+ (alias differential)
+ (action
+  (run %{exe:differential.exe} %{env:CELGO=celgo} --cases %{env:CEL_DIFF_CASES=2000})))

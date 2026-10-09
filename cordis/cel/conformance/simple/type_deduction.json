@@ -1,0 +1,1654 @@
+{
+ "source": "cel-spec tests/simple/testdata/type_deduction.textproto @ 40a3c9007a9305d1f2638d5f538a4e011732cace",
+ "name": "type_deductions",
+ "sections": [
+  {
+   "name": "constant_literals",
+   "tests": [
+    {
+     "name": "bool",
+     "expr": "true",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": {
+      "value": {
+       "bool": true
+      },
+      "type": "bool"
+     }
+    },
+    {
+     "name": "int",
+     "expr": "42",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "42"
+     },
+     "check_only": false,
+     "typed_result": {
+      "value": {
+       "int": "42"
+      },
+      "type": "int"
+     }
+    },
+    {
+     "name": "uint",
+     "expr": "42u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "uint": "42"
+     },
+     "check_only": false,
+     "typed_result": {
+      "value": {
+       "uint": "42"
+      },
+      "type": "uint"
+     }
+    },
+    {
+     "name": "double",
+     "expr": "0.1",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "double": 0.1
+     },
+     "check_only": false,
+     "typed_result": {
+      "value": {
+       "double": 0.1
+      },
+      "type": "double"
+     }
+    },
+    {
+     "name": "string",
+     "expr": "\"test\"",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "string": "test"
+     },
+     "check_only": false,
+     "typed_result": {
+      "value": {
+       "string": "test"
+      },
+      "type": "string"
+     }
+    },
+    {
+     "name": "bytes",
+     "expr": "b\"test\"",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bytes": "dGVzdA=="
+     },
+     "check_only": false,
+     "typed_result": {
+      "value": {
+       "bytes": "dGVzdA=="
+      },
+      "type": "bytes"
+     }
+    },
+    {
+     "name": "null",
+     "expr": "null",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "null": null
+     },
+     "check_only": false,
+     "typed_result": {
+      "value": {
+       "null": null
+      },
+      "type": "null_type"
+     }
+    }
+   ]
+  },
+  {
+   "name": "complex_initializers",
+   "tests": [
+    {
+     "name": "list",
+     "expr": "[1]",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "list": [
+       {
+        "int": "1"
+       }
+      ]
+     },
+     "check_only": false,
+     "typed_result": {
+      "value": {
+       "list": [
+        {
+         "int": "1"
+        }
+       ]
+      },
+      "type": "list(int)"
+     }
+    },
+    {
+     "name": "map",
+     "expr": "{'abc': 123}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "map": [
+       [
+        {
+         "string": "abc"
+        },
+        {
+         "int": "123"
+        }
+       ]
+      ]
+     },
+     "check_only": false,
+     "typed_result": {
+      "value": {
+       "map": [
+        [
+         {
+          "string": "abc"
+         },
+         {
+          "int": "123"
+         }
+        ]
+       ]
+      },
+      "type": "map(string, int)"
+     }
+    },
+    {
+     "name": "struct",
+     "expr": "TestAllTypes{single_int64: 1}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto3.TestAllTypes",
+       "json": {
+        "singleInt64": "1"
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": {
+      "value": {
+       "object": {
+        "type_url": "type.googleapis.com/cel.expr.conformance.proto3.TestAllTypes",
+        "json": {
+         "singleInt64": "1"
+        }
+       }
+      },
+      "type": "cel.expr.conformance.proto3.TestAllTypes"
+     }
+    }
+   ]
+  },
+  {
+   "name": "field_access",
+   "tests": [
+    {
+     "name": "int_field",
+     "expr": "TestAllTypes{single_int64: 1}.single_int64",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "1"
+     },
+     "check_only": false,
+     "typed_result": {
+      "value": {
+       "int": "1"
+      },
+      "type": "int"
+     }
+    },
+    {
+     "name": "repeated_int_field",
+     "expr": "TestAllTypes{}.repeated_int64",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "list": []
+     },
+     "check_only": false,
+     "typed_result": {
+      "value": {
+       "list": []
+      },
+      "type": "list(int)"
+     }
+    },
+    {
+     "name": "map_bool_int",
+     "expr": "TestAllTypes{}.map_bool_int64",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "map": []
+     },
+     "check_only": false,
+     "typed_result": {
+      "value": {
+       "map": []
+      },
+      "type": "map(bool, int)"
+     }
+    },
+    {
+     "name": "enum_field",
+     "expr": "TestAllTypes{}.standalone_enum",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "0"
+     },
+     "check_only": false,
+     "typed_result": {
+      "value": {
+       "int": "0"
+      },
+      "type": "int"
+     }
+    },
+    {
+     "name": "repeated_enum_field",
+     "expr": "TestAllTypes{}.repeated_nested_enum",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "list": []
+     },
+     "check_only": false,
+     "typed_result": {
+      "value": {
+       "list": []
+      },
+      "type": "list(int)"
+     }
+    },
+    {
+     "name": "enum_map_field",
+     "expr": "TestAllTypes{}.map_int32_enum",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "map": []
+     },
+     "check_only": false,
+     "typed_result": {
+      "value": {
+       "map": []
+      },
+      "type": "map(int, int)"
+     }
+    }
+   ]
+  },
+  {
+   "name": "indexing",
+   "tests": [
+    {
+     "name": "list",
+     "expr": "['foo'][0]",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "string": "foo"
+     },
+     "check_only": false,
+     "typed_result": {
+      "value": {
+       "string": "foo"
+      },
+      "type": "string"
+     }
+    },
+    {
+     "name": "map",
+     "expr": "{'abc': 123}['abc']",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "123"
+     },
+     "check_only": false,
+     "typed_result": {
+      "value": {
+       "int": "123"
+      },
+      "type": "int"
+     }
+    }
+   ]
+  },
+  {
+   "name": "functions",
+   "tests": [
+    {
+     "name": "nested_calls",
+     "expr": "('foo' + 'bar').startsWith('foo')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": {
+      "value": {
+       "bool": true
+      },
+      "type": "bool"
+     }
+    },
+    {
+     "name": "function_result_type",
+     "expr": "fn('abc', 123)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [
+      {
+       "function": "fn",
+       "overloads": [
+        {
+         "id": "fn_string_int",
+         "params": [
+          "string",
+          "int"
+         ],
+         "result": "string",
+         "type_params": [],
+         "receiver": false
+        }
+       ]
+      }
+     ],
+     "expect": {
+      "any_value": true
+     },
+     "check_only": true,
+     "typed_result": {
+      "value": null,
+      "type": "string"
+     }
+    }
+   ]
+  },
+  {
+   "name": "flexible_type_parameter_assignment",
+   "tests": [
+    {
+     "name": "list_parameter",
+     "expr": "[[], [[]], [[[]]], [[[[]]]]]",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "any_value": true
+     },
+     "check_only": true,
+     "typed_result": {
+      "value": null,
+      "type": "list(list(list(list(list(dyn)))))"
+     }
+    },
+    {
+     "name": "list_parameter_order_independent",
+     "expr": "[[[[[]]]], [], [[[]]]]",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "any_value": true
+     },
+     "check_only": true,
+     "typed_result": {
+      "value": null,
+      "type": "list(list(list(list(list(dyn)))))"
+     }
+    },
+    {
+     "name": "comprehension_type_var_aliasing",
+     "expr": "msg.repeated_nested_message.map(x, x).map(y, y.bb)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [
+      {
+       "ident": "msg",
+       "type": "cel.expr.conformance.proto3.TestAllTypes"
+      }
+     ],
+     "expect": {
+      "any_value": true
+     },
+     "check_only": true,
+     "typed_result": {
+      "value": null,
+      "type": "list(int)"
+     }
+    },
+    {
+     "name": "overload_type_var_aliasing",
+     "expr": "([] + msg.repeated_nested_message + [])[0].bb",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [
+      {
+       "ident": "msg",
+       "type": "cel.expr.conformance.proto3.TestAllTypes"
+      }
+     ],
+     "expect": {
+      "any_value": true
+     },
+     "check_only": true,
+     "typed_result": {
+      "value": null,
+      "type": "int"
+     }
+    },
+    {
+     "name": "unconstrained_type_var_as_dyn",
+     "expr": "([].map(x,x))[0].foo",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "any_value": true
+     },
+     "check_only": true,
+     "typed_result": {
+      "value": null,
+      "type": "dyn"
+     }
+    },
+    {
+     "name": "list_parameters_do_not_unify",
+     "expr": "[msg.single_int64_wrapper, msg.single_string_wrapper]",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [
+      {
+       "ident": "msg",
+       "type": "cel.expr.conformance.proto3.TestAllTypes"
+      }
+     ],
+     "expect": {
+      "any_value": true
+     },
+     "check_only": true,
+     "typed_result": {
+      "value": null,
+      "type": "list(dyn)"
+     }
+    },
+    {
+     "name": "optional_none",
+     "expr": "[optional.none(), optional.of(1)]",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "any_value": true
+     },
+     "check_only": true,
+     "typed_result": {
+      "value": null,
+      "type": "list(optional_type(int))"
+     }
+    },
+    {
+     "name": "optional_none_2",
+     "expr": "[optional.of(1), optional.none()]",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "any_value": true
+     },
+     "check_only": true,
+     "typed_result": {
+      "value": null,
+      "type": "list(optional_type(int))"
+     }
+    },
+    {
+     "name": "optional_dyn_promotion",
+     "expr": "[optional.of(1), optional.of(dyn(1))]",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "any_value": true
+     },
+     "check_only": true,
+     "typed_result": {
+      "value": null,
+      "type": "list(optional_type(dyn))"
+     }
+    },
+    {
+     "name": "optional_dyn_promotion_2",
+     "expr": "[optional.of(dyn(1)), optional.of(1)]",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "any_value": true
+     },
+     "check_only": true,
+     "typed_result": {
+      "value": null,
+      "type": "list(optional_type(dyn))"
+     }
+    },
+    {
+     "name": "optional_in_ternary",
+     "expr": "true ? optional.of(dyn(1)) : optional.of(1)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "any_value": true
+     },
+     "check_only": true,
+     "typed_result": {
+      "value": null,
+      "type": "optional_type(dyn)"
+     }
+    }
+   ]
+  },
+  {
+   "name": "wrappers",
+   "tests": [
+    {
+     "name": "wrapper_promotion",
+     "expr": "[msg.single_int64_wrapper, msg.single_int64]",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [
+      {
+       "ident": "msg",
+       "type": "cel.expr.conformance.proto3.TestAllTypes"
+      }
+     ],
+     "expect": {
+      "any_value": true
+     },
+     "check_only": true,
+     "typed_result": {
+      "value": null,
+      "type": "list(wrapper(int))"
+     }
+    },
+    {
+     "name": "wrapper_promotion_2",
+     "expr": "[msg.single_int64, msg.single_int64_wrapper]",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [
+      {
+       "ident": "msg",
+       "type": "cel.expr.conformance.proto3.TestAllTypes"
+      }
+     ],
+     "expect": {
+      "any_value": true
+     },
+     "check_only": true,
+     "typed_result": {
+      "value": null,
+      "type": "list(wrapper(int))"
+     }
+    },
+    {
+     "name": "wrapper_dyn_promotion",
+     "expr": "[msg.single_int64_wrapper, msg.single_int64, dyn(1)]",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [
+      {
+       "ident": "msg",
+       "type": "cel.expr.conformance.proto3.TestAllTypes"
+      }
+     ],
+     "expect": {
+      "any_value": true
+     },
+     "check_only": true,
+     "typed_result": {
+      "value": null,
+      "type": "list(dyn)"
+     }
+    },
+    {
+     "name": "wrapper_dyn_promotion_2",
+     "expr": "[dyn(1), msg.single_int64_wrapper, msg.single_int64]",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [
+      {
+       "ident": "msg",
+       "type": "cel.expr.conformance.proto3.TestAllTypes"
+      }
+     ],
+     "expect": {
+      "any_value": true
+     },
+     "check_only": true,
+     "typed_result": {
+      "value": null,
+      "type": "list(dyn)"
+     }
+    },
+    {
+     "name": "wrapper_primitive_assignable",
+     "expr": "msg.single_int64_wrapper + 1",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [
+      {
+       "ident": "msg",
+       "type": "cel.expr.conformance.proto3.TestAllTypes"
+      }
+     ],
+     "expect": {
+      "any_value": true
+     },
+     "check_only": true,
+     "typed_result": {
+      "value": null,
+      "type": "int"
+     }
+    },
+    {
+     "name": "wrapper_null_assignable",
+     "expr": "msg.single_int64_wrapper == null",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [
+      {
+       "ident": "msg",
+       "type": "cel.expr.conformance.proto3.TestAllTypes"
+      }
+     ],
+     "expect": {
+      "any_value": true
+     },
+     "check_only": true,
+     "typed_result": {
+      "value": null,
+      "type": "bool"
+     }
+    },
+    {
+     "name": "wrapper_ternary_parameter_assignment",
+     "expr": "false ? msg.single_int64_wrapper : null",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [
+      {
+       "ident": "msg",
+       "type": "cel.expr.conformance.proto3.TestAllTypes"
+      }
+     ],
+     "expect": {
+      "any_value": true
+     },
+     "check_only": true,
+     "typed_result": {
+      "value": null,
+      "type": "wrapper(int)"
+     }
+    },
+    {
+     "name": "wrapper_ternary_parameter_assignment_2",
+     "expr": "true ? msg.single_int64_wrapper : 42",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [
+      {
+       "ident": "msg",
+       "type": "cel.expr.conformance.proto3.TestAllTypes"
+      }
+     ],
+     "expect": {
+      "any_value": true
+     },
+     "check_only": true,
+     "typed_result": {
+      "value": null,
+      "type": "wrapper(int)"
+     }
+    }
+   ]
+  },
+  {
+   "name": "type_parameters",
+   "tests": [
+    {
+     "name": "multiple_parameters_generality",
+     "expr": "[tuple(1, 2u, 3.0), tuple(dyn(1), dyn(2u), dyn(3.0))][0]",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [
+      {
+       "function": "tuple",
+       "overloads": [
+        {
+         "id": "tuple_T_U_V",
+         "params": [
+          "T",
+          "U",
+          "V"
+         ],
+         "result": "tuple(T, U, V)",
+         "type_params": [],
+         "receiver": false
+        }
+       ]
+      }
+     ],
+     "expect": {
+      "any_value": true
+     },
+     "check_only": true,
+     "typed_result": {
+      "value": null,
+      "type": "tuple(dyn, dyn, dyn)"
+     }
+    },
+    {
+     "name": "multiple_parameters_generality_2",
+     "expr": "sort(tuple(dyn(1), 2u, 3.0))",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [
+      {
+       "function": "tuple",
+       "overloads": [
+        {
+         "id": "tuple_T_U_V",
+         "params": [
+          "T",
+          "U",
+          "V"
+         ],
+         "result": "tuple(T, U, V)",
+         "type_params": [],
+         "receiver": false
+        }
+       ]
+      },
+      {
+       "function": "sort",
+       "overloads": [
+        {
+         "id": "sort_tuple_T_T_T",
+         "params": [
+          "tuple(T, T, T)"
+         ],
+         "result": "tuple(T, T, T)",
+         "type_params": [],
+         "receiver": false
+        }
+       ]
+      }
+     ],
+     "expect": {
+      "any_value": true
+     },
+     "check_only": true,
+     "typed_result": {
+      "value": null,
+      "type": "tuple(dyn, dyn, dyn)"
+     }
+    },
+    {
+     "name": "multiple_parameters_parameterized_ovl",
+     "expr": "tuple(1, 2u, 3.0) == tuple(1, dyn(2u), dyn(3.0))",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [
+      {
+       "function": "tuple",
+       "overloads": [
+        {
+         "id": "tuple_T_U_V",
+         "params": [
+          "T",
+          "U",
+          "V"
+         ],
+         "result": "tuple(T, U, V)",
+         "type_params": [],
+         "receiver": false
+        }
+       ]
+      }
+     ],
+     "expect": {
+      "any_value": true
+     },
+     "check_only": true,
+     "typed_result": {
+      "value": null,
+      "type": "bool"
+     }
+    },
+    {
+     "name": "multiple_parameters_parameterized_ovl_2",
+     "expr": "tuple(dyn(1), dyn(2u), 3.0) == tuple(1, 2u, 3.0)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [
+      {
+       "function": "tuple",
+       "overloads": [
+        {
+         "id": "tuple_T_U_V",
+         "params": [
+          "T",
+          "U",
+          "V"
+         ],
+         "result": "tuple(T, U, V)",
+         "type_params": [],
+         "receiver": false
+        }
+       ]
+      }
+     ],
+     "expect": {
+      "any_value": true
+     },
+     "check_only": true,
+     "typed_result": {
+      "value": null,
+      "type": "bool"
+     }
+    }
+   ]
+  },
+  {
+   "name": "legacy_nullable_types",
+   "tests": [
+    {
+     "name": "null_assignable_to_message_parameter_candidate",
+     "expr": "[msg, null][0]",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {
+      "msg": {
+       "object": {
+        "type_url": "type.googleapis.com/cel.expr.conformance.proto3.TestAllTypes",
+        "json": {}
+       }
+      }
+     },
+     "type_env": [
+      {
+       "ident": "msg",
+       "type": "cel.expr.conformance.proto3.TestAllTypes"
+      }
+     ],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto3.TestAllTypes",
+       "json": {}
+      }
+     },
+     "check_only": false,
+     "typed_result": {
+      "value": {
+       "object": {
+        "type_url": "type.googleapis.com/cel.expr.conformance.proto3.TestAllTypes",
+        "json": {}
+       }
+      },
+      "type": "cel.expr.conformance.proto3.TestAllTypes"
+     }
+    },
+    {
+     "name": "null_assignable_to_duration_parameter_candidate",
+     "expr": "[msg.single_duration, null][0]",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {
+      "msg": {
+       "object": {
+        "type_url": "type.googleapis.com/cel.expr.conformance.proto3.TestAllTypes",
+        "json": {}
+       }
+      }
+     },
+     "type_env": [
+      {
+       "ident": "msg",
+       "type": "cel.expr.conformance.proto3.TestAllTypes"
+      }
+     ],
+     "expect": {
+      "duration": "0s"
+     },
+     "check_only": false,
+     "typed_result": {
+      "value": {
+       "duration": "0s"
+      },
+      "type": "google.protobuf.Duration"
+     }
+    },
+    {
+     "name": "null_assignable_to_timestamp_parameter_candidate",
+     "expr": "[msg.single_timestamp, null][0]",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {
+      "msg": {
+       "object": {
+        "type_url": "type.googleapis.com/cel.expr.conformance.proto3.TestAllTypes",
+        "json": {}
+       }
+      }
+     },
+     "type_env": [
+      {
+       "ident": "msg",
+       "type": "cel.expr.conformance.proto3.TestAllTypes"
+      }
+     ],
+     "expect": {
+      "timestamp": "1970-01-01T00:00:00Z"
+     },
+     "check_only": false,
+     "typed_result": {
+      "value": {
+       "timestamp": "1970-01-01T00:00:00Z"
+      },
+      "type": "google.protobuf.Timestamp"
+     }
+    },
+    {
+     "name": "null_assignable_to_abstract_parameter_candidate",
+     "expr": "[optional.of(1), null][0]",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "any_value": true
+     },
+     "check_only": true,
+     "typed_result": {
+      "value": null,
+      "type": "optional_type(int)"
+     }
+    }
+   ]
+  },
+  {
+   "name": "type_parameters_in_type_type",
+   "tests": [
+    {
+     "name": "type_param_in_type_type_int",
+     "expr": "cast('hello', int)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [
+      {
+       "function": "cast",
+       "overloads": [
+        {
+         "id": "cast_val_to_type",
+         "params": [
+          "dyn",
+          "type(T)"
+         ],
+         "result": "T",
+         "type_params": [],
+         "receiver": false
+        }
+       ]
+      }
+     ],
+     "expect": {
+      "any_value": true
+     },
+     "check_only": true,
+     "typed_result": {
+      "value": null,
+      "type": "int"
+     }
+    },
+    {
+     "name": "type_param_in_type_type_string",
+     "expr": "cast(123, string)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [
+      {
+       "function": "cast",
+       "overloads": [
+        {
+         "id": "cast_val_to_type",
+         "params": [
+          "dyn",
+          "type(T)"
+         ],
+         "result": "T",
+         "type_params": [],
+         "receiver": false
+        }
+       ]
+      }
+     ],
+     "expect": {
+      "any_value": true
+     },
+     "check_only": true,
+     "typed_result": {
+      "value": null,
+      "type": "string"
+     }
+    },
+    {
+     "name": "composite_type_param_in_type_type",
+     "expr": "first_elem_type('data', type([1]))",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [
+      {
+       "function": "first_elem_type",
+       "overloads": [
+        {
+         "id": "first_elem_type_list",
+         "params": [
+          "dyn",
+          "type(list(T))"
+         ],
+         "result": "T",
+         "type_params": [],
+         "receiver": false
+        }
+       ]
+      }
+     ],
+     "expect": {
+      "any_value": true
+     },
+     "check_only": true,
+     "typed_result": {
+      "value": null,
+      "type": "int"
+     }
+    },
+    {
+     "name": "nested_type_param_in_type_type",
+     "expr": "unwrap_type(type(int))",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [
+      {
+       "function": "unwrap_type",
+       "overloads": [
+        {
+         "id": "unwrap_type_t",
+         "params": [
+          "type(type(T))"
+         ],
+         "result": "type(T)",
+         "type_params": [],
+         "receiver": false
+        }
+       ]
+      }
+     ],
+     "expect": {
+      "any_value": true
+     },
+     "check_only": true,
+     "typed_result": {
+      "value": null,
+      "type": "type(int)"
+     }
+    },
+    {
+     "name": "type_map_erasure_comparison",
+     "expr": "type({}) == map",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "any_value": true
+     },
+     "check_only": true,
+     "typed_result": {
+      "value": null,
+      "type": "bool"
+     }
+    },
+    {
+     "name": "type_list_erasure_comparison",
+     "expr": "type([1]) == list",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "any_value": true
+     },
+     "check_only": true,
+     "typed_result": {
+      "value": null,
+      "type": "bool"
+     }
+    },
+    {
+     "name": "type_comparison_different_types_inequality",
+     "expr": "type(1) != type(1u)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": {
+      "value": {
+       "bool": true
+      },
+      "type": "bool"
+     }
+    },
+    {
+     "name": "type_comparison_different_types_equality",
+     "expr": "type(1) == type(1u)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": {
+      "value": {
+       "bool": false
+      },
+      "type": "bool"
+     }
+    }
+   ]
+  },
+  {
+   "name": "empty_range_nested_comprehensions",
+   "tests": [
+    {
+     "name": "empty_list_range_nested_list_comprehension",
+     "expr": "[].map(x, x.map(y, y))",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "any_value": true
+     },
+     "check_only": true,
+     "typed_result": {
+      "value": null,
+      "type": "list(list(dyn))"
+     }
+    },
+    {
+     "name": "empty_map_range_nested_comprehension",
+     "expr": "{}.map(k, k.map(y, y))",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "any_value": true
+     },
+     "check_only": true,
+     "typed_result": {
+      "value": null,
+      "type": "list(list(dyn))"
+     }
+    },
+    {
+     "name": "empty_range_nested_comprehension_before_constraint",
+     "expr": "[].all(x, x.all(y, y == 1) && x == 1)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": {
+      "value": {
+       "bool": true
+      },
+      "type": "bool"
+     }
+    },
+    {
+     "name": "empty_range_nested_comprehension_boolean_map",
+     "expr": "[].map(i, i.map(j, j > 1))",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "any_value": true
+     },
+     "check_only": true,
+     "typed_result": {
+      "value": null,
+      "type": "list(list(bool))"
+     }
+    },
+    {
+     "name": "empty_range_nested_comprehension_equality",
+     "expr": "[].map(i, i.map(j, j > 1)) == [[]]",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": {
+      "value": {
+       "bool": false
+      },
+      "type": "bool"
+     }
+    }
+   ]
+  },
+  {
+   "name": "type_decay",
+   "tests": [
+    {
+     "name": "type_list_decay",
+     "expr": "[int, bool, double]",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "list": [
+       {
+        "type": "int"
+       },
+       {
+        "type": "bool"
+       },
+       {
+        "type": "double"
+       }
+      ]
+     },
+     "check_only": false,
+     "typed_result": {
+      "value": {
+       "list": [
+        {
+         "type": "int"
+        },
+        {
+         "type": "bool"
+        },
+        {
+         "type": "double"
+        }
+       ]
+      },
+      "type": "list(type(dyn))"
+     }
+    },
+    {
+     "name": "type_ternary_decay",
+     "expr": "true ? type(1) : type(1u)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "type": "int"
+     },
+     "check_only": false,
+     "typed_result": {
+      "value": {
+       "type": "int"
+      },
+      "type": "type(dyn)"
+     }
+    },
+    {
+     "name": "type_free_param_list_decay",
+     "expr": "[type([]), int]",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "list": [
+       {
+        "type": "list"
+       },
+       {
+        "type": "int"
+       }
+      ]
+     },
+     "check_only": false,
+     "typed_result": {
+      "value": {
+       "list": [
+        {
+         "type": "list"
+        },
+        {
+         "type": "int"
+        }
+       ]
+      },
+      "type": "list(type(dyn))"
+     }
+    },
+    {
+     "name": "type_free_param_list_decay_order_independent",
+     "expr": "[int, type([])]",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "list": [
+       {
+        "type": "int"
+       },
+       {
+        "type": "list"
+       }
+      ]
+     },
+     "check_only": false,
+     "typed_result": {
+      "value": {
+       "list": [
+        {
+         "type": "int"
+        },
+        {
+         "type": "list"
+        }
+       ]
+      },
+      "type": "list(type(dyn))"
+     }
+    },
+    {
+     "name": "type_nested_list_decay",
+     "expr": "[[type(1)], [type(1u)]]",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "list": [
+       {
+        "list": [
+         {
+          "type": "int"
+         }
+        ]
+       },
+       {
+        "list": [
+         {
+          "type": "uint"
+         }
+        ]
+       }
+      ]
+     },
+     "check_only": false,
+     "typed_result": {
+      "value": {
+       "list": [
+        {
+         "list": [
+          {
+           "type": "int"
+          }
+         ]
+        },
+        {
+         "list": [
+          {
+           "type": "uint"
+          }
+         ]
+        }
+       ]
+      },
+      "type": "list(list(type(dyn)))"
+     }
+    },
+    {
+     "name": "type_free_param_list_concat",
+     "expr": "([] + [[type(1)]]) + [[type([])]]",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "list": [
+       {
+        "list": [
+         {
+          "type": "int"
+         }
+        ]
+       },
+       {
+        "list": [
+         {
+          "type": "list"
+         }
+        ]
+       }
+      ]
+     },
+     "check_only": false,
+     "typed_result": {
+      "value": {
+       "list": [
+        {
+         "list": [
+          {
+           "type": "int"
+          }
+         ]
+        },
+        {
+         "list": [
+          {
+           "type": "list"
+          }
+         ]
+        }
+       ]
+      },
+      "type": "list(list(type(dyn)))"
+     }
+    }
+   ]
+  }
+ ]
+}

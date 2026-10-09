@@ -16,6 +16,7 @@ simulator that checks one against the other.
 | `sim/` | The simulator: one entropy `Oracle` makes every choice; `Assertions` speaks the Antithesis vocabulary; `Itf` writes runs as model-level ITF traces for `quintgo validate`. | 3 |
 | `hegel/` | The oracle over a Hegel test case, so failing runs shrink. | 3 |
 | `bin/` | `cordis-sim`: run a campaign, print its verdict, write ITF traces. | 3 |
+| `cel/` | CEL for cells (RFC 0001): parser, macros, evaluator, actual cost; cel-spec conformance and a differential test against cel-go. See `cel/README.md`. | phase 2, 4 |
 | `test/` | Alcotest suites: kernel and `Order` units, simulator campaigns, confluence, replay; Hegel properties with a negative control. | |
 
 ## Running it

@@ -1,0 +1,992 @@
+{
+ "source": "cel-spec tests/simple/testdata/network_ext.textproto @ 40a3c9007a9305d1f2638d5f538a4e011732cace",
+ "name": "network_ext",
+ "sections": [
+  {
+   "name": "ip_type",
+   "tests": [
+    {
+     "name": "parse_ipv4",
+     "expr": "string(ip('192.168.0.1'))",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "string": "192.168.0.1"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "parse_invalid_ipv4",
+     "expr": "ip('192.168.0.1.0')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "IP Address '192.168.0.1.0' parse error during conversion from string"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "is_ip_valid_ipv4",
+     "expr": "isIP('192.168.0.1')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "is_ip_invalid_ipv4",
+     "expr": "isIP('192.168.0.1.0')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ip_is_canonical_valid_ipv4",
+     "expr": "ip.isCanonical('127.0.0.1')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ip_is_canonical_invalid_ipv4",
+     "expr": "ip.isCanonical('127.0.0.1.0')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "IP Address '127.0.0.1.0' parse error during conversion from string"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ip_is_canonical_non_canonical_ipv6",
+     "expr": "ip.isCanonical('2001:DB8::68')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "parse_ipv6",
+     "expr": "string(ip('2001:db8::68'))",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "string": "2001:db8::68"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "parse_invalid_ipv6",
+     "expr": "ip('2001:db8:::68')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "IP Address '2001:db8:::68' parse error"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "parse_invalid_ipv6_with_zone",
+     "expr": "ip('fe80::1%en0')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "IP Address with zone value is not allowed"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "parse_invalid_ipv4_in_ipv6",
+     "expr": "ip('::ffff:192.168.0.1')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "IPv4-mapped IPv6 address is not allowed"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ip_to_string",
+     "expr": "string(ip('192.168.0.1'))",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "string": "192.168.0.1"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ip_type",
+     "expr": "type(ip('192.168.0.1')) == net.IP",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "is_ip_cidr_compile_error",
+     "expr": "isIP(cidr('192.168.0.0/24'))",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "found no matching overload for 'isIP' applied to '(net.CIDR)'"
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "ipv4",
+   "tests": [
+    {
+     "name": "ipv4_family",
+     "expr": "ip('192.168.0.1').family()",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "4"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ipv4_is_unspecified_true",
+     "expr": "ip('0.0.0.0').isUnspecified()",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ipv4_is_unspecified_false",
+     "expr": "ip('127.0.0.1').isUnspecified()",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ipv4_is_loopback_true",
+     "expr": "ip('127.0.0.1').isLoopback()",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ipv4_is_loopback_false",
+     "expr": "ip('1.2.3.4').isLoopback()",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ipv4_is_global_unicast_true",
+     "expr": "ip('192.168.0.1').isGlobalUnicast()",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ipv4_is_global_unicast_false",
+     "expr": "ip('255.255.255.255').isGlobalUnicast()",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "is_link_local_multicast_true",
+     "expr": "ip('224.0.0.1').isLinkLocalMulticast()",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "is_link_local_multicast_false",
+     "expr": "ip('224.0.1.1').isLinkLocalMulticast()",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "is_link_local_unicast_true",
+     "expr": "ip('169.254.169.254').isLinkLocalUnicast()",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "is_link_local_unicast_false",
+     "expr": "ip('192.168.0.1').isLinkLocalUnicast()",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ipv4_equals",
+     "expr": "ip('127.0.0.1') == ip('127.0.0.1')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ipv4_not_equals",
+     "expr": "ip('127.0.0.1') == ip('10.0.0.1')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ipv4_equals_ipv6",
+     "expr": "ip('::ffff:c0a8:1') == ip('192.168.0.1')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ipv4_not_equals_ipv6",
+     "expr": "ip('::ffff:c0a8:1') == ip('192.168.10.1')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "ipv6",
+   "tests": [
+    {
+     "name": "family",
+     "expr": "ip('2001:db8::68').family()",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "6"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "is_unspecified_true",
+     "expr": "ip('::').isUnspecified()",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "is_loopback_true",
+     "expr": "ip('::1').isLoopback()",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "is_global_unicast_true",
+     "expr": "ip('2001:db8::abcd').isGlobalUnicast()",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "is_global_unicast_false",
+     "expr": "ip('ff00::1').isGlobalUnicast()",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "is_link_local_multicast_true",
+     "expr": "ip('ff02::1').isLinkLocalMulticast()",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "is_link_local_multicast_false",
+     "expr": "ip('fd00::1').isLinkLocalMulticast()",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "is_link_local_unicast_true",
+     "expr": "ip('fe80::1').isLinkLocalUnicast()",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "is_link_local_unicast_false",
+     "expr": "ip('fd80::1').isLinkLocalUnicast()",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ipv6_equals",
+     "expr": "ip('2001:db8::1') == ip('2001:DB8::1')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ipv6_not_equals",
+     "expr": "ip('::') == ip('::ffff')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "cidr",
+   "tests": [
+    {
+     "name": "parse_cidr_ipv4",
+     "expr": "type(cidr('192.168.0.0/24')) == net.CIDR",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "parse_invalid_cidr_ipv4",
+     "expr": "cidr('192.168.0.0/')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "network address parse error during conversion from string"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "parse_invalid_cidr_with_zone",
+     "expr": "cidr('fe80::1%en0/24')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "CIDR with zone value is not allowed"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "parse_invalid_cidr_ipv4_in_ipv6",
+     "expr": "cidr('::ffff:192.168.0.1/24')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "IPv4-mapped IPv6 address is not allowed"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "cidr_equals",
+     "expr": "cidr('127.0.0.1/24') == cidr('127.0.0.1/24')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "cidr_not_equals",
+     "expr": "cidr('192.0.0.1/32') == cidr('10.0.0.1/8')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "cidr_not_equals_ipv4_ipv6",
+     "expr": "cidr('2001:db8::/32') == cidr('10.0.0.1/32')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "cidr_contains_ip_ipv4_object",
+     "expr": "cidr('192.168.0.0/24').containsIP(ip('192.168.0.1'))",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "cidr_does_not_contain_ip_ipv4_object",
+     "expr": "cidr('192.168.0.0/24').containsIP(ip('192.168.1.1'))",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "cidr_contains_ip_ipv4_string",
+     "expr": "cidr('192.168.0.0/24').containsIP('192.168.0.1')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "cidr_does_not_contain_ip_ipv4_string",
+     "expr": "cidr('192.168.0.0/24').containsIP('192.168.1.1')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "cidr_contains_cidr_ipv4_object",
+     "expr": "cidr('192.168.0.0/24').containsCIDR(cidr('192.168.0.0/25'))",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "cidr_contains_cidr_ipv4_object_32",
+     "expr": "cidr('192.168.0.0/24').containsCIDR(cidr('192.168.0.1/32'))",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "cidr_not_contains_cidr_ipv4_object",
+     "expr": "cidr('192.168.0.0/24').containsCIDR(cidr('192.168.0.0/23'))",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "cidr_contains_cidr_ipv4_string",
+     "expr": "cidr('192.168.0.0/24').containsCIDR('192.168.0.0/25')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "cidr_contains_cidr",
+     "expr": "cidr('10.0.0.0/8').containsCIDR(cidr('10.0.0.0/8'))",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "cidr_contains_cidr_ipv4_exact",
+     "expr": "cidr('10.0.0.0/8').containsCIDR('10.0.0.0/8')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "cidr_ipv6_not_contains_ip_ipv4_object",
+     "expr": "cidr('2001:db8::/32').containsIP(ip('192.168.1.1'))",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "cidr_ipv4_not_contains_ip_ipv6_object",
+     "expr": "cidr('192.168.1.1/32').containsIP(ip('2001:db8::1'))",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "cidr_get_ip_ipv4",
+     "expr": "cidr('192.168.0.0/24').ip() == ip('192.168.0.0')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "cidr_masked_ipv4",
+     "expr": "cidr('192.168.0.1/24').masked() == cidr('192.168.0.0/24')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "cidr_prefix_length_ipv4",
+     "expr": "cidr('192.168.0.0/24').prefixLength()",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "24"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "parse_cidr_ipv6",
+     "expr": "string(cidr('2001:db8::/32'))",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "string": "2001:db8::/32"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "cidr_contains_ip_ipv6_object",
+     "expr": "cidr('2001:db8::/32').containsIP(ip('2001:db8::1'))",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "cidr_contains_cidr_ipv6_object",
+     "expr": "cidr('2001:db8::/32').containsCIDR(cidr('2001:db8::/33'))",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "cidr_get_ip_ipv6",
+     "expr": "cidr('2001:db8::/32').ip() == ip('2001:db8::')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "cidr_prefix_length_ipv6",
+     "expr": "cidr('2001:db8::/32').prefixLength()",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "32"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "cidr_to_string",
+     "expr": "string(cidr('192.168.0.0/24'))",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "string": "192.168.0.0/24"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "cidr_type",
+     "expr": "type(cidr('192.168.0.0/24')) == net.CIDR",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  }
+ ]
+}

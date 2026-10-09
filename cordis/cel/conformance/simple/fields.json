@@ -1,0 +1,1100 @@
+{
+ "source": "cel-spec tests/simple/testdata/fields.textproto @ 40a3c9007a9305d1f2638d5f538a4e011732cace",
+ "name": "fields",
+ "sections": [
+  {
+   "name": "map_fields",
+   "tests": [
+    {
+     "name": "map_key_int64",
+     "expr": "{0:1,2:2,5:true}[5]",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "map_key_uint64",
+     "expr": "{0u:1u,2u:'happy',5u:3u}[2u]",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "string": "happy"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "map_key_string",
+     "expr": "{'name':100u}['name']",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "uint": "100"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "map_key_bool",
+     "expr": "{true:5}[true]",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "5"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "map_key_mixed_type",
+     "expr": "{true:1,2:2,5u:3}[true]",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "1"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "map_key_mixed_numbers_double_key",
+     "expr": "{1u: 1.0, 2: 2.0, 3u: 3.0}[3.0]",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "double": 3.0
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "map_key_mixed_numbers_lossy_double_key",
+     "expr": "{1u: 1.0, 2: 2.0, 3u: 3.0}[3.1]",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "no such key"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "map_key_mixed_numbers_uint_key",
+     "expr": "{1u: 1.0, 2: 2.0, 3u: 3.0}[2u]",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "double": 2.0
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "map_key_mixed_numbers_int_key",
+     "expr": "{1u: 1.0, 2: 2.0, 3u: 3.0}[1]",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "double": 1.0
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "map_field_access",
+     "expr": "x.name",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {
+      "x": {
+       "map": [
+        [
+         {
+          "string": "name"
+         },
+         {
+          "int": "1024"
+         }
+        ]
+       ]
+      }
+     },
+     "type_env": [
+      {
+       "ident": "x",
+       "type": "map(string, int)"
+      }
+     ],
+     "expect": {
+      "int": "1024"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "map_no_such_key",
+     "expr": "{0:1,2:2,5:3}[1]",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "no such key"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "map_no_such_key_or_false",
+     "expr": "dyn({0:1,2:2,5:3}[1]) || false",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "no such key"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "map_no_such_key_or_true",
+     "expr": "dyn({0:1,2:2,5:3}[1]) || true",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "map_no_such_key_and_false",
+     "expr": "dyn({0:1,2:2,5:3}[1]) && false",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "map_no_such_key_and_true",
+     "expr": "dyn({0:1,2:2,5:3}[1]) && true",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "no such key"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "map_bad_key_type",
+     "expr": "{0:1,2:2,5:3}[dyn(b'')]",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "no such key"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "map_bad_key_type_or_false",
+     "expr": "dyn({0:1,2:2,5:3}[dyn(b'')]) || false",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "no such key"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "map_bad_key_type_or_true",
+     "expr": "dyn({0:1,2:2,5:3}[dyn(b'')]) || true",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "map_bad_key_type_and_false",
+     "expr": "dyn({0:1,2:2,5:3}[dyn(b'')]) && false",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "map_bad_key_type_and_true",
+     "expr": "dyn({0:1,2:2,5:3}[dyn(b'')]) && true",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "no such key"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "map_field_select_no_such_key",
+     "expr": "x.name",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {
+      "x": {
+       "map": [
+        [
+         {
+          "string": "holiday"
+         },
+         {
+          "string": "field"
+         }
+        ]
+       ]
+      }
+     },
+     "type_env": [
+      {
+       "ident": "x",
+       "type": "map(string, string)"
+      }
+     ],
+     "expect": {
+      "error": "no such key: 'name'"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "map_field_select_no_such_key_or_false",
+     "expr": "dyn(x.name) || false",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {
+      "x": {
+       "map": [
+        [
+         {
+          "string": "holiday"
+         },
+         {
+          "string": "field"
+         }
+        ]
+       ]
+      }
+     },
+     "type_env": [
+      {
+       "ident": "x",
+       "type": "map(string, string)"
+      }
+     ],
+     "expect": {
+      "error": "no such key: 'name'"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "map_field_select_no_such_key_or_true",
+     "expr": "dyn(x.name) || true",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {
+      "x": {
+       "map": [
+        [
+         {
+          "string": "holiday"
+         },
+         {
+          "string": "field"
+         }
+        ]
+       ]
+      }
+     },
+     "type_env": [
+      {
+       "ident": "x",
+       "type": "map(string, string)"
+      }
+     ],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "map_field_select_no_such_key_and_false",
+     "expr": "dyn(x.name) && false",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {
+      "x": {
+       "map": [
+        [
+         {
+          "string": "holiday"
+         },
+         {
+          "string": "field"
+         }
+        ]
+       ]
+      }
+     },
+     "type_env": [
+      {
+       "ident": "x",
+       "type": "map(string, string)"
+      }
+     ],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "map_field_select_no_such_key_and_true",
+     "expr": "dyn(x.name) && true",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {
+      "x": {
+       "map": [
+        [
+         {
+          "string": "holiday"
+         },
+         {
+          "string": "field"
+         }
+        ]
+       ]
+      }
+     },
+     "type_env": [
+      {
+       "ident": "x",
+       "type": "map(string, string)"
+      }
+     ],
+     "expect": {
+      "error": "no such key: 'name'"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "map_value_null",
+     "expr": "{true:null}[true]",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "null": null
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "map_value_bool",
+     "expr": "{27:false}[27]",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "map_value_string",
+     "expr": "{'n':'x'}['n']",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "string": "x"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "map_value_float",
+     "expr": "{3:15.15}[3]",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "double": 15.15
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "map_value_uint64",
+     "expr": "{0u:1u,2u:2u,5u:3u}[0u]",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "uint": "1"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "map_value_int64",
+     "expr": "{true:1,false:2}[true]",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "1"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "map_value_bytes",
+     "expr": "{0:b''}[0]",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bytes": ""
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "map_value_list",
+     "expr": "{0u:[1]}[0u]",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "list": [
+       {
+        "int": "1"
+       }
+      ]
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "map_value_map",
+     "expr": "{'map': {'k': 'v'}}['map']",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "map": [
+       [
+        {
+         "string": "k"
+        },
+        {
+         "string": "v"
+        }
+       ]
+      ]
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "map_value_mix_type",
+     "expr": "{'map': {'k': 'v'}, 'list': [1]}['map']",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "map": [
+       [
+        {
+         "string": "k"
+        },
+        {
+         "string": "v"
+        }
+       ]
+      ]
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "map_has",
+   "tests": [
+    {
+     "name": "has",
+     "expr": "has({'a': 1, 'b': 2}.a)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "has_not",
+     "expr": "has({'a': 1, 'b': 2}.c)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "has_empty",
+     "expr": "has({}.a)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "quoted_map_fields",
+   "tests": [
+    {
+     "name": "field_access_slash",
+     "expr": "{'/api/v1': true, '/api/v2': false}.`/api/v1`",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_access_dash",
+     "expr": "{'content-type': 'application/json', 'content-length': 145}.`content-type` == 'application/json'",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_access_dot",
+     "expr": "{'foo.txt': 32, 'bar.csv': 1024}.`foo.txt`",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "32"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "has_field_slash",
+     "expr": "has({'/api/v1': true, '/api/v2': false}.`/api/v3`)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "has_field_dash",
+     "expr": "has({'content-type': 'application/json', 'content-length': 145}.`content-type`)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "has_field_dot",
+     "expr": "has({'foo.txt': 32, 'bar.csv': 1024}.`foo.txt`)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "qualified_identifier_resolution",
+   "tests": [
+    {
+     "name": "qualified_ident",
+     "expr": "a.b.c",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {
+      "a.b.c": {
+       "string": "yeah"
+      }
+     },
+     "type_env": [
+      {
+       "ident": "a.b.c",
+       "type": "string"
+      }
+     ],
+     "expect": {
+      "string": "yeah"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "map_field_select",
+     "expr": "a.b.c",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {
+      "a.b": {
+       "map": [
+        [
+         {
+          "string": "c"
+         },
+         {
+          "string": "yeah"
+         }
+        ]
+       ]
+      }
+     },
+     "type_env": [
+      {
+       "ident": "a.b",
+       "type": "map(string, string)"
+      }
+     ],
+     "expect": {
+      "string": "yeah"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "qualified_identifier_resolution_unchecked",
+     "expr": "a.b.c",
+     "disable_macros": false,
+     "disable_check": true,
+     "container": "",
+     "bindings": {
+      "a.b": {
+       "map": [
+        [
+         {
+          "string": "c"
+         },
+         {
+          "string": "oops"
+         }
+        ]
+       ]
+      },
+      "a.b.c": {
+       "string": "yeah"
+      }
+     },
+     "type_env": [
+      {
+       "ident": "a.b.c",
+       "type": "string"
+      },
+      {
+       "ident": "a.b",
+       "type": "map(string, string)"
+      }
+     ],
+     "expect": {
+      "string": "yeah"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "list_field_select_unsupported",
+     "expr": "a.b.pancakes",
+     "disable_macros": false,
+     "disable_check": true,
+     "container": "",
+     "bindings": {
+      "a.b": {
+       "list": [
+        {
+         "string": "pancakes"
+        }
+       ]
+      }
+     },
+     "type_env": [
+      {
+       "ident": "a.b",
+       "type": "list(string)"
+      }
+     ],
+     "expect": {
+      "error": "type 'list_type:<elem_type:<primitive:STRING > > ' does not support field selection"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "int64_field_select_unsupported",
+     "expr": "a.pancakes",
+     "disable_macros": false,
+     "disable_check": true,
+     "container": "",
+     "bindings": {
+      "a": {
+       "int": "15"
+      }
+     },
+     "type_env": [
+      {
+       "ident": "a",
+       "type": "int"
+      }
+     ],
+     "expect": {
+      "error": "type 'int64_type' does not support field selection"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "ident_with_longest_prefix_check",
+     "expr": "a.b.c",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {
+      "a.b": {
+       "map": [
+        [
+         {
+          "string": "c"
+         },
+         {
+          "string": "oops"
+         }
+        ]
+       ]
+      },
+      "a.b.c": {
+       "string": "yeah"
+      }
+     },
+     "type_env": [
+      {
+       "ident": "a.b.c",
+       "type": "string"
+      },
+      {
+       "ident": "a.b",
+       "type": "map(string, string)"
+      }
+     ],
+     "expect": {
+      "string": "yeah"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "map_key_float",
+     "expr": "{3.3:15.15, 1.0: 5}[1.0]",
+     "disable_macros": false,
+     "disable_check": true,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "unsupported key type"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "map_key_null",
+     "expr": "{null:false}[null]",
+     "disable_macros": false,
+     "disable_check": true,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "unsupported key type"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "map_value_repeat_key",
+     "expr": "{true:1,false:2,true:3}[true]",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "Failed with repeated key"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "map_value_repeat_key_heterogeneous",
+     "expr": "{0: 1, 0u: 2}[0.0]",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "Failed with repeated key"
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "in",
+   "tests": [
+    {
+     "name": "empty",
+     "expr": "7 in {}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "singleton",
+     "expr": "true in {true: 1}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "present",
+     "expr": "'George' in {'John': 'smart', 'Paul': 'cute', 'George': 'quiet', 'Ringo': 'funny'}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "absent",
+     "expr": "'spider' in {'ant': 6, 'fly': 6, 'centipede': 100}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "mixed_numbers_and_keys_present",
+     "expr": "3.0 in {1: 1, 2: 2, 3u: 3} && 2u in {1u: 1, 2: 2} && 1 in {1u: 1, 2: 2}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "mixed_numbers_and_keys_absent",
+     "expr": "3.1 in {1: 1, 2: 2, 3u: 3}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  }
+ ]
+}

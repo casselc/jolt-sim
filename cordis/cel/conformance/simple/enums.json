@@ -1,0 +1,1461 @@
+{
+ "source": "cel-spec tests/simple/testdata/enums.textproto @ 40a3c9007a9305d1f2638d5f538a4e011732cace",
+ "name": "enums",
+ "sections": [
+  {
+   "name": "legacy_proto2",
+   "tests": [
+    {
+     "name": "literal_global",
+     "expr": "GlobalEnum.GAZ",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "2"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "literal_nested",
+     "expr": "TestAllTypes.NestedEnum.BAR",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "1"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "literal_zero",
+     "expr": "GlobalEnum.GOO",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "0"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "comparison",
+     "expr": "GlobalEnum.GAR == 1",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "arithmetic",
+     "expr": "TestAllTypes.NestedEnum.BAR + 3",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "4"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "type_global",
+     "expr": "type(GlobalEnum.GOO)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "type": "int"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "type_nested",
+     "expr": "type(TestAllTypes.NestedEnum.BAZ)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "type": "int"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "select_default",
+     "expr": "TestAllTypes{}.standalone_enum",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "0"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_type",
+     "expr": "type(TestAllTypes{}.standalone_enum)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "type": "int"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "assign_standalone_name",
+     "expr": "TestAllTypes{standalone_enum: TestAllTypes.NestedEnum.BAZ}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto2.TestAllTypes",
+       "json": {
+        "standaloneEnum": "BAZ"
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "assign_standalone_int",
+     "expr": "TestAllTypes{standalone_enum: 1}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto2.TestAllTypes",
+       "json": {
+        "standaloneEnum": "BAR"
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "assign_standalone_int_too_big",
+     "expr": "TestAllTypes{standalone_enum: 5000000000}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "range"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "assign_standalone_int_too_neg",
+     "expr": "TestAllTypes{standalone_enum: -7000000000}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "range"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "access_repeated_enum",
+     "expr": "TestAllTypes{}.repeated_nested_enum",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "list": []
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "assign_repeated_enum",
+     "expr": "TestAllTypes{  repeated_nested_enum: [    TestAllTypes.NestedEnum.FOO,    TestAllTypes.NestedEnum.BAR]}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto2.TestAllTypes",
+       "json": {
+        "repeatedNestedEnum": [
+         "FOO",
+         "BAR"
+        ]
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "list_enum_as_list_int",
+     "expr": "0 in TestAllTypes{  repeated_nested_enum: [    TestAllTypes.NestedEnum.FOO,    TestAllTypes.NestedEnum.BAR]}.repeated_nested_enum",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "enum_as_int",
+     "expr": "TestAllTypes{standalone_enum: TestAllTypes.NestedEnum.FOO}.standalone_enum in [0]",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "legacy_proto3",
+   "tests": [
+    {
+     "name": "literal_global",
+     "expr": "GlobalEnum.GAZ",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "2"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "literal_nested",
+     "expr": "TestAllTypes.NestedEnum.BAR",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "1"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "literal_zero",
+     "expr": "GlobalEnum.GOO",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "0"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "comparison",
+     "expr": "GlobalEnum.GAR == 1",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "arithmetic",
+     "expr": "TestAllTypes.NestedEnum.BAR + 3",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "4"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "type_global",
+     "expr": "type(GlobalEnum.GOO)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "type": "int"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "type_nested",
+     "expr": "type(TestAllTypes.NestedEnum.BAZ)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "type": "int"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "select_default",
+     "expr": "TestAllTypes{}.standalone_enum",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "0"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "select",
+     "expr": "x.standalone_enum",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {
+      "x": {
+       "object": {
+        "type_url": "type.googleapis.com/cel.expr.conformance.proto3.TestAllTypes",
+        "json": {
+         "standaloneEnum": "BAZ"
+        }
+       }
+      }
+     },
+     "type_env": [
+      {
+       "ident": "x",
+       "type": "cel.expr.conformance.proto3.TestAllTypes"
+      }
+     ],
+     "expect": {
+      "int": "2"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "select_big",
+     "expr": "x.standalone_enum",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {
+      "x": {
+       "object": {
+        "type_url": "type.googleapis.com/cel.expr.conformance.proto3.TestAllTypes",
+        "json": {
+         "standaloneEnum": 108
+        }
+       }
+      }
+     },
+     "type_env": [
+      {
+       "ident": "x",
+       "type": "cel.expr.conformance.proto3.TestAllTypes"
+      }
+     ],
+     "expect": {
+      "int": "108"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "select_neg",
+     "expr": "x.standalone_enum",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {
+      "x": {
+       "object": {
+        "type_url": "type.googleapis.com/cel.expr.conformance.proto3.TestAllTypes",
+        "json": {
+         "standaloneEnum": -3
+        }
+       }
+      }
+     },
+     "type_env": [
+      {
+       "ident": "x",
+       "type": "cel.expr.conformance.proto3.TestAllTypes"
+      }
+     ],
+     "expect": {
+      "int": "-3"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_type",
+     "expr": "type(TestAllTypes{}.standalone_enum)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "type": "int"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "assign_standalone_name",
+     "expr": "TestAllTypes{standalone_enum: TestAllTypes.NestedEnum.BAZ}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto3.TestAllTypes",
+       "json": {
+        "standaloneEnum": "BAZ"
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "assign_standalone_int",
+     "expr": "TestAllTypes{standalone_enum: 1}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto3.TestAllTypes",
+       "json": {
+        "standaloneEnum": "BAR"
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "assign_standalone_int_big",
+     "expr": "TestAllTypes{standalone_enum: 99}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto3.TestAllTypes",
+       "json": {
+        "standaloneEnum": 99
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "assign_standalone_int_neg",
+     "expr": "TestAllTypes{standalone_enum: -1}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto3.TestAllTypes",
+       "json": {
+        "standaloneEnum": -1
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "assign_standalone_int_too_big",
+     "expr": "TestAllTypes{standalone_enum: 5000000000}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "range"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "assign_standalone_int_too_neg",
+     "expr": "TestAllTypes{standalone_enum: -7000000000}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "range"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "access_repeated_enum",
+     "expr": "TestAllTypes{}.repeated_nested_enum",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "list": []
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "assign_repeated_enum",
+     "expr": "TestAllTypes{  repeated_nested_enum: [    TestAllTypes.NestedEnum.FOO,    TestAllTypes.NestedEnum.BAR]}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto2.TestAllTypes",
+       "json": {
+        "repeatedNestedEnum": [
+         "FOO",
+         "BAR"
+        ]
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "list_enum_as_list_int",
+     "expr": "0 in TestAllTypes{  repeated_nested_enum: [    TestAllTypes.NestedEnum.FOO,    TestAllTypes.NestedEnum.BAR]}.repeated_nested_enum",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "enum_as_int",
+     "expr": "TestAllTypes{standalone_enum: TestAllTypes.NestedEnum.FOO}.standalone_enum in [0]",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "strong_proto2",
+   "tests": [
+    {
+     "name": "literal_global",
+     "expr": "GlobalEnum.GAZ",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "enum": {
+       "type": "cel.expr.conformance.proto2.GlobalEnum",
+       "value": 2
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "literal_nested",
+     "expr": "TestAllTypes.NestedEnum.BAR",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "enum": {
+       "type": "cel.expr.conformance.proto2.TestAllTypes.NestedEnum",
+       "value": 1
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "literal_zero",
+     "expr": "GlobalEnum.GOO",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "enum": {
+       "type": "cel.expr.conformance.proto2.GlobalEnum",
+       "value": 0
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "comparison_true",
+     "expr": "GlobalEnum.GAR == GlobalEnum.GAR",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "comparison_false",
+     "expr": "GlobalEnum.GAR == GlobalEnum.GAZ",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "type_global",
+     "expr": "type(GlobalEnum.GOO)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "type": "cel.expr.conformance.proto2.GlobalEnum"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "type_nested",
+     "expr": "type(TestAllTypes.NestedEnum.BAZ)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "type": "cel.expr.conformance.proto2.TestAllTypes.NestedEnum"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "select_default",
+     "expr": "TestAllTypes{}.standalone_enum",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "enum": {
+       "type": "cel.expr.conformance.proto2.TestAllTypes.NestedEnum",
+       "value": 0
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_type",
+     "expr": "type(TestAllTypes{}.standalone_enum)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "type": "cel.expr.conformance.proto2.TestAllTypes.NestedEnum"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "assign_standalone_name",
+     "expr": "TestAllTypes{standalone_enum: TestAllTypes.NestedEnum.BAZ}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto2.TestAllTypes",
+       "json": {
+        "standaloneEnum": "BAZ"
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "assign_standalone_int",
+     "expr": "TestAllTypes{standalone_enum: TestAllTypes.NestedEnum(1)}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto2.TestAllTypes",
+       "json": {
+        "standaloneEnum": "BAR"
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "convert_symbol_to_int",
+     "expr": "int(GlobalEnum.GAZ)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "2"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "convert_unnamed_to_int",
+     "expr": "int(x)",
+     "disable_macros": false,
+     "disable_check": true,
+     "container": "",
+     "bindings": {
+      "x": {
+       "enum": {
+        "type": "cel.expr.conformance.proto2.GlobalEnum",
+        "value": 444
+       }
+      }
+     },
+     "type_env": [],
+     "expect": {
+      "int": "444"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "convert_int_inrange",
+     "expr": "TestAllTypes.NestedEnum(2)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "enum": {
+       "type": "cel.expr.conformance.proto2.TestAllTypes.NestedEnum",
+       "value": 2
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "convert_int_big",
+     "expr": "TestAllTypes.NestedEnum(20000)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "enum": {
+       "type": "cel.expr.conformance.proto2.TestAllTypes.NestedEnum",
+       "value": 20000
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "convert_int_neg",
+     "expr": "GlobalEnum(-33)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "enum": {
+       "type": "cel.expr.conformance.proto2.GlobalEnum",
+       "value": -33
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "convert_int_too_big",
+     "expr": "TestAllTypes.NestedEnum(5000000000)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "range"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "convert_int_too_neg",
+     "expr": "TestAllTypes.NestedEnum(-7000000000)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "range"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "convert_string",
+     "expr": "TestAllTypes.NestedEnum('BAZ')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "enum": {
+       "type": "cel.expr.conformance.proto2.TestAllTypes.NestedEnum",
+       "value": 2
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "convert_string_bad",
+     "expr": "TestAllTypes.NestedEnum('BLETCH')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "invalid"
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "strong_proto3",
+   "tests": [
+    {
+     "name": "literal_global",
+     "expr": "GlobalEnum.GAZ",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "enum": {
+       "type": "cel.expr.conformance.proto3.GlobalEnum",
+       "value": 2
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "literal_nested",
+     "expr": "TestAllTypes.NestedEnum.BAR",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "enum": {
+       "type": "cel.expr.conformance.proto3.TestAllTypes.NestedEnum",
+       "value": 1
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "literal_zero",
+     "expr": "GlobalEnum.GOO",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "enum": {
+       "type": "cel.expr.conformance.proto3.GlobalEnum",
+       "value": 0
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "comparison_true",
+     "expr": "GlobalEnum.GAR == GlobalEnum.GAR",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "comparison_false",
+     "expr": "GlobalEnum.GAR == GlobalEnum.GAZ",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "type_global",
+     "expr": "type(GlobalEnum.GOO)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "type": "cel.expr.conformance.proto3.GlobalEnum"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "type_nested",
+     "expr": "type(TestAllTypes.NestedEnum.BAZ)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "type": "cel.expr.conformance.proto3.TestAllTypes.NestedEnum"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "select_default",
+     "expr": "TestAllTypes{}.standalone_enum",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "enum": {
+       "type": "cel.expr.conformance.proto3.TestAllTypes.NestedEnum",
+       "value": 0
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "select",
+     "expr": "x.standalone_enum",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {
+      "x": {
+       "object": {
+        "type_url": "type.googleapis.com/cel.expr.conformance.proto3.TestAllTypes",
+        "json": {
+         "standaloneEnum": "BAZ"
+        }
+       }
+      }
+     },
+     "type_env": [
+      {
+       "ident": "x",
+       "type": "cel.expr.conformance.proto3.TestAllTypes"
+      }
+     ],
+     "expect": {
+      "enum": {
+       "type": "cel.expr.conformance.proto3.TestAllTypes.NestedEnum",
+       "value": 2
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "select_big",
+     "expr": "x.standalone_enum",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {
+      "x": {
+       "object": {
+        "type_url": "type.googleapis.com/cel.expr.conformance.proto3.TestAllTypes",
+        "json": {
+         "standaloneEnum": 108
+        }
+       }
+      }
+     },
+     "type_env": [
+      {
+       "ident": "x",
+       "type": "cel.expr.conformance.proto3.TestAllTypes"
+      }
+     ],
+     "expect": {
+      "enum": {
+       "type": "cel.expr.conformance.proto3.TestAllTypes.NestedEnum",
+       "value": 108
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "select_neg",
+     "expr": "x.standalone_enum",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {
+      "x": {
+       "object": {
+        "type_url": "type.googleapis.com/cel.expr.conformance.proto3.TestAllTypes",
+        "json": {
+         "standaloneEnum": -3
+        }
+       }
+      }
+     },
+     "type_env": [
+      {
+       "ident": "x",
+       "type": "cel.expr.conformance.proto3.TestAllTypes"
+      }
+     ],
+     "expect": {
+      "enum": {
+       "type": "cel.expr.conformance.proto3.TestAllTypes.NestedEnum",
+       "value": -3
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_type",
+     "expr": "type(TestAllTypes{}.standalone_enum)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "type": "cel.expr.conformance.proto3.TestAllTypes.NestedEnum"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "assign_standalone_name",
+     "expr": "TestAllTypes{standalone_enum: TestAllTypes.NestedEnum.BAZ}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto3.TestAllTypes",
+       "json": {
+        "standaloneEnum": "BAZ"
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "assign_standalone_int",
+     "expr": "TestAllTypes{standalone_enum: TestAllTypes.NestedEnum(1)}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto3.TestAllTypes",
+       "json": {
+        "standaloneEnum": "BAR"
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "assign_standalone_int_big",
+     "expr": "TestAllTypes{standalone_enum: TestAllTypes.NestedEnum(99)}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto3.TestAllTypes",
+       "json": {
+        "standaloneEnum": 99
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "assign_standalone_int_neg",
+     "expr": "TestAllTypes{standalone_enum: TestAllTypes.NestedEnum(-1)}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto3.TestAllTypes",
+       "json": {
+        "standaloneEnum": -1
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "convert_symbol_to_int",
+     "expr": "int(GlobalEnum.GAZ)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "2"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "convert_unnamed_to_int",
+     "expr": "int(x)",
+     "disable_macros": false,
+     "disable_check": true,
+     "container": "",
+     "bindings": {
+      "x": {
+       "enum": {
+        "type": "cel.expr.conformance.proto3.GlobalEnum",
+        "value": 444
+       }
+      }
+     },
+     "type_env": [],
+     "expect": {
+      "int": "444"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "convert_unnamed_to_int_select",
+     "expr": "int(x.standalone_enum)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {
+      "x": {
+       "object": {
+        "type_url": "type.googleapis.com/cel.expr.conformance.proto3.TestAllTypes",
+        "json": {
+         "standaloneEnum": -987
+        }
+       }
+      }
+     },
+     "type_env": [
+      {
+       "ident": "x",
+       "type": "cel.expr.conformance.proto3.TestAllTypes"
+      }
+     ],
+     "expect": {
+      "int": "-987"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "convert_int_inrange",
+     "expr": "TestAllTypes.NestedEnum(2)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "enum": {
+       "type": "cel.expr.conformance.proto3.TestAllTypes.NestedEnum",
+       "value": 2
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "convert_int_big",
+     "expr": "TestAllTypes.NestedEnum(20000)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "enum": {
+       "type": "cel.expr.conformance.proto3.TestAllTypes.NestedEnum",
+       "value": 20000
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "convert_int_neg",
+     "expr": "GlobalEnum(-33)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "enum": {
+       "type": "cel.expr.conformance.proto3.GlobalEnum",
+       "value": -33
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "convert_int_too_big",
+     "expr": "TestAllTypes.NestedEnum(5000000000)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "range"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "convert_int_too_neg",
+     "expr": "TestAllTypes.NestedEnum(-7000000000)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "range"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "convert_string",
+     "expr": "TestAllTypes.NestedEnum('BAZ')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "enum": {
+       "type": "cel.expr.conformance.proto3.TestAllTypes.NestedEnum",
+       "value": 2
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "convert_string_bad",
+     "expr": "TestAllTypes.NestedEnum('BLETCH')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "invalid"
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  }
+ ]
+}

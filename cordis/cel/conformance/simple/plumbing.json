@@ -1,0 +1,124 @@
+{
+ "source": "cel-spec tests/simple/testdata/plumbing.textproto @ 40a3c9007a9305d1f2638d5f538a4e011732cace",
+ "name": "plumbing",
+ "sections": [
+  {
+   "name": "min",
+   "tests": [
+    {
+     "name": "min_program",
+     "expr": "17",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "17"
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "eval_results",
+   "tests": [
+    {
+     "name": "error_result",
+     "expr": "1 / 0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "foo"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "eval_map_results",
+     "expr": "{\"k1\":\"v1\",\"k\":\"v\"}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "map": [
+       [
+        {
+         "string": "k"
+        },
+        {
+         "string": "v"
+        }
+       ],
+       [
+        {
+         "string": "k1"
+        },
+        {
+         "string": "v1"
+        }
+       ]
+      ]
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "check_inputs",
+   "tests": [
+    {
+     "name": "skip_check",
+     "expr": "[17, 'pancakes']",
+     "disable_macros": false,
+     "disable_check": true,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "list": [
+       {
+        "int": "17"
+       },
+       {
+        "string": "pancakes"
+       }
+      ]
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "eval_inputs",
+   "tests": [
+    {
+     "name": "one_ignored_value_arg",
+     "expr": "'foo'",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {
+      "x": {
+       "int": "17"
+      }
+     },
+     "type_env": [],
+     "expect": {
+      "string": "foo"
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  }
+ ]
+}

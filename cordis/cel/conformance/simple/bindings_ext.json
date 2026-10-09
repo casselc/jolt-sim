@@ -1,0 +1,150 @@
+{
+ "source": "cel-spec tests/simple/testdata/bindings_ext.textproto @ 40a3c9007a9305d1f2638d5f538a4e011732cace",
+ "name": "bindings_ext",
+ "sections": [
+  {
+   "name": "bind",
+   "tests": [
+    {
+     "name": "boolean_literal",
+     "expr": "cel.bind(t, true, t)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "string_concat",
+     "expr": "cel.bind(msg, \"hello\", msg + msg + msg)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "string": "hellohellohello"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "bind_nested",
+     "expr": "cel.bind(t1, true, cel.bind(t2, true, t1 && t2))",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "macro_exists",
+     "expr": "cel.bind(valid_elems, [1, 2, 3], [3, 4, 5].exists(e, e in valid_elems))",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "macro_not_exists",
+     "expr": "cel.bind(valid_elems, [1, 2, 3], ![4, 5].exists(e, e in valid_elems))",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "shadowing",
+     "expr": "cel.bind(x, 0, x == 0)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {
+      "x": {
+       "int": "1"
+      }
+     },
+     "type_env": [
+      {
+       "ident": "x",
+       "type": "int"
+      }
+     ],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "shadowing_namespace_resolution",
+     "expr": "cel.bind(x, 0, x == 0)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "com.example",
+     "bindings": {
+      "com.example.x": {
+       "int": "1"
+      }
+     },
+     "type_env": [
+      {
+       "ident": "com.example.x",
+       "type": "int"
+      }
+     ],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "shadowing_namespace_resolution_selector",
+     "expr": "cel.bind(x, {'y': 0}, x.y == 0)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "com.example",
+     "bindings": {
+      "com.example.x.y": {
+       "int": "1"
+      }
+     },
+     "type_env": [
+      {
+       "ident": "com.example.x.y",
+       "type": "int"
+      }
+     ],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  }
+ ]
+}

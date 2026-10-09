@@ -1,0 +1,385 @@
+{
+ "source": "cel-spec tests/simple/testdata/namespace.textproto @ 40a3c9007a9305d1f2638d5f538a4e011732cace",
+ "name": "namespace",
+ "sections": [
+  {
+   "name": "qualified",
+   "tests": [
+    {
+     "name": "self_eval_qualified_lookup",
+     "expr": "x.y",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {
+      "x.y": {
+       "bool": true
+      }
+     },
+     "type_env": [
+      {
+       "ident": "x.y",
+       "type": "bool"
+      }
+     ],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "namespace",
+   "tests": [
+    {
+     "name": "self_eval_container_lookup",
+     "expr": "y",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "x",
+     "bindings": {
+      "x.y": {
+       "bool": true
+      },
+      "y": {
+       "string": "false"
+      }
+     },
+     "type_env": [
+      {
+       "ident": "x.y",
+       "type": "bool"
+      },
+      {
+       "ident": "y",
+       "type": "string"
+      }
+     ],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "self_eval_container_lookup_unchecked",
+     "expr": "y",
+     "disable_macros": false,
+     "disable_check": true,
+     "container": "x",
+     "bindings": {
+      "x.y": {
+       "bool": true
+      },
+      "y": {
+       "bool": false
+      }
+     },
+     "type_env": [
+      {
+       "ident": "x.y",
+       "type": "bool"
+      },
+      {
+       "ident": "y",
+       "type": "bool"
+      }
+     ],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "namespace_shadowing",
+   "tests": [
+    {
+     "name": "basic",
+     "expr": "y",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "com.example",
+     "bindings": {
+      "com.example.y": {
+       "bool": true
+      },
+      "y": {
+       "string": "string"
+      }
+     },
+     "type_env": [
+      {
+       "ident": "com.example.y",
+       "type": "bool"
+      },
+      {
+       "ident": "y",
+       "type": "string"
+      }
+     ],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "disambiguation",
+     "expr": ".y",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "com.example",
+     "bindings": {
+      "com.example.y": {
+       "string": "com.example.y"
+      },
+      "y": {
+       "string": "y"
+      }
+     },
+     "type_env": [
+      {
+       "ident": "com.example.y",
+       "type": "string"
+      },
+      {
+       "ident": "y",
+       "type": "string"
+      }
+     ],
+     "expect": {
+      "string": "y"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "comprehension_shadowing",
+     "expr": "[0].exists(y, y == 0)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "com.example",
+     "bindings": {
+      "com.example.y": {
+       "int": "42"
+      }
+     },
+     "type_env": [
+      {
+       "ident": "com.example.y",
+       "type": "int"
+      }
+     ],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "comprehension_shadowing_disambiguation",
+     "expr": "['compre'].exists(y, .y == 'y')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "com.example",
+     "bindings": {
+      "y": {
+       "string": "y"
+      }
+     },
+     "type_env": [
+      {
+       "ident": "y",
+       "type": "string"
+      }
+     ],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "comprehension_shadowing_parse_only",
+     "expr": "[0].exists(y, y == 0)",
+     "disable_macros": false,
+     "disable_check": true,
+     "container": "com.example",
+     "bindings": {
+      "com.example.y": {
+       "int": "42"
+      }
+     },
+     "type_env": [
+      {
+       "ident": "com.example.y",
+       "type": "int"
+      }
+     ],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "comprehension_shadowing_selector",
+     "expr": "[{'z': 0}].exists(y, y.z == 0)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {
+      "y.z": {
+       "int": "42"
+      }
+     },
+     "type_env": [
+      {
+       "ident": "y.z",
+       "type": "int"
+      }
+     ],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "comprehension_shadowing_selector_parse_only",
+     "expr": "[{'z': 0}].exists(y, y.z == 0)",
+     "disable_macros": false,
+     "disable_check": true,
+     "container": "",
+     "bindings": {
+      "y.z": {
+       "int": "42"
+      }
+     },
+     "type_env": [
+      {
+       "ident": "y.z",
+       "type": "int"
+      }
+     ],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "comprehension_shadowing_namespaced_selector",
+     "expr": "[{'z': 0}].exists(y, y.z == 0)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "com.example",
+     "bindings": {
+      "com.example.y.z": {
+       "int": "42"
+      }
+     },
+     "type_env": [
+      {
+       "ident": "com.example.y.z",
+       "type": "int"
+      }
+     ],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "comprehension_shadowing_namespaced_selector_parse_only",
+     "expr": "[{'z': 0}].exists(y, y.z == 0)",
+     "disable_macros": false,
+     "disable_check": true,
+     "container": "com.example",
+     "bindings": {
+      "com.example.y.z": {
+       "int": "42"
+      }
+     },
+     "type_env": [
+      {
+       "ident": "com.example.y.z",
+       "type": "int"
+      }
+     ],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "comprehension_shadowing_namespaced_selector_disambiguation",
+     "expr": "[{'z': 'compre'}].exists(y, .y.z == 'y.z')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "com.example",
+     "bindings": {
+      "com.example.y.z": {
+       "string": "com.example.y.z"
+      },
+      "y.z": {
+       "string": "y.z"
+      }
+     },
+     "type_env": [
+      {
+       "ident": "com.example.y.z",
+       "type": "string"
+      },
+      {
+       "ident": "y.z",
+       "type": "string"
+      }
+     ],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "comprehension_shadowing_nesting",
+     "expr": "[1].exists(y, [0].exists(y, y == 0))",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "com.example",
+     "bindings": {
+      "com.example.y": {
+       "int": "42"
+      },
+      "y": {
+       "int": "42"
+      }
+     },
+     "type_env": [
+      {
+       "ident": "com.example.y",
+       "type": "int"
+      },
+      {
+       "ident": "y",
+       "type": "int"
+      }
+     ],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  }
+ ]
+}

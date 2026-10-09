@@ -1,0 +1,77 @@
+{
+ "source": "cel-spec tests/simple/testdata/encoders_ext.textproto @ 40a3c9007a9305d1f2638d5f538a4e011732cace",
+ "name": "encoders_ext",
+ "sections": [
+  {
+   "name": "encode",
+   "tests": [
+    {
+     "name": "hello",
+     "expr": "base64.encode(b'hello')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "string": "aGVsbG8="
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "decode",
+   "tests": [
+    {
+     "name": "hello",
+     "expr": "base64.decode('aGVsbG8=')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bytes": "aGVsbG8="
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "hello_without_padding",
+     "expr": "base64.decode('aGVsbG8')",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bytes": "aGVsbG8="
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "round_trip",
+   "tests": [
+    {
+     "name": "hello",
+     "expr": "base64.decode(base64.encode(b'Hello World!'))",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bytes": "SGVsbG8gV29ybGQh"
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  }
+ ]
+}

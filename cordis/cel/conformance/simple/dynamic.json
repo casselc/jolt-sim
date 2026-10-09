@@ -1,0 +1,4146 @@
+{
+ "source": "cel-spec tests/simple/testdata/dynamic.textproto @ 40a3c9007a9305d1f2638d5f538a4e011732cace",
+ "name": "dynamic",
+ "sections": [
+  {
+   "name": "int32",
+   "tests": [
+    {
+     "name": "literal",
+     "expr": "google.protobuf.Int32Value{value: -123}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "-123"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "literal_no_field_access",
+     "expr": "google.protobuf.Int32Value{value: -123}.value",
+     "disable_macros": false,
+     "disable_check": true,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "no_matching_overload"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "literal_zero",
+     "expr": "google.protobuf.Int32Value{}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "0"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "var",
+     "expr": "x",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {
+      "x": {
+       "object": {
+        "type_url": "type.googleapis.com/google.protobuf.Int32Value",
+        "json": 2000000
+       }
+      }
+     },
+     "type_env": [
+      {
+       "ident": "x",
+       "type": "google.protobuf.Int32Value"
+      }
+     ],
+     "expect": {
+      "int": "2000000"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto2",
+     "expr": "TestAllTypes{single_int32_wrapper: 432}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto2.TestAllTypes",
+       "json": {
+        "singleInt32Wrapper": 432
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto2_zero",
+     "expr": "TestAllTypes{single_int32_wrapper: 0}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto2.TestAllTypes",
+       "json": {
+        "singleInt32Wrapper": 0
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto2_max",
+     "expr": "TestAllTypes{single_int32_wrapper: 2147483647}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto2.TestAllTypes",
+       "json": {
+        "singleInt32Wrapper": 2147483647
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto2_min",
+     "expr": "TestAllTypes{single_int32_wrapper: -2147483648}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto2.TestAllTypes",
+       "json": {
+        "singleInt32Wrapper": -2147483648
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto2_range",
+     "expr": "TestAllTypes{single_int32_wrapper: 12345678900}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "range error"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_read_proto2",
+     "expr": "TestAllTypes{single_int32_wrapper: 642}.single_int32_wrapper",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "642"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_read_proto2_zero",
+     "expr": "TestAllTypes{single_int32_wrapper: 0}.single_int32_wrapper",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "0"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_read_proto2_unset",
+     "expr": "TestAllTypes{}.single_int32_wrapper",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "null": null
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto3",
+     "expr": "TestAllTypes{single_int32_wrapper: -975}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto3.TestAllTypes",
+       "json": {
+        "singleInt32Wrapper": -975
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto3_zero",
+     "expr": "TestAllTypes{single_int32_wrapper: 0}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto3.TestAllTypes",
+       "json": {
+        "singleInt32Wrapper": 0
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto3_max",
+     "expr": "TestAllTypes{single_int32_wrapper: 2147483647}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto3.TestAllTypes",
+       "json": {
+        "singleInt32Wrapper": 2147483647
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto3_min",
+     "expr": "TestAllTypes{single_int32_wrapper: -2147483648}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto3.TestAllTypes",
+       "json": {
+        "singleInt32Wrapper": -2147483648
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto3_range",
+     "expr": "TestAllTypes{single_int32_wrapper: -998877665544332211}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "range error"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_read_proto3",
+     "expr": "TestAllTypes{single_int32_wrapper: 642}.single_int32_wrapper",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "642"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_read_proto3_zero",
+     "expr": "TestAllTypes{single_int32_wrapper: 0}.single_int32_wrapper",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "0"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_read_proto3_unset",
+     "expr": "TestAllTypes{}.single_int32_wrapper",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "null": null
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "int64",
+   "tests": [
+    {
+     "name": "literal",
+     "expr": "google.protobuf.Int64Value{value: -123}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "-123"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "literal_no_field_access",
+     "expr": "google.protobuf.Int64Value{value: -123}.value",
+     "disable_macros": false,
+     "disable_check": true,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "no_matching_overload"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "literal_zero",
+     "expr": "google.protobuf.Int64Value{}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "0"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "var",
+     "expr": "x",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {
+      "x": {
+       "object": {
+        "type_url": "type.googleapis.com/google.protobuf.Int64Value",
+        "json": "2000000"
+       }
+      }
+     },
+     "type_env": [
+      {
+       "ident": "x",
+       "type": "google.protobuf.Int64Value"
+      }
+     ],
+     "expect": {
+      "int": "2000000"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto2",
+     "expr": "TestAllTypes{single_int64_wrapper: 432}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto2.TestAllTypes",
+       "json": {
+        "singleInt64Wrapper": "432"
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto2_zero",
+     "expr": "TestAllTypes{single_int64_wrapper: 0}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto2.TestAllTypes",
+       "json": {
+        "singleInt64Wrapper": "0"
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto3",
+     "expr": "TestAllTypes{single_int64_wrapper: -975}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto3.TestAllTypes",
+       "json": {
+        "singleInt64Wrapper": "-975"
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto3_zero",
+     "expr": "TestAllTypes{single_int64_wrapper: 0}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto3.TestAllTypes",
+       "json": {
+        "singleInt64Wrapper": "0"
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "uint32",
+   "tests": [
+    {
+     "name": "literal",
+     "expr": "google.protobuf.UInt32Value{value: 123u}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "uint": "123"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "literal_no_field_access",
+     "expr": "google.protobuf.UInt32Value{value: 123u}.value",
+     "disable_macros": false,
+     "disable_check": true,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "no_matching_overload"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "literal_zero",
+     "expr": "google.protobuf.UInt32Value{}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "uint": "0"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "var",
+     "expr": "x",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {
+      "x": {
+       "object": {
+        "type_url": "type.googleapis.com/google.protobuf.UInt32Value",
+        "json": 2000000
+       }
+      }
+     },
+     "type_env": [
+      {
+       "ident": "x",
+       "type": "google.protobuf.UInt32Value"
+      }
+     ],
+     "expect": {
+      "uint": "2000000"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto2",
+     "expr": "TestAllTypes{single_uint32_wrapper: 432u}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto2.TestAllTypes",
+       "json": {
+        "singleUint32Wrapper": 432
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto2_zero",
+     "expr": "TestAllTypes{single_uint32_wrapper: 0u}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto2.TestAllTypes",
+       "json": {
+        "singleUint32Wrapper": 0
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto2_max",
+     "expr": "TestAllTypes{single_uint32_wrapper: 4294967295u}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto2.TestAllTypes",
+       "json": {
+        "singleUint32Wrapper": 4294967295
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto2_range",
+     "expr": "TestAllTypes{single_uint32_wrapper: 6111222333u}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "range error"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto3",
+     "expr": "TestAllTypes{single_uint32_wrapper: 975u}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto3.TestAllTypes",
+       "json": {
+        "singleUint32Wrapper": 975
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto3_zero",
+     "expr": "TestAllTypes{single_uint32_wrapper: 0u}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto3.TestAllTypes",
+       "json": {
+        "singleUint32Wrapper": 0
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto3_max",
+     "expr": "TestAllTypes{single_uint32_wrapper: 4294967295u}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto3.TestAllTypes",
+       "json": {
+        "singleUint32Wrapper": 4294967295
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto3_range",
+     "expr": "TestAllTypes{single_uint32_wrapper: 6111222333u}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "range error"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_read_proto2",
+     "expr": "TestAllTypes{single_uint32_wrapper: 258u}.single_uint32_wrapper",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "uint": "258"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_read_proto2_zero",
+     "expr": "TestAllTypes{single_uint32_wrapper: 0u}.single_uint32_wrapper",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "uint": "0"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_read_proto2_unset",
+     "expr": "TestAllTypes{}.single_uint32_wrapper",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "null": null
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "uint64",
+   "tests": [
+    {
+     "name": "literal",
+     "expr": "google.protobuf.UInt64Value{value: 123u}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "uint": "123"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "literal_no_field_access",
+     "expr": "google.protobuf.UInt64Value{value: 123u}.value",
+     "disable_macros": false,
+     "disable_check": true,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "no_matching_overload"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "literal_zero",
+     "expr": "google.protobuf.UInt64Value{}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "uint": "0"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "var",
+     "expr": "x",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {
+      "x": {
+       "object": {
+        "type_url": "type.googleapis.com/google.protobuf.UInt64Value",
+        "json": "2000000"
+       }
+      }
+     },
+     "type_env": [
+      {
+       "ident": "x",
+       "type": "google.protobuf.UInt64Value"
+      }
+     ],
+     "expect": {
+      "uint": "2000000"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto2",
+     "expr": "TestAllTypes{single_uint64_wrapper: 432u}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto2.TestAllTypes",
+       "json": {
+        "singleUint64Wrapper": "432"
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto2_zero",
+     "expr": "TestAllTypes{single_uint64_wrapper: 0u}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto2.TestAllTypes",
+       "json": {
+        "singleUint64Wrapper": "0"
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto3",
+     "expr": "TestAllTypes{single_uint64_wrapper: 975u}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto3.TestAllTypes",
+       "json": {
+        "singleUint64Wrapper": "975"
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto3_zero",
+     "expr": "TestAllTypes{single_uint64_wrapper: 0u}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto3.TestAllTypes",
+       "json": {
+        "singleUint64Wrapper": "0"
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_read_proto2",
+     "expr": "TestAllTypes{single_uint64_wrapper: 5123123123u}.single_uint64_wrapper",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "uint": "5123123123"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_read_proto2_zero",
+     "expr": "TestAllTypes{single_uint64_wrapper: 0u}.single_uint64_wrapper",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "uint": "0"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_read_proto2_unset",
+     "expr": "TestAllTypes{}.single_uint64_wrapper",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "null": null
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "float",
+   "tests": [
+    {
+     "name": "literal",
+     "expr": "google.protobuf.FloatValue{value: -1.5e3}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "double": -1500.0
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "literal_not_double",
+     "expr": "google.protobuf.FloatValue{value: 1.333} == 1.333",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "literal_no_field_access",
+     "expr": "google.protobuf.FloatValue{value: 3.1416}.value",
+     "disable_macros": false,
+     "disable_check": true,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "no_matching_overload"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "literal_zero",
+     "expr": "google.protobuf.FloatValue{}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "double": 0.0
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "var",
+     "expr": "x",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {
+      "x": {
+       "object": {
+        "type_url": "type.googleapis.com/google.protobuf.FloatValue",
+        "json": -1250000.0
+       }
+      }
+     },
+     "type_env": [
+      {
+       "ident": "x",
+       "type": "google.protobuf.FloatValue"
+      }
+     ],
+     "expect": {
+      "double": -1250000.0
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto2",
+     "expr": "TestAllTypes{single_float_wrapper: 86.75}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto2.TestAllTypes",
+       "json": {
+        "singleFloatWrapper": 86.75
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto2_zero",
+     "expr": "TestAllTypes{single_float_wrapper: 0.0}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto2.TestAllTypes",
+       "json": {
+        "singleFloatWrapper": 0.0
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto2_subnorm",
+     "expr": "TestAllTypes{single_float_wrapper: 1e-40}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto2.TestAllTypes",
+       "json": {
+        "singleFloatWrapper": 9.99995e-41
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto2_round_to_zero",
+     "expr": "TestAllTypes{single_float_wrapper: 1e-50}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto2.TestAllTypes",
+       "json": {
+        "singleFloatWrapper": 0.0
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto2_range",
+     "expr": "TestAllTypes{single_float_wrapper: 1.4e55}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto2.TestAllTypes",
+       "json": {
+        "singleFloatWrapper": "Infinity"
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_read_proto2",
+     "expr": "TestAllTypes{single_float_wrapper: -12.375}.single_float_wrapper",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "double": -12.375
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_read_proto2_zero",
+     "expr": "TestAllTypes{single_float_wrapper: 0.0}.single_float_wrapper",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "double": 0.0
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_read_proto2_unset",
+     "expr": "TestAllTypes{}.single_float_wrapper",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "null": null
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto3",
+     "expr": "TestAllTypes{single_float_wrapper: -9.75}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto3.TestAllTypes",
+       "json": {
+        "singleFloatWrapper": -9.75
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto3_zero",
+     "expr": "TestAllTypes{single_float_wrapper: 0.0}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto3.TestAllTypes",
+       "json": {
+        "singleFloatWrapper": 0.0
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto2_subnorm",
+     "expr": "TestAllTypes{single_float_wrapper: 1e-40}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto2.TestAllTypes",
+       "json": {
+        "singleFloatWrapper": 9.99995e-41
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto3_round_to_zero",
+     "expr": "TestAllTypes{single_float_wrapper: -9.9e-100}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto3.TestAllTypes",
+       "json": {
+        "singleFloatWrapper": -0.0
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto3_range",
+     "expr": "TestAllTypes{single_float_wrapper: -9.9e100}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto3.TestAllTypes",
+       "json": {
+        "singleFloatWrapper": "-Infinity"
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_read_proto3",
+     "expr": "TestAllTypes{single_float_wrapper: 64.25}.single_float_wrapper",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "double": 64.25
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_read_proto3_zero",
+     "expr": "TestAllTypes{single_float_wrapper: 0.0}.single_float_wrapper",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "double": 0.0
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_read_proto3_unset",
+     "expr": "TestAllTypes{}.single_float_wrapper",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "null": null
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "double",
+   "tests": [
+    {
+     "name": "literal",
+     "expr": "google.protobuf.DoubleValue{value: -1.5e3}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "double": -1500.0
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "literal_no_field_access",
+     "expr": "google.protobuf.DoubleValue{value: 3.1416}.value",
+     "disable_macros": false,
+     "disable_check": true,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "no_matching_overload"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "literal_zero",
+     "expr": "google.protobuf.DoubleValue{}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "double": 0.0
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "var",
+     "expr": "x",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {
+      "x": {
+       "object": {
+        "type_url": "type.googleapis.com/google.protobuf.DoubleValue",
+        "json": -1250000.0
+       }
+      }
+     },
+     "type_env": [
+      {
+       "ident": "x",
+       "type": "google.protobuf.DoubleValue"
+      }
+     ],
+     "expect": {
+      "double": -1250000.0
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto2",
+     "expr": "TestAllTypes{single_double_wrapper: 86.75}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto2.TestAllTypes",
+       "json": {
+        "singleDoubleWrapper": 86.75
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto2_zero",
+     "expr": "TestAllTypes{single_double_wrapper: 0.0}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto2.TestAllTypes",
+       "json": {
+        "singleDoubleWrapper": 0.0
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto2_range",
+     "expr": "TestAllTypes{single_double_wrapper: 1.4e55}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto2.TestAllTypes",
+       "json": {
+        "singleDoubleWrapper": 1.4e+55
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_read_proto2",
+     "expr": "TestAllTypes{single_double_wrapper: -12.375}.single_double_wrapper",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "double": -12.375
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_read_proto2_zero",
+     "expr": "TestAllTypes{single_int32_wrapper: 0}.single_int32_wrapper",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "0"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_read_proto2_unset",
+     "expr": "TestAllTypes{}.single_double_wrapper",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "null": null
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto3",
+     "expr": "TestAllTypes{single_double_wrapper: -9.75}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto3.TestAllTypes",
+       "json": {
+        "singleDoubleWrapper": -9.75
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto3_zero",
+     "expr": "TestAllTypes{single_double_wrapper: 0.0}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto3.TestAllTypes",
+       "json": {
+        "singleDoubleWrapper": 0.0
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto3_range",
+     "expr": "TestAllTypes{single_double_wrapper: -9.9e100}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto3.TestAllTypes",
+       "json": {
+        "singleDoubleWrapper": -9.9e+100
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_read_proto3",
+     "expr": "TestAllTypes{single_double_wrapper: 64.25}.single_double_wrapper",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "double": 64.25
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_read_proto3_zero",
+     "expr": "TestAllTypes{single_double_wrapper: 0.0}.single_double_wrapper",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "double": 0.0
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_read_proto3_unset",
+     "expr": "TestAllTypes{}.single_double_wrapper",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "null": null
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "bool",
+   "tests": [
+    {
+     "name": "literal",
+     "expr": "google.protobuf.BoolValue{value: true}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "literal_no_field_access",
+     "expr": "google.protobuf.BoolValue{value: true}.value",
+     "disable_macros": false,
+     "disable_check": true,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "no_matching_overload"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "literal_empty",
+     "expr": "google.protobuf.BoolValue{}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "var",
+     "expr": "x",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {
+      "x": {
+       "object": {
+        "type_url": "type.googleapis.com/google.protobuf.BoolValue",
+        "json": true
+       }
+      }
+     },
+     "type_env": [
+      {
+       "ident": "x",
+       "type": "google.protobuf.BoolValue"
+      }
+     ],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto2",
+     "expr": "TestAllTypes{single_bool_wrapper: true}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto2.TestAllTypes",
+       "json": {
+        "singleBoolWrapper": true
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto2_false",
+     "expr": "TestAllTypes{single_bool_wrapper: false}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto2.TestAllTypes",
+       "json": {
+        "singleBoolWrapper": false
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto3",
+     "expr": "TestAllTypes{single_bool_wrapper: true}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto3.TestAllTypes",
+       "json": {
+        "singleBoolWrapper": true
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto3_false",
+     "expr": "TestAllTypes{single_bool_wrapper: false}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto3.TestAllTypes",
+       "json": {
+        "singleBoolWrapper": false
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "string",
+   "tests": [
+    {
+     "name": "literal",
+     "expr": "google.protobuf.StringValue{value: 'foo'}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "string": "foo"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "literal_no_field_access",
+     "expr": "google.protobuf.StringValue{value: 'foo'}.value",
+     "disable_macros": false,
+     "disable_check": true,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "no_matching_overload"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "literal_empty",
+     "expr": "google.protobuf.StringValue{}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "string": ""
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "literal_unicode",
+     "expr": "google.protobuf.StringValue{value: 'flambé'}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "string": "flambé"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "var",
+     "expr": "x",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {
+      "x": {
+       "object": {
+        "type_url": "type.googleapis.com/google.protobuf.StringValue",
+        "json": "bar"
+       }
+      }
+     },
+     "type_env": [
+      {
+       "ident": "x",
+       "type": "google.protobuf.StringValue"
+      }
+     ],
+     "expect": {
+      "string": "bar"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto2",
+     "expr": "TestAllTypes{single_string_wrapper: 'baz'}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto2.TestAllTypes",
+       "json": {
+        "singleStringWrapper": "baz"
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto2_empty",
+     "expr": "TestAllTypes{single_string_wrapper: ''}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto2.TestAllTypes",
+       "json": {
+        "singleStringWrapper": ""
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto3",
+     "expr": "TestAllTypes{single_string_wrapper: 'bletch'}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto3.TestAllTypes",
+       "json": {
+        "singleStringWrapper": "bletch"
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto3_empty",
+     "expr": "TestAllTypes{single_string_wrapper: ''}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto3.TestAllTypes",
+       "json": {
+        "singleStringWrapper": ""
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "bytes",
+   "tests": [
+    {
+     "name": "literal",
+     "expr": "google.protobuf.BytesValue{value: b'foo\\123'}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bytes": "Zm9vUw=="
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "literal_no_field_access",
+     "expr": "google.protobuf.BytesValue{value: b'foo'}.value",
+     "disable_macros": false,
+     "disable_check": true,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "no_matching_overload"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "literal_empty",
+     "expr": "google.protobuf.BytesValue{}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bytes": ""
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "literal_unicode",
+     "expr": "google.protobuf.BytesValue{value: b'flambé'}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bytes": "ZmxhbWLDqQ=="
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "var",
+     "expr": "x",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {
+      "x": {
+       "object": {
+        "type_url": "type.googleapis.com/google.protobuf.BytesValue",
+        "json": "YmFy"
+       }
+      }
+     },
+     "type_env": [
+      {
+       "ident": "x",
+       "type": "google.protobuf.BytesValue"
+      }
+     ],
+     "expect": {
+      "bytes": "YmFy"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto2",
+     "expr": "TestAllTypes{single_bytes_wrapper: b'baz'}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto2.TestAllTypes",
+       "json": {
+        "singleBytesWrapper": "YmF6"
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto2_empty",
+     "expr": "TestAllTypes{single_bytes_wrapper: b''}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto2.TestAllTypes",
+       "json": {
+        "singleBytesWrapper": ""
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto3",
+     "expr": "TestAllTypes{single_bytes_wrapper: b'bletch'}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto3.TestAllTypes",
+       "json": {
+        "singleBytesWrapper": "YmxldGNo"
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto3_empty",
+     "expr": "TestAllTypes{single_bytes_wrapper: b''}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto3.TestAllTypes",
+       "json": {
+        "singleBytesWrapper": ""
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "list",
+   "tests": [
+    {
+     "name": "literal",
+     "expr": "google.protobuf.ListValue{values: [3.0, 'foo', null]}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "list": [
+       {
+        "double": 3.0
+       },
+       {
+        "string": "foo"
+       },
+       {
+        "null": null
+       }
+      ]
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "literal_no_field_access",
+     "expr": "google.protobuf.ListValue{values: [3.0, 'foo', null]}.values",
+     "disable_macros": false,
+     "disable_check": true,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "no_matching_overload"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "literal_empty",
+     "expr": "google.protobuf.ListValue{values: []}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "list": []
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "var",
+     "expr": "x",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {
+      "x": {
+       "object": {
+        "type_url": "type.googleapis.com/google.protobuf.ListValue",
+        "json": [
+         "bar",
+         [
+          "a",
+          "b"
+         ]
+        ]
+       }
+      }
+     },
+     "type_env": [
+      {
+       "ident": "x",
+       "type": "google.protobuf.ListValue"
+      }
+     ],
+     "expect": {
+      "list": [
+       {
+        "string": "bar"
+       },
+       {
+        "list": [
+         {
+          "string": "a"
+         },
+         {
+          "string": "b"
+         }
+        ]
+       }
+      ]
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto2",
+     "expr": "TestAllTypes{list_value: [1.0, 'one']}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto2.TestAllTypes",
+       "json": {
+        "listValue": [
+         1.0,
+         "one"
+        ]
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto2_empty",
+     "expr": "TestAllTypes{list_value: []}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto2.TestAllTypes",
+       "json": {
+        "listValue": []
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_read_proto2",
+     "expr": "TestAllTypes{list_value: [1.0, 'one']}.list_value",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "list": [
+       {
+        "double": 1.0
+       },
+       {
+        "string": "one"
+       }
+      ]
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_read_proto2_empty",
+     "expr": "TestAllTypes{list_value: []}.list_value",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "list": []
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_read_proto2_unset",
+     "expr": "TestAllTypes{}.list_value",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "list": []
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto3",
+     "expr": "TestAllTypes{list_value: [1.0, 'one']}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto3.TestAllTypes",
+       "json": {
+        "listValue": [
+         1.0,
+         "one"
+        ]
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto3_empty",
+     "expr": "TestAllTypes{list_value: []}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto3.TestAllTypes",
+       "json": {
+        "listValue": []
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_read_proto3",
+     "expr": "TestAllTypes{list_value: [1.0, 'one']}.list_value",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "list": [
+       {
+        "double": 1.0
+       },
+       {
+        "string": "one"
+       }
+      ]
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_read_proto3_empty",
+     "expr": "TestAllTypes{list_value: []}.list_value",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "list": []
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_read_proto3_unset",
+     "expr": "TestAllTypes{}.list_value",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "list": []
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "struct",
+   "tests": [
+    {
+     "name": "literal",
+     "expr": "google.protobuf.Struct{fields: {'uno': 1.0, 'dos': 2.0}}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "map": [
+       [
+        {
+         "string": "uno"
+        },
+        {
+         "double": 1.0
+        }
+       ],
+       [
+        {
+         "string": "dos"
+        },
+        {
+         "double": 2.0
+        }
+       ]
+      ]
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "literal_no_field_access",
+     "expr": "google.protobuf.Struct{fields: {'uno': 1.0, 'dos': 2.0}}.fields",
+     "disable_macros": false,
+     "disable_check": true,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "no_matching_overload"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "literal_empty",
+     "expr": "google.protobuf.Struct{fields: {}}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "map": []
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "var",
+     "expr": "x",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {
+      "x": {
+       "object": {
+        "type_url": "type.googleapis.com/google.protobuf.Struct",
+        "json": {
+         "last": "Lincoln",
+         "first": "Abraham"
+        }
+       }
+      }
+     },
+     "type_env": [
+      {
+       "ident": "x",
+       "type": "google.protobuf.Struct"
+      }
+     ],
+     "expect": {
+      "map": [
+       [
+        {
+         "string": "first"
+        },
+        {
+         "string": "Abraham"
+        }
+       ],
+       [
+        {
+         "string": "last"
+        },
+        {
+         "string": "Lincoln"
+        }
+       ]
+      ]
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto2",
+     "expr": "TestAllTypes{single_struct: {'un': 1.0, 'deux': 2.0}}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto2.TestAllTypes",
+       "json": {
+        "singleStruct": {
+         "deux": 2.0,
+         "un": 1.0
+        }
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto2_empty",
+     "expr": "TestAllTypes{single_struct: {}}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto2.TestAllTypes",
+       "json": {
+        "singleStruct": {}
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto2_bad",
+     "expr": "TestAllTypes{single_struct: {1: 'uno'}}",
+     "disable_macros": false,
+     "disable_check": true,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "bad key type"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_read_proto2",
+     "expr": "TestAllTypes{single_struct: {'one': 1.0}}.single_struct",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "map": [
+       [
+        {
+         "string": "one"
+        },
+        {
+         "double": 1.0
+        }
+       ]
+      ]
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_read_proto2_empty",
+     "expr": "TestAllTypes{single_struct: {}}.single_struct",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "map": []
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_read_proto2_unset",
+     "expr": "TestAllTypes{}.single_struct",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "map": []
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto3",
+     "expr": "TestAllTypes{single_struct: {'un': 1.0, 'deux': 2.0}}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto3.TestAllTypes",
+       "json": {
+        "singleStruct": {
+         "deux": 2.0,
+         "un": 1.0
+        }
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto3_empty",
+     "expr": "TestAllTypes{single_struct: {}}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto3.TestAllTypes",
+       "json": {
+        "singleStruct": {}
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto3_bad",
+     "expr": "TestAllTypes{single_struct: {1: 'uno'}}",
+     "disable_macros": false,
+     "disable_check": true,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "bad key type"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_read_proto3",
+     "expr": "TestAllTypes{single_struct: {'one': 1.0}}.single_struct",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "map": [
+       [
+        {
+         "string": "one"
+        },
+        {
+         "double": 1.0
+        }
+       ]
+      ]
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_read_proto3_empty",
+     "expr": "TestAllTypes{single_struct: {}}.single_struct",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "map": []
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_read_proto3_unset",
+     "expr": "TestAllTypes{}.single_struct",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "map": []
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "value_null",
+   "tests": [
+    {
+     "name": "literal",
+     "expr": "Value{null_value: NullValue.NULL_VALUE}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "google.protobuf",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "null": null
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "literal_no_field_access",
+     "expr": "Value{null_value: NullValue.NULL_VALUE}.null_value",
+     "disable_macros": false,
+     "disable_check": true,
+     "container": "google.protobuf",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "no_matching_overload"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "literal_unset",
+     "expr": "google.protobuf.Value{}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "null": null
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "var",
+     "expr": "x",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {
+      "x": {
+       "object": {
+        "type_url": "type.googleapis.com/google.protobuf.Value",
+        "json": null
+       }
+      }
+     },
+     "type_env": [
+      {
+       "ident": "x",
+       "type": "google.protobuf.Value"
+      }
+     ],
+     "expect": {
+      "null": null
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto2",
+     "expr": "TestAllTypes{single_value: null}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto2.TestAllTypes",
+       "json": {
+        "singleValue": null
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_read_proto2",
+     "expr": "TestAllTypes{single_value: null}.single_value",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "null": null
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_read_proto2_unset",
+     "expr": "TestAllTypes{}.single_value",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "null": null
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto3",
+     "expr": "TestAllTypes{single_value: null}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto3.TestAllTypes",
+       "json": {
+        "singleValue": null
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_read_proto3",
+     "expr": "TestAllTypes{single_value: null}.single_value",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "null": null
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_read_proto3_unset",
+     "expr": "TestAllTypes{}.single_value",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "null": null
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "value_number",
+   "tests": [
+    {
+     "name": "literal",
+     "expr": "google.protobuf.Value{number_value: 12.5}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "double": 12.5
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "literal_no_field_access",
+     "expr": "google.protobuf.Value{number_value: 12.5}.number_value",
+     "disable_macros": false,
+     "disable_check": true,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "no_matching_overload"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "literal_zero",
+     "expr": "google.protobuf.Value{number_value: 0.0}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "double": 0.0
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "var",
+     "expr": "x",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {
+      "x": {
+       "object": {
+        "type_url": "type.googleapis.com/google.protobuf.Value",
+        "json": -26.375
+       }
+      }
+     },
+     "type_env": [
+      {
+       "ident": "x",
+       "type": "google.protobuf.Value"
+      }
+     ],
+     "expect": {
+      "double": -26.375
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto2",
+     "expr": "TestAllTypes{single_value: 7e23}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto2.TestAllTypes",
+       "json": {
+        "singleValue": 7e+23
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto2_zero",
+     "expr": "TestAllTypes{single_value: 0.0}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto2.TestAllTypes",
+       "json": {
+        "singleValue": 0.0
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_read_proto2",
+     "expr": "TestAllTypes{single_value: 7e23}.single_value",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "double": 7e+23
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_read_proto2_zero",
+     "expr": "TestAllTypes{single_value: 0.0}.single_value",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "double": 0.0
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto3",
+     "expr": "TestAllTypes{single_value: 7e23}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto3.TestAllTypes",
+       "json": {
+        "singleValue": 7e+23
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto3_zero",
+     "expr": "TestAllTypes{single_value: 0.0}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto3.TestAllTypes",
+       "json": {
+        "singleValue": 0.0
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_read_proto3",
+     "expr": "TestAllTypes{single_value: 7e23}.single_value",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "double": 7e+23
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_read_proto3_zero",
+     "expr": "TestAllTypes{single_value: 0.0}.single_value",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "double": 0.0
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "value_string",
+   "tests": [
+    {
+     "name": "literal",
+     "expr": "google.protobuf.Value{string_value: 'foo'}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "string": "foo"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "literal_no_field_access",
+     "expr": "google.protobuf.Value{string_value: 'foo'}.string_value",
+     "disable_macros": false,
+     "disable_check": true,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "no_matching_overload"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "literal_empty",
+     "expr": "google.protobuf.Value{string_value: ''}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "string": ""
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "var",
+     "expr": "x",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {
+      "x": {
+       "object": {
+        "type_url": "type.googleapis.com/google.protobuf.Value",
+        "json": "bar"
+       }
+      }
+     },
+     "type_env": [
+      {
+       "ident": "x",
+       "type": "google.protobuf.Value"
+      }
+     ],
+     "expect": {
+      "string": "bar"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto2",
+     "expr": "TestAllTypes{single_value: 'baz'}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto2.TestAllTypes",
+       "json": {
+        "singleValue": "baz"
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto2_empty",
+     "expr": "TestAllTypes{single_value: ''}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto2.TestAllTypes",
+       "json": {
+        "singleValue": ""
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_read_proto2",
+     "expr": "TestAllTypes{single_value: 'bletch'}.single_value",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "string": "bletch"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_read_proto2_zero",
+     "expr": "TestAllTypes{single_value: ''}.single_value",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "string": ""
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto3",
+     "expr": "TestAllTypes{single_value: 'baz'}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto3.TestAllTypes",
+       "json": {
+        "singleValue": "baz"
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto3_empty",
+     "expr": "TestAllTypes{single_value: ''}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto3.TestAllTypes",
+       "json": {
+        "singleValue": ""
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_read_proto3",
+     "expr": "TestAllTypes{single_value: 'bletch'}.single_value",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "string": "bletch"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_read_proto3_zero",
+     "expr": "TestAllTypes{single_value: ''}.single_value",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "string": ""
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "value_bool",
+   "tests": [
+    {
+     "name": "literal",
+     "expr": "google.protobuf.Value{bool_value: true}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "literal_no_field_access",
+     "expr": "google.protobuf.Value{bool_value: true}.bool_value",
+     "disable_macros": false,
+     "disable_check": true,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "no_matching_overload"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "literal_false",
+     "expr": "google.protobuf.Value{bool_value: false}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "var",
+     "expr": "x",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {
+      "x": {
+       "object": {
+        "type_url": "type.googleapis.com/google.protobuf.Value",
+        "json": true
+       }
+      }
+     },
+     "type_env": [
+      {
+       "ident": "x",
+       "type": "google.protobuf.Value"
+      }
+     ],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto2",
+     "expr": "TestAllTypes{single_value: true}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto2.TestAllTypes",
+       "json": {
+        "singleValue": true
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto2_false",
+     "expr": "TestAllTypes{single_value: false}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto2.TestAllTypes",
+       "json": {
+        "singleValue": false
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_read_proto2",
+     "expr": "TestAllTypes{single_value: true}.single_value",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_read_proto2_false",
+     "expr": "TestAllTypes{single_value: false}.single_value",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto3",
+     "expr": "TestAllTypes{single_value: true}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto3.TestAllTypes",
+       "json": {
+        "singleValue": true
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto3_false",
+     "expr": "TestAllTypes{single_value: false}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto3.TestAllTypes",
+       "json": {
+        "singleValue": false
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_read_proto3",
+     "expr": "TestAllTypes{single_value: true}.single_value",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_read_proto3_false",
+     "expr": "TestAllTypes{single_value: false}.single_value",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": false
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "value_struct",
+   "tests": [
+    {
+     "name": "literal",
+     "expr": "google.protobuf.Value{struct_value: {'a': 1.0, 'b': 'two'}}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "map": [
+       [
+        {
+         "string": "a"
+        },
+        {
+         "double": 1.0
+        }
+       ],
+       [
+        {
+         "string": "b"
+        },
+        {
+         "string": "two"
+        }
+       ]
+      ]
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "literal_no_field_access",
+     "expr": "google.protobuf.Value{struct_value: {'a': 1.0, 'b': 'two'}}.struct_value",
+     "disable_macros": false,
+     "disable_check": true,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "no_matching_overload"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "literal_empty",
+     "expr": "google.protobuf.Value{struct_value: {}}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "map": []
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "var",
+     "expr": "x",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {
+      "x": {
+       "object": {
+        "type_url": "type.googleapis.com/google.protobuf.Value",
+        "json": {
+         "x": null,
+         "y": false
+        }
+       }
+      }
+     },
+     "type_env": [
+      {
+       "ident": "x",
+       "type": "google.protobuf.Value"
+      }
+     ],
+     "expect": {
+      "map": [
+       [
+        {
+         "string": "x"
+        },
+        {
+         "null": null
+        }
+       ],
+       [
+        {
+         "string": "y"
+        },
+        {
+         "bool": false
+        }
+       ]
+      ]
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto2",
+     "expr": "TestAllTypes{single_value: {'un': 1.0, 'deux': 2.0}}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto2.TestAllTypes",
+       "json": {
+        "singleValue": {
+         "deux": 2.0,
+         "un": 1.0
+        }
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto2_empty",
+     "expr": "TestAllTypes{single_value: {}}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto2.TestAllTypes",
+       "json": {
+        "singleValue": {}
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_read_proto2",
+     "expr": "TestAllTypes{single_value: {'i': true}}.single_value",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "map": [
+       [
+        {
+         "string": "i"
+        },
+        {
+         "bool": true
+        }
+       ]
+      ]
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_read_proto2_empty",
+     "expr": "TestAllTypes{single_value: {}}.single_value",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "map": []
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto3",
+     "expr": "TestAllTypes{single_value: {'un': 1.0, 'deux': 2.0}}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto3.TestAllTypes",
+       "json": {
+        "singleValue": {
+         "deux": 2.0,
+         "un": 1.0
+        }
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto3_empty",
+     "expr": "TestAllTypes{single_value: {}}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto3.TestAllTypes",
+       "json": {
+        "singleValue": {}
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_read_proto3",
+     "expr": "TestAllTypes{single_value: {'i': true}}.single_value",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "map": [
+       [
+        {
+         "string": "i"
+        },
+        {
+         "bool": true
+        }
+       ]
+      ]
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_read_proto3_empty",
+     "expr": "TestAllTypes{single_value: {}}.single_value",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "map": []
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "value_list",
+   "tests": [
+    {
+     "name": "literal",
+     "expr": "google.protobuf.Value{list_value: ['a', 3.0]}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "list": [
+       {
+        "string": "a"
+       },
+       {
+        "double": 3.0
+       }
+      ]
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "literal_no_field_access",
+     "expr": "google.protobuf.Value{list_value: []}.list_value",
+     "disable_macros": false,
+     "disable_check": true,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "no_matching_overload"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "literal_empty",
+     "expr": "google.protobuf.Value{list_value: []}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "list": []
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "var",
+     "expr": "x",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {
+      "x": {
+       "object": {
+        "type_url": "type.googleapis.com/google.protobuf.Value",
+        "json": [
+         1.0,
+         true,
+         "hi"
+        ]
+       }
+      }
+     },
+     "type_env": [
+      {
+       "ident": "x",
+       "type": "google.protobuf.Value"
+      }
+     ],
+     "expect": {
+      "list": [
+       {
+        "double": 1.0
+       },
+       {
+        "bool": true
+       },
+       {
+        "string": "hi"
+       }
+      ]
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto2",
+     "expr": "TestAllTypes{single_value: ['un', 1.0]}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto2.TestAllTypes",
+       "json": {
+        "singleValue": [
+         "un",
+         1.0
+        ]
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto2_empty",
+     "expr": "TestAllTypes{single_value: []}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto2.TestAllTypes",
+       "json": {
+        "singleValue": []
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_read_proto2",
+     "expr": "TestAllTypes{single_value: ['i', true]}.single_value",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "list": [
+       {
+        "string": "i"
+       },
+       {
+        "bool": true
+       }
+      ]
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_read_proto2_empty",
+     "expr": "TestAllTypes{single_value: []}.single_value",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "list": []
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto3",
+     "expr": "TestAllTypes{single_value: ['un', 1.0]}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto3.TestAllTypes",
+       "json": {
+        "singleValue": [
+         "un",
+         1.0
+        ]
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto3_empty",
+     "expr": "TestAllTypes{single_value: []}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto3.TestAllTypes",
+       "json": {
+        "singleValue": []
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_read_proto3",
+     "expr": "TestAllTypes{single_value: ['i', true]}.single_value",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "list": [
+       {
+        "string": "i"
+       },
+       {
+        "bool": true
+       }
+      ]
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_read_proto3_empty",
+     "expr": "TestAllTypes{single_value: []}.single_value",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "list": []
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "any",
+   "tests": [
+    {
+     "name": "literal",
+     "expr": "google.protobuf.Any{type_url: 'type.googleapis.com/cel.expr.conformance.proto2.TestAllTypes', value: b'\\x08\\x96\\x01'}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto2.TestAllTypes",
+       "json": {
+        "singleInt32": 150
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "literal_no_field_access",
+     "expr": "google.protobuf.Any{type_url: 'type.googleapis.com/cel.expr.conformance.proto2.TestAllTypes', value: b'\\x08\\x96\\x01'}.type_url",
+     "disable_macros": false,
+     "disable_check": true,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "no_matching_overload"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "literal_empty",
+     "expr": "google.protobuf.Any{}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "conversion"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "var",
+     "expr": "x",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {
+      "x": {
+       "object": {
+        "type_url": "type.googleapis.com/google.protobuf.Any",
+        "json": {
+         "@type": "type.googleapis.com/cel.expr.conformance.proto2.TestAllTypes",
+         "singleInt32": 150
+        }
+       }
+      }
+     },
+     "type_env": [
+      {
+       "ident": "x",
+       "type": "google.protobuf.Any"
+      }
+     ],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto2.TestAllTypes",
+       "json": {
+        "singleInt32": 150
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto2",
+     "expr": "TestAllTypes{single_any: TestAllTypes{single_int32: 150}}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto2.TestAllTypes",
+       "json": {
+        "singleAny": {
+         "@type": "type.googleapis.com/cel.expr.conformance.proto2.TestAllTypes",
+         "singleInt32": 150
+        }
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_read_proto2",
+     "expr": "TestAllTypes{single_any: TestAllTypes{single_int32: 150}}.single_any",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto2",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto2.TestAllTypes",
+       "json": {
+        "singleInt32": 150
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_assign_proto3",
+     "expr": "TestAllTypes{single_any: TestAllTypes{single_int32: 150}}",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto3.TestAllTypes",
+       "json": {
+        "singleAny": {
+         "@type": "type.googleapis.com/cel.expr.conformance.proto3.TestAllTypes",
+         "singleInt32": 150
+        }
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "field_read_proto3",
+     "expr": "TestAllTypes{single_any: TestAllTypes{single_int32: 150}}.single_any",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "object": {
+       "type_url": "type.googleapis.com/cel.expr.conformance.proto3.TestAllTypes",
+       "json": {
+        "singleInt32": 150
+       }
+      }
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "complex",
+   "tests": [
+    {
+     "name": "any_list_map",
+     "expr": "TestAllTypes{single_any: [{'almost': 'done'}]}.single_any",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "cel.expr.conformance.proto3",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "list": [
+       {
+        "map": [
+         [
+          {
+           "string": "almost"
+          },
+          {
+           "string": "done"
+          }
+         ]
+        ]
+       }
+      ]
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  }
+ ]
+}

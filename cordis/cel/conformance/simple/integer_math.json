@@ -1,0 +1,912 @@
+{
+ "source": "cel-spec tests/simple/testdata/integer_math.textproto @ 40a3c9007a9305d1f2638d5f538a4e011732cace",
+ "name": "integer_math",
+ "sections": [
+  {
+   "name": "int64_math",
+   "tests": [
+    {
+     "name": "add_positive_positive",
+     "expr": "40 + 2",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "42"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "add_positive_negative",
+     "expr": "42 + (-7)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "35"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "add_negative_negative",
+     "expr": "-4 + (-2)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "-6"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "sub_positive_positive",
+     "expr": "42 - 12",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "30"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "sub_positive_negative",
+     "expr": "42 - (-22)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "64"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "sub_negative_negative",
+     "expr": "-42 - (-12)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "-30"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "multiply_positive_positive",
+     "expr": "42 * 2",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "84"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "multiply_positive_negative",
+     "expr": "40 * (-2)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "-80"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "multiply_negative_negative",
+     "expr": "-30 * (-2)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "60"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "divide_positive_positive",
+     "expr": "42 / 2",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "21"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "divide_positive_negative",
+     "expr": "-20 / 2",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "-10"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "divide_negative_negative",
+     "expr": "-80 / (-2)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "40"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "mod_positive_positive",
+     "expr": "47 % 5",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "2"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "mod_positive_negative",
+     "expr": "43 % (-5)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "3"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "mod_negative_negative",
+     "expr": "-42 % (-5)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "-2"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "mod_negative_positive",
+     "expr": "-3 % 5",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "-3"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "unary_minus_pos",
+     "expr": "-(42)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "-42"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "unary_minus_neg",
+     "expr": "-(-42)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "42"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "unary_minus_no_overload",
+     "expr": "-(42u)",
+     "disable_macros": false,
+     "disable_check": true,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "no_such_overload"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "unary_minus_not_bool",
+     "expr": "-false",
+     "disable_macros": false,
+     "disable_check": true,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "no_such_overload"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "mod_zero",
+     "expr": "34 % 0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "modulus by zero"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "negative_zero",
+     "expr": "-(0)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "0"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "double_negative",
+     "expr": "-(-42)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "42"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "divide_zero",
+     "expr": "15 / 0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "divide by zero"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "multiply_zero",
+     "expr": "15 * 0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "0"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "add_left_identity",
+     "expr": "0 + 17",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "17"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "add_right_identity",
+     "expr": " 29 + 0",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "29"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "add_commutative",
+     "expr": "75 + 15 == 15 + 75",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "add_associative",
+     "expr": "5 + (15 + 20) == (5 + 15) + 20",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "mul_left_identity",
+     "expr": "1 * 45",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "45"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "mul_right_identity",
+     "expr": "-25 * 1",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "int": "-25"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "mul_commutative",
+     "expr": "15 * 25 == 25 * 15",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "mul_associative",
+     "expr": "15 * (23 * 88) == (15 * 23) * 88",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "add_mul_distribute",
+     "expr": "5 * (15 + 25)  == 5 * 15 + 5 * 25",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "int64_overflow_positive",
+     "expr": "9223372036854775807 + 1",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "return error for overflow"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "int64_overflow_negative",
+     "expr": "-9223372036854775808 - 1",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "return error for overflow"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "int64_overflow_add_negative",
+     "expr": "-9223372036854775808 + (-1)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "return error for overflow"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "int64_overflow_sub_positive",
+     "expr": "1 - (-9223372036854775807)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "return error for overflow"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "int64_min_negate",
+     "expr": "-(-9223372036854775808)",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "return error for overflow"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "int64_min_negate_mul",
+     "expr": "(-9223372036854775808) * -1",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "return error for overflow"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "int64_min_negate_div",
+     "expr": "(-9223372036854775808)/-1",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "return error for overflow"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "int64_overflow_mul_positive",
+     "expr": "5000000000 * 5000000000",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "return error for overflow"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "int64_overflow_mul_negative",
+     "expr": "(-5000000000) * 5000000000",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "return error for overflow"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "uint64_overflow_positive",
+     "expr": "18446744073709551615u + 1u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "return error for overflow"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "uint64_overflow_negative",
+     "expr": "0u - 1u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "return error for overflow"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "uint64_overflow_mul_positive",
+     "expr": "5000000000u * 5000000000u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "return error for overflow"
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  },
+  {
+   "name": "uint64_math",
+   "tests": [
+    {
+     "name": "add",
+     "expr": "42u + 2u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "uint": "44"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "sub",
+     "expr": "42u - 12u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "uint": "30"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "multiply",
+     "expr": "40u * 2u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "uint": "80"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "divide",
+     "expr": "60u / 2u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "uint": "30"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "mod",
+     "expr": "42u % 5u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "uint": "2"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "negative_no_overload",
+     "expr": "-(5u)",
+     "disable_macros": false,
+     "disable_check": true,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "no such overload"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "mod_zero",
+     "expr": "34u % 0u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "modulus by zero"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "divide_zero",
+     "expr": "15u / 0u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "error": "divide by zero"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "multiply_zero",
+     "expr": "15u * 0u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "uint": "0"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "add_left_identity",
+     "expr": "0u + 17u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "uint": "17"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "add_right_identity",
+     "expr": " 29u + 0u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "uint": "29"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "add_commutative",
+     "expr": "75u + 15u == 15u + 75u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "add_associative",
+     "expr": "5u + (15u + 20u) == (5u + 15u) + 20u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "mul_left_identity",
+     "expr": "1u * 45u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "uint": "45"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "mul_right_identity",
+     "expr": "25u * 1u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "uint": "25"
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "mul_commutative",
+     "expr": "15u * 25u == 25u * 15u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "mul_associative",
+     "expr": "15u * (23u * 88u) == (15u * 23u) * 88u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    },
+    {
+     "name": "add_mul_distribute",
+     "expr": "5u * (15u + 25u)  == 5u * 15u + 5u * 25u",
+     "disable_macros": false,
+     "disable_check": false,
+     "container": "",
+     "bindings": {},
+     "type_env": [],
+     "expect": {
+      "bool": true
+     },
+     "check_only": false,
+     "typed_result": null
+    }
+   ]
+  }
+ ]
+}

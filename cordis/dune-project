@@ -8,5 +8,6 @@
   (ocaml (>= 5.4))
   (dune (>= 3.16))
   yojson
+  re
   (alcotest :with-test)
   (hegel (and :with-test (>= 0.25.0)))))
