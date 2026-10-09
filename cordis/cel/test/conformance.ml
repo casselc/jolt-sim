@@ -18,13 +18,6 @@ type outcome = Pass | Fail of string | Skip of string
 let file_skips =
   [ ("timestamps", "timestamps and durations (RFC 0001 step 5)");
     ("type_deduction", "type checker (RFC 0001 step 3)");
-    ("string_ext", "extension library: strings");
-    ("math_ext", "extension library: math");
-    ("lists_ext", "extension library: lists");
-    ("bindings_ext", "extension library: bindings");
-    ("encoders_ext", "extension library: encoders");
-    ("network_ext", "extension library: network");
-    ("block_ext", "cel-go internal: cel.block");
     ("optionals", "optional types");
     ("proto2", "protobuf messages (out of scope)");
     ("proto2_ext", "protobuf messages (out of scope)");
@@ -33,10 +26,12 @@ let file_skips =
     ("wrappers", "protobuf wrapper types (out of scope)");
     ("namespace", "containers") ]
 
+let no_skip = ref false
+
 let run_test file (t : Yojson.Safe.t) =
   let str k = J.to_string (J.member k t) in
   let expr = str "expr" in
-  match List.assoc_opt file file_skips with
+  match (if !no_skip then None else List.assoc_opt file file_skips) with
   | Some why -> Skip why
   | None -> (
       if J.to_bool (J.member "check_only" t) then Skip "check only (type checker, RFC 0001 step 3)"
@@ -75,7 +70,8 @@ let () =
   Arg.parse
     [ ("--verbose", Arg.Set verbose, "print every failure");
       ("--file", Arg.Set_string only, "run one file");
-      ("--fail-on-fail", Arg.Set fail_on_fail, "exit 1 on any failure") ]
+      ("--fail-on-fail", Arg.Set fail_on_fail, "exit 1 on any failure");
+      ("--no-skip", Arg.Set no_skip, "run the files skipped as a whole, to see how they fail") ]
     (fun d -> dir := d)
     "conformance.exe DIR";
   let files =

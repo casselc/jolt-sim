@@ -54,6 +54,9 @@ type t =
   | Optional of t option
   | Error of string
   | Unknown of int list
+  | Opaque of { tname : string; data : string }
+      (** a value of an extension type (e.g. [net.IP]), held in a canonical
+          string form; equal when type and form are equal *)
 
 let type_of = function
   | Null -> T_null
@@ -70,6 +73,7 @@ let type_of = function
   | Duration _ -> T_duration
   | Optional _ -> T_optional
   | Error _ | Unknown _ -> T_named "error"
+  | Opaque { tname; _ } -> T_named tname
 
 let is_error = function Error _ -> true | _ -> false
 let is_unknown = function Unknown _ -> true | _ -> false
@@ -198,6 +202,7 @@ let rec equal a b =
       && List.for_all (fun (k, v) -> match map_find ys k with Some v' -> equal v v' | None -> false) xs
   | Type x, Type y -> type_name x = type_name y
   | Timestamp (s, n), Timestamp (s', n') | Duration (s, n), Duration (s', n') -> s = s' && n = n'
+  | Opaque a, Opaque b -> a.tname = b.tname && a.data = b.data
   | Optional x, Optional y -> (
       match x, y with None, None -> true | Some x, Some y -> equal x y | _ -> false)
   | _ -> false
@@ -232,3 +237,4 @@ let rec to_string = function
   | Optional (Some v) -> "optional.of(" ^ to_string v ^ ")"
   | Error e -> "error(" ^ e ^ ")"
   | Unknown ids -> "unknown(" ^ String.concat "," (List.map string_of_int ids) ^ ")"
+  | Opaque { tname; data } -> Printf.sprintf "%s(%S)" tname data

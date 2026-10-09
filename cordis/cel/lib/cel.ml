@@ -8,6 +8,7 @@ module Eval = Eval
 let parse = Parser.parse
 
 let eval ?limit ?(vars = []) ?(macros = true) src =
+  Extensions.load ();
   match Parser.parse ~macros src with
   | Error e -> Error e
   | Ok ast -> Ok (Eval.run ?limit ~vars ast)

@@ -34,7 +34,10 @@ let resolve act name =
       let name = if String.length name > 0 && name.[0] = '.' then String.sub name 1 (String.length name - 1) else name in
       match List.assoc_opt name act.vars with
       | Some v -> Some v
-      | None -> Option.map (fun t -> Type t) (List.assoc_opt name type_idents))
+      | None -> (
+          match List.assoc_opt name type_idents with
+          | Some t -> Some (Type t)
+          | None -> Option.map (fun t -> Type t) (Registry.find_type name)))
 
 (* ---- helpers ------------------------------------------------------------------------ *)
 
@@ -272,7 +275,7 @@ let call_function fn args =
         Error "insert failed: key already exists"
       else make_map (entries @ m)
   | ("timestamp" | "duration"), _ -> Error "unsupported: timestamps and durations (RFC 0001 step 5)"
-  | _ -> no_overload fn
+  | _ -> ( match Registry.call fn args with Some v -> v | None -> no_overload fn)
 
 (* ---- evaluation ------------------------------------------------------------------ *)
 
@@ -363,6 +366,15 @@ let rec eval c act (e : Ast.expr) : Value.t =
       let pairs = List.map (fun (k, v) -> (eval c act k, eval c act v)) kvs in
       let all = List.concat_map (fun (k, v) -> [ k; v ]) pairs in
       strict all (fun _ -> make_map pairs)
+  | Ast.Call { fn; target = Some t; args } -> (
+      (* a namespaced function: math.greatest(x) when math is not a value *)
+      match ident_path t with
+      | Some (root :: _ as p)
+        when (not (List.mem_assoc root act.locals))
+             && resolve act root = None
+             && Registry.mem (String.concat "." (p @ [ fn ])) ->
+          eval_call c act (String.concat "." (p @ [ fn ])) None args
+      | _ -> eval_call c act fn (Some t) args)
   | Ast.Call { fn; target; args } -> eval_call c act fn target args
   | Ast.Comprehension { iter_var; iter_var2; range; accu_var; accu_init; loop_cond; loop_step; result } -> (
       let r = eval c act range in
