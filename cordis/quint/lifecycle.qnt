@@ -34,7 +34,8 @@
  *  - RECONCILE = false (`blindRetry`): an Uncertain intent is sent again
  *    instead of reconciled against the world.
  * Witnesses (checked as not(w), expected VIOLATED in simulation):
- * someUncertain, guardWaiting, someFailed, failingUnload, restartedEmits.
+ * someUncertain, guardWaiting, someFailed, failingUnload; and
+ * restartedEmits, on the `longLived` instance, where nothing is retired.
  */
 module lifecycle {
   type Life =
@@ -265,5 +266,21 @@ module blindRetry {
     RETIRABLE = Set(1, 3),
     GUARD = true,
     RECONCILE = false
+  ).* from "./lifecycle"
+}
+
+// The design with nothing retired: for witnesses that need a long life,
+// such as a fiber failing, restarting and emitting again.
+module longLived {
+  import lifecycle(
+    FIBERS = Set(1, 2, 3),
+    REQ = Map(1 -> Set(), 2 -> Set("db"), 3 -> Set("api")),
+    PROV = Map(1 -> Set("db"), 2 -> Set("api"), 3 -> Set()),
+    ITERS = Map(1 -> 1, 2 -> 2, 3 -> 1),
+    PROV_AT = Map(1 -> 0, 2 -> 1, 3 -> -1),
+    EMIT_AT = Map(1 -> Set(), 2 -> Set(0), 3 -> Set(0)),
+    RETIRABLE = Set(),
+    GUARD = true,
+    RECONCILE = true
   ).* from "./lifecycle"
 }

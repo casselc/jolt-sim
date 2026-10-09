@@ -521,6 +521,15 @@ Four phases, each usable on its own: first the pure core and its checks, then la
 2. **Hand-written Quint model of the lifecycle and outbox,** from `retirement.qnt` and `ambiguousCall.qnt`, checked in CI with the observability verdict rules.
 3. **Simulator.** A seeded Picos scheduler plus Eio mock, one entropy oracle backed by Hegel draws, the Antithesis-shaped assertion API, and ITF traces that quintgo validates.
 
+**Phase 1b: model the distributed parts before building them**
+
+Plain Quint modules beside the lifecycle model, each with a design instance, mutants and witnesses, simulated and checked with Apalache to a bound. Implementation in phase 3 follows the models.
+
+- 3a. **Outbox placement** (`cordis/quint/outbox.qnt`): per-agent outbox jails holding journals and credentials, the central limit service, `pf` egress, jail crashes, step-snapshot rollbacks and lost messages.
+- 3b. **Snapshot branching:** one snapshot restored into several VMs with fork IDs; only the chosen branch's emissions are released.
+- 3c. **The MCP/A2A gateway:** tool calls from outbox jails, intent kinds from tool annotations and `pf`, the stricter winning.
+- 3d. **Capability attenuation,** if Syndicate-style sturdy refs are adopted: attenuation never widens.
+
 **Phase 2: languages and imports**
 
 4. **CEL evaluator** with the cost estimator, the macro extensions and function libraries, tested against cel-spec conformance and cel-go.

@@ -9,6 +9,7 @@ simulator that checks one against the other.
 | --- | --- | --- |
 | `kernel/` | `Kernel`: the calculus (`target`, `relied`, `next`, `apply`, `orchestrate`) with Uncertain, turns, compensation, failure and episodes, as total functions with no IO. `Order`: ensemble's `restart-plan` and `intensity`, ported. | 1 |
 | `quint/` | `lifecycle.qnt`: the calculus and the outbox's answers, with a `design` instance, two mutants (`noGuard`, `blindRetry`) and five witnesses. `check.sh` runs the model gate; `model-verdict.sh` holds casselc/observability's fail and warn rules. | 2 |
+| `quint/outbox.qnt` | The outbox placement: per-agent outbox jails with journals and credentials, a central limit service, `pf` egress, crashes, restarts, step-snapshot rollbacks and lost messages. Four mutants, five witnesses. | 3a |
 | `sim/` | The simulator: one entropy `Oracle` makes every choice; `Assertions` speaks the Antithesis vocabulary; `Itf` writes runs as model-level ITF traces for `quintgo validate`. | 3 |
 | `hegel/` | The oracle over a Hegel test case, so failing runs shrink. | 3 |
 | `bin/` | `cordis-sim`: run a campaign, print its verdict, write ITF traces. | 3 |
@@ -27,10 +28,10 @@ dune build && dune test                    # 18 tests, about a second
 dune exec -- cordis-sim --runs 500         # a campaign over the chain scenario
 dune exec -- cordis-sim --scenario random --fibers 6 --runs 1000
 dune exec -- cordis-sim --mutant blind-retry   # exits 1: at most once is violated
-QUINTGO=$HOME/bin/quintgo quint/check.sh   # the model gate, a few minutes
+QUINTGO=$HOME/bin/quintgo quint/check.sh   # the model gate, about ten minutes
 ```
 
-`quint run` here uses `--backend typescript` (`QUINT_BACKEND` overrides it):
+`quint verify` (Apalache) needs Java 17+. `quint run` here uses `--backend typescript` (`QUINT_BACKEND` overrides it):
 the Rust backend is fetched from GitHub on first use, which some sandboxes
 refuse.
 
@@ -41,11 +42,12 @@ not run counts as a pass.
 
 | Property | Simulator (`always`) | Quint | Grade |
 | --- | --- | --- | --- |
-| The guard: an installed fiber's view names only installed providers (Cordis Thm 70) | every state | `guardHolds`; mutant `noGuard` breaks it | `:sampled` |
-| At most once: no emission takes effect twice | every state; mutant `blind-retry` breaks it, Hegel finds it | `atMostOnce`; mutant `blindRetry` breaks it | `:sampled` |
-| Terminal recovery: a fiber not installed holds no bindings; an unconsumed binding holds its provided value (Cordis Thm 68) | every state | `boundOnlyWhenRun` | `:sampled` |
+| The guard: an installed fiber's view names only installed providers (Cordis Thm 70) | every state | `guardHolds`; mutant `noGuard` breaks it | `:sampled`; `:exhausted` to 8 steps |
+| At most once: no emission takes effect twice | every state; mutant `blind-retry` breaks it, Hegel finds it | `atMostOnce`; mutant `blindRetry` breaks it | `:sampled`; `:exhausted` to 8 steps (model) |
+| Terminal recovery: a fiber not installed holds no bindings; an unconsumed binding holds its provided value (Cordis Thm 68) | every state | `boundOnlyWhenRun` | `:sampled`; `:exhausted` to 8 steps (model) |
 | Progress: every run quiesces, and a run with nothing left to do is quiet (Thm 73) | end of every run | not modelled (no liveness) | `:sampled` |
 | Confluence: every schedule quiesces to the same tables when shared operations commute (Thm 80) | 60 schedules of a fan-in; with `Put` instead of `Add`, schedules disagree, as they should | not modelled | `:sampled` |
+| Outbox: at most once across jail crashes and snapshot rollbacks; the shared limit holds; only outbox jails reach the service; a Done receipt is true | — | `outbox.qnt` `safety`; mutants `journalInSnapshot`, `localLimits`, `pfOpen`, `resendOnRestart` each break theirs | `:sampled`; `:exhausted` to 8 steps |
 | Conformance: a simulator run is a run of the model | — | `quintgo validate` replays ITF traces; a blind-retry run claiming to be the design is rejected | `:monitored` |
 
 ## What the simulator found

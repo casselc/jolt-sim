@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
-# The model gate for cordis phase 1 (docs/cordis/DESIGN.md, build order item
-# 2): simulate quint/lifecycle.qnt's design, its witnesses and its mutants,
-# replay simulator runs in the model with quintgo (conformance), and hand the
-# report to model-verdict.sh, whose fail and warn rules decide the exit.
+# The model gate for cordis (docs/cordis/DESIGN.md, build order items 2 and
+# 3a): simulate each model's design, witnesses and mutants; check each design
+# with Apalache to VERIFY_STEPS (default 8); replay simulator runs in the
+# model with quintgo (conformance); and hand the report to model-verdict.sh,
+# whose fail and warn rules decide the exit.
 #
 #   quint/check.sh                       # from cordis/
 #   OUT=report.txt SAMPLES=2000 quint/check.sh
 #
-# Needs quint (npm i -g @informalsystems/quint), dune with the cordis switch,
+# Needs quint (npm i -g @informalsystems/quint), Java 17+ for the Apalache that
+# `quint verify` fetches, dune with the cordis switch,
 # and quintgo (casselc/observability/quintgo; set QUINTGO to its binary).
 # Without QUINTGO the conformance rows report ERROR and the gate fails: a
 # skipped check is not a pass.
@@ -24,26 +26,52 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 : > "$OUT"
 
-sim() { # main invariant expect
-  local main=$1 inv=$2 expect=$3 r
-  out=$(cd "$here" && quint run --backend "$BACKEND" --main "$main" --invariant "$inv" \
-          --max-samples "$SAMPLES" --max-steps "$STEPS" lifecycle.qnt 2>&1)
-  if echo "$out" | grep -q '\[ok\] No violation'; then r=ok
-  elif echo "$out" | grep -q '\[violation\]'; then r=VIOLATED
-  else r=ERROR; echo "$out" | tail -5 >&2
+VERIFY_STEPS=${VERIFY_STEPS:-8}
+
+result() { # quint output -> ok | VIOLATED | ERROR
+  if echo "$1" | grep -q '\[ok\] No violation'; then echo ok
+  elif echo "$1" | grep -q '\[violation\]'; then echo VIOLATED
+  else echo "$1" | tail -5 >&2; echo ERROR
   fi
-  echo "sim lifecycle.qnt $main $inv $SAMPLES x $STEPS $r (expect $expect)" | tee -a "$OUT"
 }
 
+sim() { # file main invariant expect
+  local file=$1 main=$2 inv=$3 expect=$4 out
+  out=$(cd "$here" && quint run --backend "$BACKEND" --main "$main" --invariant "$inv" \
+          --max-samples "$SAMPLES" --max-steps "$STEPS" "$file" 2>&1)
+  echo "sim $file $main $inv $SAMPLES x $STEPS $(result "$out") (expect $expect)" | tee -a "$OUT"
+}
+
+verify() { # file main invariant expect: Apalache, bounded (an :exhausted grade to that depth)
+  local file=$1 main=$2 inv=$3 expect=$4 out
+  out=$(cd "$here" && quint verify --main "$main" --invariant "$inv" --max-steps "$VERIFY_STEPS" "$file" 2>&1)
+  echo "verify $file $main $inv $VERIFY_STEPS $(result "$out") (expect $expect)" | tee -a "$OUT"
+}
+
+# ---- lifecycle.qnt -------------------------------------------------------------------
 # the design: every safety property holds
-for inv in guardHolds atMostOnce boundOnlyWhenRun; do sim design "$inv" ok; done
+for inv in guardHolds atMostOnce boundOnlyWhenRun; do sim lifecycle.qnt design "$inv" ok; done
+verify lifecycle.qnt design safety ok
 # witnesses: each state must be reachable
-for w in someUncertain guardWaiting someFailed failingUnload restartedEmits; do
-  sim design "not($w)" VIOLATED
+for w in someUncertain guardWaiting someFailed failingUnload; do
+  sim lifecycle.qnt design "not($w)" VIOLATED
 done
+# a restart that emits again needs a long life: nothing retired
+sim lifecycle.qnt longLived "not(restartedEmits)" VIOLATED
 # mutants: each must break the property it exists to protect
-sim noGuard guardHolds VIOLATED
-sim blindRetry atMostOnce VIOLATED
+sim lifecycle.qnt noGuard guardHolds VIOLATED
+sim lifecycle.qnt blindRetry atMostOnce VIOLATED
+
+# ---- outbox.qnt ----------------------------------------------------------------------
+for inv in atMostOnce withinLimit onlyOutboxEgress receiptsTrue; do sim outbox.qnt design "$inv" ok; done
+verify outbox.qnt design safety ok
+for w in someUnknown limitFull reconciledApplied reconciledNotApplied rolledBackAfterSend; do
+  sim outbox.qnt design "not($w)" VIOLATED
+done
+sim outbox.qnt journalInSnapshot atMostOnce VIOLATED
+sim outbox.qnt localLimits withinLimit VIOLATED
+sim outbox.qnt pfOpen onlyOutboxEgress VIOLATED
+sim outbox.qnt resendOnRestart atMostOnce VIOLATED
 
 # conformance: simulator runs replayed in the model
 conform() { # label scenario mutant expect(pass|fail) extra-args...
