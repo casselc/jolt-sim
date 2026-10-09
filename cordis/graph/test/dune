@@ -1,0 +1,5 @@
+; Hegel properties of the syntax: round trip, formatting, hashes
+(test
+ (name props)
+ (modules props)
+ (libraries cordis_graph cordis_cel cel_testgen hegel alcotest))

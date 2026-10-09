@@ -1,0 +1,3 @@
+(executable
+ (name cgraph)
+ (libraries cordis_graph))

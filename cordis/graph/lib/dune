@@ -1,0 +1,3 @@
+(library
+ (name cordis_graph)
+ (libraries cordis_cel))

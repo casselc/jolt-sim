@@ -1,0 +1,38 @@
+// The review loop of docs/cordis/rfc/0002-graph-language.md.
+
+type Diff    = { path : string; patch : string<max 65536> };
+type Review  = { passed : bool; notes : string };
+type Verdict = Pass(Review) | Fail(Review);
+
+effect repo.read(string) : { text : string };
+effect llm.complete({ prompt : list(string); max_tokens : int }) : { text : string };
+
+cell write(request : Diff, notes : list(string)) : Diff = {
+  // a revision folds the notes into the patch
+  Diff{path: request.path, patch: notes.fold(p, request.patch, n, p + '\n// ' + n)};
+}
+
+cell critic(diff : Diff) : Verdict
+  ! { repo.read, llm.complete }
+  state { attempts : int = 0; }
+= {
+  use ctx  = repo.read(diff.path);
+  use resp = llm.complete({'prompt': [ctx.text, diff.patch], 'max_tokens': 4000});
+  let r    = Review{passed: resp.text.startsWith('LGTM'), notes: resp.text};
+  r.passed ? Verdict.Pass(r) : Verdict.Fail(r)
+    with state.attempts := state.attempts + 1;
+}
+
+cell gate(v : Verdict) : bool = {
+  match v { Pass(r) -> true; Fail(r) -> false };
+}
+
+graph review_loop {
+  input  request : Diff;
+  stream notes : string;
+  asset  draft   = write(request, notes) ~fresh:on_change;
+  asset  verdict = critic(draft);
+  asset  shipped = gate(verdict);
+  route verdict { Pass(_) -> shipped; Fail(r) -> notes <~ r.notes };
+  invariant critic before gate;
+}
