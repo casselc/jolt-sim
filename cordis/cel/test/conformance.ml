@@ -16,8 +16,7 @@ type outcome = Pass | Fail of string | Skip of string
 
 (* Whole files that exercise libraries this implementation does not have yet. *)
 let file_skips =
-  [ ("timestamps", "timestamps and durations (RFC 0001 step 5)");
-    ("type_deduction", "type checker (RFC 0001 step 3)");
+  [ ("type_deduction", "type checker (RFC 0001 step 3)");
     ("optionals", "optional types");
     ("proto2", "protobuf messages (out of scope)");
     ("proto2_ext", "protobuf messages (out of scope)");
@@ -36,8 +35,6 @@ let run_test file (t : Yojson.Safe.t) =
   | None -> (
       if J.to_bool (J.member "check_only" t) then Skip "check only (type checker, RFC 0001 step 3)"
       else if str "container" <> "" then Skip "containers"
-      else if mentions expr "timestamp(" || mentions expr "duration(" then
-        Skip "timestamps and durations (RFC 0001 step 5)"
       else
         let expect = J.member "expect" t in
         match expect with

@@ -101,6 +101,8 @@ let mul_uint a b =
     let r = Int64.mul a b in
     if Int64.unsigned_div r b <> a then overflow else Uint r
 
+let time_result k = function Ok v -> k v | Result.Error e -> Error e
+
 let arith op a b =
   match op, a, b with
   | "_+_", Int x, Int y -> add_int x y
@@ -124,6 +126,16 @@ let arith op a b =
   | "_+_", String x, String y -> String (x ^ y)
   | "_+_", Bytes x, Bytes y -> Bytes (x ^ y)
   | "_+_", List x, List y -> List (Array.append x y)
+  | "_+_", Timestamp (s, n), Duration (ds, dn) | "_+_", Duration (ds, dn), Timestamp (s, n) ->
+      time_result (fun (s, n) -> Timestamp (s, n)) (Ctime.ts_add (s, n) (ds, dn))
+  | "_-_", Timestamp (s, n), Duration (ds, dn) ->
+      time_result (fun (s, n) -> Timestamp (s, n)) (Ctime.ts_add (s, n) (Ctime.dur_neg (ds, dn)))
+  | "_-_", Timestamp (s1, n1), Timestamp (s2, n2) ->
+      time_result (fun (s, n) -> Duration (s, n)) (Ctime.ts_sub (s1, n1) (s2, n2))
+  | "_+_", Duration (s1, n1), Duration (s2, n2) ->
+      time_result (fun (s, n) -> Duration (s, n)) (Ctime.dur_add (s1, n1) (s2, n2))
+  | "_-_", Duration (s1, n1), Duration (s2, n2) ->
+      time_result (fun (s, n) -> Duration (s, n)) (Ctime.dur_sub (s1, n1) (s2, n2))
   | _ -> no_overload op
 
 let compare_values op a b =
@@ -198,6 +210,8 @@ let convert fn v =
   | "string", Double d -> String (format_double d)
   | "string", Bool b -> String (string_of_bool b)
   | "string", Bytes b -> if String.is_valid_utf_8 b then String b else Error "invalid UTF-8 in bytes"
+  | "string", Timestamp (s, n) -> String (Ctime.format_timestamp (s, n))
+  | "string", Duration (s, n) -> String (Ctime.format_duration (s, n))
   | "bytes", Bytes _ -> v
   | "bytes", String s -> Bytes s
   | "bool", Bool _ -> v
@@ -274,7 +288,20 @@ let call_function fn args =
       if List.exists (fun (k, _) -> lookup_key m k <> None) entries then
         Error "insert failed: key already exists"
       else make_map (entries @ m)
-  | ("timestamp" | "duration"), _ -> Error "unsupported: timestamps and durations (RFC 0001 step 5)"
+  | "timestamp", [ (Timestamp _ as t) ] -> t
+  | "timestamp", [ String s ] -> time_result (fun (s, n) -> Timestamp (s, n)) (Ctime.parse_timestamp s)
+  | "timestamp", [ Int i ] -> time_result (fun (s, n) -> Timestamp (s, n)) (Ctime.check_ts (i, 0))
+  | "duration", [ (Duration _ as d) ] -> d
+  | "duration", [ String s ] -> time_result (fun (s, n) -> Duration (s, n)) (Ctime.parse_duration s)
+  | ( ("getFullYear" | "getMonth" | "getDate" | "getDayOfMonth" | "getDayOfYear" | "getDayOfWeek" | "getHours"
+      | "getMinutes" | "getSeconds" | "getMilliseconds") as part ),
+    Timestamp (s, n) :: tz -> (
+      match tz with
+      | [] -> time_result (fun i -> Int i) (Ctime.timestamp_part part (s, n))
+      | [ String z ] -> time_result (fun i -> Int i) (Ctime.timestamp_part part ~tz:z (s, n))
+      | _ -> no_overload part)
+  | ("getHours" | "getMinutes" | "getSeconds" | "getMilliseconds"), [ Duration (s, n) ] ->
+      Int (Ctime.duration_part fn (s, n))
   | _ -> ( match Registry.call fn args with Some v -> v | None -> no_overload fn)
 
 (* ---- evaluation ------------------------------------------------------------------ *)

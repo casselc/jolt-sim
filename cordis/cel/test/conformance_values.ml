@@ -34,8 +34,10 @@ let rec decode (j : Yojson.Safe.t) : Value.t =
       match List.assoc_opt t Eval.type_idents with
       | Some ty -> Value.Type ty
       | None -> Value.Type (Value.T_named t))
-  | `Assoc [ ("timestamp", _) ] | `Assoc [ ("duration", _) ] ->
-      raise (Unsupported "timestamps and durations (RFC 0001 step 5)")
+  | `Assoc [ ("timestamp", `String t) ] -> (
+      match Ctime.parse_timestamp t with Ok (s, n) -> Value.Timestamp (s, n) | Error e -> raise (Unsupported e))
+  | `Assoc [ ("duration", `String d) ] -> (
+      match Ctime.parse_duration d with Ok (s, n) -> Value.Duration (s, n) | Error e -> raise (Unsupported e))
   | `Assoc [ ("object", _) ] | `Assoc [ ("enum", _) ] ->
       raise (Unsupported "protobuf messages and enums (out of scope)")
   | _ -> raise (Unsupported ("value " ^ Yojson.Safe.to_string j))
