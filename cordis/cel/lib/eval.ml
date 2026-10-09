@@ -319,6 +319,9 @@ let call_function fn args =
       match compile_regex p with
       | Some r -> Bool (Re.execp r s)
       | None -> err "invalid regular expression: %s" p)
+  | ("int" | "uint" | "double" | "string" | "bytes" | "bool"), [ (Opaque _ as v) ] -> (
+      (* an extension type converts through its library's overload *)
+      match Registry.call fn args with Some r -> r | None -> convert fn v)
   | ("int" | "uint" | "double" | "string" | "bytes" | "bool" | "dyn" | "type"), [ v ] -> convert fn v
   | "@map_insert", [ Map m; k; v ] -> (
       match lookup_key m k with
