@@ -8,28 +8,36 @@ expression, against cel-go.
 | Path | What it is |
 | --- | --- |
 | `lib/value.ml` | Values; CEL's heterogeneous numeric equality and ordering; maps kept in CEL key order so iteration is deterministic |
-| `lib/lexer.ml`, `lib/parser.ml` | The grammar, with the standard macros and the two-variable comprehension macros expanded to comprehensions at parse time |
-| `lib/eval.ml` | The evaluator: error and short-circuit rules, the standard library, and the actual-cost counter |
-| `conformance/` | cel-spec's `tests/simple` suite as JSON (Apache-2.0, see its README for the pinned SHA and how to regenerate) |
+| `lib/lexer.ml`, `lib/parser.ml` | The grammar, with the standard macros, the two-variable comprehension macros, optional syntax and message literals |
+| `lib/eval.ml` | The evaluator: error and short-circuit rules, containers, the standard library, and the actual-cost counter |
+| `lib/checker.ml` | The type checker: inference with type variables, assignability and join, standard-library signatures |
+| `lib/ctime.ml` | Timestamps and durations, RFC 3339 and Go-style parsing, calendar accessors in any IANA zone |
+| `lib/proto.ml` | Protobuf messages from descriptors: construction, presence, defaults, well-known types, protobuf JSON and binary decoding |
+| `lib/registry.ml`, `lib/extensions.ml` | Extension functions, macros and checker signatures, registered by library |
+| `lib/ext_*.ml` | Libraries: strings, math, lists, sets, network, encoders, optionals, `cel.bind`/`cel.block`, proto extensions |
+| `conformance/` | cel-spec's `tests/simple` suite and the descriptors of its protos as JSON (Apache-2.0; see its README) |
 | `celgo/` | A JSON-lines front end to cel-go v0.30.0, the reference for the differential test |
-| `test/conformance.ml` | Runs the suite: every test passes, fails or is skipped with its reason |
+| `test/conformance.ml` | Runs the suite; `--check-all` also type-checks every test that evaluates to a value |
 | `test/differential.ml` | Hegel draws expressions; each must give the same value (or both an error) and the same actual cost as cel-go |
 
-## Status (RFC 0001 phasing)
+## Status
 
-| Step | State |
+**Every cel-spec conformance test runs, and all 2527 pass.** Nothing is
+skipped. The differential test agrees with cel-go on value and cost for
+thousands of generated expressions.
+
+| RFC 0001 step | State |
 | --- | --- |
-| 1. Parser, macros, evaluator, standard library without time types | done: 1043 conformance tests pass, 0 fail |
-| 2. Actual cost | done for unchecked evaluation: equal to cel-go's on 5,000 generated expressions |
-| 3. Type checker | next; it also enables cel-go's per-overload costs (string and regex operations by length, `in` by list size), which cel-go applies only to checked expressions |
-| 4. Static estimator and the Hegel cost-soundness property | after 3 |
-| 5. Timestamps and durations | 78 conformance tests waiting |
-| 6. Harness extensions (`fold`, `match`, libraries) | two-variable comprehensions are in |
+| 1. Parser, macros, evaluator, standard library | done |
+| 2. Actual cost | done for unchecked evaluation: equal to cel-go's |
+| 3. Type checker | done: all type-deduction tests pass, and every core test that evaluates checks to a type that admits its value; extension-library signatures in progress |
+| 4. Static estimator and the Hegel cost-soundness property | next |
+| 5. Timestamps and durations | done |
+| 6. Harness extensions | two-variable comprehensions, `cel.bind`, `cel.block` in; `fold`, `match`, libraries next |
 
-Skipped conformance tests, by reason: containers 231, protobuf messages,
-enums and wrappers 361 (out of scope), extension libraries 548 (strings,
-math, lists, network, bindings, encoders, `cel.block`), timestamps 83,
-optional types 70, type checker 66.
+Beyond the RFC's first scope, protobuf messages are supported (they were
+out of scope): they are what the protobuf importer of RFC 0003 will feed
+cells, so the runtime half is done.
 
 ## Running
 
@@ -40,6 +48,21 @@ CELGO=/tmp/celgo dune build @cel/test/differential # 2000 cases by default (CEL_
 ```
 
 ## Decisions and cel-go differences
+
+- **Enums are ints by default** (cel-go's legacy mode). Strong enums,
+  typed values with `pkg.Enum(n)` and `pkg.Enum('NAME')` constructors, are
+  an option (`Proto.strong_enums`); the conformance runner turns it on for
+  the `strong_*` sections, so both halves of the enum tests run.
+- **Time zones come from the host's zoneinfo** (`$ZONEINFO`, default
+  `/usr/share/zoneinfo`), including backward-compatible names through
+  `tzdata.zi` links. A cell that names a zone therefore depends on the
+  host's tz data; the harness should pin it (or vendor it) per release.
+- **NaN sorts first** in `sort` and `sortBy`, so sorting is total and
+  deterministic; cel-go leaves NaN where its algorithm happens to put it.
+- **Where cel-go and the conformance suite disagree, the suite wins**:
+  `indexOf`/`lastIndexOf` with an offset past the end are errors, format
+  errors use the suite's wording, and an IPv4-mapped IPv6 address written
+  in hex is accepted as the IPv4 address (the dotted form is refused).
 
 - **Map iteration is sorted** (RFC 0001, "Determinism"). cel-go iterates Go
   maps in random order, so a comprehension over a map can build lists in a
