@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The model gate for cordis (docs/cordis/DESIGN.md, build order items 2 and
-# 3a): simulate each model's design, witnesses and mutants; check each design
+# 3a-3d): simulate each model's design, witnesses and mutants; check each design
 # with Apalache to VERIFY_STEPS (default 8); replay simulator runs in the
 # model with quintgo (conformance); and hand the report to model-verdict.sh,
 # whose fail and warn rules decide the exit.
@@ -28,8 +28,9 @@ trap 'rm -rf "$work"' EXIT
 
 VERIFY_STEPS=${VERIFY_STEPS:-8}
 
-result() { # quint output -> ok | VIOLATED | ERROR
-  if echo "$1" | grep -q '\[ok\] No violation'; then echo ok
+result() { # quint output -> ok | VIOLATED | ERROR (a deadlock is a broken model, not a finding)
+  if echo "$1" | grep -q 'reached a deadlock'; then echo "$1" | tail -3 >&2; echo ERROR
+  elif echo "$1" | grep -q '\[ok\] No violation'; then echo ok
   elif echo "$1" | grep -q '\[violation\]'; then echo VIOLATED
   else echo "$1" | tail -5 >&2; echo ERROR
   fi
@@ -72,6 +73,32 @@ sim outbox.qnt journalInSnapshot atMostOnce VIOLATED
 sim outbox.qnt localLimits withinLimit VIOLATED
 sim outbox.qnt pfOpen onlyOutboxEgress VIOLATED
 sim outbox.qnt resendOnRestart atMostOnce VIOLATED
+
+# ---- branches.qnt --------------------------------------------------------------------
+for inv in onlyChosen atMostOnce realOnlyToChosen answered; do sim branches.qnt design "$inv" ok; done
+verify branches.qnt design safety ok
+for w in sharedKeyHeldBack divergentSimulated chosenGotReal; do sim branches.qnt design "not($w)" VIOLATED; done
+sim branches.qnt releaseEarly onlyChosen VIOLATED
+# defense in depth: with the hold-back broken, oracle-drawn keys still stop duplicates
+sim branches.qnt releaseEarly atMostOnce ok
+sim branches.qnt releaseEarlyNoDedup atMostOnce VIOLATED
+sim branches.qnt noForkIds realOnlyToChosen VIOLATED
+
+# ---- gateway.qnt ---------------------------------------------------------------------
+for inv in atMostOnce remoteViaOutbox; do sim gateway.qnt design "$inv" ok; done
+verify gateway.qnt design safety ok
+for w in misannotatedReplayed emissionDeduped; do sim gateway.qnt design "not($w)" VIOLATED; done
+sim gateway.qnt ungated atMostOnce VIOLATED
+sim gateway.qnt missingIsInternal atMostOnce VIOLATED
+# honest annotations and "missing means emission" suffice without gating
+sim gateway.qnt honestUngated safety ok
+
+# ---- caps.qnt ------------------------------------------------------------------------
+for inv in noWidening attenuates; do sim caps.qnt design "$inv" ok; done
+verify caps.qnt design safety ok
+for w in narrowedTwice emptyRights; do sim caps.qnt design "not($w)" VIOLATED; done
+sim caps.qnt uncoveredCaveats noWidening VIOLATED
+sim caps.qnt unionCaveats noWidening VIOLATED
 
 # conformance: simulator runs replayed in the model
 conform() { # label scenario mutant expect(pass|fail) extra-args...

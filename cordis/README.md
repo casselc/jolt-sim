@@ -10,6 +10,9 @@ simulator that checks one against the other.
 | `kernel/` | `Kernel`: the calculus (`target`, `relied`, `next`, `apply`, `orchestrate`) with Uncertain, turns, compensation, failure and episodes, as total functions with no IO. `Order`: ensemble's `restart-plan` and `intensity`, ported. | 1 |
 | `quint/` | `lifecycle.qnt`: the calculus and the outbox's answers, with a `design` instance, two mutants (`noGuard`, `blindRetry`) and five witnesses. `check.sh` runs the model gate; `model-verdict.sh` holds casselc/observability's fail and warn rules. | 2 |
 | `quint/outbox.qnt` | The outbox placement: per-agent outbox jails with journals and credentials, a central limit service, `pf` egress, crashes, restarts, step-snapshot rollbacks and lost messages. Four mutants, five witnesses. | 3a |
+| `quint/branches.qnt` | Snapshot branching: one snapshot restored into several VMs with fork IDs; the outbox holds every branch's intents until one is chosen. Three mutants, three witnesses. | 3b |
+| `quint/gateway.qnt` | Tool calls through the MCP/A2A gateway: remote and hosted tools, annotations that can lie or be missing, rollback replay. Two mutants, two witnesses. | 3c |
+| `quint/caps.qnt` | Sturdy-ref attenuation: caveats appended by holders, a MAC chain the gatekeeper checks. Two mutants, two witnesses. | 3d |
 | `sim/` | The simulator: one entropy `Oracle` makes every choice; `Assertions` speaks the Antithesis vocabulary; `Itf` writes runs as model-level ITF traces for `quintgo validate`. | 3 |
 | `hegel/` | The oracle over a Hegel test case, so failing runs shrink. | 3 |
 | `bin/` | `cordis-sim`: run a campaign, print its verdict, write ITF traces. | 3 |
@@ -28,7 +31,7 @@ dune build && dune test                    # 18 tests, about a second
 dune exec -- cordis-sim --runs 500         # a campaign over the chain scenario
 dune exec -- cordis-sim --scenario random --fibers 6 --runs 1000
 dune exec -- cordis-sim --mutant blind-retry   # exits 1: at most once is violated
-QUINTGO=$HOME/bin/quintgo quint/check.sh   # the model gate, about ten minutes
+QUINTGO=$HOME/bin/quintgo quint/check.sh   # the model gate, about fifteen minutes
 ```
 
 `quint verify` (Apalache) needs Java 17+. `quint run` here uses `--backend typescript` (`QUINT_BACKEND` overrides it):
@@ -48,6 +51,9 @@ not run counts as a pass.
 | Progress: every run quiesces, and a run with nothing left to do is quiet (Thm 73) | end of every run | not modelled (no liveness) | `:sampled` |
 | Confluence: every schedule quiesces to the same tables when shared operations commute (Thm 80) | 60 schedules of a fan-in; with `Put` instead of `Add`, schedules disagree, as they should | not modelled | `:sampled` |
 | Outbox: at most once across jail crashes and snapshot rollbacks; the shared limit holds; only outbox jails reach the service; a Done receipt is true | — | `outbox.qnt` `safety`; mutants `journalInSnapshot`, `localLimits`, `pfOpen`, `resendOnRestart` each break theirs | `:sampled`; `:exhausted` to 8 steps |
+| Branches: only the chosen branch's emissions take effect, once; only it gets real receipts; every intent is answered | — | `branches.qnt` `safety`; mutants `releaseEarly`, `releaseEarlyNoDedup`, `noForkIds` | `:sampled`; `:exhausted` to 8 steps |
+| Gateway: no call has an outside effect twice; remote tools leave only through the outbox | — | `gateway.qnt` `safety`; mutants `ungated`, `missingIsInternal` | `:sampled`; `:exhausted` to 8 steps |
+| Capabilities: attenuation never widens | — | `caps.qnt` `safety`; mutants `uncoveredCaveats`, `unionCaveats` | `:sampled`; `:exhausted` to 8 steps |
 | Conformance: a simulator run is a run of the model | — | `quintgo validate` replays ITF traces; a blind-retry run claiming to be the design is rejected | `:monitored` |
 
 ## What the simulator found
@@ -57,6 +63,25 @@ their intents under the same idempotency key, so a restart read as a
 duplicate emission. Each activation is now an episode (Cordis's own term):
 the fiber's episode counter is part of every released intent's key, and the
 model counts emissions per episode.
+
+## What the phase 1b models found
+
+- **Gateway:** classification by MCP annotation is a hint, not a guarantee.
+  A hosted MCP server annotated `openWorldHint: false` that does reach out
+  is classed internal, replayed on rollback, and acts twice. The fix the
+  model checks: a hosted server's own egress also goes through an outbox,
+  keyed by the calling emission's idempotency key, which the gateway passes
+  in the MCP request's metadata. With honest annotations and "missing means
+  emission", effects are single even without it (`honestUngated`).
+- **Branches:** releasing before a branch is chosen breaks `onlyChosen`,
+  but with keys drawn from the oracle and deduplicated, identical branches
+  still cannot double an effect (`releaseEarly` keeps `atMostOnce`).
+  Without fork IDs in the outbox's records, a real receipt reaches every
+  branch that issued the same key.
+- **Outbox:** each of the placement's four choices (journal off the
+  snapshotted dataset, a central limit service, `pf` egress from outbox
+  jails only, reconcile on restart) is load-bearing: dropping any one
+  breaks a property.
 
 ## Deviations from the design sketch
 

@@ -280,8 +280,10 @@ module journalInSnapshot {
                 JOURNAL_SNAPSHOTTED = true, CENTRAL = true, PF_OPEN = false, RECONCILE = true).* from "./outbox"
 }
 
+// Three agents with one emission each: a per-jail check lets all three
+// through against a shared limit of two, in a short trace.
 module localLimits {
-  import outbox(AGENTS = Set(1, 2), IDS = Set(10, 11, 20, 21), LIMIT = 2,
+  import outbox(AGENTS = Set(1, 2, 3), IDS = Set(10, 20, 30), LIMIT = 2,
                 JOURNAL_SNAPSHOTTED = false, CENTRAL = false, PF_OPEN = false, RECONCILE = true).* from "./outbox"
 }
 

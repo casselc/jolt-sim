@@ -525,10 +525,10 @@ Four phases, each usable on its own: first the pure core and its checks, then la
 
 Plain Quint modules beside the lifecycle model, each with a design instance, mutants and witnesses, simulated and checked with Apalache to a bound. Implementation in phase 3 follows the models.
 
-- 3a. **Outbox placement** (`cordis/quint/outbox.qnt`): per-agent outbox jails holding journals and credentials, the central limit service, `pf` egress, jail crashes, step-snapshot rollbacks and lost messages.
-- 3b. **Snapshot branching:** one snapshot restored into several VMs with fork IDs; only the chosen branch's emissions are released.
-- 3c. **The MCP/A2A gateway:** tool calls from outbox jails, intent kinds from tool annotations and `pf`, the stricter winning.
-- 3d. **Capability attenuation,** if Syndicate-style sturdy refs are adopted: attenuation never widens.
+- 3a. **Outbox placement** (`cordis/quint/outbox.qnt`, done): per-agent outbox jails holding journals and credentials, the central limit service, `pf` egress, jail crashes, step-snapshot rollbacks and lost messages.
+- 3b. **Snapshot branching** (`branches.qnt`, done): one snapshot restored into several VMs with fork IDs; only the chosen branch's emissions are released.
+- 3c. **The MCP/A2A gateway** (`gateway.qnt`, done): tool calls from outbox jails, intent kinds from tool annotations and `pf`, the stricter winning. The model found that annotations cannot be what keeps effects single: a hosted MCP server's own egress must also go through an outbox, keyed by the calling emission's idempotency key passed in the request's metadata.
+- 3d. **Capability attenuation** (`caps.qnt`, done), if Syndicate-style sturdy refs are adopted: attenuation never widens.
 
 **Phase 2: languages and imports**
 
