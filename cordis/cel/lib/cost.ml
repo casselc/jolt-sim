@@ -182,6 +182,7 @@ let call_shape ctx fn (arg_ids : int list) (args : shape list) =
       { lo = lo l + lo r; hi = l.hi +! r.hi; elem = lazy (join (elem l) (elem r)); key = lazy (join (key l) (key r)) }
   | "_[_]", [ c; _ ] -> elem c
   | "value", [ o ] -> elem o
+  | "@match_value", [ v; _ ] -> elem v
   | ("_[?_]" | "_?._"), [ c; _ ] -> { scalar with elem = c.elem }
   | "orValue", [ o; x ] -> join (elem o) x
   | "optional.of", [ x ] -> { scalar with elem = lazy x }
@@ -196,7 +197,9 @@ let call_shape ctx fn (arg_ids : int list) (args : shape list) =
       | Some Checker.Bool -> sized 4 5
       | Some Checker.Timestamp -> sized 20 30
       | Some Checker.Duration -> sized 2 24
-      | _ -> unknown)
+      (* a dyn argument: a string or bytes no longer than itself, or a
+         rendered scalar (at most 30, a timestamp's length) *)
+      | _ -> sized 0 (max x.hi 30))
   | "bytes", [ x ] -> (
       match ty 0 with
       | Some Checker.Bytes -> x

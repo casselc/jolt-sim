@@ -11,6 +11,7 @@ type token =
   | TRUE | FALSE | NULL | IN
   | LPAREN | RPAREN | LBRACKET | RBRACKET | LBRACE | RBRACE
   | DOT | COMMA | COLON | QUESTION
+  | ARROW | SEMI  (** -> and ; separate the cases of a match *)
   | NOT | MINUS | PLUS | STAR | SLASH | PERCENT
   | EQ | NE | LT | LE | GT | GE | AND | OR
   | EOF
@@ -100,8 +101,10 @@ let tokenize (src : string) : token list =
   let i = ref 0 in
   let peek k = if !i + k < n then src.[!i + k] else '\000' in
   let starts_with s = !i + String.length s <= n && String.sub src !i (String.length s) = s in
-  (* read a quoted literal starting at the opening quote; returns its body *)
-  let read_quoted () =
+  (* read a quoted literal starting at the opening quote; returns its body.
+     In a raw literal a backslash escapes nothing, so r'\' is one
+     backslash, as in cel-go's grammar. *)
+  let read_quoted ?(raw = false) () =
     let q = src.[!i] in
     let triple = !i + 2 < n && src.[!i + 1] = q && src.[!i + 2] = q in
     let close = if triple then String.make 3 q else String.make 1 q in
@@ -110,7 +113,7 @@ let tokenize (src : string) : token list =
     let rec find () =
       if !i >= n then raise (Lex_error "unterminated string")
       else if starts_with close then ()
-      else if src.[!i] = '\\' then (i := !i + 2; find ())
+      else if (not raw) && src.[!i] = '\\' then (i := !i + 2; find ())
       else if (not triple) && (src.[!i] = '\n' || src.[!i] = '\r') then
         raise (Lex_error "newline in string")
       else (incr i; find ())
@@ -170,7 +173,7 @@ let tokenize (src : string) : token list =
         (match src.[!i] with 'r' | 'R' -> raw := true | _ -> bytes := true);
         incr i
       done;
-      let body = read_quoted () in
+      let body = read_quoted ~raw:!raw () in
       let v = decode ~bytes:!bytes ~raw:!raw body in
       push (if !bytes then BYTES v else STRING v)
     end
@@ -199,7 +202,7 @@ let tokenize (src : string) : token list =
       let tok2 =
         match two with
         | "==" -> Some EQ | "!=" -> Some NE | "<=" -> Some LE | ">=" -> Some GE
-        | "&&" -> Some AND | "||" -> Some OR | _ -> None
+        | "&&" -> Some AND | "||" -> Some OR | "->" -> Some ARROW | _ -> None
       in
       match tok2 with
       | Some t -> push t; i := !i + 2
@@ -209,7 +212,7 @@ let tokenize (src : string) : token list =
             | '(' -> LPAREN | ')' -> RPAREN | '[' -> LBRACKET | ']' -> RBRACKET
             | '{' -> LBRACE | '}' -> RBRACE | '.' -> DOT | ',' -> COMMA | ':' -> COLON
             | '?' -> QUESTION | '!' -> NOT | '-' -> MINUS | '+' -> PLUS | '*' -> STAR
-            | '/' -> SLASH | '%' -> PERCENT | '<' -> LT | '>' -> GT
+            | '/' -> SLASH | '%' -> PERCENT | '<' -> LT | '>' -> GT | ';' -> SEMI
             | _ -> raise (Lex_error (Printf.sprintf "unexpected character %C" c))
           in
           push t;

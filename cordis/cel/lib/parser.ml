@@ -6,9 +6,19 @@ open Ast
 
 exception Parse_error of string
 
+(* raised before a match's '{': the word was the identifier match *)
+exception Not_a_match
+
 let fail fmt = Printf.ksprintf (fun s -> raise (Parse_error s)) fmt
 
-type state = { mutable toks : token list; mutable next_id : int; macros : bool }
+(* [no_struct]: parsing a match's scrutinee, where `v {` opens the cases,
+   not a message literal; brackets of any kind turn it back off. *)
+type state = { mutable toks : token list; mutable next_id : int; macros : bool; mutable no_struct : bool }
+
+let nested st f =
+  let saved = st.no_struct in
+  st.no_struct <- false;
+  Fun.protect ~finally:(fun () -> st.no_struct <- saved) (fun () -> f ())
 
 let mk st kind =
   st.next_id <- st.next_id + 1;
@@ -282,10 +292,10 @@ and parse_member_suffix st e =
       advance st;
       let optional = peek st = QUESTION in
       if optional then advance st;
-      let i = parse_expr st in
+      let i = nested st (fun () -> parse_expr st) in
       expect st RBRACKET "']'";
       parse_member_suffix st (call st (if optional then op_opt_index else op_index) [ e; i ])
-  | LBRACE when (match e.kind with Ident _ | Select { test_only = false; _ } -> true | _ -> false) ->
+  | LBRACE when (not st.no_struct) && (match e.kind with Ident _ | Select { test_only = false; _ } -> true | _ -> false) ->
       (* a message literal: the receiver is the (qualified) type name *)
       let rec name (e : expr) =
         match e.kind with
@@ -316,7 +326,9 @@ and parse_member_suffix st e =
       parse_member_suffix st (mk st (Struct_lit { tname; fields = go [] }))
   | _ -> e
 
-and parse_args st close =
+and parse_args st close = nested st (fun () -> parse_args_ st close)
+
+and parse_args_ st close =
   if peek st = close then (advance st; [])
   else
     let rec go acc =
@@ -342,10 +354,38 @@ and parse_primary st =
   | NULL -> advance st; const st Value.Null
   | LPAREN ->
       advance st;
-      let e = parse_expr st in
+      let e = nested st (fun () -> parse_expr st) in
       expect st RPAREN "')'";
       e
-  | LBRACKET ->
+  | LBRACKET -> nested st (fun () -> parse_list st)
+  | LBRACE -> nested st (fun () -> parse_map st)
+  | DOT -> (
+      (* a leading dot names the root scope: .x *)
+      advance st;
+      match peek st with
+      | IDENT n -> advance st; primary_ident st ("." ^ n)
+      | _ -> fail "expected an identifier after '.'")
+  | IDENT "match" when st.macros && starts_expr (peek2 st) -> (
+      (* match v { Tag(x) -> e; Other -> e; _ -> e }, or the identifier
+         match when what follows is not a match *)
+      let saved = st.toks and saved_id = st.next_id in
+      advance st;
+      try parse_match st
+      with Not_a_match ->
+        st.toks <- saved;
+        st.next_id <- saved_id;
+        advance st;
+        primary_ident st "match")
+  | IDENT n ->
+      (* reserved words may name fields and methods (after '.'), not values *)
+      if List.mem n Lexer.reserved then fail "reserved identifier: %s" n;
+      advance st;
+      primary_ident st n
+  | t ->
+      ignore t;
+      fail "unexpected token"
+
+and parse_list st =
       advance st;
       (* [?e]: an element present only when the optional e has a value *)
       let rec go acc =
@@ -362,7 +402,8 @@ and parse_primary st =
         end
       in
       mk st (List_lit (go []))
-  | LBRACE ->
+
+and parse_map st =
       advance st;
       let rec go acc =
         if peek st = RBRACE then (advance st; List.rev acc)
@@ -381,20 +422,63 @@ and parse_primary st =
         end
       in
       mk st (Map_lit (go []))
-  | DOT -> (
-      (* a leading dot names the root scope: .x *)
-      advance st;
-      match peek st with
-      | IDENT n -> advance st; primary_ident st ("." ^ n)
-      | _ -> fail "expected an identifier after '.'")
-  | IDENT n ->
-      (* reserved words may name fields and methods (after '.'), not values *)
-      if List.mem n Lexer.reserved then fail "reserved identifier: %s" n;
-      advance st;
-      primary_ident st n
-  | t ->
-      ignore t;
-      fail "unexpected token"
+
+(* A match (RFC 0001, "Extensions"): the scrutinee, then cases
+   Tag(x) -> e, Tag -> e, _ -> e, separated by ';' or ','. It expands to
+   conditionals over the reserved functions @match_is (does the value have
+   this tag?), @match_value (its payload) and @match_fail (no case matched,
+   naming the cases covered so the checker can report the missing ones). *)
+and parse_match st =
+  st.no_struct <- true;
+  let scrutinee =
+    Fun.protect ~finally:(fun () -> st.no_struct <- false) (fun () ->
+        try parse_expr st with Parse_error _ -> raise Not_a_match)
+  in
+  if peek st <> LBRACE then raise Not_a_match;
+  advance st;
+  let rec cases acc =
+    match peek st with
+    | RBRACE -> advance st; List.rev acc
+    | IDENT tag ->
+        advance st;
+        let binder =
+          if peek st = LPAREN then begin
+            advance st;
+            let b = match peek st with IDENT b -> advance st; b | _ -> fail "expected a variable in the case pattern" in
+            expect st RPAREN "')'";
+            Some b
+          end
+          else None
+        in
+        expect st ARROW "'->'";
+        let body = nested st (fun () -> parse_expr st) in
+        let acc = (tag, binder, body) :: acc in
+        (match peek st with
+         | SEMI | COMMA -> advance st
+         | RBRACE -> ()
+         | _ -> fail "expected ';' or '}' after a match case");
+        cases acc
+    | _ -> fail "expected a match case"
+  in
+  let cs = cases [] in
+  if cs = [] then fail "a match needs at least one case";
+  let tags = List.filter_map (fun (t, _, _) -> if t = "_" then None else Some t) cs in
+  List.iter (fun t -> if List.length (List.filter (( = ) t) tags) > 1 then fail "duplicate match case %s" t) tags;
+  let m = Printf.sprintf "@match%d" st.next_id in
+  let mv () = id_ st m and tag t = const st (Value.String t) in
+  let rec chain = function
+    | [] -> call st "@match_fail" [ mv (); mk st (List_lit (List.map tag tags)) ]
+    | [ ("_", None, body) ] -> body
+    | ("_", _, _) :: _ -> fail "a wildcard case must come last and binds nothing"
+    | (t, binder, body) :: rest ->
+        let body =
+          match binder with
+          | None -> body
+          | Some b -> Ext_cel.bind ~mk:(mk st) b (call st "@match_value" [ mv (); tag t ]) body
+        in
+        call st op_cond [ call st "@match_is" [ mv (); tag t ]; body; chain rest ]
+  in
+  Ext_cel.bind ~mk:(mk st) m scrutinee (chain cs)
 
 and primary_ident st n =
   if peek st = LPAREN then begin
@@ -429,11 +513,18 @@ and library_macro st target name args =
       | Some ex -> ex ~mk:mkk ~target args
       | None -> None)
 
+(* Can this token begin an expression (the scrutinee after `match`)? *)
+and starts_expr = function
+  | INT _ | UINT _ | DOUBLE _ | STRING _ | BYTES _ | IDENT _ | TRUE | FALSE | NULL
+  | LPAREN | LBRACKET | LBRACE | DOT | NOT | MINUS ->
+      true
+  | _ -> false
+
 let parse ?(macros = true) src =
   match Lexer.tokenize src with
   | exception Lexer.Lex_error m -> Error ("lex: " ^ m)
   | toks -> (
-      let st = { toks; next_id = 0; macros } in
+      let st = { toks; next_id = 0; macros; no_struct = false } in
       match parse_expr st with
       | exception Parse_error m -> Error ("parse: " ^ m)
       | e -> if peek st = EOF then Ok e else Error "parse: unexpected trailing input")

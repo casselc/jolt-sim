@@ -131,6 +131,125 @@ let test_determinism () =
       let once () = match Cel.eval ~vars:(Typed_gen.bindings c) c.src with Ok r -> Some (Value.to_string r.value, r.cost) | Error _ -> None in
       Hegel.require tc ~msg:"evaluation is a function of the expression and inputs" (once () = once ()))
 
+(* ---- harness extensions: fold, match, libraries ------------------------------------------- *)
+
+let int_list tc = List.init (pick tc 6) (fun _ -> pick tc 41 - 20)
+let int_list_value l = Value.List (Array.of_list (List.map (fun i -> Value.Int (Int64.of_int i)) l))
+let value_eq a b = (Value.is_error a && Value.is_error b) || Value.to_string a = Value.to_string b
+
+let eval_with vars src = match Cel.eval ~vars src with Ok r -> r.value | Error e -> Value.Error e
+
+(* fold and fold_while against an OCaml model of the same loop *)
+let test_fold () =
+  run "fold" (fun tc ->
+      let l = int_list tc and k = pick tc 30 in
+      let vars = [ ("xs", int_list_value l) ] in
+      let sum = List.fold_left ( + ) 0 l in
+      let rec while_ acc = function x :: rest when acc < k -> while_ (acc + x) rest | _ -> acc in
+      let indexed = List.fold_left ( + ) 0 (List.mapi ( * ) l) in
+      let cases =
+        [ ("xs.fold(a, 0, x, a + x)", Value.Int (Int64.of_int sum));
+          ("xs.fold(a, [], x, a + [x])", int_list_value l);
+          ("xs.fold(a, [], x, [x] + a)", int_list_value (List.rev l));
+          (Printf.sprintf "xs.fold_while(a, 0, x, a < %d, a + x)" k, Value.Int (Int64.of_int (while_ 0 l)));
+          ("xs.fold(a, 0, i, x, a + i * x)", Value.Int (Int64.of_int indexed));
+          ("xs.fold(a, 0, x, a + x) == xs.fold(a, 0, i, x, a + x)", Value.Bool true) ]
+      in
+      List.iter
+        (fun (src, want) ->
+          let got = eval_with vars src in
+          note tc (Printf.sprintf "%s with xs = %s: %s, want %s" src (Value.to_string (int_list_value l)) (Value.to_string got) (Value.to_string want));
+          Hegel.require tc ~msg:"fold disagrees with the model" (value_eq got want))
+        cases)
+
+(* A match without a wildcard is accepted exactly when it covers every
+   case, and picks the case the model picks. *)
+let test_match () =
+  run "match" (fun tc ->
+      let all = [ "A"; "B"; "C"; "D" ] in
+      let cases = List.filteri (fun i _ -> i < 1 + pick tc 4) all in
+      let unit = List.filter (fun _ -> pick tc 3 = 0) cases in
+      let decl =
+        "variant(" ^ String.concat ", " (List.map (fun c -> if List.mem c unit then c else c ^ "(int)") cases) ^ ")"
+      in
+      let covered = List.filter (fun _ -> pick tc 4 > 0) cases in
+      let wildcard = pick tc 3 = 0 in
+      let arm c = if List.mem c unit then Printf.sprintf "%s -> %d" c (Hashtbl.hash c mod 100) else Printf.sprintf "%s(v) -> v * %d" c (1 + Hashtbl.hash c mod 7) in
+      let arms = List.map arm covered @ (if wildcard || covered = [] then [ "_ -> -1" ] else []) in
+      let src = "match r { " ^ String.concat "; " arms ^ " }" in
+      let env = Checker.declare_ident (Checker.empty ()) "r" (Checker.parse_type decl) in
+      note tc (Printf.sprintf "r : %s\n%s" decl src);
+      let exhaustive = wildcard || covered = [] || List.length covered = List.length cases in
+      match Cel.parse src with
+      | Error e -> Hegel.require tc ~msg:("parse: " ^ e) false
+      | Ok ast -> (
+          (match Checker.check env ast with
+           | Ok _ -> Hegel.require tc ~msg:"a match missing a case was accepted" exhaustive
+           | Error e -> note tc e; Hegel.require tc ~msg:"an exhaustive match was rejected" (not exhaustive));
+          (* the value: the model picks the case by tag *)
+          let tag = choose tc cases and payload = pick tc 21 - 10 in
+          let r =
+            Value.make_map
+              ((Value.String "tag", Value.String tag)
+               :: (if List.mem tag unit then [] else [ (Value.String "value", Value.Int (Int64.of_int payload)) ]))
+          in
+          let want =
+            if List.mem tag covered then
+              Value.Int (Int64.of_int (if List.mem tag unit then Hashtbl.hash tag mod 100 else payload * (1 + Hashtbl.hash tag mod 7)))
+            else if wildcard || covered = [] then Value.Int (-1L)
+            else Value.Error "no case"
+          in
+          let got = eval_with [ ("r", r) ] src in
+          note tc (Printf.sprintf "tag %s, payload %d: %s, want %s" tag payload (Value.to_string got) (Value.to_string want));
+          Hegel.require tc ~msg:"match picked the wrong case" (value_eq got want)))
+
+(* Inlining preserves meaning: a generated expression, made the body of a
+   library function over its variables, is called with generated argument
+   expressions over the same variable names (L.f(v1 + 1, v0)), so a
+   parameter that captured a caller's variable would show. The inlined call
+   must equal the body evaluated with each parameter bound to its
+   argument's value, and its cost stay within the estimate. *)
+let test_inlining () =
+  run "inlining" (fun tc ->
+      let d = Typed_gen.of_hegel tc in
+      let c = Typed_gen.case d in
+      let scope = List.map (fun (n, t, _) -> (n, t)) c.vars in
+      (* half the arguments are another variable of the same type: L.f(v1, v0) *)
+      let args =
+        List.map
+          (fun (_, t, _) ->
+            match List.filter (fun (_, u) -> u = t) scope with
+            | _ :: _ as same when d.pick 2 = 0 -> fst (Typed_gen.choose d same)
+            | _ -> Typed_gen.expr d scope t 2)
+          c.vars
+      in
+      let params = String.concat ", " (List.map (fun (n, t, _) -> n ^ ": " ^ Typed_gen.ty_text t) c.vars) in
+      let text = Printf.sprintf "f(%s): %s = %s;" params (Typed_gen.ty_text c.ty) c.src in
+      let call = Printf.sprintf "L.f(%s)" (String.concat ", " args) in
+      note tc (text ^ "\n" ^ call);
+      match Library.parse text with
+      | Error e -> Hegel.require tc ~msg:("a well-typed body was rejected: " ^ e) false
+      | Ok lib -> (
+          let env = Typed_gen.checker_env c in
+          match Result.bind (Cel.parse call) (Library.compile env [ ("L", lib) ]) with
+          | Error e -> Hegel.require tc ~msg:("the call was rejected: " ^ e) false
+          | Ok (_, inlined) -> (
+              let arg_values = List.map (eval_with (Typed_gen.bindings c)) args in
+              let want =
+                match List.find_opt Value.is_error arg_values with
+                | Some e -> e (* a call is strict *)
+                | None -> eval_with (List.map2 (fun (n, _, _) v -> (n, v)) c.vars arg_values) c.src
+              in
+              let r = Eval.run ~vars:(Typed_gen.bindings c) inlined in
+              note tc (Printf.sprintf "want %s, inlined %s" (Value.to_string want) (Value.to_string r.value));
+              Hegel.require tc ~msg:"inlining changed the value" (value_eq want r.value);
+              let sizes = List.map (fun (n, _, v) -> (n, max 1 (max_size v))) c.vars in
+              match Cost.estimate ~sizes env inlined with
+              | Error e -> Hegel.require tc ~msg:("the inlined expression does not check: " ^ e) false
+              | Ok est ->
+                  note tc (Printf.sprintf "actual %d, estimate [%d, %d]" r.cost est.min est.max);
+                  Hegel.require tc ~msg:"actual cost exceeds the estimate" (r.cost <= est.max))))
+
 (* ---- lexer and parser ------------------------------------------------------------------------ *)
 
 (* A CEL string literal for s, escaping as cel-spec allows. *)
@@ -308,6 +427,10 @@ let () =
           Alcotest.test_case "well-typed expressions evaluate within their type" `Quick test_soundness ] );
       ("evaluation", [ Alcotest.test_case "deterministic" `Quick test_determinism ]);
       ("cost", [ Alcotest.test_case "actual cost is within the estimate" `Quick test_cost_soundness ]);
+      ( "extensions",
+        [ Alcotest.test_case "fold agrees with the model" `Quick test_fold;
+          Alcotest.test_case "match: exhaustiveness and the chosen case" `Quick test_match;
+          Alcotest.test_case "inlining preserves value, cost within the estimate" `Quick test_inlining ] );
       ( "syntax",
         [ Alcotest.test_case "string literals round-trip" `Quick test_string_literals;
           Alcotest.test_case "number literals round-trip" `Quick test_number_literals;

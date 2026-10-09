@@ -12,5 +12,6 @@ let load () =
     Ext_math.register ();
     Ext_lists.register ();
     Ext_network.register ();
-    Ext_encoders.register ()
+    Ext_encoders.register ();
+    Ext_cordis.register ()
   end

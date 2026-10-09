@@ -16,12 +16,15 @@ expression, against cel-go.
 | `lib/proto.ml` | Protobuf messages from descriptors: construction, presence, defaults, well-known types, protobuf JSON and binary decoding |
 | `lib/registry.ml`, `lib/extensions.ml` | Extension functions, macros and checker signatures, registered by library |
 | `lib/ext_*.ml` | Libraries: strings, math, lists, sets, network, encoders, optionals, `cel.bind`/`cel.block`, proto extensions |
+| `lib/ext_cordis.ml` | The harness extensions: `fold`, `fold_while`, and the runtime half of `match` |
+| `lib/library.ml`, `lib/sha256.ml` | Function libraries: parsing, admission (types, confinement, acyclic calls), content hashes, checking calls against signatures, inlining |
 | `conformance/` | cel-spec's `tests/simple` suite and the descriptors of its protos as JSON (Apache-2.0; see its README) |
 | `celgo/` | A JSON-lines front end to cel-go v0.30.0, the reference for the differential test |
 | `test/conformance.ml` | Runs the suite; `--check-all` also type-checks every test that evaluates to a value and checks its actual cost against the static estimate |
 | `test/differential.ml` | Hegel draws expressions; each must give the same value (or both an error), the same checked type and the same actual cost as cel-go |
 | `test/typed_gen.ml` | A type-directed generator: well-typed expressions over typed, bound variables |
-| `test/props.ml` | Hegel properties: checker algebra and soundness, cost soundness, determinism, syntax round trips, values, time, protobuf |
+| `test/props.ml` | Hegel properties: checker algebra and soundness, cost soundness, determinism, syntax round trips, values, time, protobuf, fold, match, inlining |
+| `test/extensions_test.ml` | Expansion tests and exhaustiveness errors for `fold`, `match` and libraries; SHA-256 vectors |
 
 ## Status
 
@@ -38,7 +41,7 @@ every conformance test.
 | 3. Type checker | done: all type-deduction tests pass, every test that evaluates checks to a type that admits its value, and the checked type matches cel-go's |
 | 4. Static estimator and the Hegel cost-soundness property | done |
 | 5. Timestamps and durations | done |
-| 6. Harness extensions | two-variable comprehensions, `cel.bind`, `cel.block` in; `fold`, `match`, libraries next |
+| 6. Harness extensions | done: `fold`, `fold_while`, `match` over variants and optionals with exhaustiveness checking, function libraries with inlining; pure cells as functions wait for cells |
 
 Beyond the RFC's first scope, protobuf messages are supported (they were
 out of scope): they are what the protobuf importer of RFC 0003 will feed

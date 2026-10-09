@@ -25,6 +25,10 @@ let to_checker t = Checker.parse_type (ty_text t)
 
 type draw = { pick : int -> int }
 
+(* The harness extensions (fold, fold_while) in generated expressions; the
+   differential test against cel-go turns them off. *)
+let extensions = ref true
+
 let of_hegel tc =
   { pick = (fun n -> if n <= 1 then 0 else Hegel.draw_silent tc (Hegel.Generators.integers ~min_value:0 ~max_value:(n - 1) ())) }
 
@@ -94,13 +98,16 @@ let rec expr d (scope : scope) ty depth : string =
   else
     match ty with
     | Int -> (
-        match d.pick 6 with
+        match d.pick (if !extensions then 7 else 6) with
         | 0 -> leaf d scope Int
         | 1 -> Printf.sprintf "(%s %s %s)" (sub Int) (choose d [ "+"; "-"; "*"; "/"; "%" ]) (sub Int)
         | 2 -> Printf.sprintf "-(%s)" (sub Int)
         | 3 -> Printf.sprintf "size(%s)" (sub (choose d [ String; Bytes; List Int; Map (String, Bool) ]))
         | 4 -> Printf.sprintf "int(%s)" (sub (choose d [ Uint; Double; Int ]))
-        | _ -> Printf.sprintf "%s.map(x, x * 2)[0]" (list_of d scope Int (depth - 1)))
+        | 5 -> Printf.sprintf "%s.map(x, x * 2)[0]" (list_of d scope Int (depth - 1))
+        | _ ->
+            Printf.sprintf "%s.fold_while(a, 0, z, a < %s, a + %s)" (sub (List Int)) (sub Int)
+              (expr d (bind "z" Int (bind "a" Int scope)) Int (depth - 1)))
     | Uint -> (
         match d.pick 3 with
         | 0 -> leaf d scope Uint
@@ -138,9 +145,14 @@ let rec expr d (scope : scope) ty depth : string =
             let m = choose d [ "all"; "exists"; "exists_one" ] in
             Printf.sprintf "%s.%s(x, %s)" (list_of d scope Int (depth - 1)) m (expr d (bind "x" Int scope) Bool (depth - 1)))
     | String -> (
-        match d.pick 3 with
+        match d.pick (if !extensions then 4 else 3) with
         | 0 -> leaf d scope String
         | 1 -> Printf.sprintf "(%s + %s)" (sub String) (sub String)
+        | 2 when !extensions ->
+            (* an accumulator that grows with each iteration *)
+            let e = choose d [ Int; String ] in
+            Printf.sprintf "%s.fold(a, %s, z, a + %s)" (sub (List e)) (sub String)
+              (expr d (bind "z" e (bind "a" String scope)) String (depth - 1))
         | _ -> Printf.sprintf "string(%s)" (sub (choose d [ Int; Uint; Double; Bool; String ])))
     | Bytes -> (
         match d.pick 3 with
@@ -183,7 +195,14 @@ and leaf d scope ty =
 type case = { vars : (string * ty * Value.t) list; ty : ty; src : string }
 
 let case d =
-  let vars = List.init (d.pick 3) (fun i -> let t = gen_ty d 1 in (Printf.sprintf "v%d" i, t, value d t)) in
+  let vars =
+    let types = ref [] in
+    List.init (d.pick 4) (fun i ->
+        (* often the type of an earlier variable, so expressions can mix them *)
+        let t = match !types with _ :: _ when d.pick 2 = 0 -> choose d !types | _ -> gen_ty d 1 in
+        types := t :: !types;
+        (Printf.sprintf "v%d" i, t, value d t))
+  in
   let ty = gen_ty d 2 in
   let src = expr d (List.map (fun (n, t, _) -> (n, t)) vars) ty 4 in
   { vars; ty; src }

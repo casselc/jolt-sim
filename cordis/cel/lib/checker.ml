@@ -37,6 +37,9 @@ type t =
   | Opt of t
   | Message of string
   | Opaque of string * t list  (** tuple(T, U, V), net.IP ... *)
+  | Variant of (string * t option) list
+      (** variant(Pass(T), Fail(U), Skipped): tagged cases, each with an
+          optional payload. A value is a map {'tag': 'Pass', 'value': x}. *)
   | Param of string  (** a type parameter in a signature *)
   | Var of int  (** a type variable during inference *)
 
@@ -65,6 +68,10 @@ let rec to_string = function
   | Message n -> n
   | Opaque (n, []) -> n
   | Opaque (n, ps) -> n ^ "(" ^ String.concat ", " (List.map to_string ps) ^ ")"
+  | Variant cs ->
+      "variant("
+      ^ String.concat ", " (List.map (fun (n, t) -> match t with None -> n | Some t -> n ^ "(" ^ to_string t ^ ")") cs)
+      ^ ")"
   | Param p -> p
   | Var i -> Printf.sprintf "_var%d" i
 
@@ -118,6 +125,14 @@ let parse_type (s : string) : t =
     | "optional_type", [] -> Opt Dyn
     | n, [] when is_param n -> Param n
     | n, [] when Proto.find_message n <> None -> !message_type_ref n
+    | "variant", cases ->
+        Variant
+          (List.map
+             (function
+               | Opaque (n, [ t ]) -> (n, Some t)
+               | Opaque (n, []) | Param n | Message n -> (n, None)
+               | t -> raise (Invalid_argument ("variant case " ^ to_string t)))
+             cases)
     | n, ps -> Opaque (n, ps)
   in
   ty ()
@@ -151,6 +166,7 @@ let rec substitute env t =
   | Wrapper t -> Wrapper (substitute env t)
   | Opt t -> Opt (substitute env t)
   | Opaque (n, ps) -> Opaque (n, List.map (substitute env) ps)
+  | Variant cs -> Variant (List.map (fun (n, t) -> (n, Option.map (substitute env) t)) cs)
   | t -> t
 
 (* Unbound variables become dyn when a type is reported. *)
@@ -163,6 +179,7 @@ let rec finalize env t =
   | Wrapper t -> Wrapper (finalize env t)
   | Opt t -> Opt (finalize env t)
   | Opaque (n, ps) -> Opaque (n, List.map (finalize env) ps)
+  | Variant cs -> Variant (List.map (fun (n, t) -> (n, Option.map (finalize env) t)) cs)
   | t -> t
 
 let rec occurs env i t =
@@ -171,6 +188,7 @@ let rec occurs env i t =
   | List t | Type t | Wrapper t | Opt t -> occurs env i t
   | Map (k, v) -> occurs env i k || occurs env i v
   | Opaque (_, ps) -> List.exists (occurs env i) ps
+  | Variant cs -> List.exists (fun (_, t) -> match t with Some t -> occurs env i t | None -> false) cs
   | _ -> false
 
 let bind env i t = if not (occurs env i t) then Hashtbl.replace env.subst i t
@@ -214,6 +232,20 @@ let rec assignable env p a =
   | Type x, Type y -> ignore (assignable env x y); true
   | Map (k1, v1), Map (k2, v2) -> assignable env k1 k2 && assignable env v1 v2
   | Opaque (n, ps), Opaque (m, qs) -> n = m && List.length ps = List.length qs && List.for_all2 (assignable env) ps qs
+  (* a variant built in CEL is a map {'tag': ..., 'value': ...}: its type
+     says string keys and dyn (or, for unit cases only, string) values, and
+     its tag is checked when matched *)
+  | Variant _, Map (k, v) -> assignable env String k && (match resolve env v with Dyn | String | Var _ -> true | _ -> false)
+  | Variant cs, Variant ds ->
+      (* the same cases, by name, with assignable payloads *)
+      List.length cs = List.length ds
+      && List.for_all
+           (fun (n, t) ->
+             match t, List.assoc_opt n ds with
+             | None, Some None -> true
+             | Some t, Some (Some u) -> assignable env t u
+             | _ -> false)
+           cs
   | x, y -> x = y
 
 (* Instantiate a signature's type parameters with fresh variables. *)
@@ -227,6 +259,7 @@ let instantiate env (params, result) =
     | Wrapper t -> Wrapper (go t)
     | Opt t -> Opt (go t)
     | Opaque (n, ps) -> Opaque (n, List.map go ps)
+    | Variant cs -> Variant (List.map (fun (n, t) -> (n, Option.map go t)) cs)
     | t -> t
   in
   (List.map go params, go result)
@@ -559,6 +592,31 @@ and infer_kind env locals (e : Ast.expr) : t =
       else
         fail "found no matching overload for '_?_:_' applied to (bool, %s, %s)" (to_string (finalize env tt))
           (to_string (finalize env ft))
+  (* an inlined library call (library.ml): its arguments, then its body *)
+  | Ast.Call { fn = "@strict"; target = None; args } when args <> [] ->
+      List.fold_left (fun _ a -> infer env locals a) Dyn args
+  (* a match's expansion (parser.ml): the scrutinee's type names its cases *)
+  | Ast.Call { fn = ("@match_is" | "@match_value") as fn; target = None; args = [ m; { kind = Ast.Const (Value.String tag); _ } ] } -> (
+      let mt = infer env locals m in
+      match match_cases env mt with
+      | None -> if fn = "@match_is" then Bool else Dyn
+      | Some cases -> (
+          match List.assoc_opt tag cases with
+          | None ->
+              fail "no case '%s' in %s" tag (to_string (finalize env mt))
+          | Some payload ->
+              if fn = "@match_is" then Bool
+              else match payload with Some t -> t | None -> fail "case '%s' carries no value" tag))
+  | Ast.Call { fn = "@match_fail"; target = None; args = [ m; { kind = Ast.List_lit tags; _ } ] } -> (
+      let mt = infer env locals m in
+      let covered = List.filter_map (fun (t : Ast.expr) -> match t.kind with Ast.Const (Value.String s) -> Some s | _ -> None) tags in
+      match match_cases env mt with
+      | Some cases -> (
+          match List.filter (fun (n, _) -> not (List.mem n covered)) cases with
+          | [] -> fresh env
+          | missing ->
+              fail "match is not exhaustive: no case for %s" (String.concat ", " (List.map fst missing)))
+      | None -> fresh env)
   | Ast.Call { fn; target = None; args = [ x; field ] } when fn = Ast.op_opt_select ->
       let xt = infer env locals x in
       let name = match field.kind with Ast.Const (Value.String s) -> s | _ -> "" in
@@ -606,6 +664,14 @@ and infer_kind env locals (e : Ast.expr) : t =
       if not (flexible env at st) then fail "loop step does not match the accumulator";
       infer env ((accu_var, at) :: locals) result
 
+(* The cases a match can name: a variant's, or an optional's Some and None.
+   None for a scrutinee whose type does not say (dyn, a map). *)
+and match_cases env t =
+  match resolve env t with
+  | Variant cs -> Some cs
+  | Opt t -> Some [ ("Some", Some t); ("None", None) ]
+  | _ -> None
+
 (* A list element; [?e] contributes the optional's content type. *)
 and element env locals (e : Ast.expr) =
   match e.kind with
@@ -622,16 +688,22 @@ and select_type env ot field =
       | Some f -> field_type f
       | None -> fail "undefined field '%s'" field)
   | Opt t -> Opt (select_type env t field)
+  | Variant _ -> (match field with "tag" -> String | "value" -> Dyn | f -> fail "undefined field '%s'" f)
   | t -> fail "type '%s' does not support field selection" (to_string (finalize env t))
 
-(* The checked type of an expression, or the first error. *)
+(* The checked type of an expression, or the first error. Each check is a
+   fresh inference: environments derived by declare_ident share the
+   substitution table, so it starts empty, and no binding from an earlier
+   check can leak into this one. *)
 let check env (e : Ast.expr) =
+  Hashtbl.reset env.subst;
   match infer env [] e with
   | t -> Ok (finalize env t)
   | exception Check_error m -> Error m
 
 (* The checked type and the type of every subexpression, by id. *)
 let check_types env (e : Ast.expr) =
+  Hashtbl.reset env.subst;
   Hashtbl.reset env.types;
   match infer env [] e with
   | t ->

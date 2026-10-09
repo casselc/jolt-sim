@@ -34,3 +34,9 @@
  (alias differential)
  (action
   (run %{exe:differential.exe} %{env:CELGO=celgo} --cases %{env:CEL_DIFF_CASES=2000})))
+
+; The harness extensions: fold, match, function libraries
+(test
+ (name extensions_test)
+ (modules extensions_test)
+ (libraries cordis_cel alcotest))

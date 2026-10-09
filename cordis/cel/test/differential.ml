@@ -196,6 +196,8 @@ let compare_estimates tc src ast theirs our_cost =
 
 let () =
   let path = ref "" and cases = ref 500 in
+  (* cel-go has no fold *)
+  Typed_gen.extensions := false;
   Arg.parse [ ("--cases", Arg.Set_int cases, "test cases") ] (fun p -> path := p) "differential.exe CELGO";
   if !path = "" then (prerr_endline "usage: differential.exe CELGO"; exit 2);
   let checked = ref 0 and known = ref 0 in
