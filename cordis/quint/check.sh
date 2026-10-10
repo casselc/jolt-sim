@@ -161,7 +161,8 @@ sim observe.qnt oneClass obsNeverUncertain VIOLATED
 
 # ---- engine.qnt (RFC 0006: the turn commit protocol) -------------------------------------
 for inv in releasedOnlyDurable effectMatchesCommit commitAtomic receiptOnce uncertainSurvives; do sim engine.qnt design "$inv" ok; done
-VERIFY_STEPS=${ENGINE_VERIFY_STEPS:-$VERIFY_STEPS} verify engine.qnt design safety ok
+# Apalache: depth 6 in about 75 s, 7 in about 400 s (checked once), 8 over 30 minutes
+VERIFY_STEPS=${ENGINE_VERIFY_STEPS:-6} verify engine.qnt design safety ok
 for w in crashBeforeRelease groupCommitted receiptRedelivered recoveredUncertain allDone; do sim engine.qnt design "not($w)" VIOLATED; done
 sim engine.qnt releaseEarly releasedOnlyDurable VIOLATED
 sim engine.qnt releaseEarly effectMatchesCommit VIOLATED
@@ -170,6 +171,17 @@ sim engine.qnt unkeyedReceipt receiptOnce VIOLATED
 sim engine.qnt forgetUncertain uncertainSurvives VIOLATED
 # an equivalent mutant: keyed receipts make the fiber's durable state the dedup
 sim engine.qnt dedupInMemory safety ok
+
+# ---- handoff.qnt (RFC 0006: the run store to the outbox journal, across rollbacks) -----
+for inv in atMostOnce onlyCommittedReleased noOrphan receiptToIssuer; do sim handoff.qnt design "$inv" ok; done
+verify handoff.qnt design safety ok
+for w in rolledBackReissued duplicateFrameIgnored resentAfterOutboxCrash; do sim handoff.qnt design "not($w)" VIOLATED; done
+# every turn answered needs a long run: crashes and rollbacks are always enabled
+STEPS=100 SAMPLES=20000 sim handoff.qnt design "not(allAnswered)" VIOLATED
+sim handoff.qnt keyFromClock atMostOnce VIOLATED
+sim handoff.qnt relayUncommitted onlyCommittedReleased VIOLATED
+sim handoff.qnt ackBeforeJournal noOrphan VIOLATED
+sim handoff.qnt receiptAny receiptToIssuer VIOLATED
 
 # conformance: simulator runs replayed in the model
 conform() { # label scenario mutant expect(pass|fail) extra-args...

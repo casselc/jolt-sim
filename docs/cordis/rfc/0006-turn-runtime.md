@@ -895,18 +895,30 @@ What writing it changed from the plan above:
   a second effect needs a second key for one emission; that is
   `handoff.qnt`'s `keyFromClock`, not this model's.
 
-### `handoff.qnt`: the run store to the outbox journal
+Apalache checks the design to depth 7 (about 400 s); the gate runs depth
+6 (about 75 s), and depth 8 did not finish in 30 minutes.
 
-The relay between a run store that rolls back with step snapshots and an
-outbox journal that does not (`outbox.qnt` treats the guest abstractly;
-this model makes it a log). Step snapshots, rollbacks, relay crashes,
-lost and duplicated frames on the channel, deterministic keys.
+### `handoff.qnt`: the run store to the outbox journal (written)
+
+The guest computes and commits one intent per turn in a run store that
+rolls back with the step snapshot; a relay sends committed,
+unacknowledged intents over a channel that loses and duplicates frames;
+the outbox journals each key on a dataset the snapshot skips,
+acknowledges, sends each key to the world once, and answers duplicates
+and re-issued keys from the journal. The guest and the outbox each crash;
+the agent snapshots and rolls back.
 
 | | |
 | --- | --- |
-| Properties | `atMostOnce`; `onlyCommittedReleased`: every intent the outbox sent was in a record that was durable when relayed; `noOrphan`: at rest, every durable unreleased intent is journaled by the outbox; `receiptToIssuer`: a receipt is applied to the record (fiber, episode, fork) that issued it; `rollbackAnswered`: an intent re-issued after a rollback is answered from the journal, not resent |
-| Mutants | `keyFromClock` (a key with a schedule- or time-dependent part; a rollback re-issues under a new key) → `atMostOnce`; `relayUncommitted` (the relay reads a record before it is durable; a crash forgets it) → `onlyCommittedReleased`; `ackBeforeJournal` (the outbox acknowledges before journaling, then crashes) → `noOrphan` |
-| Witnesses | `rolledBackReissued`, `relayRestarted`, `duplicateFrameIgnored` |
+| Properties | `atMostOnce` (per turn); `onlyCommittedReleased`: every journaled key was durable in the run store when relayed; `noOrphan`: every key the guest holds acknowledged is journaled; `receiptToIssuer`: the guest applies a receipt only to an intent it has committed |
+| Mutants | `keyFromClock` (a key with a time part that a rollback does not rewind) → `atMostOnce`; `relayUncommitted` → `onlyCommittedReleased`; `ackBeforeJournal` (and an outbox crash between) → `noOrphan`; `receiptAny` (a receipt applied before the rolled-back guest has re-issued its intent) → `receiptToIssuer` |
+| Witnesses | `rolledBackReissued` (a re-issued key answered from the journal: the plan's `rollbackAnswered`), `duplicateFrameIgnored`, `resentAfterOutboxCrash`, `allAnswered` |
+
+One rule the model made explicit: after a rollback, a receipt for an
+intent the guest has not yet re-issued waits, and is applied when the
+re-issued frame is answered from the journal; applying it at once
+(`receiptAny`) gives the guest a receipt for a turn it has not taken.
+Apalache checks the design to depth 8 (about 10 s).
 
 The model takes "the run store rolls back exactly with the step snapshot"
 as given. Stage 3's native rollback-fidelity check is the evidence for

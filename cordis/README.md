@@ -20,6 +20,7 @@ simulator that checks one against the other.
 | `graph/` | The graph language (RFC 0002 rev 2): parser, printer, hashes, checker, cost budgets, compatibility, hash-guarded patches, compilation to the kernel; `cgraph`. Descriptor-native protobuf types across revisions (RFC 0004). | phase 2, 5 |
 | `import/` | Importers (RFC 0003): protobuf, and JSON Schema drafts 4 to 2020-12 with a compiled CEL predicate, an interpreter and a strict codec; `cimport`. Checked against the official JSON Schema Test Suite, Python's `jsonschema` (Hegel) and SchemaStore. | phase 2, 6 |
 | `quint/admission.qnt`, `assets.qnt`, `routes.qnt`, `revisions.qnt` | Phase 2's models: concurrent edits, memoisation and freshness, guarded assets and feedback loops, descriptor-native revisions (RFCs 0002 and 0004). | phase 2 |
+| `quint/engine.qnt`, `handoff.qnt` | The turn commit protocol (one record per turn, group commit, the output gate, crashes) and the relay from the run store to the outbox journal across step-snapshot rollbacks (RFC 0006). | phase 3 |
 | `quint/frames.qnt`, `observe.qnt` | Frames consumed in batches (RFC 0005 rev 2); observational emissions, which retry under reservations instead of reconciling (RFC 0006 rev 2). Written before their implementations. | phase 3 |
 | `test/` | Alcotest suites: kernel and `Order` units, simulator campaigns, confluence, replay; Hegel properties with a negative control. | |
 
