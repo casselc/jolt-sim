@@ -30,3 +30,18 @@
 (rule (alias runtest) (action (diff golden/types.cg types.cg.out)))
 (rule (alias runtest) (action (diff golden/report.txt report.txt.out)))
 (rule (alias runtest) (action (diff golden/names.json names.json.out)))
+
+; The validation predicate against the official JSON Schema Test Suite;
+; the skipped schemas, by reason, are checked in
+(executable
+ (name schema_suite)
+ (modules schema_suite)
+ (libraries cordis_import cordis_cel yojson))
+
+(rule
+ (deps (glob_files json-schema-test-suite/*.json))
+ (action
+  (with-stdout-to schema_suite.out
+   (run %{exe:schema_suite.exe} json-schema-test-suite))))
+
+(rule (alias runtest) (action (diff golden/schema_suite.txt schema_suite.out)))

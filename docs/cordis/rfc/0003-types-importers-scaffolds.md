@@ -1,6 +1,7 @@
 # RFC 0003: The type IR, importers and scaffolds
 
-Status: revision 2. **For protobuf, superseded by [RFC 0004](0004-descriptor-native-types.md)**:
+Status: revision 3 (the JSON Schema importer specified). **For protobuf,
+superseded by [RFC 0004](0004-descriptor-native-types.md)**:
 graphs use protobuf descriptors directly, and the translating importer
 described below (implemented in `cordis/import`) remains as a report tool
 showing what a schema would lose as graph-language records. The JSON
@@ -24,6 +25,13 @@ types concrete:
 | `Ref` for recursion | A recursive edge becomes `dyn`, reported | The graph language rejects recursive types; references come with a later revision of RFC 0002 |
 | `Any` becomes `bytes` plus residue | `Any` becomes `dyn`, reported | At the boundary an `Any` is a JSON object with `@type`, not bytes |
 | Identity (document, name, content hash) | Each emitted type's hash is its graph-language hash (RFC 0002 "Identity"); the report records the source document | The same hashing as every other definition |
+
+**Revision 3** specifies the JSON Schema importer ("The JSON Schema
+importer", below). It adds one idea revision 2 did not need: the
+**validation predicate**, a compilation of any supported subschema to a
+CEL predicate over the instance's plain JSON form, which is both the
+residue of what the types cannot say and the codec's check at the
+boundary. It is tested against the official JSON Schema Test Suite.
 
 **Why no Quint model.** An importer is a pure function from a schema to a
 file: no state, no concurrency, no partial failure. What can go wrong is a
@@ -126,11 +134,108 @@ timestamps and durations to their RFC 3339 and `1.5s` forms; wrappers to
 their value or omitted. Reading rejects what the types reject: unknown
 fields, a second member of one oneof, an unknown enum name or number.
 
+## The JSON Schema importer
+
+Input: a JSON Schema document, draft 2020-12 (draft-07's `definitions`
+and `dependencies` are read as `$defs`, `dependentRequired` and
+`dependentSchemas`). The root and every `$defs` entry become types; the
+root is named by `title`, else by the file name. `$ref` resolves within
+the document (`#/$defs/X`, JSON Pointers, `$anchor`); a remote `$ref`,
+`$dynamicRef`, `unevaluatedProperties` and `unevaluatedItems` are refused
+with a report until a later revision.
+
+### The validation predicate
+
+Every supported subschema compiles to a CEL predicate over the instance
+as plain JSON: objects as `map(string, dyn)`, arrays as lists, numbers as
+`double`, and `null`. Each keyword is a conjunct, guarded by the type it
+applies to, so a predicate never errors:
+
+| Keyword | Predicate (at `x`) |
+| --- | --- |
+| `type` | `type(x) == string`, …; `integer` is a finite double with `math.trunc(x) == x` |
+| `minLength`, `maxLength` | `size(x)` (CEL counts code points, as JSON Schema does) |
+| `pattern` | `x.matches(re)`: both search unanchored; ECMA-262 features RE2 lacks (lookaround, backreferences) are refused |
+| `minimum`, `maximum`, `exclusive…`, `multipleOf` | comparisons; `multipleOf m`: `math.trunc(x / m) == x / m` |
+| `const`, `enum` | `==`, `in` (CEL's equality is JSON's: `1 == 1.0`, `false != 0`) |
+| `properties`, `required`, `additionalProperties`, `patternProperties`, `propertyNames`, `min/maxProperties`, `dependentRequired`, `dependentSchemas` | `'p' in x`, `x.all(k, …)` |
+| `items`, `prefixItems`, `contains`, `min/maxContains`, `min/maxItems`, `uniqueItems` | `x.all(i, v, …)`, `size(x.filter(v, …))`, `size(x.distinct()) == size(x)` |
+| `allOf`, `anyOf`, `oneOf`, `not`, `if`/`then`/`else` | `&&`, `\|\|`, `size([p1, …].filter(b, b)) == 1`, `!`, `c ? t : e` |
+| `$ref` | the target's predicate, inlined; a recursive reference has no predicate (CEL has no recursion), so its schema is refused for validation and reported |
+| `format`, `title`, `description`, `default`, `examples`, `deprecated`, `readOnly`, `writeOnly`, `$comment` | none: annotations (2020-12's default) |
+
+### Types
+
+The types are the structural part of the schema, the predicate the rest:
+
+| JSON Schema | Graph language | Residue |
+| --- | --- | --- |
+| `string` | `string`, `<max maxLength>` when given | the rest of its keywords |
+| `integer`; `number` | `int` (a value beyond int64 is refused at the boundary); `double` | bounds, `multipleOf` |
+| `boolean` | `bool` | |
+| `array` with `items` | `list(T)`, `<max maxItems>` when given | `minItems`, `uniqueItems`, `contains` |
+| `array` with `prefixItems` and `items: false` | a record `{ _0 : T0; _1 : T1; … }`, by position | |
+| `object` with `properties` | a closed record; a property not in `required` is `option(T)` | the object's other keywords |
+| `object` with only `additionalProperties` or one `patternProperties` | `map(string, T)`, `<max maxProperties>` when given | `propertyNames`, the pattern |
+| `enum` of strings | a variant of unit cases | |
+| `enum`, `const` otherwise | the values' common type | `in`, `==` |
+| `[T, "null"]`, `anyOf`/`oneOf` of `T` and `null` | `option(T)` | |
+| `oneOf`/`anyOf` of objects with a discriminating property (each branch's `const`, or OpenAPI's `discriminator`) | a variant, a case per branch named by the constant, carrying the branch's record without the discriminator | |
+| `allOf` of objects | one record: properties and `required` merged | a property both define differently: report and `dyn` |
+| `$ref` to `$defs/X` | `X` | |
+| a recursive `$ref` | `dyn` | report |
+| `true`, `{}`, and anything else (`not`, `if`, undiscriminated `oneOf`, mixed `type`) | `dyn` | the whole predicate |
+| `false` | refused | |
+
+**Objects are closed.** A record refuses properties it does not name,
+even where the schema leaves the object open: at a trust boundary an
+unexpected property is refused, not carried. The report says so for each
+open object; a schema that wants extra properties says so with
+`additionalProperties`.
+
+**Names.** A type is named from its `$defs` key in CamelCase; a property
+whose name is not an identifier (`first-name`, `$id`) becomes one
+(`first_name`, `_id`), and a CEL reserved word is selected with
+backquotes, as for protobuf. The name map keeps every JSON name; a
+collision is suffixed and reported. Variant cases are named from the
+string constants the same way.
+
+**Size bounds** come from `maxLength`, `maxItems` and `maxProperties`
+where the schema gives them, so the cost estimator uses the schema's own
+bounds; a missing bound gets the default ceiling, reported once.
+
+### Residue and the codec
+
+`check_T` is the predicate's typed residue: the keywords the type does
+not capture, over the typed value (a field of an `option` checked only
+when present), with any `dyn` location checked by its whole predicate.
+The codec maps JSON to and from typed values by the name map. Reading is
+strict: it refuses what the type refuses (a missing required property, a
+property the record does not name, a value of another JSON type, an
+integer with a fraction or beyond int64, a string constant that is no
+case) and then evaluates `check_T`; writing prints properties in schema
+order and absent `option`s as omitted members.
+
+### Testing
+
+- **The predicate against the official JSON Schema Test Suite**
+  (`tests/draft2020-12`): for every test whose schema compiles, the
+  predicate's verdict is the suite's; schemas that do not compile are
+  counted, by reason, and the count is checked in.
+- **Golden imports**: a corpus of schemas, with types, report and name map
+  checked in; every types file passes the graph checker.
+- **Agreement with a validator (Hegel)**: for every imported type, values
+  drawn from the type (at the schema's boundaries, both sides, in a
+  minority of cases) are written by the codec and validated by Python's
+  `jsonschema`; it accepts a value exactly when `check_T` does, and the
+  codec reads back what it writes.
+- **The codec by example**, and mutants of the compiler and importer.
+
 ## Importers to come
 
 | Source | Maps to | Lossy where |
 | --- | --- | --- |
-| JSON Schema (2020-12) | objects to records (closed at trust boundaries), `enum` to variants, `$ref` to a named type | `allOf` (merged, residue for conflicts), `not`, `if`/`then`/`else`, undiscriminated `oneOf`/`anyOf` (looser type plus residue), `patternProperties`; recursion as for protobuf |
+| JSON Schema (2020-12) | specified above | |
 | OpenAPI 3.1 | schemas via the JSON Schema importer; each operation to an effect (an intent kind) | callbacks and links are reported, not imported |
 | AsyncAPI 3 | channels and send or receive operations to the graph's inputs and effects | bindings beyond the message payload are reported |
 | XSD, CSV (with Table Schema), Arrow (for Parquet and Vortex) | see [RFC 0005](0005-xml-csv-frames.md) (proposed) | |
