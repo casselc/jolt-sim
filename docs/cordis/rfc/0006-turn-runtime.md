@@ -24,10 +24,10 @@ why:
 | --- | --- | --- |
 | Run store: the framed log (2B) from stage 3, SQLite (2A) the fallback | **SQLite (2A) behind the `Store` signature at stage 3**; the framed log when the unikernel host (8C) is built | 2B's case rests on running on a Solo5 block device under the narrow tender, the furthest-out part of the plan. Snapshots, compaction and indexes before there is a unikernel to run them on is cost with no near-term return, and stage 1's conformance does not depend on the store |
 | Every lost receipt makes the fiber Uncertain; only a reconcile moves it on | **Observational emissions**: an intent kind whose only outside effect is spend retries under a held reservation instead (Decision 3, "Observational emissions"); modelled in `observe.qnt` | Inference calls and most read-only tool calls cannot answer "did key K happen?", and repeating them changes nothing but spend. Under revision 1 the first LLM-heavy graphs would wait in Uncertain on reconciles no provider can answer |
-| "The run store rolls back with the step snapshot" taken as exact in `handoff.qnt` | Kept in the model, and **checked natively** at the run-store stage | Yard's SR1 work saw a ZFS snapshot dirtied with no application write (a `zil_replay` to `zil_destroy` path wrote 8 KiB at mount). The models cannot see that class of behaviour |
+| "The run store rolls back with the step snapshot" taken as exact in `handoff.qnt` | Kept in the model, and **checked natively** at the run-store stage | Yard's SR1 work (branch `sr1-service-jails`, STATE.md) found a ZFS dataset dirtied at mount with no application write: DTrace caught `zil_replay` to `zil_destroy` to `dsl_dataset_dirty`, 8 KiB in `written@snap`, while `zfs diff` was empty and content hashes identical. The models cannot see that class of behaviour, and a check must tell logical change from physical |
 | Stages ordered by layer: core, values, store, outbox, cutover, frames, platform | **A vertical slice first**: the review loop end to end, with an LLM intent through a loopback outbox and a crash and recovery checked against the models, before cutover, frames, or more importers | The system's core promises (at-most-once emission, rollback, the trap, the outbox) live here, not in the importers. RFC 0005 stays unscheduled, and the OpenAPI and AsyncAPI importers wait for the slice |
 | Open questions 1, 2, 3 and 9 open | Answered ("Open questions") | Values in a separate pure module; the canonical text as the record's hash input until Preserves is needed; `ctx.now` recorded in the commit record; no external durable-execution engine in the outbox |
-| Hosting from the unikernel down (8C) | **8A on FreeBSD as a client of yard** first: its service-jail lifecycle (suspend, resume, refusal on drift, settled cleanup) is the outbox jail's shape | Use what runs now: jails and ZFS snapshots and clones; unikernels and the OxCaml port (7 to 14 person-weeks) follow. Yard's lifecycle is as the review describes it; its code is not yet public, so stage 4 starts by checking it against yard's own models |
+| Hosting from the unikernel down (8C) | **8A on FreeBSD as a client of yard** first: its service-jail lifecycle (suspend, resume, refusal on drift, settled cleanup) is the outbox jail's shape | Use what runs now: jails and ZFS snapshots and clones; unikernels and the OxCaml port (7 to 14 person-weeks) follow. Yard's lifecycle is modelled (`spec/sr0/lifecycle.qnt`, with load-order, key and operator-removal models beside it) and its Go state machine replays the model's ITF traces, as `cordis/sim` does with `quintgo` |
 
 ## Purpose
 
@@ -820,14 +820,23 @@ importers wait for the slice.
 3. **The run store, hardened.** Recovery under fault injection; the
    replay audit (5C); and a **native rollback-fidelity check**: on the
    host's own filesystem (ZFS on FreeBSD), snapshot the run store's
-   dataset, write, roll back, and compare the store byte for byte and by
-   commit record, including across a remount, since a ZFS snapshot has
-   been seen dirtied at mount with no application write. `handoff.qnt`
-   assumes rollback is exact; this check is what makes the assumption
-   evidence, not hope.
+   dataset, write, roll back, and compare the store by its files' content
+   hashes and by commit record, including across a remount. Compare
+   logical content, not `written@snap`: yard's SR1 found mount-time
+   intent-log housekeeping dirties a dataset physically (8 KiB) with no
+   logical change, so a physical measure gives false positives, and it
+   refuses resumes on it only because a workspace's drift is a different
+   question. `handoff.qnt` assumes rollback is exact; this check is what
+   makes the assumption evidence, not hope.
 4. **Hosting on yard.** 8A on FreeBSD as a yard client: the agent's VM or
-   jail, and the outbox jail as a yard service jail with its suspend,
-   resume, drift refusal and settled cleanup; caps and Cedar at the trap.
+   jail, and the outbox jail as a yard service jail (SR1: a service spec,
+   suspend and resume by ZFS snapshot, refusal on workspace drift with an
+   explicit force, liveness probes, per-project keys). The outbox
+   journal's dataset must stay out of the agent's step snapshots
+   (`journalInSnapshot`), which yard's layout of one dataset per workspace
+   allows; its key-service and crypto-shred decisions (SR1's open
+   decision 1) bear on where the journal's dataset sits. Caps and Cedar
+   at the trap.
 5. **Cutover.** Shadow instances with cassette receipts; rolling cutover
    with durable begin and end records; state plans (carry, migrate by
    reset); the soak gate wired into admission.
