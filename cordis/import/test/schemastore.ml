@@ -13,7 +13,7 @@
    The output is one line per schema and a summary, diffed against the
    checked-in expectation at a pinned commit (fetch_schemastore.sh).
 
-     schemastore.exe SCHEMASTORE_DIR JSVALID.py *)
+     schemastore.exe SCHEMASTORE_DIR JSVALID.py [--expect GOLDEN] *)
 
 open Cordis_import
 module J = Yojson.Safe
@@ -101,12 +101,22 @@ let () =
                         Printf.sprintf "%s: imported, %d types, %d instances" stem (List.length imp.defs) !tried))))
       files
   in
-  Printf.printf "# SchemaStore: %d schemas; %d import (their types check); %d are refused.\n" (List.length files) !imported (List.length files - !imported);
-  Printf.printf "# Instances of imported schemas: %d positive, %d negative; %d agree with jsonschema; %d valid ones are refused as RFC 0003 documents; %d jsonschema could not validate.\n"
+  let out = Buffer.create 65536 in
+  let printf fmt = Printf.bprintf out fmt in
+  printf "# SchemaStore: %d schemas; %d import (their types check); %d are refused.\n" (List.length files) !imported (List.length files - !imported);
+  printf "# Instances of imported schemas: %d positive, %d negative; %d agree with jsonschema; %d valid ones are refused as RFC 0003 documents; %d jsonschema could not validate.\n"
     !positive !negative !agree !documented_n !unvalidated;
-  Printf.printf "# Refusals by kind:\n";
-  Hashtbl.fold (fun k n acc -> (n, k) :: acc) refused [] |> List.sort (fun a b -> compare b a) |> List.iter (fun (n, k) -> Printf.printf "#   %4d  %s\n" n k);
-  List.iter print_endline lines;
+  printf "# Refusals by kind:\n";
+  Hashtbl.fold (fun k n acc -> (n, k) :: acc) refused [] |> List.sort (fun a b -> compare b a) |> List.iter (fun (n, k) -> printf "#   %4d  %s\n" n k);
+  List.iter (fun l -> printf "%s\n" l) lines;
+  let text = Buffer.contents out in
+  print_string text;
+  (* with --expect, the output must be the checked-in one *)
+  (match Array.to_list Sys.argv with
+   | [ _; _; _; "--expect"; golden ] ->
+       let want = In_channel.with_open_bin golden In_channel.input_all in
+       if want <> text then failures := Printf.sprintf "the output differs from %s (rerun without --expect to see it)" golden :: !failures
+   | _ -> ());
   if !failures <> [] then begin
     prerr_endline (Printf.sprintf "%d disagreements:" (List.length !failures));
     List.iter prerr_endline (List.rev !failures);

@@ -21,7 +21,8 @@ module V = Cordis_cel.Value
 
 let settings =
   let cases = match Sys.getenv_opt "IMPORT_PROPS_CASES" with Some n -> int_of_string n | None -> 300 in
-  Hegel.Settings.create ~test_cases:cases ~seed:41 ()
+  let seed = match Sys.getenv_opt "IMPORT_PROPS_SEED" with Some s -> int_of_string s | None -> 41 in
+  Hegel.Settings.create ~test_cases:cases ~seed ()
 
 let jsvalid = Sys.argv.(1)
 let corpus = Array.to_list (Array.sub Sys.argv 2 (Array.length Sys.argv - 2))
@@ -118,6 +119,19 @@ let rec same (a : V.t) (b : V.t) =
   | V.Int x, V.Int y -> x = y
   | _ -> a = b
 
+(* the swarm for one test case: which keyword families, instance kinds and
+   perturbations it may draw (Typed_gen.swarm) *)
+let keyword_swarm = ref (List.init 30 Fun.id)
+let instance_swarm = ref (List.init 7 Fun.id)
+let perturb_swarm = ref (List.init 7 Fun.id)
+
+let new_swarm d =
+  if Sys.getenv_opt "SWARM" <> Some "0" then begin
+    keyword_swarm := Typed_gen.swarm d 30;
+    instance_swarm := Typed_gen.swarm d 7;
+    perturb_swarm := Typed_gen.swarm d 7
+  end
+
 (* One node of a JSON document changed: what a writer that is almost right
    sends. Nodes are numbered in pre-order; [k] picks one. *)
 let perturb d (j : J.t) : J.t =
@@ -125,7 +139,7 @@ let perturb d (j : J.t) : J.t =
   let rec size (j : J.t) = 1 + (match j with `List xs -> List.fold_left (fun a x -> a + size x) 0 xs | `Assoc kv -> List.fold_left (fun a (_, x) -> a + size x) 0 kv | _ -> 0) in
   let target = d.Typed_gen.pick (size j) in
   let change (j : J.t) : J.t =
-    match d.pick 7, j with
+    match Typed_gen.pick_from d !perturb_swarm, j with
     | 0, _ -> `Null
     | 1, _ -> `Float 2.5
     | 2, _ -> `String "x"
@@ -157,6 +171,7 @@ let test_corpus () =
   let docs = List.map (fun p -> (p, J.from_file p)) corpus in
   Hegel.run_hegel_test ~settings ~database_key:"cordis:import:schema-corpus" (fun tc ->
       let d = Typed_gen.of_hegel tc in
+      new_swarm d;
       let path, doc = choose d docs in
       pools_for doc;
       let imp = Jsonschema.import doc in
@@ -198,7 +213,7 @@ let rec schema ?(top = true) d depth : J.t =
   let small () = `Int (d.Typed_gen.pick 4) in
   let num () = choose d [ `Int 0; `Int 1; `Int (-1); `Int 2; `Float 0.5; `Float 2.5 ] in
   let keyword () : (string * J.t) list =
-    match d.pick 30 with
+    match Typed_gen.pick_from d !keyword_swarm with
     | 0 -> [ ("type", `String (choose d [ "string"; "integer"; "number"; "boolean"; "null"; "object"; "array" ])) ]
     | 1 -> [ ("type", `List [ `String (choose d [ "string"; "integer"; "object"; "array" ]); `String "null" ]) ]
     | 2 -> [ ("minLength", small ()) ]
@@ -252,7 +267,8 @@ let rec schema ?(top = true) d depth : J.t =
 (* instances from the pools (set from the schema by [pools_for]), arrays
    sometimes with a repeated element *)
 and instance d depth : J.t =
-  match d.Typed_gen.pick (if depth <= 0 then 5 else 7) with
+  let kinds = List.filter (fun k -> depth > 0 || k < 5) !instance_swarm in
+  match if kinds = [] then d.Typed_gen.pick 5 else Typed_gen.pick_from d kinds with
   | 0 -> `Null
   | 1 -> `Bool (d.pick 2 = 0)
   | 2 -> `Int (Int64.to_int (choose d !ints))
@@ -266,6 +282,7 @@ and instance d depth : J.t =
 let test_predicate () =
   Hegel.run_hegel_test ~settings ~database_key:"cordis:import:schema-predicate" (fun tc ->
       let d = Typed_gen.of_hegel tc in
+      new_swarm d;
       let s = schema d (1 + d.pick 3) in
       pools_for s;
       match Schema_pred.compile s "x" with
@@ -286,16 +303,39 @@ let test_predicate () =
 let test_import () =
   Hegel.run_hegel_test ~settings ~database_key:"cordis:import:schema-import" (fun tc ->
       let d = Typed_gen.of_hegel tc in
+      new_swarm d;
       let s = schema d (1 + d.pick 3) in
       match Jsonschema.import s with
       | exception Jsonschema.Refused _ -> ()
       | imp ->
           let types = Cordis_graph.Print.file (Jsonschema.types_file imp) in
           Hegel.note tc (J.to_string s ^ "\n" ^ types);
+          (* guide the search toward schemas the importer types rather than
+             leaves dyn: that is where its own rules live *)
+          if Sys.getenv_opt "TARGET" <> Some "0" then begin
+            let rec typed (t : Jsonschema.t) =
+              match t with
+              | Dyn -> 0
+              | Rec _ -> 1
+              | Opt t | Lst (t, _) | Mp (t, _) -> 1 + typed t
+              | _ -> 1
+            in
+            let score =
+              List.fold_left
+                (fun acc (_, d) ->
+                  acc + match d with
+                    | Jsonschema.Record fs -> 1 + List.fold_left (fun a (f : Jsonschema.field) -> a + typed f.ty) 0 fs
+                    | Enum _ | Variant _ -> 2
+                    | Alias t -> typed t)
+                0 imp.defs
+            in
+            Hegel.target tc ~label:"typed locations" ~value:(float_of_int score)
+          end;
           (match Cordis_graph.Patch.load ~options:{ Cordis_graph.Check.default_options with budget = max_int } types with
            | Ok _ -> ()
            | Error es -> Hegel.require tc ~msg:("the types file does not check: " ^ String.concat "; " es) false);
           pools_for s;
+          let valid_count = ref 0 in
           for _ = 1 to 6 do
             let i =
               if d.pick 2 = 0 then instance d 2
@@ -307,11 +347,13 @@ let test_import () =
             match jsonschema s i with
             | Error e -> Hegel.require tc ~msg:("jsonschema: " ^ e) false
             | Ok valid -> (
+                if valid then incr valid_count;
                 match Jsonschema_codec.read imp imp.root i with
                 | Ok _ -> Hegel.require tc ~msg:(Printf.sprintf "the codec read %s, which jsonschema refuses" (J.to_string i)) valid
                 | Error e ->
                     Hegel.require tc ~msg:(Printf.sprintf "the codec refused %s (%s), which jsonschema accepts" (J.to_string i) e) ((not valid) || refused_as_closed e))
-          done)
+          done;
+          if Sys.getenv_opt "TARGET" <> Some "0" then Hegel.target tc ~label:"valid instances" ~value:(float_of_int !valid_count))
 
 (* ---- by example ------------------------------------------------------------------------------------- *)
 

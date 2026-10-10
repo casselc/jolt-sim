@@ -211,3 +211,15 @@ let checker_env c =
   List.fold_left (fun env (n, t, _) -> Checker.declare_ident env n (to_checker t)) (Checker.empty ()) c.vars
 
 let bindings c = List.map (fun (n, _, v) -> (n, v)) c.vars
+
+(* Swarm testing (Groce et al., "Swarm Testing", ISSTA 2012): for one test
+   case, a random subset of [n] features is enabled (each with probability
+   one half, at least one), and the case draws only from those. Rare
+   combinations of the remaining features come up far more often than when
+   every feature is always available. [swarm d n] returns the enabled
+   feature indices; [pick_from d enabled] draws one of them. *)
+let swarm d n =
+  let on = List.filter (fun _ -> d.pick 2 = 0) (List.init n Fun.id) in
+  if on = [] then [ d.pick n ] else on
+
+let pick_from d enabled = List.nth enabled (d.pick (List.length enabled))

@@ -90,6 +90,4 @@
  (alias schemastore)
  (deps jsvalid.py golden/schemastore.txt)
  (action
-  (progn
-   (with-stdout-to schemastore.out (run %{exe:schemastore.exe} %{env:SCHEMASTORE=schemastore} jsvalid.py))
-   (diff golden/schemastore.txt schemastore.out))))
+  (run %{exe:schemastore.exe} %{env:SCHEMASTORE=schemastore} jsvalid.py --expect golden/schemastore.txt)))
