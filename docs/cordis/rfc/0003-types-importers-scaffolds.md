@@ -320,6 +320,16 @@ order and absent `option`s as omitted members.
     documented;
   - examples of every rule of the importer's own, with the verdict
     `jsonschema`'s, not written by hand.
+- **SchemaStore** (`schemastore.ml`, at a pinned commit; the alias
+  `@import/test/schemastore`): every schema is imported in one shared
+  document set with the draft metaschemas, and every test instance of an
+  imported schema is read by the codec and validated by `jsonschema`. Of
+  990 schemas, 893 import and their types check; 97 are refused, by kind
+  (29 a remote reference to a document not in the set, 29 a lookaround
+  pattern, 26 `unevaluatedProperties`, the rest a handful each). Of the
+  instances, 1,886 agree with `jsonschema`, 220 valid ones are documented
+  refusals, 37 `jsonschema` itself cannot validate, and none disagree.
+  The listing is checked in, as for the suite.
 - **Golden imports** of the corpus schemas (types, report, name map).
 - **Mutants** of the predicate compiler, the importer and the codec: of
   27 tried, 25 are caught by the properties, the examples or the suite;
