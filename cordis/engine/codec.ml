@@ -122,6 +122,9 @@ let fact (x : E.fact) =
   | E.Answered (s, e, c) -> `List [ `String "answered"; `String s; `Int e; `Int c ]
   | E.Episode e -> `List [ `String "episode"; `Int e ]
   | E.Budget (r, st) -> `List [ `String "budget"; `Int r; `Int st ]
+  | E.Cutover_begin id -> `List [ `String "cutover-begin"; `String id ]
+  | E.Asset_revision (a, id) -> `List [ `String "asset-revision"; `String a; `String id ]
+  | E.Cutover_end id -> `List [ `String "cutover-end"; `String id ]
 
 let of_fact (j : J.t) : E.fact =
   match j with
@@ -131,6 +134,9 @@ let of_fact (j : J.t) : E.fact =
   | `List [ `String "answered"; `String s; e; c ] -> E.Answered (s, int_ e, int_ c)
   | `List [ `String "episode"; e ] -> E.Episode (int_ e)
   | `List [ `String "budget"; r; st ] -> E.Budget (int_ r, int_ st)
+  | `List [ `String "cutover-begin"; `String id ] -> E.Cutover_begin id
+  | `List [ `String "asset-revision"; `String a; `String id ] -> E.Asset_revision (a, id)
+  | `List [ `String "cutover-end"; `String id ] -> E.Cutover_end id
   | j -> bad "not a fact: %s" (J.to_string j)
 
 let record (r : E.record) = J.to_string (`Assoc [ ("v", `Int version); ("seq", `Int r.seq); ("facts", `List (List.map fact r.facts)) ])

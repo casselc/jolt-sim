@@ -984,6 +984,36 @@ importers wait for the slice.
 5. **Cutover.** Shadow instances with cassette receipts; rolling cutover
    with durable begin and end records; state plans (carry, migrate by
    reset); the soak gate wired into admission.
+
+   **Progress.** `cutover.qnt` is written and gated (Apalache to depth 8,
+   about 25 s): a candidate soaked in a shadow that emits nothing, then a
+   durable begin, assets switched one at a time at commit boundaries,
+   providers first, the old fiber retired before the new one, and a
+   durable end; a crash between begin and end finishes the cutover. Six
+   properties, four witnesses, five mutants. The engine follows it for
+   candidates that keep the graph's wiring (a rewiring is refused, and
+   goes through a restart): `Engine.admit` writes the begin record;
+   `Switch a` is offered when the asset's fiber is idle and every asset it
+   reads has switched; an unchanged cell (by its definition's hash) keeps
+   its value and memo, a changed one carries its state (or resets it, as
+   `Compat.state_plan` says) and recomputes; `Finish_cutover` writes the
+   end record and makes the candidate live; recovery replays the
+   cutover's facts given the revisions the host knows, and the replay
+   audit follows each asset's revision, so every turn is checked against
+   the code that ran it. `Engine.soak` runs a candidate alone in memory
+   on the live inputs against a cassette and returns only a verdict.
+   `engine/test/cutover_test.ml`: a soak and a cutover part way through
+   the loop (every asset on the candidate, the critic's requests switching
+   once and for good, the records auditing clean across revisions); a
+   candidate whose critic divides by zero fails its soak and leaves the
+   live instance untouched; a rewiring is refused; a crash between begin
+   and end is recovered and finished; and a Hegel property, a cutover at
+   any step with lost and duplicated receipts and crashes, resting where a
+   fresh run of the candidate does, ordered after every step. Four planted
+   cutover faults are caught (switching a busy fiber, a consumer first,
+   a switch not recorded, a changed cell kept). The admitter, like any
+   sender, keeps a candidate until its begin record is durable and admits
+   it again after a crash that lost it.
 6. **Wider.** Frames (RFC 0005 rules 1 to 12, once scheduled); the
    OpenAPI and AsyncAPI importers; 8C in a Solo5 unikernel with the run
    store moved to the framed log (2B) on a block device, under the

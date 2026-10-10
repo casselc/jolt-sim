@@ -31,6 +31,14 @@
      at its actual cost, once; an Uncertain intent's reservation is held;
      an attempt abandoned for another is charged at its worst case
      (observe.qnt's expire), so a late answer is never under-counted;
+   - cutover (quint/cutover.qnt): an admitted revision that keeps the
+     graph's wiring is cut over asset by asset, at commit boundaries (an
+     asset switches only with its fiber idle, so every receipt is applied
+     under the revision that issued its intent), providers before
+     consumers, between durable begin and end records; an unchanged cell
+     keeps its value and memo, a changed one carries or resets its state
+     and recomputes; a candidate is first soaked in a shadow that answers
+     its intents from a cassette and emits nothing;
    - lost receipts (quint/observe.qnt, quint/lifecycle.qnt): an
      observational intent is attempted again, up to a bound, and then the
      computation fails; an effectful one makes the fiber Uncertain, which
@@ -70,6 +78,11 @@ type slot = {
 
 type source = { svalue : V.t option; srev : int }
 
+(* a revision of the graph: its id (the graph definition's hash, which
+   covers its cells), what was checked, each cell's hash, and whether a
+   cell's state carries from the revision before (Compat.state_plan) *)
+type revision = { id : string; checked : Check.checked; cell_hashes : (string * string) list; carry : string -> bool }
+
 (* A record is the durable form of one step: the facts it changed. *)
 type fact =
   | Slot of string * slot
@@ -78,6 +91,9 @@ type fact =
   | Answered of string * int * int  (** scrutinee, episode, computation *)
   | Episode of int
   | Budget of int * int  (** reserved, settled *)
+  | Cutover_begin of string  (** the candidate revision's id *)
+  | Asset_revision of string * string  (** an asset now runs this revision *)
+  | Cutover_end of string
 
 type record = { seq : int; facts : fact list }
 
@@ -97,6 +113,8 @@ type action =
   | Withdraw of string  (** a guard or a dependency no longer holds *)
   | Turn of string  (** evaluate the running fiber's next turn *)
   | Append of string * string  (** run a route's append for the scrutinee's current revision, into the stream *)
+  | Switch of string  (** cut an asset over to the candidate revision *)
+  | Finish_cutover
 
 type t = {
   g : Check.graph_info;
@@ -117,6 +135,10 @@ type t = {
   worst : string -> int;  (** an intent kind's worst-case cost: policy *)
   reserved : int;
   settled : int;
+  rev : string;  (** the live revision *)
+  cell_hashes : (string * string) list;  (** the live revision's cells, by name *)
+  asset_rev : string Smap.t;  (** the revision each asset runs *)
+  cutting : revision option;  (** the candidate, between cutover-begin and cutover-end *)
 }
 
 let action_name = function
@@ -124,6 +146,8 @@ let action_name = function
   | Withdraw a -> "withdraw " ^ a
   | Turn a -> "turn " ^ a
   | Append (s, st) -> Printf.sprintf "append %s -> %s" s st
+  | Switch a -> "switch " ^ a
+  | Finish_cutover -> "finish cutover"
 
 (* ---- creation ------------------------------------------------------------------------------------- *)
 
@@ -139,7 +163,8 @@ let eval_init registry (e : Cordis_cel.Ast.expr option) =
       | { value = V.Error m; _ } -> err "a state initial value: %s" m
       | { value; _ } -> value)
 
-let create ?(classes = fun _ -> Effectful) ?(max_attempts = 3) ?budget ?(worst = fun _ -> 0) (checked : Check.checked) graph =
+let create ?(classes = fun _ -> Effectful) ?(max_attempts = 3) ?budget ?(worst = fun _ -> 0) ?(revision = "") ?(cell_hashes = [])
+    (checked : Check.checked) graph =
   let g = match List.find_opt (fun (g : Check.graph_info) -> g.gname = graph) checked.graphs with Some g -> g | None -> err "no graph %s" graph in
   let cell name = match List.find_opt (fun (c : Check.cell_info) -> c.cname = name) checked.cells with Some c -> c | None -> err "no cell %s" name in
   let cells = List.fold_left (fun m (a : Check.asset_info) -> Smap.add a.aname (cell a.acell) m) Smap.empty g.assets in
@@ -155,7 +180,9 @@ let create ?(classes = fun _ -> Effectful) ?(max_attempts = 3) ?budget ?(worst =
     inputs = List.fold_left (fun m (n, _) -> Smap.add n { svalue = None; srev = 0 } m) Smap.empty g.inputs;
     streams = List.fold_left (fun m (n, _) -> Smap.add n ([], 0) m) Smap.empty g.streams;
     slots; answered = []; episode = 0; seq = 0; durable = 0; gated = []; refused = 0;
-    budget; worst; reserved = 0; settled = 0 }
+    budget; worst; reserved = 0; settled = 0;
+    rev = revision; cell_hashes; asset_rev = List.fold_left (fun m (a : Check.asset_info) -> Smap.add a.aname revision m) Smap.empty g.assets;
+    cutting = None }
 
 (* ---- reading -------------------------------------------------------------------------------------- *)
 
@@ -251,7 +278,22 @@ let ready t =
         | _ -> None)
       t.g.append_exprs
   in
-  assets @ List.sort_uniq compare appends
+  (* cutover: an asset switches with its fiber idle and every asset it reads switched before it *)
+  let cutover =
+    match t.cutting with
+    | None -> []
+    | Some c ->
+        let pending = List.filter (fun (ai : Check.asset_info) -> Smap.find ai.aname t.asset_rev <> c.id) t.g.assets in
+        if pending = [] then [ Finish_cutover ]
+        else
+          List.filter_map
+            (fun (ai : Check.asset_info) ->
+              let idle = not (fiber_busy (Smap.find ai.aname t.slots).fiber) in
+              let providers_done = List.for_all (fun d -> (not (Smap.mem d t.slots)) || Smap.find d t.asset_rev = c.id) ai.args in
+              if idle && providers_done then Some (Switch ai.aname) else None)
+            pending
+  in
+  assets @ List.sort_uniq compare appends @ cutover
 
 let quiet t = ready t = [] && t.gated = [] && Smap.for_all (fun _ s -> not (fiber_busy s.fiber)) t.slots
 
@@ -334,6 +376,39 @@ let perform t action =
               let t, r = record (with_slot t a s) [ Slot (a, s) ] in
               (t, [ Persist r ]))
       | _ -> err "turn %s: not running" a)
+  | Switch a -> (
+      match t.cutting with
+      | None -> err "switch %s: no cutover under way" a
+      | Some c ->
+          let ai = asset_info t a in
+          let nc = List.find (fun (x : Check.cell_info) -> x.cname = ai.acell) c.checked.cells in
+          let unchanged = List.assoc_opt ai.acell t.cell_hashes = List.assoc_opt ai.acell c.cell_hashes && List.assoc_opt ai.acell c.cell_hashes <> None in
+          let s = Smap.find a t.slots in
+          let s =
+            if unchanged then s (* the same code: its value and memo stand *)
+            else
+              let inits = List.map (fun (f, e) -> (f, eval_init c.checked.registry e)) nc.inits in
+              let old = match s.state with V.Map m -> m | _ -> [] in
+              let state =
+                V.make_map
+                  (List.map
+                     (fun (f, v) -> (V.String f, if c.carry ai.acell then Option.value (V.map_find old (V.String f)) ~default:v else v))
+                     inits)
+              in
+              (* new code: recompute; a failed computation gets another chance under it *)
+              { s with state; seen = []; fiber = Ready }
+          in
+          let t = { t with slots = Smap.add a s t.slots; cells = Smap.add a nc t.cells; asset_rev = Smap.add a c.id t.asset_rev } in
+          let t, r = record t [ Slot (a, s); Asset_revision (a, c.id) ] in
+          (t, [ Persist r ]))
+  | Finish_cutover -> (
+      match t.cutting with
+      | None -> err "finish: no cutover under way"
+      | Some c ->
+          let g = List.find (fun (g : Check.graph_info) -> g.gname = t.g.gname) c.checked.graphs in
+          let t = { t with g; registry = c.checked.registry; rev = c.id; cell_hashes = c.cell_hashes; cutting = None } in
+          let t, r = record t [ Cutover_end c.id ] in
+          (t, [ Persist r ]))
   | Append (sc, stream) ->
       let sl = Smap.find sc t.slots in
       let v = Option.get sl.value in
@@ -458,8 +533,10 @@ let spend t = (t.reserved, t.settled)
    awaited key and attempt make a second answer change nothing. Every
    Uncertain fiber is reconciled again. A fiber that was running re-runs
    its turn, which is deterministic. *)
-let recover ?classes ?max_attempts ?budget ?worst (checked : Check.checked) graph (records : record list) =
-  let t = create ?classes ?max_attempts ?budget ?worst checked graph in
+let recover ?classes ?max_attempts ?budget ?worst ?revision ?cell_hashes ?(revisions = []) (checked : Check.checked) graph
+    (records : record list) =
+  let t = create ?classes ?max_attempts ?budget ?worst ?revision ?cell_hashes checked graph in
+  let known id = match List.find_opt (fun (c : revision) -> c.id = id) revisions with Some c -> c | None -> err "recovery needs revision %s" id in
   let apply t = function
     | Slot (a, s) -> { t with slots = Smap.add a s t.slots }
     | Input (n, src) -> { t with inputs = Smap.add n src t.inputs }
@@ -467,6 +544,15 @@ let recover ?classes ?max_attempts ?budget ?worst (checked : Check.checked) grap
     | Answered (s, e, c) -> { t with answered = (s, e, c) :: t.answered }
     | Episode e -> { t with episode = e }
     | Budget (reserved, settled) -> { t with reserved; settled }
+    | Cutover_begin id -> { t with cutting = Some (known id) }
+    | Asset_revision (a, id) ->
+        let c = known id in
+        let ai = asset_info t a in
+        { t with asset_rev = Smap.add a id t.asset_rev; cells = Smap.add a (List.find (fun (x : Check.cell_info) -> x.cname = ai.acell) c.checked.cells) t.cells }
+    | Cutover_end id ->
+        let c = known id in
+        let g = List.find (fun (g : Check.graph_info) -> g.gname = t.g.gname) c.checked.graphs in
+        { t with g; registry = c.checked.registry; rev = c.id; cell_hashes = c.cell_hashes; cutting = None }
   in
   let t = List.fold_left (fun t (r : record) -> List.fold_left apply { t with seq = r.seq; durable = r.seq } r.facts) t records in
   let refused = t.refused in
@@ -492,8 +578,10 @@ let recover ?classes ?max_attempts ?budget ?worst (checked : Check.checked) grap
    Cells are pure CEL, so a difference means nondeterminism, or records
    read against a graph whose code is not the code that wrote them. A turn
    that failed is checked to fail again. Returns the differences found. *)
-let audit ?classes ?max_attempts ?budget ?worst (checked : Check.checked) graph (records : record list) =
+let audit ?classes ?max_attempts ?budget ?worst ?(revisions = []) (checked : Check.checked) graph (records : record list) =
   let t0 = create ?classes ?max_attempts ?budget ?worst checked graph in
+  (* across a cutover, each asset's turns are evaluated with the code its asset ran when they were recorded *)
+  let cells = ref t0.cells in
   let problems = ref [] in
   let say fmt = Printf.ksprintf (fun m -> problems := m :: !problems) fmt in
   let last = Hashtbl.create 8 in
@@ -504,7 +592,7 @@ let audit ?classes ?max_attempts ?budget ?worst (checked : Check.checked) graph 
           | Slot (a, s) ->
               (match Hashtbl.find_opt last a, s.fiber with
                | Some ({ fiber = Running { turn; args; receipts; _ }; _ } as before), after -> (
-                   let t = { t0 with slots = Smap.add a before t0.slots } in
+                   let t = { t0 with slots = Smap.add a before t0.slots; cells = !cells } in
                    let c = Smap.find a t.cells in
                    let last_turn = turn = List.length c.turns - 1 in
                    match after, eval_turn t a ~turn ~args ~receipts with
@@ -523,7 +611,72 @@ let audit ?classes ?max_attempts ?budget ?worst (checked : Check.checked) graph 
                    | _ -> ())
                | _ -> ());
               Hashtbl.replace last a s
+          | Asset_revision (a, id) -> (
+              match List.find_opt (fun (c : revision) -> c.id = id) revisions with
+              | Some c ->
+                  let ai = List.find (fun (x : Check.asset_info) -> x.aname = a) t0.g.assets in
+                  cells := Smap.add a (List.find (fun (x : Check.cell_info) -> x.cname = ai.acell) c.checked.cells) !cells
+              | None -> say "record %d: %s runs revision %s, which the audit was not given" r.seq a id)
           | _ -> ())
         r.facts)
     records;
   List.rev !problems
+
+(* ---- admission and the shadow ------------------------------------------------------------------- *)
+
+(* what must not change for a rolling cutover: the graph's wiring *)
+let wiring (g : Check.graph_info) =
+  ( List.map fst g.inputs, List.map fst g.streams,
+    List.map (fun (a : Check.asset_info) -> (a.aname, a.acell, a.args, a.guards)) g.assets,
+    List.map (fun (s, c, st, b, _) -> (s, c, st, b)) g.append_exprs, g.capacities )
+
+(* Begin cutting over to an admitted candidate: a durable cutover-begin
+   record; the assets then switch as [ready] offers them. A candidate that
+   rewires the graph is refused: that is a restart (decision 6A), not a
+   rolling cutover. *)
+let admit t (c : revision) =
+  if t.cutting <> None then Error "a cutover is already under way"
+  else
+    match List.find_opt (fun (g : Check.graph_info) -> g.gname = t.g.gname) c.checked.graphs with
+    | None -> Error (Printf.sprintf "the candidate has no graph %s" t.g.gname)
+    | Some g when wiring g <> wiring t.g -> Error "the candidate rewires the graph; a rolling cutover keeps the wiring (restart instead)"
+    | Some _ ->
+        let t, r = record { t with cutting = Some c } [ Cutover_begin c.id ] in
+        Ok (t, [ Persist r ])
+
+(* The shadow soak (decision 6C): the candidate runs alone, in memory, on
+   the given inputs, its intents answered by [cassette], until it comes to
+   rest. It returns a verdict and nothing else: no record and no intent of
+   a shadow leaves it (cutover.qnt's noShadowEmission). *)
+let soak ?classes ?budget ?worst ?(limit = 10_000) (c : revision) graph ~inputs ~(cassette : intent -> V.t * int) =
+  match create ?classes ?budget ?worst c.checked graph with
+  | exception Engine_error m -> Error m
+  | t0 -> (
+      let rec go t steps =
+        if steps > limit then Error (Printf.sprintf "the candidate did not come to rest in %d steps" limit)
+        else
+          let t, _ = handle t (Durable t.seq) in
+          let t =
+            Smap.fold
+              (fun _ (s : slot) t ->
+                match s.fiber with
+                | Awaiting { intent; _ } -> fst (handle t (Receipt (intent.key, intent.attempt, (let v, c = cassette intent in Done (v, c)))))
+                | _ -> t)
+              t.slots t
+          in
+          match ready t with
+          | a :: _ -> go (fst (perform t a)) (steps + 1)
+          | [] -> (
+              match failures t with
+              | [] when quiet t -> Ok ()
+              | [] -> Error "the candidate stopped short of rest (its budget?)"
+              | fs -> Error (String.concat "; " (List.map (fun (a, m) -> a ^ ": " ^ m) fs)))
+      in
+      match List.fold_left (fun t (n, v) -> fst (handle t (Set_input (n, v)))) t0 inputs with
+      | t -> (try go t 0 with Engine_error m -> Error m)
+      | exception Engine_error m -> Error m)
+
+let inputs t = Smap.fold (fun n (s : source) acc -> match s.svalue with Some v -> (n, v) :: acc | None -> acc) t.inputs []
+let revision t = t.rev
+let cutting t = Option.map (fun c -> c.id) t.cutting
+let asset_revision t a = Smap.find a t.asset_rev

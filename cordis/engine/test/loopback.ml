@@ -31,6 +31,29 @@ let checked =
 
 let classes = function "llm.complete" -> E.Observational | _ -> E.Effectful
 
+(* a revision of the graph from its text: its id is the graph's hash, which covers its cells; a cell's
+   state carries unless Compat's state plan, against [from], says to migrate it *)
+let revision_of ?from text : E.revision =
+  match Cordis_graph.Parse.file text with
+  | Error m -> failwith m
+  | Ok file -> (
+      match Cordis_graph.Check.check file with
+      | Error es -> failwith (String.concat "; " es)
+      | Ok checked ->
+          let hs = Cordis_graph.Print.hashes file in
+          let cells = List.filter_map (fun (c : Cordis_graph.Check.cell_info) -> Option.map (fun h -> (c.cname, h)) (List.assoc_opt c.cname hs)) checked.cells in
+          let plan =
+            match from with
+            | None -> []
+            | Some (old_file, old_checked) -> Cordis_graph.Compat.state_plan ~old_file ~old_checked ~new_file:file ~new_checked:checked
+          in
+          let carry c = match List.assoc_opt c plan with Some (Cordis_graph.Compat.Migrate _) -> false | _ -> true in
+          { E.id = List.assoc "review_loop" hs; checked; cell_hashes = cells; carry })
+
+let live_text = lazy (read Sys.argv.(1))
+let live = lazy (revision_of (Lazy.force live_text))
+let live_file = lazy (match Cordis_graph.Parse.file (Lazy.force live_text) with Ok f -> f | Error m -> failwith m)
+
 (* budgets: each kind's worst case (policy) and what the world actually charges *)
 let worst = function "llm.complete" -> 5 | _ -> 1
 let actual = function "llm.complete" -> 3 | _ -> 1
@@ -88,6 +111,9 @@ type host = {
   mutable captured : E.command list;  (** the commands of the current host step, in order *)
   store : store;
   mutable crashes : int;  (** crashes still allowed *)
+  mutable revisions : E.revision list;  (** the candidates this host has admitted, for recovery *)
+  mutable admitting : E.revision option;
+      (** the admitter keeps a candidate until its cutover is durable, and admits it again after a crash that lost it *)
   mutable last_input : V.t option;
       (** the sender keeps an input until it is durable, and sends it again after a crash; the same input again changes nothing *)
   mutable codec_errors : string list;
@@ -105,7 +131,7 @@ type host = {
 }
 
 let new_host ?(store = memory_store ()) ?(crashes = 0) ?budget t =
-  { budget; charged = 0; spend_errors = []; t; recording = None; captured = []; store; crashes; codec_errors = []; last_input = None; unsynced = 0; durable = 0; outbox = []; journal = Hashtbl.create 8; effects = Hashtbl.create 8;
+  { budget; charged = 0; spend_errors = []; t; recording = None; captured = []; store; crashes; revisions = []; admitting = None; codec_errors = []; last_input = None; unsynced = 0; durable = 0; outbox = []; journal = Hashtbl.create 8; effects = Hashtbl.create 8;
     inflight = []; reconciles = []; released_early = 0 }
 
 let obey ?(durable = false) h cmds =
@@ -162,12 +188,21 @@ let take_ h (f : faults) ~next_input = function
          (quint/handoff.qnt's lost frames); the outbox's journal and its answers in flight survive *)
       h.outbox <- [];
       h.reconciles <- [];
-      let t, cmds = E.recover ~classes ?budget:h.budget ~worst (Lazy.force checked) "review_loop" (h.store.load ()) in
+      let r = Lazy.force live in
+      let t, cmds =
+        E.recover ~classes ?budget:h.budget ~worst ~revision:r.id ~cell_hashes:r.cell_hashes ~revisions:h.revisions r.checked "review_loop"
+          (h.store.load ())
+      in
       h.t <- t;
       h.unsynced <- h.durable;
       (* releases from durable records pass the output gate *)
       obey ~durable:true h cmds;
-      Option.iter (fun v -> feed h (E.Set_input ("request", v))) h.last_input
+      Option.iter (fun v -> feed h (E.Set_input ("request", v))) h.last_input;
+      Option.iter
+        (fun (c : E.revision) ->
+          if E.cutting h.t = None && E.revision h.t <> c.id then
+            match E.admit h.t c with Ok (t, cmds) -> h.t <- t; obey h cmds | Error m -> failwith ("re-admit: " ^ m))
+        h.admitting
   | Send i ->
       h.outbox <- List.filter (fun j -> j != i) h.outbox;
       let receipt =
@@ -334,7 +369,8 @@ let run ?(faults = no_faults) ?(limit = 5000) ?(after = 0) ?(crash_at = []) ?cha
   go 0
 
 let start ?store ?crashes ?(budget = 1000) ?(input = diff "src/main.ml" "let x = 1") () =
-  let h = new_host ?store ?crashes ~budget (E.create ~classes ~budget ~worst (Lazy.force checked) "review_loop") in
+  let r = Lazy.force live in
+  let h = new_host ?store ?crashes ~budget (E.create ~classes ~budget ~worst ~revision:r.id ~cell_hashes:r.cell_hashes r.checked "review_loop") in
   h.last_input <- Some input;
   feed h (E.Set_input ("request", input));
   h

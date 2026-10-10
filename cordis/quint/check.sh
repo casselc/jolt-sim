@@ -138,6 +138,16 @@ sim budget.qnt refundOnLost heldWhileUncertain VIOLATED
 sim budget.qnt refundOnLost accounted VIOLATED
 sim budget.qnt settleEveryDelivery settleOnce VIOLATED
 
+# ---- cutover.qnt (RFC 0006 decision 6: shadow soak, rolling cutover at commit boundaries) --
+for inv in singleWriter answeredByIssuer noShadowEmission rejectedLeavesLive noUnadmittedMix ordered; do sim cutover.qnt design "$inv" ok; done
+verify cutover.qnt design safety ok
+for w in cutoverWaitedOnUncertain crashMidCutoverCompleted soakRejected cutoverDone; do sim cutover.qnt design "not($w)" VIOLATED; done
+sim cutover.qnt retireAwaiting answeredByIssuer VIOLATED
+sim cutover.qnt shadowReleases noShadowEmission VIOLATED
+sim cutover.qnt volatileCutover noUnadmittedMix VIOLATED
+sim cutover.qnt insertConsumerFirst ordered VIOLATED
+sim cutover.qnt insertFirst singleWriter VIOLATED
+
 # ---- runtime.qnt (RFC 0006: the engine's protocol, which engine runs are replayed in) ---
 sim runtime.qnt design safety ok
 for w in retried doubted refetched recoveredAwaiting gaveUp; do sim runtime.qnt design "not($w)" VIOLATED; done
