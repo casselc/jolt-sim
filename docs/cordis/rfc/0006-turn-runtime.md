@@ -1,0 +1,948 @@
+# RFC 0006: The turn runtime
+
+Status: proposed; options, not yet decided. Phase 3 (DESIGN.md build
+order items 8 and 10, with the trap side of 9). Design context:
+[DESIGN.md](../DESIGN.md) "The runtime", "The outbox", "Where the outbox
+runs", "Hosting"; [RFC 0002](0002-graph-language.md) "Routes and streams at
+run time" and "Compilation to the kernel"; [RFC 0004](0004-descriptor-native-types.md)
+"Revisions"; [RFC 0005](0005-xml-csv-frames.md) "Frames", rules 1 to 12.
+Prior art: [research/STREAMING-PRIOR-ART.md](../research/STREAMING-PRIOR-ART.md),
+and the sources at the end. Models it must honour: every module in
+`cordis/quint/`, listed in "What is already fixed".
+
+## Purpose
+
+Phases 1 and 2 built everything a running graph needs except the thing
+that runs it. `cordis/kernel` decides lifecycle steps as pure functions;
+`cordis/sim` schedules them under one entropy oracle; `cordis/graph`
+checks a graph, estimates each turn's cost and compiles the graph to
+kernel components (`graph/lib/compile.ml`); `cordis/cel` evaluates a turn
+with a runtime cost limit (`Eval.run ?limit`). Ten Quint models state
+what the running system must guarantee. None of it persists anything,
+sends anything, or survives a crash.
+
+The **turn runtime** executes admitted graph revisions. It:
+
+- schedules the turns of cells, and the lifecycle steps around them;
+- evaluates each turn's CEL with its inputs, state and receipts, within
+  its cost limit and its parameters' size bounds;
+- persists each turn as one atomic commit record (RFC 0005 rule 2);
+- hands committed intents to the outbox, and feeds receipts back;
+- recovers from a crash to the last commit, and replays deterministically;
+- cuts over between revisions at commit boundaries (carry, drain,
+  restart);
+- runs routes, guards, streams with capacities, episodes and frames in
+  batches, as the models say;
+- enforces cost and budget at run time, beside the static estimates.
+
+This RFC does not choose yet. For each decision it sets out two to four
+genuinely different options, the prior art each follows, its cost, and how
+it keeps the modelled invariants. It ends with a recommended combination,
+a staged plan, open questions, and the Quint models to write **before**
+any of it is implemented: the project's rule is that anything stateful or
+concurrent is modelled first.
+
+## What is already fixed
+
+The options below differ in mechanism. They do not get to differ in these
+obligations, each of which a model already checks.
+
+| Model (`cordis/quint/`) | Property | What the runtime must do |
+| --- | --- | --- |
+| `lifecycle.qnt` | `guardHolds` | change lifecycle state only through `Kernel.apply` and `Kernel.orchestrate`; never unload a fiber some committed view names |
+| | `atMostOnce` (mutant `blindRetry`) | answer a `Lost` receipt with `Reconcile`, never a resend; carry the episode in every released key (`ikey ^ "@" ^ episode`) |
+| | `boundOnlyWhenRun` | unbind a fiber's keys when it leaves; recovery must not resurrect bindings of a fiber that is not installed |
+| `outbox.qnt` | `atMostOnce` (mutants `journalInSnapshot`, `resendOnRestart`) | keep the outbox journal off every dataset a step snapshot rolls back; reconcile `Unknown` entries after an outbox restart |
+| | `withinLimit` (`localLimits`) | shared limits are granted by the central service, not counted per runtime |
+| | `onlyOutboxEgress` (`pfOpen`) | the runtime has no network path of its own |
+| | `receiptsTrue` | a `Definite` receipt is recorded only for an effect that happened |
+| `branches.qnt` | `onlyChosen`, `realOnlyToChosen` (`releaseEarly`, `noForkIds`) | the fork ID is part of every commit record and every intent record; only the chosen branch's intents are released |
+| `gateway.qnt` | `atMostOnce`, `remoteViaOutbox` (`ungated`, `missingIsInternal`) | pass the calling emission's idempotency key in a hosted tool's request metadata; a missing annotation means emission |
+| `caps.qnt` | `noWidening` (`uncoveredCaveats`, `unionCaveats`) | the runtime holds sturdy refs and may only attenuate them; it never mints authority |
+| `admission.qnt` | `liveAdmitted`, `noLostUpdate`, `narrowingApproved` | run only revisions admission made live; a revision change is a recorded event, never a file swap |
+| `assets.qnt` | `consistent`, `receiptBacked`, `atMostOnce` (`memoByCell`, `receiptsByCell`, `noMemo`) | memoise by (cell hash, input hashes); the emission memo is the receipt cache, keyed by the value sent; early cutoff |
+| `revisions.qnt` | `ownRegistry`, `stateReadable`, `breakingApproved`, `singleWriter` (`globalRegistry`, `carryAlways`, `noApproval`, `insertFirst`) | each fiber evaluates with its own revision's registry; state crosses a revision only when the new type reads it; retire before insert |
+| `routes.qnt` | `consistent`, `appendOnce`, `bounded` (`keepGuarded`, `appendEveryRun`, `noCap`) | withdraw a guarded asset when its guard stops holding; key an append by the scrutinee's revision; refuse an append to a full stream; a new input empties the streams |
+| `frames.qnt` | `accConsistent`, `contiguous`, `cursorMatches`, `revsInOrder`, `accTyped`, `effectsOnce`, `endAfterAll`, `noRowLost`, `bufferBounded` | RFC 0005 rules 1 to 10: durable batch intervals, one atomic record per turn, intents keyed `(stream, generation, lo, index)`, cutover at a commit, a committed end turn, backpressure that loses no row |
+
+Three further facts constrain every option:
+
+- **The kernel is the control plane, not the data plane.** It models
+  values as integers and has no conditionals (`compile.ml`'s header). The
+  runtime therefore has two layers whatever else it chooses: the kernel
+  deciding *which fiber may step*, and a value plane holding asset values,
+  their revisions and freshness, stream contents, memo entries, guards and
+  appends, and cell state, deciding *what a step computes*. The value
+  plane's rules are the ones `assets.qnt`, `routes.qnt` and `frames.qnt`
+  already state.
+- **Cordis hosts are inertial** (Cordis §4.4, SYNTHESIS.md): a transition
+  completes before the next begins. Any concurrency must preserve that for
+  each fiber, and the global reads the calculus makes (`target`, `relied`
+  read the whole registry) must see a consistent registry.
+- **Turns are deterministic.** A turn is a CEL program over its inputs,
+  state and earlier receipts (RFC 0002 "Cells"); RFC 0001 "Determinism"
+  removes clocks, map-order and regex nondeterminism. What is not
+  deterministic is the schedule, the arrival of inputs and receipts, and
+  faults. The runtime's recovery argument rests on this split.
+
+## The commit record
+
+Every store option below persists the same logical record. It is fixed
+here so the options can be compared on how they make it atomic, not on
+what it holds. One record per kernel step that changes durable state;
+for a turn (an `Iter` or `Finish`):
+
+```
+<commit
+  {graph: #x"…" revision: #x"…" fork: 0       ; RFC 0002 hash; branches.qnt fork ID
+   seq: 1041                                  ; position in this instance's log
+   fiber: 7 episode: 3 turn: 1 life: reloading
+   inputs: {draft: <rev 12 #x"…">}            ; the revisions and hashes it read
+   receipts: [#x"5a1e…@3"]                    ; receipts consumed by this turn
+   state: {attempts: 2}                       ; the cell's state after the turn
+   assets: {verdict: <rev 13 #x"…">}          ; values bound, by hash (blobs apart)
+   streams: {notes: <append #x"…" rev: 13>}   ; keyed appends (routes.qnt)
+   frame: <batch {stream: s gen: 2 lo: 4 hi: 6}> ; RFC 0005 rules 1, 2, 5
+   cutover: none                              ; or <carry r'> <drain r'> <restart r'>
+   budget: {reserve: 4000 settle: []}         ; see Decision 4
+   intents: [<intent llm.complete {key: #x"…@3" …}>]}>
+```
+
+Lifecycle-only steps (`Begin`, `Divert`, `Leave`, `Unload`), orchestration
+inputs (`Insert`, `Retire`, `Receive`, `Reconcile`, `Restart`), graph
+inputs and admissions are records of the same envelope with the fields
+that apply. A graph input is durable before its first turn reads it, the
+input analogue of RFC 0005 rule 1.
+
+The record is the unit of atomicity: state, cursor, revision, intents,
+episode and budget reservation land together or not at all
+(`frames.qnt`'s `splitCommit` mutant is what happens otherwise).
+**Release follows durability**: no intent leaves for the outbox before the
+record holding it is durable. This is Remus's output commit, Cloudflare
+Durable Objects' output gate, and DESIGN.md's "released only after its
+turn commits".
+
+## Decision 1: execution model and concurrency
+
+How turns are scheduled and evaluated inside one runtime instance (one
+agent's graphs, or one graph; see Decision 8).
+
+### 1A. One deterministic event loop per instance, sans-IO core
+
+A single thread owns the registry, the value plane and the log. The loop
+takes the next event (a graph input, a receipt, an admission, a timer) or
+the next enabled step, evaluates it, appends the record, and once the
+record is durable releases its intents. All IO sits behind a small effect
+seam (store, outbox channel, clock, picker); the core is a pure function
+`step : core -> event -> core * command list`, the shape `Kernel` already
+has.
+
+- **Prior art:** Spritely Goblins and E's vats (a turn runs to completion
+  on one event loop, transactionally); TigerBeetle and FoundationDB (a
+  single-threaded deterministic core, the same code run by the simulator);
+  Cloudflare Durable Objects (one thread per object, input and output
+  gates); Redis; the "sans-IO" protocol pattern.
+- **For:** inertial by construction; `target` and `relied` always see one
+  registry; the simulator *is* the runtime with the oracle as picker and
+  in-memory store and outbox, so `quintgo` conformance covers production
+  code, not a twin; no locks. CEL turns are cost-bounded, so a turn cannot
+  hog the loop beyond its estimate, and no preemption is needed. The core
+  runs unchanged on a Unix process (Eio at the edge), under the simulator,
+  and in a MirageOS unikernel, whose device layer is Lwt-based and which
+  runs one domain anyway.
+- **Against:** no parallelism inside an instance. A graph with many
+  independent expensive assets waits for them in turn. Parallelism comes
+  from many instances (DESIGN.md "Parallelism comes from many VMs").
+- **Invariants:** every model's actions are already atomic steps of one
+  global state, so the runtime's step is the model's step; refinement is
+  direct.
+
+### 1B. Eio fibers per cell, with a domain pool for evaluation
+
+Each kernel fiber is an Eio fiber; independent assets evaluate in
+parallel on `Eio.Domain_manager` (or a Moonpool pool); a mutex or a single
+committer fiber serialises registry changes and log appends.
+
+- **Prior art:** Eio's structured concurrency (one `Switch` per activation,
+  as DESIGN.md "The runtime" sketches); Flink and Rama task parallelism.
+- **For:** uses multicore inside one instance; Switches give LIFO release
+  of acquisitions for free; matches the original sketch in DESIGN.md and
+  OCAML-ON-BHYVE.md.
+- **Against:** the registry becomes shared state: either one lock around
+  every kernel call (which is 1A with extra threads) or a protocol that
+  needs its own model. Schedules are nondeterministic in production, so
+  determinism holds only in the simulator's Picos/Eio mock, and the code
+  paths differ. Inside a unikernel there is one domain, so the parallelism
+  is unavailable exactly where the deterministic tender runs.
+- **Invariants:** `singleWriter` and `guardHolds` need the commit path
+  serialised; parallel evaluation is safe only because CEL is pure.
+
+### 1C. An actor per fiber, with mailboxes and supervision trees
+
+Each fiber is an actor holding its own lifecycle state; providers and
+consumers exchange messages (activate, deactivate, value changed); a
+supervisor actor applies `Order.restart_plan` and `intensity`.
+
+- **Prior art:** Erlang/OTP, Akka, Orleans' grains, Riot (OCaml 5 actors);
+  ensemble's supervision, already ported in `kernel/order.ml`.
+- **For:** crash containment per fiber; natural mapping of supervision;
+  scales across hosts.
+- **Against:** the Cordis calculus reads the whole registry (`relied`:
+  does *any* installed fiber's committed view name this one?). In an actor
+  system that is a distributed protocol with in-flight messages, so the
+  guard (Theorem 70) becomes a new concurrent algorithm to model and
+  prove, not a function call. Confluence across actors needs every
+  message order considered.
+- **Invariants:** `guardHolds` must be re-established by a message
+  protocol (reference counting of consumers, as Cordis §6.2's broker
+  suggests); a new model would be required before building it.
+
+### 1D. An external durable-execution engine hosts the cells
+
+Run each graph as a Temporal workflow, a Restate virtual object, or a
+Golem Wasm component; the engine journals, retries and recovers; Cordis
+supplies the cells and the policy.
+
+- **Prior art:** Temporal (event history, deterministic replay, worker
+  versioning), Restate (per-invocation journal, single writer per key),
+  Golem (Wasm with an oplog), Flink or Rama for frames.
+- **For:** years of operational hardening; tooling; durability not ours
+  to get right.
+- **Against:** no OCaml SDK in any of them; their versioning (patch
+  markers, pinned versus auto-upgrade) and retry models differ from
+  carry/drain/restart and from "reconcile, never blind retry" (activities
+  are at-least-once); Uncertain is not first-class; the engine runs
+  outside the deterministic boundary and outside the trap, so the
+  simulator and Quint conformance no longer cover what runs; two sources
+  of truth for revision state. Each is also a server to operate.
+- **Invariants:** `atMostOnce` would rest on the engine's activity
+  semantics plus our idempotency keys; `revsInOrder` and `singleWriter`
+  on its versioning, which does not have carry with a typed accumulator.
+
+### Comparison
+
+| | 1A loop | 1B Eio + domains | 1C actors | 1D external engine |
+| --- | --- | --- | --- | --- |
+| Inertial, consistent registry | by construction | needs a serialised commit path | needs a protocol | engine's |
+| Same code under the simulator | yes | partly (mock schedulers) | partly | no |
+| Parallelism inside an instance | none (pure work may be offloaded) | yes | yes | yes |
+| Runs in a single-domain unikernel | yes | degenerates to 1A | yes, one domain | no |
+| New models needed | none beyond this RFC's | commit serialisation | guard protocol | engine semantics |
+
+## Decision 2: the durable store
+
+Where the commit records live, and how one record is made atomic. Two
+stores are distinguished first, because their requirements differ:
+
+- the **definitions store** holds graphs, cells, libraries, descriptor
+  sets and policy by hash. It is written at admission, read at load,
+  branched per candidate (DESIGN.md: Irmin; RFC 0002 "Deferred"). Its
+  write rate is that of agent edits.
+- the **run store** holds commit records: per-turn state, cursors,
+  intents, receipts, memo entries. Its write rate is that of turns, and
+  each write is on the critical path to releasing an emission.
+
+A content-addressed store fits the first and is a poor fit for the second
+(a Merkle commit per turn). The options below are for the run store; the
+definitions store stays as DESIGN.md has it, and Dolt or Irmin appear only
+as an option for it.
+
+A further constraint comes from `outbox.qnt`: the outbox journal must not
+be rolled back with a step snapshot (`journalInSnapshot`). The run store,
+by contrast, *should* roll back with the VM, since rolling back a step is
+the inverse of its internal effects. So the run store and the outbox
+journal are two stores on two datasets, joined by a relay keyed by
+deterministic idempotency keys (the transactional outbox pattern). After a
+rollback the guest re-runs its turns, re-derives the same keys, and the
+outbox journal answers from what it recorded (`outbox.qnt`'s
+`rolledBackAfterSend` witness). This holds for every option below; the
+relay is modelled in `handoff.qnt` (see "Models to write first").
+
+### 2A. SQLite in WAL mode
+
+One database file per instance. Tables for commit records, current state
+per fiber, pending intents, receipts, memo, stream contents and cursors.
+One SQLite transaction per record (or per group of records, see below),
+`synchronous=FULL`.
+
+- **Prior art:** SQLite's atomic commit and WAL; samizdat-agent-bootstrap's
+  ADR-001 ("SQLite causal truth, OTel observation, chDB derived"); the
+  transactional outbox pattern (an outbox table written in the business
+  transaction); jolt-sim's own outbox example
+  (`src/jolt/example/outbox/sqlite.clj`) and its SQLite simulation pack
+  (`src/jolt/sim/sqlite.clj`).
+- **For:** atomic multi-table commit for free; queryable by people and
+  tools (pending intents, Uncertain fibers, budget per graph); mature
+  bindings (`sqlite3-ocaml`); runs on Linux and FreeBSD; one writer is
+  exactly what 1A has.
+- **Against:** a C library and a POSIX VFS: it does not run on a Solo5
+  block device without a custom VFS. `fsync` per turn costs latency
+  (mitigated by group commit). State is stored as current rows, so the
+  history of a fiber is a separate table we must keep.
+- **Atomicity:** the SQLite transaction.
+
+### 2B. An append-only framed log with snapshots
+
+Each record is one frame in jolt-sim's crash-safe journal format
+(`proofs/journal-wal/README.md`, `src/jolt/sim/journal.clj`): length,
+sequence, previous-record CRC, payload, trailing CRC. The trailing CRC is
+the commit point: a torn frame is not a record. Current state is an
+in-memory fold of the log, checkpointed by periodic snapshots (themselves
+records naming the sequence they cover); the log before the oldest
+retained snapshot is compacted.
+
+- **Prior art:** Kafka Streams' changelog topics; Rama's PState
+  checkpoints; Feldera's per-step journal; LevelDB's log framing and
+  SQLite's stop-at-first-invalid scan (the journal-wal README's own
+  sources); Temporal's Continue-As-New as the compaction lesson.
+- **For:** "one atomic record" (RFC 0005 rule 2) is literally one frame;
+  one sequential write and one `fsync` per record or group; runs on a raw
+  block device, so on Solo5 inside the narrow tender, where torn writes
+  are a simulated fault; its framing and recovery scan are already
+  bounded-proved (`proofs/journal-wal/`, SMT reference and buggy variants);
+  the log is also the audit trail and the source of ITF traces. Payloads
+  are Preserves binary, as DESIGN.md "Serialization" asks of journals.
+- **Against:** we own a storage engine: snapshots, compaction, the index
+  of pending intents and memo entries, rebuilt in memory at recovery.
+  Ad-hoc queries need a tool (or a derived SQLite or chDB copy).
+- **Atomicity:** the trailing CRC of one frame.
+
+### 2C. LMDB
+
+A memory-mapped copy-on-write B+tree. One write transaction per record;
+readers get MVCC snapshots without blocking the writer.
+
+- **Prior art:** LMDB (OpenLDAP); its OCaml binding `lmdb`.
+- **For:** crash-safe without a recovery pass (the root page flip is the
+  commit); readers (observability, a conformance projector) never block
+  the loop; single writer matches 1A.
+- **Against:** a fixed map size to manage; no SQL; a C library needing
+  `mmap`, so no unikernel; history must again be kept explicitly; `fsync`
+  per transaction unless `MDB_NOSYNC`, which gives up durability.
+- **Atomicity:** the write transaction.
+
+### 2D. A server database (Postgres)
+
+Commit records and the outbox table in Postgres; the outbox relay reads
+with `FOR UPDATE SKIP LOCKED` or logical decoding.
+
+- **Prior art:** the transactional outbox as usually deployed; Debezium's
+  outbox event router (CDC); Temporal's and Restate's own persistence
+  options.
+- **For:** standard operations, replication, point-in-time recovery;
+  several runtime instances can share one database.
+- **Against:** a server outside the VM and outside the snapshot, so a
+  step rollback no longer reverts internal state (it would need
+  per-branch schemas or savepoints, and `branches.qnt`'s fork IDs on every
+  row); a network hop on every commit; outside the deterministic
+  boundary, so the simulator would need its own model of Postgres.
+- **Atomicity:** the database transaction.
+
+### Group commit
+
+With any option, records may be grouped into one `fsync`: a group is
+durable all at once, and the intents of every record in it are released
+after the group's `fsync`. Grouping changes latency, not meaning, because
+each record stays atomic and release still follows durability. The
+picker's batch size is policy, not code.
+
+### Comparison
+
+| | 2A SQLite | 2B framed log | 2C LMDB | 2D Postgres |
+| --- | --- | --- | --- | --- |
+| Rule 2 atomicity | transaction | one frame | transaction | transaction |
+| Rolls back with a step snapshot | yes (on the VM's dataset) | yes | yes | no |
+| Runs in a Solo5 unikernel | no (VFS needed) | yes (block device) | no | no (network) |
+| Under the narrow tender's torn writes | no | yes | no | no |
+| Queryable | SQL | needs a tool | key-value | SQL |
+| Engine we own | none | log, snapshots, compaction | none | none |
+| Already proved here | no | framing and recovery (`proofs/journal-wal`) | no | no |
+
+## Decision 3: effect execution, outbox delivery and receipts
+
+What happens to an intent after its record is durable, and how its
+receipt comes back. Common to all options: an intent is checked against
+its cell's effect row and schema, carries a deterministic key
+(`(graph, revision, fiber, turn, episode)`, or `(stream, generation, lo,
+index)` for a batch), names a capability rather than holding a
+credential, and its receipt (`Definite`, `Failed`, `Lost`) is itself a
+durable record before the fiber's next turn reads it. A receipt applied
+twice (a redelivery) must be recognised by its key and applied once.
+
+### 3A. In-process executors
+
+Effect handlers (an HTTP client, the model client, a tool runner) run in
+the runtime process, as Eio fibers on the loop's edge.
+
+- **Prior art:** Temporal activities in the same worker; jolt-sim's
+  `flow_effect_session` publishing through a borrowed worker service.
+- **For:** simplest; lowest latency; ideal for the simulator, where the
+  "executor" is the replay cassette and the oracle chooses each receipt.
+- **Against:** credentials sit in the runtime; the runtime has network
+  access, which breaks `onlyOutboxEgress` (`pfOpen`); the journal is the
+  run store, so a step rollback forgets sent intents (`journalInSnapshot`).
+  Acceptable only where there is no snapshot and no adversary: tests and
+  development.
+
+### 3B. An outbox process per agent, outside the snapshot (DESIGN.md's choice)
+
+The runtime relays committed intents over a frame channel (virtio-console
+on the platform, a Unix socket off it) to the agent's outbox jail. The
+outbox journals each intent by key, asks the central limiter for a token,
+checks the capability (`caps.qnt`) and the Cedar decision, sends, and
+journals the receipt; MCP and A2A calls go through the gateway with the
+calling key in the request metadata (`gateway.qnt`). Receipts come back
+over the same channel and are deduplicated by key on both sides.
+
+- **Prior art:** the transactional outbox with a relay; Flink's two-phase
+  sinks (staged intent, then commit); `outbox.qnt`, `gateway.qnt`,
+  `branches.qnt` as already checked.
+- **For:** every placement property already modelled holds by
+  construction; credentials and egress live in one jail per agent; branches
+  share one outbox, which holds back all but the chosen branch.
+- **Against:** a second process and a channel protocol to build and model
+  (the relay); a round trip per emission; the outbox journal has its own
+  store (SQLite fits there: it is in a POSIX jail and benefits from
+  queries).
+
+### 3C. A central outbox daemon for every agent
+
+One daemon next to `pf` holds every agent's journal and credentials.
+
+- **Prior art:** a shared egress proxy; DESIGN.md "Where the outbox runs",
+  row 5.
+- **For:** one exit point, shared connections, global deduplication.
+- **Against:** already rejected in DESIGN.md: every credential in one
+  place, a single point of failure, noisy neighbours, awkward per-agent
+  restore. Listed for completeness.
+
+### 3D. Split by effect class
+
+Internal effects and acquisitions run in-process (or in child jails whose
+clones roll back, DESIGN.md "Hosting"); only emissions go to the outbox
+jail (3B). `route.append` is an acquisition handled internally (RFC 0002
+"Compilation to the kernel").
+
+- **For:** most agent work (builds, tests, file edits in a child jail)
+  avoids the outbox round trip, as DESIGN.md intends; the outbox carries
+  only what crosses `pf`.
+- **Against:** classification must be right; `gateway.qnt` showed it is a
+  hint, and the backstop (a hosted tool's own egress gated by the calling
+  key) must be in place before relying on it.
+
+Whichever is chosen, **retry rules come from the intent kind**: idempotent
+kinds may resend under the same key; others are reconciled. A `Lost`
+receipt puts the fiber in Uncertain, which the runtime answers only with a
+reconcile read and a `Reconcile` orchestration (`lifecycle.qnt`'s
+`blindRetry`). A reconcile deadline is policy, after which a person
+decides (DESIGN.md "Risks").
+
+## Decision 4: scheduling, fairness, and budgets
+
+### Scheduling within an instance
+
+Which enabled step the loop takes next. Confluence (Cordis Theorem 80,
+`:sampled` in `cordis/test`) says the quiescent state does not depend on
+the order when shared operations commute, so the choice is about latency,
+wasted work and fairness, not correctness. Options:
+
+- **4A. FIFO over enabled steps**, ties broken by fiber ID. Simplest;
+  deterministic. Can recompute an asset twice when two of its inputs
+  change in turn (a glitch, then the fix).
+- **4B. By height**: take the enabled step of lowest topological height
+  first, so an asset recomputes once after all its stale inputs settle.
+  Prior art: Jane Street Incremental's recompute heap ordered by height;
+  Salsa's revision-based early cutoff; `assets.qnt`'s `cutoffSaved`
+  witness shows what early cutoff saves. Receipts and inputs are events,
+  and are taken before steps of greater height.
+- **4C. Oracle-driven** (the simulator's picker), for testing only; it
+  is how every other order is shown to reach the same rest.
+
+### Fairness across graphs and tenants
+
+When one instance hosts several graphs (Decision 8), the loop also picks
+among graphs. Options: round robin by turn; **deficit round robin by
+cost units** (Shreedhar and Varghese), where each graph earns a quantum of
+CEL cost per round and a turn runs when its estimate fits the deficit;
+or strict priority. Strict priority can starve; DRR bounds the wait of a
+ready graph by the quanta of the others, which is checkable as an
+invariant (a bounded-wait counter) since Quint does not check liveness.
+
+### Cost and budgets at run time
+
+The static estimate (RFC 0001 "Cost") bounds each turn at admission. At
+run time there are three distinct quantities:
+
+| Quantity | Bound | Enforced by |
+| --- | --- | --- |
+| A turn's CEL cost | its estimate's max, which admission checked against the budget | `Eval.run ~limit`: the limit is the estimate. Exceeding it is an estimator soundness bug: the turn is discarded, the fiber `Failed`, and the case reported (RFC 0001's Hegel property should have caught it) |
+| Input sizes | the parameters' `<max N>` bounds the estimate assumed | checked at the cell's boundary before the turn runs; a violation is a typed refusal, never a truncation (RFC 0002 "Types") |
+| Spend: model tokens, money, calls, wall time | per graph, per agent, per period, in policy | reservations in the commit record, settled by receipts (below) |
+
+Options for spend:
+
+- **4D. Static only.** Admission multiplies the estimates by an expected
+  number of turns. Cheap; wrong for feedback loops, whose turn count is
+  bounded only by stream capacities, and for model calls, whose cost is in
+  the receipt.
+- **4E. Reserve on commit, settle on receipt.** A turn that emits an
+  intent reserves its worst case (`max_tokens`, a price table) in the same
+  record as the intent; the receipt settles to the actual figure and
+  releases the rest. A `Lost` receipt keeps the reservation until
+  reconcile. A turn whose reservation does not fit is not run, and the
+  fiber waits (or the graph is paused), which is a definite "not
+  emitted". Prior art: cloud billing holds; Rama's migration work charged
+  per batch (RFC 0005 rule 6).
+- **4F. Central token buckets only.** The limiter of `outbox.qnt` grants
+  each emission a token against shared limits. Already modelled for
+  counts; it knows nothing of per-graph budgets or receipts' actual cost.
+
+4E and 4F compose: the runtime reserves against its graph's budget at
+commit; the outbox asks the limiter for the shared token at release. The
+atomicity matters: a reservation written after the intent's record, or a
+refund on `Lost` that later turns out to have taken effect, overspends.
+`budget.qnt` (below) checks this.
+
+## Decision 5: recovery and replay
+
+What a restarted runtime reads, and what it re-executes.
+
+### 5A. Snapshot plus commit log (state-based)
+
+Recovery loads the latest snapshot, folds the records after it, and
+resumes. A turn computed but not committed is simply re-run: CEL is pure,
+so it yields the same record, and its intents carry the same keys, so the
+outbox deduplicates any that the relay had already passed on.
+
+- **Prior art:** Kafka Streams (changelog, offsets), Rama microbatches,
+  Flink checkpoints, Spark's `offsets/` and `commits/` logs.
+- **For:** recovery time bounded by the snapshot interval; does not need
+  old code to be loadable, only old state to be readable
+  (`stateReadable`).
+- **Against:** state is trusted as written: a nondeterminism bug that
+  produced a wrong record is not detected by recovery.
+
+### 5B. Input journal with deterministic replay (event-sourced)
+
+Persist only inputs: graph inputs, receipts, admissions, reconcile
+outcomes, and the picker's choices. Recovery re-executes every turn from
+the start (or a snapshot) against recorded inputs, with recorded receipts
+answering every intent.
+
+- **Prior art:** Temporal's event history, Restate's journal, Golem's
+  oplog; jolt-sim's "replay with zero world calls" (JS1).
+- **For:** smallest log; any state is reconstructible at any point;
+  content-addressed definitions make "the exact code of revision r" always
+  available, which is Temporal's hardest problem.
+- **Against:** recovery time grows with history (Temporal's 51,200-event
+  limit and Continue-As-New); every revision's code must stay loadable as
+  long as its history; replay must reproduce the schedule (record the
+  picker) or rely on confluence, which holds only at rest and only for
+  commuting operations.
+
+### 5C. Hybrid: records are truth, replay is an audit
+
+Recover as 5A. Additionally, each record names the hashes of what its
+turn read (inputs, state, receipts), so any record can be re-executed
+offline and compared: a **replay audit** that reports nondeterminism the
+way Temporal's non-determinism error does, without being on the recovery
+path. The same records project to ITF traces (Decision 7).
+
+### What survives a crash, and what does not
+
+Independent of the option chosen:
+
+- **Durable:** each fiber's life (including Uncertain and its pending
+  intent), episode, committed view, state, asset revisions, stream
+  contents and answered appends, frame cursors and generations, budget
+  reservations. An Uncertain fiber is never recovered as anything else;
+  recovering it as Inactive and re-running would emit again.
+- **The episode** is incremented in the record of `Begin`, which is
+  durable before the episode's first intent is released. An episode held
+  only in memory lets a restart reuse keys (the bug the simulator found,
+  `cordis/README.md` "What the simulator found"), or, after a crash,
+  reuse them in the other direction.
+- **Acquisitions split in two.** Process-scoped handles (file
+  descriptors, connections, Eio Switches) die with the process; their
+  inverses need not run. Durable acquisitions (a child jail, a ZFS clone,
+  a lease held elsewhere) outlive it; they are recorded when acquired and
+  swept at recovery by the level above (DESIGN.md "Hosting": each level's
+  inverse is the fallback for the level inside it). The kernel's `acc`
+  is rebuilt from the durable ones only.
+- **In-flight intents** are found from the records: committed and not
+  receipted. The relay re-offers them under their keys; the outbox
+  answers each from its journal.
+
+## Decision 6: cutover and admission at run time
+
+Admission (RFC 0002 "Admission", `admission.qnt`) decides *whether* a
+revision goes live; this decision is *how* the running instance moves to
+it. The fixed points: retire before insert (`singleWriter`), cutover only
+at a commit (`revsInOrder`), state carried only when readable
+(`stateReadable`), and the per-cell state plan admission already returns
+(`Carry` or `Migrate`, RFC 0004), extended by RFC 0005 rule 5's carry,
+drain and restart for frame consumers.
+
+### 6A. Stop the world at rest
+
+Stop taking new inputs, run to quiet, wait for every receipt and every
+reconcile, then retire every old fiber, apply the state plan, insert the
+new ones. The cutover is one record.
+
+- **Prior art:** Flink's stop-with-savepoint and restart; Kafka Streams'
+  new `application.id` for incompatible topologies.
+- **For:** simplest to reason about; the "cold start of the new revision"
+  claim of RFC 0002 holds literally, except for carried accumulators.
+- **Against:** an Uncertain fiber blocks the whole graph until reconciled;
+  a long frame blocks it until drained; inputs queue meanwhile.
+
+### 6B. Rolling cutover in dependency order, at commit boundaries
+
+Per fiber, at its next commit boundary: consumers retire first and
+providers last (Cordis's ordering theorem gives this order already, since
+a provider cannot unload while relied on), then new providers are
+inserted before new consumers activate. Each stateful cell follows its
+plan: carry, migrate (reset until migration cells exist), or, for frame
+consumers, carry, drain (the old fiber finishes this frame; the new one
+takes the next) or restart (new generation). A fiber with an awaited
+receipt or an Uncertain intent is not unloaded until it is answered
+(`Kernel.next` already gives no rule to a `Reloading` fiber with
+`awaiting = Some _`, and none to `Uncertain`), so a receipt is always
+applied under the revision recorded in the intent's record.
+
+- **Prior art:** Rama's handover at checkpoint; Temporal's worker
+  versioning (pinned runs drain; auto-upgrade moves at the next task);
+  Dataflow's replacement job with drain as the alternative.
+- **For:** only the cells that changed move; unchanged cells (same hash)
+  keep running, and their memos stay valid; cutover pause is per fiber.
+- **Against:** a mixed state exists while the cutover proceeds, so the
+  cutover itself must be durable: a `cutover-begin` record naming the
+  plan and a `cutover-end` record, so that recovery mid-cutover completes
+  it (or rolls it back) instead of resuming a mixture nobody admitted.
+
+### 6C. Shadow then switch (blue/green with soak)
+
+Run the candidate in a shadow instance that reads the live inputs (or a
+branched snapshot of them), with every emission answered from the replay
+cassette (DESIGN.md gate 6, soak). When the soak passes, switch by 6A or
+6B. The shadow never writes the live run store and never releases an
+intent.
+
+- **Prior art:** Dataflow's `graph_validate_only` and "a rejected
+  replacement leaves the old job running"; the mutation protocol's soak in
+  samizdat; `branches.qnt` (only the chosen branch's emissions are
+  released).
+- **For:** gate 6 needs a shadow anyway; a candidate that fails leaves the
+  live revision untouched.
+- **Against:** twice the evaluation during soak; the shadow's inputs must
+  be a faithful copy, and the shadow's fork ID must never be chosen for
+  release.
+
+These compose rather than compete: 6C is how the soak gate runs, 6B is
+the default switch, and 6A is the fallback when the plan or policy asks
+for it (a breaking change to a shared type, or an operator's choice).
+
+## Decision 7: observability and conformance
+
+The simulator already writes ITF traces that `quintgo validate` replays
+against `lifecycle.qnt` (`cordis/sim/itf.ml`, `quint/check.sh`
+"conformance"). The question is how much of that reaches the runtime.
+
+- **7A. Offline conformance from the commit log.** The commit log is
+  projected, per model, onto that model's variables (a refinement
+  mapping: lifecycle states and `applied` for `lifecycle.qnt`; journal
+  entries for `outbox.qnt`; cursor, log and observed keys for
+  `frames.qnt`; asset revisions for `routes.qnt`) and replayed by
+  `quintgo`. A passing run earns `:monitored`. Limits carried over from
+  DESIGN.md: per actor, after the fact, 4 to 8 seconds per trace, so
+  sampled.
+- **7B. Online assertions.** The models' invariants, written once as
+  OCaml predicates over the core's state, checked after every record with
+  the Antithesis vocabulary (`Assertions.always`, `sometimes`), in the
+  simulator and, cheaply, in production. A violation stops the instance
+  before release (the record is durable; its intents are not released).
+- **7C. Model-based testing.** The model chooses the next action
+  (`quintgo`'s MBT mode, as edgepublish's write gate does), the runtime
+  under the simulator executes it, and states are compared after each
+  step. Finds divergences the runtime's own scheduler would not choose.
+- **7D. Telemetry as derived observation.** OpenTelemetry spans per turn
+  and per intent, derived from the records, never the source of truth
+  (samizdat-agent-bootstrap ADR-001's split).
+
+All four need the same thing from Decisions 1 and 2: a log whose records
+are the model's steps. With 1A and 2B the log *is* the trace; with 2A it
+is a table to export.
+
+## Decision 8: deployment shape
+
+- **8A. One process per agent, all its graphs.** One loop, one run store,
+  DRR across graphs (Decision 4). Matches "a VM per agent"
+  (DESIGN.md "Hosting"). A crash takes every graph of the agent down
+  together, and recovery brings them back together.
+- **8B. One process per graph instance.** Crash containment per graph; a
+  store per graph; cutover by starting a new process beside the old (6C
+  for free). Costs a process and a channel to the outbox per graph, and
+  cross-graph assets need IPC.
+- **8C. A MirageOS unikernel per agent VM**, the runtime inside, the
+  outbox jail outside, intent and receipt frames over virtio-console
+  (DESIGN.md "Hosting", OCAML-ON-BHYVE.md "Into the hypervisor"). The
+  narrow deterministic tender then makes the whole runtime, not only the
+  cells, deterministic under simulation: block writes (the run store),
+  console frames (intents and receipts) and `poll` (time) are its only
+  exits. Single domain; Lwt at the device layer; no POSIX, so 2A and 2C
+  do not run there.
+- **8D. A library linked into a host** (the simulator, a test, an
+  embedding harness), with the store and outbox supplied by the host.
+  This is how the simulator and the Hegel properties run it.
+
+8A, 8C and 8D are the same core under three hosts if the core is sans-IO
+(1A); 8B is 8A with one graph each.
+
+## Recommendation
+
+The combination below is a recommendation for review, not a decision.
+
+| Decision | Recommended | Why |
+| --- | --- | --- |
+| 1 Execution | **1A**, one deterministic loop per instance with a sans-IO core; pure evaluation may be offloaded to a domain pool when one exists, but every commit happens on the loop | Inertial by construction; the simulator runs the production core; runs in a single-domain unikernel; needs no model beyond those proposed here. Combiner frames (RFC 0005 rule 11) are the one case that earns parallel evaluation, and their merge is a commit like any other |
+| 2 Store | **2B**, the framed log with snapshots, for the run store; **SQLite (2A) for the outbox journal** in the outbox jail; Irmin as planned for definitions | Rule 2's atomic record is one frame; runs on a Solo5 block device under torn-write faults; the format is already proved; the log is the ITF source. The outbox jail is POSIX and benefits from queries over pending and Unknown entries |
+| 3 Effects | **3B with 3D's split**: emissions through a per-agent outbox jail; internal effects and acquisitions in-process or in child jails; **3A only as the simulator's cassette** behind the same interface | Every placement model holds by construction; one interface, two implementations |
+| 4 Scheduling and budgets | **4B** (height order) within a graph; **DRR by cost units** across graphs; runtime CEL limit equal to the estimate; **4E reservations** composed with **4F's** shared limiter | Fewer recomputes; bounded wait; spend that is atomic with the intent that incurs it |
+| 5 Recovery | **5C**: snapshot plus log, with a replay audit off the recovery path | Bounded recovery time; nondeterminism is still caught |
+| 6 Cutover | **6C** for soak, **6B** to switch, **6A** as fallback, with durable `cutover-begin`/`cutover-end` records | Only changed cells move; failed candidates leave the live revision alone; recovery never resumes an unadmitted mixture |
+| 7 Conformance | **7A + 7B + 7C**, with 7D derived | The log is the trace; assertions stop release on a violation; MBT finds what the scheduler would not choose |
+| 8 Deployment | **8D now, 8A next, 8C on the platform** | One core, three hosts, in the order the build can test them |
+
+The reasoning that ties these together: the strongest evidence this
+project produces is "the code that runs is the code the simulator and the
+models checked". Every recommended option keeps that true. 1A makes the
+production scheduler one of the simulator's schedules; 2B makes the store
+something the narrow tender can fault; 3B makes the outbox the one the
+models placed; 5C and 7A make every production run a candidate
+`:monitored` trace. The options turned down each break that chain at one
+link: 1B and 1C by nondeterministic interleavings in production, 1D and
+2D by putting state outside the deterministic boundary.
+
+The main cost of the recommendation is owning the log engine (snapshots,
+compaction, in-memory indexes). If that proves too much, 2A behind the
+same `Store` signature is the fallback for the Unix hosts, giving up
+only the unikernel.
+
+## Staged build plan
+
+Each stage is usable and tested on its own; nothing waits on the
+platform until stage 7.
+
+0. **Models.** Write and gate the models in the next section; implement
+   nothing they do not cover.
+1. **The sans-IO core over the kernel** (8D). An `Engine` holding the
+   registry, the value plane and an in-memory log; `step : core -> event
+   -> core * command list`; commands are `Persist`, `Release`, `Read`
+   (reconcile), `Sweep`. Compile a checked graph (`compile.ml`) and run
+   it to quiet. The existing `cordis/sim` becomes a host of this core;
+   its ITF output and `quintgo` conformance carry over.
+2. **The value plane.** Real CEL turns from `Check.turn.program` with
+   `Eval.run ~limit`; boundary size checks; asset values, revisions and
+   memo by (cell hash, input hashes); guards that withdraw, appends keyed
+   by scrutinee revision, capacities, episodes. The review loop
+   (`graph/examples/review.cg`) runs end to end against a cassette.
+   Hegel: compiled graphs reach the same rest as a from-scratch
+   evaluation, under random schedules (`routes.qnt`'s `consistent`, at
+   scale).
+3. **The run store.** The framed log on a file (the journal-wal adapter
+   jolt-sim has not landed yet), snapshots, recovery; crash injection at
+   every write in the simulator, torn frames included; the replay audit.
+4. **The outbox seam.** A loopback outbox (cassette) and then the outbox
+   process with its SQLite journal, the relay, receipts, reconcile,
+   retries by intent kind, reservations and the limiter. Conformance
+   against `outbox.qnt`, `handoff.qnt` and `budget.qnt` traces.
+5. **Cutover.** Shadow instances with cassette receipts; rolling cutover
+   with durable begin and end records; state plans (carry, migrate by
+   reset); the soak gate wired into admission.
+6. **Frames.** RFC 0005 rules 1 to 12 on the core: durable batch
+   intervals, per-batch turns, carry/drain/restart, backpressure, the end
+   turn, combiners on the domain pool.
+7. **Platform.** 8A on FreeBSD; then 8C in a Solo5 unikernel with the
+   log on a block device, frames over virtio-console, under the narrow
+   tender; the gateway; caps and Cedar at the trap.
+
+## Models to write first
+
+Each in `cordis/quint/`, in the existing conventions (a `design`
+instance, mutants as instances with one flag flipped, witnesses checked as
+`not(w)` expecting `VIOLATED`), added to `check.sh` with an Apalache depth,
+and given an ITF projection from the commit log so stage 1 onward can be
+checked against it.
+
+### `engine.qnt`: the turn commit protocol
+
+The lifecycle of `lifecycle.qnt` joined to a durable log: a turn is
+computed, its record appended, made durable (possibly in a group), its
+intents released, its receipt recorded, and the next turn run; a crash
+may strike between any two of these, losing everything not durable.
+
+| | |
+| --- | --- |
+| Properties | `releasedOnlyDurable`: no intent is released whose record is not durable; `commitAtomic`: no durable state without its intents, cursor, episode and reservation, and the reverse; `atMostOnce` (as `lifecycle.qnt`), across crashes; `receiptOnce`: a receipt changes a fiber's state once, however often delivered; `episodeDurable`: every released key's episode is at most the durable episode; `uncertainSurvives`: a fiber Uncertain before a crash is Uncertain after recovery; `recoveredIsCommitted`: after recovery, each fiber's state is its last durable record's |
+| Mutants | `releaseBeforeDurable` (no output gate) → `releasedOnlyDurable`, and with a crash `atMostOnce`; `episodeInMemory` → `atMostOnce`; `receiptNotJournaled` (applied but not recorded, then redelivered) → `receiptOnce`; `forgetUncertain` (recovery resets Uncertain to Inactive) → `atMostOnce`; `stateThenIntents` (two writes) → `commitAtomic` |
+| Witnesses | `crashAfterDurableBeforeRelease`, `groupCommitted` (two records in one durable step), `receiptRedelivered`, `recoveredUncertain` |
+
+### `handoff.qnt`: the run store to the outbox journal
+
+The relay between a run store that rolls back with step snapshots and an
+outbox journal that does not (`outbox.qnt` treats the guest abstractly;
+this model makes it a log). Step snapshots, rollbacks, relay crashes,
+lost and duplicated frames on the channel, deterministic keys.
+
+| | |
+| --- | --- |
+| Properties | `atMostOnce`; `onlyCommittedReleased`: every intent the outbox sent was in a record that was durable when relayed; `noOrphan`: at rest, every durable unreleased intent is journaled by the outbox; `receiptToIssuer`: a receipt is applied to the record (fiber, episode, fork) that issued it; `rollbackAnswered`: an intent re-issued after a rollback is answered from the journal, not resent |
+| Mutants | `keyFromClock` (a key with a schedule- or time-dependent part; a rollback re-issues under a new key) → `atMostOnce`; `relayUncommitted` (the relay reads a record before it is durable; a crash forgets it) → `onlyCommittedReleased`; `ackBeforeJournal` (the outbox acknowledges before journaling, then crashes) → `noOrphan` |
+| Witnesses | `rolledBackReissued`, `relayRestarted`, `duplicateFrameIgnored` |
+
+### `budget.qnt`: reservations and settlement
+
+Turns that emit intents with a worst-case cost, a per-graph budget, the
+shared limiter of `outbox.qnt`, receipts carrying actual cost, `Lost`
+receipts and reconcile.
+
+| | |
+| --- | --- |
+| Properties | `withinBudget`: settled plus reserved never exceeds the budget; `conserved`: at rest, reserved equals the sum over open intents (no leaked reservation); `heldWhileUncertain`: an Uncertain intent's reservation is kept until reconcile; `settleOnce` |
+| Mutants | `reserveAfterCommit` (the reservation is a second write; a crash between) → `withinBudget`; `refundOnLost` (a `Lost` receipt refunds; reconcile later finds it took effect) → `withinBudget`; `settleEveryDelivery` → `settleOnce` and `conserved` |
+| Witnesses | `refusedForBudget` (a turn did not run for lack of budget), `settledBelowReservation`, `uncertainHeld` |
+
+### `cutover.qnt`: moving a running instance between revisions
+
+Composes `revisions.qnt`'s cutover with the lifecycle guard, in-flight
+receipts, Uncertain, frame modes and the shadow soak; a crash may strike
+mid-cutover.
+
+| | |
+| --- | --- |
+| Properties | `singleWriter` (as `revisions.qnt`); `answeredByIssuer`: a receipt is applied under the revision recorded with its intent; `noShadowEmission`: no intent of a shadow (soak) instance is released; `rejectedLeavesLive`: a candidate that fails a gate leaves the live fibers and their state unchanged; `noUnadmittedMix`: after recovery, every running fiber belongs to the live revision, or a durable `cutover-begin` without its end names both; `ordered`: no new consumer activates before its new provider, no old provider unloads before its old consumers |
+| Mutants | `retireAwaiting` (unload with a receipt outstanding) → `answeredByIssuer`; `shadowReleases` → `noShadowEmission`; `volatileCutover` (no begin/end records) → `noUnadmittedMix`; `insertConsumerFirst` → `ordered`; `insertFirst` (as `revisions.qnt`) → `singleWriter` |
+| Witnesses | `cutoverWaitedOnUncertain`, `crashMidCutoverCompleted`, `soakRejected`, `unchangedCellKept` (a cell with the same hash kept running and its memo) |
+
+### `schedule.qnt`: schedule independence and fairness
+
+Two copies of a small graph (one shared commuting key, one guarded asset,
+one emission) run under independent schedules from the same inputs and
+receipts, in one state (a product construction, since Quint checks
+invariants of one run). Several graphs share one loop under DRR.
+
+| | |
+| --- | --- |
+| Properties | `sameRest`: when both copies are quiet, their tables and their sets of released keys are equal (Theorem 80 extended to emissions); `boundedWait`: a ready graph is passed over at most a bound of picks (a safety stand-in for fairness, since liveness is not checked) |
+| Mutants | `positionalKey` (an intent key that includes the step number) → `sameRest`; `putShared` (a shared key with non-commuting `Put`, as `cordis/test`'s confluence control) → `sameRest`; `strictPriority` → `boundedWait` |
+| Witnesses | `schedulesDiffered` (the copies took different orders and still agreed), `deficitCarried` |
+
+### Extensions to existing models
+
+- **`assets.qnt`**: add revisions. A memo entry keyed by cell hash
+  survives a cutover only for an unchanged cell; mutant `memoByName`
+  (keyed by asset name and inputs, not the cell hash) reuses an old
+  revision's output → `consistent`. (Dagster's lesson that the code
+  version belongs in the memo key.)
+- **`routes.qnt`**: add a crash and recovery between `routeAppend` and the
+  next recompute, with the answered-revisions set durable; mutant
+  `answeredInMemory` → `appendOnce`.
+- **`lifecycle.qnt`**: add durable versus process-scoped acquisitions and
+  the recovery sweep; properties `noLeakedDurable` (at rest after
+  recovery, every durable acquisition belongs to an installed fiber) and
+  `releasedOnce`; mutants `noSweep`, `sweepTwice`. (Could instead be a
+  separate `recovery.qnt` if the lifecycle model grows too slow for
+  Apalache at depth 8.)
+
+The generated Quint module per graph (RFC 0002 "Deferred") is gate 5 of
+admission, not a precondition of the runtime; it follows stage 2.
+
+## Open questions
+
+1. **The value plane's home.** Extend `Kernel` with a value type (a
+   functor over values, keeping the int instance for the existing models
+   and tests), or keep the kernel as the control plane and put values in
+   a separate pure module the engine composes? The second keeps phase 1's
+   evidence intact; the first keeps one transition function.
+2. **Record format before Preserves.** The codecs do not exist yet
+   (DESIGN.md "Open questions"). Use the canonical text and SHA-256 of RFC
+   0002 inside the frame now and change only the payload codec later, with
+   a format version in the segment header?
+3. **Time.** `ctx.now` comes from the oracle in simulation. In production
+   is it read once per turn and recorded in the record (so replay
+   reproduces it), and who supplies freshness timers (`~fresh:every`)?
+4. **Snapshot cadence and retention.** Policy numbers, but the audit (5C)
+   and conformance (7A) want history the compactor wants to drop. Ship
+   compacted segments to a derived store (chDB, as ADR-001 suggests)?
+5. **Cross-graph assets.** Can one graph's asset be another's input inside
+   one instance (one provider, `guardHolds` across graphs), or only
+   through inputs from outside? 8B forbids the first.
+6. **Uncertain and cutover.** A reconcile that never finishes blocks a
+   rolling cutover of that fiber forever. Is the reconcile deadline in
+   policy enough, or does an admitted revision need a "proceed without
+   this fiber" mode that a person approves?
+7. **Wasm cells and fuel.** Wasm cells bound work by fuel, not a CEL
+   estimate. Do they reserve fuel against the same budget, with fuel
+   priced in cost units?
+8. **Pipelining.** DESIGN.md's "an intent may refer to an earlier one's
+   future receipt" lets a chain share one commit point. The kernel
+   awaits one intent per fiber; is pipelining a later extension of
+   `engine.qnt`, or needed for the first LLM-heavy graphs?
+9. **Outbox journal store.** SQLite in the outbox jail is recommended;
+   should the outbox's own executor be an existing durable-execution
+   engine (Restate or Temporal, 1D in a narrower role), since it sits
+   outside the deterministic boundary anyway?
+10. **Unikernel IO layer.** The edge on Mirage is Lwt; on Unix, Eio. Is a
+    sans-IO core with two thin edges acceptable, or should the core speak
+    Picos so one edge serves both?
+
+## Sources
+
+In this repository: `cordis/kernel/kernel.mli`, `cordis/kernel/order.mli`,
+`cordis/sim/` (`sim.ml`, `oracle.mli`, `assertions.mli`, `itf.ml`),
+`cordis/graph/lib/compile.ml` and `check.ml`, `cordis/cel/lib/eval.ml`
+and `cost.ml`, `cordis/quint/*.qnt` and `check.sh`, `cordis/README.md`;
+`proofs/journal-wal/README.md`; `src/jolt/sim/journal.clj`,
+`flow_effect_session.clj`, `sqlite.clj`; `src/jolt/example/outbox.clj`.
+Design documents: [DESIGN.md](../DESIGN.md),
+[SYNTHESIS.md](../SYNTHESIS.md), [OCAML-ON-BHYVE.md](../OCAML-ON-BHYVE.md),
+[STREAMING-PRIOR-ART.md](../research/STREAMING-PRIOR-ART.md) (Rama,
+Flink, Beam/Dataflow, Kafka Streams, Timely/Differential, Materialize,
+Feldera, Temporal, Spark, Dagster, with their sources).
+
+Further prior art cited here:
+
+- Shi, Zhang, Cui, *A Programming Paradigm for Spatiotemporal
+  Composability* (Cordis), arXiv 2608.25512v1: §4.3 (ordering, progress,
+  confluence), §4.4 (inertial hosts), §6.2 (brokers).
+- Spritely Goblins, vats and transactional turns:
+  <https://spritely.institute/goblins/>; E's event loop:
+  <http://erights.org/elib/concurrency/event-loop.html>.
+- Cloudflare, "Durable Objects: Easy, Fast, Correct — Choose three"
+  (input and output gates):
+  <https://blog.cloudflare.com/durable-objects-easy-fast-correct-choose-three/>.
+- TigerBeetle, deterministic simulation (VOPR):
+  <https://docs.tigerbeetle.com/>; FoundationDB, simulation and testing:
+  <https://apple.github.io/foundationdb/testing.html>.
+- Remus, high availability via asynchronous VM replication (output
+  commit), NSDI 2008.
+- Temporal, workflow versioning and event history:
+  <https://docs.temporal.io/develop/go/versioning>; Restate:
+  <https://docs.restate.dev/>; Golem: <https://learn.golem.cloud/>.
+- Transactional outbox: <https://microservices.io/patterns/data/transactional-outbox.html>;
+  Debezium outbox event router:
+  <https://debezium.io/documentation/reference/stable/transformations/outbox-event-router.html>.
+- SQLite atomic commit and WAL: <https://www.sqlite.org/atomiccommit.html>,
+  <https://www.sqlite.org/wal.html>; LMDB: <http://www.lmdb.tech/doc/>;
+  PostgreSQL `SKIP LOCKED`: <https://www.postgresql.org/docs/current/sql-select.html>.
+- Eio: <https://github.com/ocaml-multicore/eio>; Picos:
+  <https://github.com/ocaml-multicore/picos>; Moonpool:
+  <https://github.com/c-cube/moonpool>; Riot: <https://github.com/riot-ml/riot>;
+  MirageOS: <https://mirage.io/>; Solo5: <https://github.com/Solo5/solo5>.
+- Jane Street Incremental (height-ordered recompute):
+  <https://github.com/janestreet/incremental>; Salsa:
+  <https://github.com/salsa-rs/salsa>.
+- Shreedhar and Varghese, "Efficient Fair Queuing using Deficit Round
+  Robin", SIGCOMM 1995.
+- Erlang/OTP supervision principles:
+  <https://www.erlang.org/doc/system/sup_princ.html>.
