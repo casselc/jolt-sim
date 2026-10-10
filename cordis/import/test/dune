@@ -36,7 +36,7 @@
 (executable
  (name schema_suite)
  (modules schema_suite)
- (libraries cordis_import cordis_cel yojson))
+ (libraries cordis_import cordis_graph cordis_cel yojson))
 
 (rule
  (deps (glob_files json-schema-test-suite/*.json))
@@ -45,3 +45,35 @@
    (run %{exe:schema_suite.exe} json-schema-test-suite))))
 
 (rule (alias runtest) (action (diff golden/schema_suite.txt schema_suite.out)))
+
+; The JSON Schema importer against Python's jsonschema. Needs python3 with
+; jsonschema:
+;   dune build @import/test/schema-agreement
+(executable
+ (name schema_agreement)
+ (modules schema_agreement)
+ (libraries cordis_import cordis_graph cordis_cel cel_testgen hegel alcotest unix yojson))
+
+(rule
+ (alias schema-agreement)
+ (deps jsvalid.py (glob_files schemas/*.json))
+ (action
+  (run %{exe:schema_agreement.exe} jsvalid.py schemas/shop.schema.json schemas/events.schema.json schemas/tree.schema.json)))
+(rule (with-stdout-to shop.types.out (run %{exe:../bin/cimport.exe} jsonschema %{dep:schemas/shop.schema.json} --print types)))
+(rule (alias runtest) (action (diff golden/shop.types.txt shop.types.out)))
+(rule (with-stdout-to shop.report.out (run %{exe:../bin/cimport.exe} jsonschema %{dep:schemas/shop.schema.json} --print report)))
+(rule (alias runtest) (action (diff golden/shop.report.txt shop.report.out)))
+(rule (with-stdout-to shop.names.out (run %{exe:../bin/cimport.exe} jsonschema %{dep:schemas/shop.schema.json} --print names)))
+(rule (alias runtest) (action (diff golden/shop.names.txt shop.names.out)))
+(rule (with-stdout-to events.types.out (run %{exe:../bin/cimport.exe} jsonschema %{dep:schemas/events.schema.json} --print types)))
+(rule (alias runtest) (action (diff golden/events.types.txt events.types.out)))
+(rule (with-stdout-to events.report.out (run %{exe:../bin/cimport.exe} jsonschema %{dep:schemas/events.schema.json} --print report)))
+(rule (alias runtest) (action (diff golden/events.report.txt events.report.out)))
+(rule (with-stdout-to events.names.out (run %{exe:../bin/cimport.exe} jsonschema %{dep:schemas/events.schema.json} --print names)))
+(rule (alias runtest) (action (diff golden/events.names.txt events.names.out)))
+(rule (with-stdout-to tree.types.out (run %{exe:../bin/cimport.exe} jsonschema %{dep:schemas/tree.schema.json} --print types)))
+(rule (alias runtest) (action (diff golden/tree.types.txt tree.types.out)))
+(rule (with-stdout-to tree.report.out (run %{exe:../bin/cimport.exe} jsonschema %{dep:schemas/tree.schema.json} --print report)))
+(rule (alias runtest) (action (diff golden/tree.report.txt tree.report.out)))
+(rule (with-stdout-to tree.names.out (run %{exe:../bin/cimport.exe} jsonschema %{dep:schemas/tree.schema.json} --print names)))
+(rule (alias runtest) (action (diff golden/tree.names.txt tree.names.out)))

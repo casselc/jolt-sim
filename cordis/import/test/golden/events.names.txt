@@ -1,0 +1,59 @@
+{
+  "$root": "Event",
+  "Created": {
+    "properties": {
+      "type": { "json": "type", "required": true, "nullable": false },
+      "id": { "json": "id", "required": true, "nullable": false },
+      "priority": {
+        "json": "priority",
+        "required": false,
+        "nullable": false
+      },
+      "score": { "json": "score", "required": false, "nullable": true },
+      "headers": { "json": "headers", "required": false, "nullable": false },
+      "retry": { "json": "retry", "required": false, "nullable": false }
+    }
+  },
+  "DeletedReason": { "enum": { "User": "user", "Expired": "expired" } },
+  "Deleted": {
+    "properties": {
+      "type": { "json": "type", "required": true, "nullable": false },
+      "id": { "json": "id", "required": true, "nullable": false },
+      "reason": { "json": "reason", "required": false, "nullable": false },
+      "payload": { "json": "payload", "required": false, "nullable": false }
+    }
+  },
+  "EventItemCreated": {
+    "properties": {
+      "id": { "json": "id", "required": true, "nullable": false },
+      "priority": {
+        "json": "priority",
+        "required": false,
+        "nullable": false
+      },
+      "score": { "json": "score", "required": false, "nullable": true },
+      "headers": { "json": "headers", "required": false, "nullable": false },
+      "retry": { "json": "retry", "required": false, "nullable": false }
+    }
+  },
+  "EventItemDeleted": {
+    "properties": {
+      "id": { "json": "id", "required": true, "nullable": false },
+      "reason": { "json": "reason", "required": false, "nullable": false },
+      "payload": { "json": "payload", "required": false, "nullable": false }
+    }
+  },
+  "Event": {
+    "discriminator": "type",
+    "cases": {
+      "ItemCreated": {
+        "value": "item.created",
+        "payload": "EventItemCreated"
+      },
+      "ItemDeleted": {
+        "value": "item.deleted",
+        "payload": "EventItemDeleted"
+      }
+    }
+  }
+}

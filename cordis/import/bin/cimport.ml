@@ -1,6 +1,7 @@
 (* cimport: schema importers (docs/cordis/rfc/0003-types-importers-scaffolds.md).
 
      cimport protobuf SET.binpb [--out DIR | --print types|report|names]
+     cimport jsonschema SCHEMA.json [--out DIR | --print types|report|names]
 
    reads a FileDescriptorSet and writes DIR/types.cg (the types and their
    check_ cells), DIR/report.txt (what was approximated) and DIR/names.json
@@ -17,8 +18,43 @@ let read path = In_channel.with_open_bin path In_channel.input_all
 
 let die fmt = Printf.ksprintf (fun m -> prerr_endline m; exit 1) fmt
 
+(* the output must check on its own, with no budget: the budget belongs to
+   the graph that uses it *)
+let check_output types =
+  match Cordis_graph.Patch.load ~options:{ Cordis_graph.Check.default_options with budget = max_int } types with
+  | Ok _ -> ()
+  | Error es ->
+      if Sys.getenv_opt "CIMPORT_DUMP" <> None then print_string types;
+      die "the imported types do not check:\n  %s" (String.concat "\n  " es)
+
+let emit rest types report names =
+  match rest with
+  | [ "--print"; "types" ] -> print_string types
+  | [ "--print"; "report" ] -> print_string report
+  | [ "--print"; "names" ] -> print_string names
+  | [ "--out"; dir ] ->
+      let write name s = Out_channel.with_open_text (Filename.concat dir name) (fun oc -> output_string oc s) in
+      write "types.cg" types;
+      write "report.txt" report;
+      write "names.json" names
+  | [] -> print_string types; print_string "\n// ---- report\n"; print_string report
+  | _ -> die "usage: cimport (protobuf SET.binpb | jsonschema SCHEMA.json) [--out DIR | --print types|report|names]"
+
 let () =
   match Array.to_list Sys.argv with
+  | _ :: "jsonschema" :: path :: rest -> (
+      match Yojson.Safe.from_string (read path) with
+      | exception Yojson.Json_error m -> die "%s: not JSON: %s" path m
+      | doc -> (
+          let stem = Filename.remove_extension (Filename.remove_extension (Filename.basename path)) in
+          match Jsonschema.import ~name:stem doc with
+          | exception Jsonschema.Refused m -> die "%s: %s" path m
+          | imp ->
+              let types = Cordis_graph.Print.file (Jsonschema.types_file imp) in
+              check_output types;
+              emit rest types
+                (String.concat "" (List.map (fun (l, m) -> Printf.sprintf "%s: %s\n" l m) imp.report))
+                (Yojson.Safe.pretty_to_string (Jsonschema.name_map imp) ^ "\n")))
   | [ _; "protobuf"; set; "--print"; "attach" ] ->
       Printf.printf "uses descriptors sha256:%s;\n" (Cordis_cel.Sha256.digest (read set))
   | _ :: "protobuf" :: set :: rest -> (

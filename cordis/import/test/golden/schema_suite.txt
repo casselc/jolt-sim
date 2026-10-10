@@ -1,3 +1,4 @@
+# The importer and codec: 939 tests agree; 14 valid instances are refused as RFC 0003 documents; 348 tests in 138 groups are not imported, as listed after the predicate's.
 # The validation predicate against the JSON Schema Test Suite (draft 2020-12)
 # 971 tests agree; 330 tests in 134 groups are skipped: their schemas do not compile, as below.
 additionalProperties.json: non-ASCII pattern with additionalProperties: pattern "^\195\161" is not ASCII
@@ -17,7 +18,7 @@ dynamicRef.json: A $dynamicRef with a non-matching $dynamicAnchor in the same sc
 dynamicRef.json: A $dynamicRef that initially resolves to a schema with a matching $dynamicAnchor resolves to the first $dynamicAnchor in the dynamic scope: keyword $dynamicAnchor
 dynamicRef.json: A $dynamicRef that initially resolves to a schema without a matching $dynamicAnchor behaves like a normal $ref to $anchor: keyword $dynamicAnchor
 dynamicRef.json: multiple dynamic paths to the $dynamicRef keyword: a remote $ref (numberList)
-dynamicRef.json: after leaving a dynamic scope, it is not used by a $dynamicRef: a remote $ref (start)
+dynamicRef.json: after leaving a dynamic scope, it is not used by a $dynamicRef: an embedded resource ($id "second_scope"): references would resolve against it
 dynamicRef.json: strict-tree schema, guards against misspelled properties: keyword $dynamicAnchor
 dynamicRef.json: tests for implementation dynamic anchor and reference link: a remote $ref (extendible-dynamic-ref.json)
 dynamicRef.json: $ref and $dynamicAnchor are independent of order - $defs first: a remote $ref (extendible-dynamic-ref.json)
@@ -33,8 +34,8 @@ ref.json: root pointer ref: a recursive $ref (#)
 ref.json: remote ref, containing refs itself: a remote $ref (https://json-schema.org/draft/2020-12/schema)
 ref.json: Recursive references between schemas: a remote $ref (node)
 ref.json: ref creates new scope when adjacent to keywords: keyword unevaluatedProperties
-ref.json: refs with relative uris and defs: $ref #/$defs/inner: no $defs
-ref.json: relative refs with absolute uris and defs: $ref #/$defs/inner: no $defs
+ref.json: refs with relative uris and defs: an embedded resource ($id "schema-relative-uri-defs2.json"): references would resolve against it
+ref.json: relative refs with absolute uris and defs: an embedded resource ($id "http://example.com/schema-refs-absolute-uris-defs2.json"): references would resolve against it
 ref.json: $id must be resolved against nearest parent, not just immediate parent: a remote $ref (http://example.com/b/d.json)
 ref.json: order of evaluation: $id and $ref: a remote $ref (int.json)
 ref.json: order of evaluation: $id and $ref on nested schema: a remote $ref (nested/foo.json)
@@ -48,7 +49,7 @@ refRemote.json: remote ref: a remote $ref (http://localhost:1234/draft2020-12/in
 refRemote.json: fragment within remote ref: a remote $ref (http://localhost:1234/draft2020-12/subSchemas.json#/$defs/integer)
 refRemote.json: anchor within remote ref: a remote $ref (http://localhost:1234/draft2020-12/locationIndependentIdentifier.json#foo)
 refRemote.json: ref within remote ref: a remote $ref (http://localhost:1234/draft2020-12/subSchemas.json#/$defs/refToInteger)
-refRemote.json: base URI change: a remote $ref (folderInteger.json)
+refRemote.json: base URI change: an embedded resource ($id "baseUriChange/"): references would resolve against it
 refRemote.json: base URI change - change folder: a remote $ref (baseUriChangeFolder/)
 refRemote.json: base URI change - change folder in subschema: a remote $ref (baseUriChangeFolderInSubschema/#/$defs/bar)
 refRemote.json: root ref in remote ref: a remote $ref (name-defs.json#/$defs/orNull)
@@ -134,3 +135,142 @@ unevaluatedProperties.json: Evaluated properties collection needs to consider in
 unevaluatedProperties.json: Evaluated properties collection needs to consider instance location with additionalProperties: keyword unevaluatedProperties
 vocabulary.json: schema that uses custom metaschema with with no validation vocabulary: a custom metaschema ("http://localhost:1234/draft2020-12/metaschema-no-validation.json")
 vocabulary.json: ignore unrecognized optional vocabulary: a custom metaschema ("http://localhost:1234/draft2020-12/metaschema-optional-vocabulary.json")
+# Not imported:
+additionalProperties.json: non-ASCII pattern with additionalProperties: Root: pattern "^\195\161" is not ASCII
+anchor.json: Location-independent identifier with absolute URI: a remote $ref (http://localhost:1234/draft2020-12/bar#foo)
+anchor.json: Location-independent identifier with base URI change in subschema: a remote $ref (http://localhost:1234/draft2020-12/nested.json#foo)
+anchor.json: same $anchor with different base uri: a remote $ref (child1#my_anchor)
+boolean_schema.json: boolean schema 'false': Root: the schema false admits nothing
+defs.json: validate definition against metaschema: a remote $ref (https://json-schema.org/draft/2020-12/schema)
+dynamicRef.json: A $dynamicRef to a $dynamicAnchor in the same schema resource behaves like a normal $ref to an $anchor: foo: keyword $dynamicAnchor
+dynamicRef.json: A $dynamicRef to an $anchor in the same schema resource behaves like a normal $ref to an $anchor: Root[]: keyword $dynamicRef
+dynamicRef.json: A $ref to a $dynamicAnchor in the same schema resource behaves like a normal $ref to an $anchor: $ref #items: no such anchor
+dynamicRef.json: A $dynamicRef resolves to the first $dynamicAnchor still in scope that is encountered when the schema is evaluated: a remote $ref (list)
+dynamicRef.json: A $dynamicRef without anchor in fragment behaves identical to $ref: a remote $ref (list)
+dynamicRef.json: A $dynamicRef with intermediate scopes that don't include a matching $dynamicAnchor does not affect dynamic scope resolution: a remote $ref (list)
+dynamicRef.json: An $anchor with the same name as a $dynamicAnchor is not used for dynamic scope resolution: a remote $ref (list)
+dynamicRef.json: A $dynamicRef without a matching $dynamicAnchor in the same schema resource behaves like a normal $ref to $anchor: a remote $ref (list)
+dynamicRef.json: A $dynamicRef with a non-matching $dynamicAnchor in the same schema resource behaves like a normal $ref to $anchor: a remote $ref (list)
+dynamicRef.json: A $dynamicRef that initially resolves to a schema with a matching $dynamicAnchor resolves to the first $dynamicAnchor in the dynamic scope: extended: an embedded resource ($id "extended"): references would resolve against it
+dynamicRef.json: A $dynamicRef that initially resolves to a schema without a matching $dynamicAnchor behaves like a normal $ref to $anchor: a remote $ref (bar)
+dynamicRef.json: multiple dynamic paths to the $dynamicRef keyword: a remote $ref (genericList)
+dynamicRef.json: after leaving a dynamic scope, it is not used by a $dynamicRef: start: an embedded resource ($id "start"): references would resolve against it
+dynamicRef.json: strict-tree schema, guards against misspelled properties: Root: keyword $dynamicAnchor
+dynamicRef.json: tests for implementation dynamic anchor and reference link: a remote $ref (extendible-dynamic-ref.json)
+dynamicRef.json: $ref and $dynamicAnchor are independent of order - $defs first: a remote $ref (extendible-dynamic-ref.json)
+dynamicRef.json: $ref and $dynamicAnchor are independent of order - $ref first: Root: a remote $ref (extendible-dynamic-ref.json)
+dynamicRef.json: $ref to $dynamicRef finds detached $dynamicAnchor: a remote $ref (http://localhost:1234/draft2020-12/detached-dynamicref.json#/$defs/foo)
+dynamicRef.json: $dynamicRef points to a boolean schema: false: the schema false admits nothing
+dynamicRef.json: $dynamicRef skips over intermediate resources - direct reference: a remote $ref (item)
+dynamicRef.json: $dynamicRef avoids the root of each schema, but scopes are still registered: a remote $ref (first#/$defs/stuff)
+not.json: collect annotations inside a 'not', even if collection is disabled: Root: keyword unevaluatedProperties
+pattern.json: pattern with Unicode property escape requires unicode mode: Root: pattern "^\\p{Letter}+$" uses a Unicode property class
+patternProperties.json: patternProperties with Unicode property escape: Root: pattern "^\\p{Letter}+$" uses a Unicode property class
+properties.json: properties with boolean schema: Root_bar: the schema false admits nothing
+ref.json: escaped pointer ref: $ref #/$defs/slash/field: no slash
+ref.json: remote ref, containing refs itself: a remote $ref (https://json-schema.org/draft/2020-12/schema)
+ref.json: $ref to boolean schema false: bool: the schema false admits nothing
+ref.json: Recursive references between schemas: a remote $ref (tree)
+ref.json: ref creates new scope when adjacent to keywords: A: keyword unevaluatedProperties
+ref.json: refs with relative uris and defs: Root: an embedded resource ($id "schema-relative-uri-defs2.json"): references would resolve against it
+ref.json: relative refs with absolute uris and defs: Root: an embedded resource ($id "http://example.com/schema-refs-absolute-uris-defs2.json"): references would resolve against it
+ref.json: $id must be resolved against nearest parent, not just immediate parent: a remote $ref (http://example.com/b/d.json)
+ref.json: order of evaluation: $id and $ref: a remote $ref (int.json)
+ref.json: order of evaluation: $id and $anchor and $ref: smallint: an embedded resource ($id "https://example.com/draft2020-12/ref-and-id2/"): references would resolve against it
+ref.json: order of evaluation: $id and $ref on nested schema: a remote $ref (./bar.json)
+ref.json: simple URN base URI with $ref via the URN: Root: a remote $ref (urn:uuid:deadbeef-1234-ffff-ffff-4321feebdaed)
+ref.json: URN ref with nested pointer ref: $ref #/$defs/bar: no bar
+ref.json: ref to if: Root: a remote $ref (http://example.com/ref/if)
+ref.json: ref to then: Root: a remote $ref (http://example.com/ref/then)
+ref.json: ref to else: Root: a remote $ref (http://example.com/ref/else)
+ref.json: ref with absolute-path-reference: a remote $ref (/absref/foobar.json)
+refRemote.json: remote ref: a remote $ref (http://localhost:1234/draft2020-12/integer.json)
+refRemote.json: fragment within remote ref: a remote $ref (http://localhost:1234/draft2020-12/subSchemas.json#/$defs/integer)
+refRemote.json: anchor within remote ref: a remote $ref (http://localhost:1234/draft2020-12/locationIndependentIdentifier.json#foo)
+refRemote.json: ref within remote ref: a remote $ref (http://localhost:1234/draft2020-12/subSchemas.json#/$defs/refToInteger)
+refRemote.json: base URI change: Root: an embedded resource ($id "baseUriChange/"): references would resolve against it
+refRemote.json: base URI change - change folder: a remote $ref (folderInteger.json)
+refRemote.json: base URI change - change folder in subschema: a remote $ref (baseUriChangeFolderInSubschema/#/$defs/bar)
+refRemote.json: root ref in remote ref: a remote $ref (name-defs.json#/$defs/orNull)
+refRemote.json: remote ref with ref to defs: a remote $ref (ref-and-defs.json)
+refRemote.json: Location-independent identifier in remote ref: a remote $ref (http://localhost:1234/draft2020-12/locationIndependentIdentifier.json#/$defs/refToInteger)
+refRemote.json: retrieved nested refs resolve relative to their URI not $id: a remote $ref (nested/foo-ref-string.json)
+refRemote.json: remote HTTP ref with different $id: a remote $ref (http://localhost:1234/draft2020-12/different-id-ref-string.json)
+refRemote.json: remote HTTP ref with different URN $id: a remote $ref (http://localhost:1234/draft2020-12/urn-ref-string.json)
+refRemote.json: remote HTTP ref with nested absolute ref: a remote $ref (http://localhost:1234/draft2020-12/nested-absolute-ref-to-string.json)
+refRemote.json: $ref to $ref finds detached $anchor: a remote $ref (http://localhost:1234/draft2020-12/detached-ref.json#/$defs/foo)
+unevaluatedItems.json: unevaluatedItems true: Root: keyword unevaluatedItems
+unevaluatedItems.json: unevaluatedItems false: Root: keyword unevaluatedItems
+unevaluatedItems.json: unevaluatedItems as schema: Root: keyword unevaluatedItems
+unevaluatedItems.json: unevaluatedItems with uniform items: Root: keyword unevaluatedItems
+unevaluatedItems.json: unevaluatedItems with tuple: Root: keyword unevaluatedItems
+unevaluatedItems.json: unevaluatedItems with items and prefixItems: Root: keyword unevaluatedItems
+unevaluatedItems.json: unevaluatedItems with items: Root: keyword unevaluatedItems
+unevaluatedItems.json: unevaluatedItems with nested tuple: Root: keyword unevaluatedItems
+unevaluatedItems.json: unevaluatedItems with nested items: Root: keyword unevaluatedItems
+unevaluatedItems.json: unevaluatedItems with nested prefixItems and items: Root: keyword unevaluatedItems
+unevaluatedItems.json: unevaluatedItems with nested unevaluatedItems: Root: keyword unevaluatedItems
+unevaluatedItems.json: unevaluatedItems with anyOf: Root: keyword unevaluatedItems
+unevaluatedItems.json: unevaluatedItems with oneOf: Root: keyword unevaluatedItems
+unevaluatedItems.json: unevaluatedItems with not: Root: keyword unevaluatedItems
+unevaluatedItems.json: unevaluatedItems with if/then/else: Root: keyword unevaluatedItems
+unevaluatedItems.json: unevaluatedItems with boolean schemas: Root: keyword unevaluatedItems
+unevaluatedItems.json: unevaluatedItems with $ref: Root: keyword unevaluatedItems
+unevaluatedItems.json: unevaluatedItems before $ref: Root: keyword unevaluatedItems
+unevaluatedItems.json: unevaluatedItems with $dynamicRef: a remote $ref (./baseSchema)
+unevaluatedItems.json: unevaluatedItems can't see inside cousins: Root: keyword unevaluatedItems
+unevaluatedItems.json: item is evaluated in an uncle schema to unevaluatedItems: Root: keyword unevaluatedItems
+unevaluatedItems.json: unevaluatedItems depends on adjacent contains: Root: keyword unevaluatedItems
+unevaluatedItems.json: unevaluatedItems depends on multiple nested contains: Root: keyword unevaluatedItems
+unevaluatedItems.json: unevaluatedItems and contains interact to control item dependency relationship: Root: keyword unevaluatedItems
+unevaluatedItems.json: unevaluatedItems with minContains = 0: Root: keyword unevaluatedItems
+unevaluatedItems.json: non-array instances are valid: Root: keyword unevaluatedItems
+unevaluatedItems.json: unevaluatedItems with null instance elements: Root: keyword unevaluatedItems
+unevaluatedItems.json: unevaluatedItems can see annotations from if without then and else: Root: keyword unevaluatedItems
+unevaluatedItems.json: Evaluated items collection needs to consider instance location: Root: keyword unevaluatedItems
+unevaluatedProperties.json: unevaluatedProperties true: Root: keyword unevaluatedProperties
+unevaluatedProperties.json: unevaluatedProperties schema: Root: keyword unevaluatedProperties
+unevaluatedProperties.json: unevaluatedProperties false: Root: keyword unevaluatedProperties
+unevaluatedProperties.json: unevaluatedProperties with adjacent properties: Root: keyword unevaluatedProperties
+unevaluatedProperties.json: unevaluatedProperties with adjacent patternProperties: Root: keyword unevaluatedProperties
+unevaluatedProperties.json: unevaluatedProperties with adjacent bool additionalProperties: Root: keyword unevaluatedProperties
+unevaluatedProperties.json: unevaluatedProperties with adjacent non-bool additionalProperties: Root: keyword unevaluatedProperties
+unevaluatedProperties.json: unevaluatedProperties with nested properties: Root: keyword unevaluatedProperties
+unevaluatedProperties.json: unevaluatedProperties with nested patternProperties: Root: keyword unevaluatedProperties
+unevaluatedProperties.json: unevaluatedProperties with nested additionalProperties: Root: keyword unevaluatedProperties
+unevaluatedProperties.json: unevaluatedProperties with nested unevaluatedProperties: Root: keyword unevaluatedProperties
+unevaluatedProperties.json: unevaluatedProperties with anyOf: Root: keyword unevaluatedProperties
+unevaluatedProperties.json: unevaluatedProperties with oneOf: Root: keyword unevaluatedProperties
+unevaluatedProperties.json: unevaluatedProperties with not: Root: keyword unevaluatedProperties
+unevaluatedProperties.json: unevaluatedProperties with if/then/else: Root: keyword unevaluatedProperties
+unevaluatedProperties.json: unevaluatedProperties with if/then/else, then not defined: Root: keyword unevaluatedProperties
+unevaluatedProperties.json: unevaluatedProperties with if/then/else, else not defined: Root: keyword unevaluatedProperties
+unevaluatedProperties.json: unevaluatedProperties with dependentSchemas: Root: keyword unevaluatedProperties
+unevaluatedProperties.json: unevaluatedProperties with boolean schemas: Root: keyword unevaluatedProperties
+unevaluatedProperties.json: unevaluatedProperties with $ref: Root: keyword unevaluatedProperties
+unevaluatedProperties.json: unevaluatedProperties before $ref: Root: keyword unevaluatedProperties
+unevaluatedProperties.json: unevaluatedProperties with $dynamicRef: a remote $ref (./baseSchema)
+unevaluatedProperties.json: unevaluatedProperties can't see inside cousins: Root: keyword unevaluatedProperties
+unevaluatedProperties.json: unevaluatedProperties can't see inside cousins (reverse order): Root: keyword unevaluatedProperties
+unevaluatedProperties.json: nested unevaluatedProperties, outer false, inner true, properties outside: Root: keyword unevaluatedProperties
+unevaluatedProperties.json: nested unevaluatedProperties, outer false, inner true, properties inside: Root: keyword unevaluatedProperties
+unevaluatedProperties.json: nested unevaluatedProperties, outer true, inner false, properties outside: Root: keyword unevaluatedProperties
+unevaluatedProperties.json: nested unevaluatedProperties, outer true, inner false, properties inside: Root: keyword unevaluatedProperties
+unevaluatedProperties.json: cousin unevaluatedProperties, true and false, true with properties: Root: keyword unevaluatedProperties
+unevaluatedProperties.json: cousin unevaluatedProperties, true and false, false with properties: Root: keyword unevaluatedProperties
+unevaluatedProperties.json: property is evaluated in an uncle schema to unevaluatedProperties: Root: keyword unevaluatedProperties
+unevaluatedProperties.json: in-place applicator siblings, allOf has unevaluated: Root: keyword unevaluatedProperties
+unevaluatedProperties.json: in-place applicator siblings, anyOf has unevaluated: Root: keyword unevaluatedProperties
+unevaluatedProperties.json: unevaluatedProperties + single cyclic ref: Root: a recursive $ref (#)
+unevaluatedProperties.json: unevaluatedProperties + ref inside allOf / oneOf: Root: keyword unevaluatedProperties
+unevaluatedProperties.json: dynamic evalation inside nested refs: one: keyword unevaluatedProperties
+unevaluatedProperties.json: non-object instances are valid: Root: keyword unevaluatedProperties
+unevaluatedProperties.json: unevaluatedProperties with null valued instance properties: Root: keyword unevaluatedProperties
+unevaluatedProperties.json: unevaluatedProperties not affected by propertyNames: Root: keyword unevaluatedProperties
+unevaluatedProperties.json: unevaluatedProperties can see annotations from if without then and else: Root: keyword unevaluatedProperties
+unevaluatedProperties.json: dependentSchemas with unevaluatedProperties: Root: keyword unevaluatedProperties
+unevaluatedProperties.json: Evaluated properties collection needs to consider instance location: Root: keyword unevaluatedProperties
+unevaluatedProperties.json: Evaluated properties collection needs to consider instance location with patternProperties: Root: keyword unevaluatedProperties
+unevaluatedProperties.json: Evaluated properties collection needs to consider instance location with additionalProperties: Root: keyword unevaluatedProperties
+vocabulary.json: schema that uses custom metaschema with with no validation vocabulary: Root_badProperty: the schema false admits nothing
+vocabulary.json: ignore unrecognized optional vocabulary: Root: a custom metaschema ("http://localhost:1234/draft2020-12/metaschema-optional-vocabulary.json")

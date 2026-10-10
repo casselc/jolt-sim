@@ -173,13 +173,15 @@ let rec pred (c : ctx) (s : J.t) (x : string) : string =
               match v with
               | `String ("https://json-schema.org/draft/2020-12/schema" | "http://json-schema.org/draft-07/schema#" | "http://json-schema.org/draft-07/schema") -> []
               | _ -> unsupported "a custom metaschema (%s)" (J.to_string v)
+            else if k = "$id" && v <> (match c.root with `Assoc rk -> Option.value (List.assoc_opt "$id" rk) ~default:`Null | _ -> `Null) then
+              unsupported "an embedded resource ($id %s): references would resolve against it" (J.to_string v)
             else if List.mem k ignored then []
             else if List.mem k refused then unsupported "keyword %s" k
             else
               match k, v with
               | "type", `String t -> [ is_type x t ]
               | "type", `List ts -> [ disj (List.map (function `String t -> is_type x t | _ -> unsupported "type") ts) ]
-              | "const", v -> [ Printf.sprintf "%s == %s" x (literal v) ]
+              | "const", v -> [ Printf.sprintf "%s == dyn(%s)" x (literal v) ]
               | "enum", `List vs -> [ Printf.sprintf "%s in [%s]" x (String.concat ", " (List.map (fun v -> "dyn(" ^ literal v ^ ")") vs)) ]
               (* strings *)
               | "minLength", n -> [ guard "string" (Printf.sprintf "size(%s) >= %d" x (nat n)) ]
@@ -248,7 +250,7 @@ let rec pred (c : ctx) (s : J.t) (x : string) : string =
               | "oneOf", `List subs ->
                   let b = fresh c "b" in
                   [ Printf.sprintf "size([%s].filter(%s, %s)) == 1" (String.concat ", " (List.map (fun sub -> pred c sub x) subs)) b b ]
-              | "not", sub -> [ Printf.sprintf "!%s" (pred c sub x) ]
+              | "not", sub -> [ Printf.sprintf "!(%s)" (pred c sub x) ]
               | "if", sub ->
                   let t = match get "then" with Some s -> pred c s x | None -> "true" in
                   let e = match get "else" with Some s -> pred c s x | None -> "true" in

@@ -1,0 +1,15 @@
+{
+  "$root": "Node",
+  "NodeLabel": { "enum": { "Leaf": "leaf", "Branch": "branch" } },
+  "Node": {
+    "properties": {
+      "value": { "json": "value", "required": true, "nullable": false },
+      "label": { "json": "label", "required": false, "nullable": false },
+      "children": {
+        "json": "children",
+        "required": false,
+        "nullable": false
+      }
+    }
+  }
+}

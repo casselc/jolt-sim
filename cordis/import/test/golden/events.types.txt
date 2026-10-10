@@ -1,0 +1,31 @@
+type Created = { type : string; id : int; priority : option(int); score : option(double); headers : option(map(string, string)); retry : option(bool); };
+
+type DeletedReason = User | Expired;
+
+type Deleted = { type : string; id : int; reason : option(DeletedReason); payload : option(dyn); };
+
+type EventItemCreated = { id : int; priority : option(int); score : option(double); headers : option(map(string, string)); retry : option(bool); };
+
+type EventItemDeleted = { id : int; reason : option(DeletedReason); payload : option(dyn); };
+
+type Event = ItemCreated(EventItemCreated) | ItemDeleted(EventItemDeleted);
+
+cell check_Created(x : Created) : bool = {
+  (x.type == dyn("item.created") && (!((type(x.id) == double || type(x.id) == int || type(x.id) == uint)) || x.id >= 1.0) && (!x.priority.hasValue() || x.priority.value() in [dyn(1.0), dyn(2.0), dyn(3.0)]) && (!x.score.hasValue() || (!((type(x.score.value()) == double || type(x.score.value()) == int || type(x.score.value()) == uint)) || x.score.value() < 100.0)) && (!x.headers.hasValue() || (!(type(x.headers.value()) == map) || x.headers.value().all(k1, (!(type(k1) == string) || k1.matches("^[a-z-]+$"))))) && (!x.retry.hasValue() || x.retry.value() == dyn(false)));
+}
+
+cell check_Deleted(x : Deleted) : bool = {
+  (x.type == dyn("item.deleted") && (!((type(x.id) == double || type(x.id) == int || type(x.id) == uint)) || x.id >= 1.0) && (!x.payload.hasValue() || (type(x.payload.value()) == map ? (!(type(x.payload.value()) == map) || "id" in x.payload.value()) : type(x.payload.value()) == null_type)));
+}
+
+cell check_EventItemCreated(x : EventItemCreated) : bool = {
+  ((!((type(x.id) == double || type(x.id) == int || type(x.id) == uint)) || x.id >= 1.0) && (!x.priority.hasValue() || x.priority.value() in [dyn(1.0), dyn(2.0), dyn(3.0)]) && (!x.score.hasValue() || (!((type(x.score.value()) == double || type(x.score.value()) == int || type(x.score.value()) == uint)) || x.score.value() < 100.0)) && (!x.headers.hasValue() || (!(type(x.headers.value()) == map) || x.headers.value().all(k1, (!(type(k1) == string) || k1.matches("^[a-z-]+$"))))) && (!x.retry.hasValue() || x.retry.value() == dyn(false)));
+}
+
+cell check_EventItemDeleted(x : EventItemDeleted) : bool = {
+  ((!((type(x.id) == double || type(x.id) == int || type(x.id) == uint)) || x.id >= 1.0) && (!x.payload.hasValue() || (type(x.payload.value()) == map ? (!(type(x.payload.value()) == map) || "id" in x.payload.value()) : type(x.payload.value()) == null_type)));
+}
+
+cell check_Event(x : Event) : bool = {
+  match x {ItemCreated(c1) -> ((!((type(c1.id) == double || type(c1.id) == int || type(c1.id) == uint)) || c1.id >= 1.0) && (!c1.priority.hasValue() || c1.priority.value() in [dyn(1.0), dyn(2.0), dyn(3.0)]) && (!c1.score.hasValue() || (!((type(c1.score.value()) == double || type(c1.score.value()) == int || type(c1.score.value()) == uint)) || c1.score.value() < 100.0)) && (!c1.headers.hasValue() || (!(type(c1.headers.value()) == map) || c1.headers.value().all(k1, (!(type(k1) == string) || k1.matches("^[a-z-]+$"))))) && (!c1.retry.hasValue() || c1.retry.value() == dyn(false))); ItemDeleted(c1) -> ((!((type(c1.id) == double || type(c1.id) == int || type(c1.id) == uint)) || c1.id >= 1.0) && (!c1.payload.hasValue() || (type(c1.payload.value()) == map ? (!(type(c1.payload.value()) == map) || "id" in c1.payload.value()) : type(c1.payload.value()) == null_type))); _ -> true};
+}

@@ -1,0 +1,45 @@
+type Status = Open | Closed | OnHold;
+
+type Money = { currency : string; units : int; nanos : option(int); };
+
+type Line = { sku : string; quantity : int; price : option(Money); };
+
+type Stamp = { at : string; };
+
+type Category = { name : string; children : option(list(dyn)); };
+
+type Address = { line1 : string; postal_code : option(string); };
+
+type OrderPaymentCard = { token : string; };
+
+type OrderPaymentPoints = { amount : int; };
+
+type OrderPayment = Card(OrderPaymentCard) | Points(OrderPaymentPoints);
+
+type OrderAudit = { at : string; by : string; };
+
+type Order = { id : string<max 32>; status : Status; lines : list(Line)<max 50>; note : option(string<max 200>); labels : option(map(string, int)<max 8>); tags : option(list(string)); payment : option(OrderPayment); audit : option(OrderAudit); category : option(Category); ship_to : option(Address); extra : option(dyn); discount : option(double); };
+
+cell check_Money(x : Money) : bool = {
+  ((!(type(x.currency) == string) || x.currency.matches("^[A-Z]{3}$")) && (!x.nanos.hasValue() || ((!((type(x.nanos.value()) == double || type(x.nanos.value()) == int || type(x.nanos.value()) == uint)) || x.nanos.value() >= -999999999.0) && (!((type(x.nanos.value()) == double || type(x.nanos.value()) == int || type(x.nanos.value()) == uint)) || x.nanos.value() <= 999999999.0))));
+}
+
+cell check_Line(x : Line) : bool = {
+  ((!(type(x.sku) == string) || size(x.sku) >= 1) && (!((type(x.quantity) == double || type(x.quantity) == int || type(x.quantity) == uint)) || x.quantity >= 1.0) && (!x.price.hasValue() || ((!(type(x.price.value().currency) == string) || x.price.value().currency.matches("^[A-Z]{3}$")) && (!x.price.value().nanos.hasValue() || ((!((type(x.price.value().nanos.value()) == double || type(x.price.value().nanos.value()) == int || type(x.price.value().nanos.value()) == uint)) || x.price.value().nanos.value() >= -999999999.0) && (!((type(x.price.value().nanos.value()) == double || type(x.price.value().nanos.value()) == int || type(x.price.value().nanos.value()) == uint)) || x.price.value().nanos.value() <= 999999999.0))))));
+}
+
+cell check_Address(x : Address) : bool = {
+  (!x.postal_code.hasValue() || (!(type(x.postal_code.value()) == string) || x.postal_code.value().matches("^[0-9]{5}$")));
+}
+
+cell check_OrderPaymentPoints(x : OrderPaymentPoints) : bool = {
+  (!((type(x.amount) == double || type(x.amount) == int || type(x.amount) == uint)) || x.amount > 0.0);
+}
+
+cell check_OrderPayment(x : OrderPayment) : bool = {
+  match x {Points(c1) -> (!((type(c1.amount) == double || type(c1.amount) == int || type(c1.amount) == uint)) || c1.amount > 0.0); _ -> true};
+}
+
+cell check_Order(x : Order) : bool = {
+  (((!(type(x.id) == string) || x.id.matches("^ord-[0-9]+$")) && (!(type(x.id) == string) || size(x.id) <= 32)) && ((!(type(x.lines) == list) || size(x.lines) >= 1) && (!(type(x.lines) == list) || size(x.lines) <= 50)) && x.lines.all(v7, ((!(type(v7.sku) == string) || size(v7.sku) >= 1) && (!((type(v7.quantity) == double || type(v7.quantity) == int || type(v7.quantity) == uint)) || v7.quantity >= 1.0) && (!v7.price.hasValue() || ((!(type(v7.price.value().currency) == string) || v7.price.value().currency.matches("^[A-Z]{3}$")) && (!v7.price.value().nanos.hasValue() || ((!((type(v7.price.value().nanos.value()) == double || type(v7.price.value().nanos.value()) == int || type(v7.price.value().nanos.value()) == uint)) || v7.price.value().nanos.value() >= -999999999.0) && (!((type(v7.price.value().nanos.value()) == double || type(v7.price.value().nanos.value()) == int || type(v7.price.value().nanos.value()) == uint)) || v7.price.value().nanos.value() <= 999999999.0))))))) && (!x.note.hasValue() || (!(type(x.note.value()) == string) || size(x.note.value()) <= 200)) && (!x.labels.hasValue() || ((!(type(x.labels.value()) == map) || size(x.labels.value()) <= 8) && x.labels.value().all(k16, (!((type(x.labels.value()[k16]) == double || type(x.labels.value()[k16]) == int || type(x.labels.value()[k16]) == uint)) || x.labels.value()[k16] >= 0.0)))) && (!x.tags.hasValue() || ((!(type(x.tags.value()) == list) || size(x.tags.value().distinct()) == size(x.tags.value())) && x.tags.value().all(v14, (!(type(v14) == string) || size(v14) >= 1)))) && (!x.payment.hasValue() || match x.payment.value() {Points(c17) -> (!((type(c17.amount) == double || type(c17.amount) == int || type(c17.amount) == uint)) || c17.amount > 0.0); _ -> true}) && (!x.ship_to.hasValue() || (!x.ship_to.value().postal_code.hasValue() || (!(type(x.ship_to.value().postal_code.value()) == string) || x.ship_to.value().postal_code.value().matches("^[0-9]{5}$")))) && (!x.extra.hasValue() || !(type(x.extra.value()) == string)) && (!x.discount.hasValue() || ((!((type(x.discount.value()) == double || type(x.discount.value()) == int || type(x.discount.value()) == uint)) || x.discount.value() >= 0.0) && (!((type(x.discount.value()) == double || type(x.discount.value()) == int || type(x.discount.value()) == uint)) || x.discount.value() <= 1.0) && (!((type(x.discount.value()) == double || type(x.discount.value()) == int || type(x.discount.value()) == uint)) || (math.isFinite(double(x.discount.value()) / 0.050000000000000003) && math.trunc(double(x.discount.value()) / 0.050000000000000003) == double(x.discount.value()) / 0.050000000000000003)))));
+}

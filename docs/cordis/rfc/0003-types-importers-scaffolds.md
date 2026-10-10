@@ -140,9 +140,13 @@ Input: a JSON Schema document, draft 2020-12 (draft-07's `definitions`
 and `dependencies` are read as `$defs`, `dependentRequired` and
 `dependentSchemas`). The root and every `$defs` entry become types; the
 root is named by `title`, else by the file name. `$ref` resolves within
-the document (`#/$defs/X`, JSON Pointers, `$anchor`); a remote `$ref`,
-`$dynamicRef`, `unevaluatedProperties` and `unevaluatedItems` are refused
-with a report until a later revision.
+the document (`#/$defs/X`, JSON Pointers, `$anchor`). A schema whose
+validation the boundary could not check exactly is **refused, not
+approximated**: a remote `$ref`, an embedded resource (a nested `$id`,
+which would change how references resolve), `$dynamicRef`,
+`unevaluatedProperties`, `unevaluatedItems`, a custom metaschema, and a
+pattern with no RE2 counterpart (lookaround, backreferences, Unicode
+property classes).
 
 ### The validation predicate
 
@@ -183,15 +187,37 @@ The types are the structural part of the schema, the predicate the rest:
 | `oneOf`/`anyOf` of objects with a discriminating property (each branch's `const`, or OpenAPI's `discriminator`) | a variant, a case per branch named by the constant, carrying the branch's record without the discriminator | |
 | `allOf` of objects | one record: properties and `required` merged | a property both define differently: report and `dyn` |
 | `$ref` to `$defs/X` | `X` | |
-| a recursive `$ref` | `dyn` | report |
+| a recursive `$ref` | `dyn` | report; the codec reads the value as the referenced type, residue and all, so the boundary checks every level; `check_T` inside a graph stops at the edge |
 | `true`, `{}`, and anything else (`not`, `if`, undiscriminated `oneOf`, mixed `type`) | `dyn` | the whole predicate |
 | `false` | refused | |
 
-**Objects are closed.** A record refuses properties it does not name,
-even where the schema leaves the object open: at a trust boundary an
-unexpected property is refused, not carried. The report says so for each
-open object; a schema that wants extra properties says so with
-`additionalProperties`.
+**Where the boundary is stricter than the schema**, by design and
+nowhere else (each reported per location, and each the only refusal the
+tests allow beyond the schema's own):
+
+- **Objects are closed.** A record refuses properties it does not name,
+  even where the schema leaves the object open: at a trust boundary an
+  unexpected property is refused, not carried. A schema that wants extra
+  properties says so with `additionalProperties`.
+- **An object schema without `type` is an object.** `{"properties": …}`
+  with no `type` also admits non-objects; real schemas almost always mean
+  an object, so the record requires one.
+- **Integers fit int64.** A larger integer is refused.
+
+**Null.** `[T, "null"]` and `anyOf`/`oneOf` of `T` and `null` are
+`option(T)`; whether `null` itself satisfies the schema (a `const` or
+`not` beside the `type` applies to it too) is decided at import, since
+`null` is one value. A `oneOf` whose other branch also admits `null` is
+`dyn`, as is a nullable `dyn`. At a `dyn` location `null` is a value, so
+an optional `dyn` property distinguishes absent from `null`.
+
+**A required property the schema does not describe** is a required field
+of any value; if `additionalProperties` is `false` as well, nothing
+satisfies the object, and its residue is `false`.
+
+**References.** Every local `$ref` is a definition, keyed by the
+reference and translated once (the root is `#`); a reference back into
+one being translated is a recursive edge.
 
 **Names.** A type is named from its `$defs` key in CamelCase; a property
 whose name is not an identifier (`first-name`, `$id`) becomes one
@@ -218,18 +244,38 @@ order and absent `option`s as omitted members.
 
 ### Testing
 
-- **The predicate against the official JSON Schema Test Suite**
-  (`tests/draft2020-12`): for every test whose schema compiles, the
-  predicate's verdict is the suite's; schemas that do not compile are
-  counted, by reason, and the count is checked in.
-- **Golden imports**: a corpus of schemas, with types, report and name map
-  checked in; every types file passes the graph checker.
-- **Agreement with a validator (Hegel)**: for every imported type, values
-  drawn from the type (at the schema's boundaries, both sides, in a
-  minority of cases) are written by the codec and validated by Python's
-  `jsonschema`; it accepts a value exactly when `check_T` does, and the
-  codec reads back what it writes.
-- **The codec by example**, and mutants of the compiler and importer.
+- **The official JSON Schema Test Suite** (`tests/draft2020-12`, vendored
+  in `cordis/import/test/json-schema-test-suite`), twice:
+  - the predicate's verdict is the suite's for every test whose schema
+    compiles (971 tests; none disagree);
+  - for every test whose schema imports, the types file checks and the
+    codec reads the instance exactly when the suite calls it valid, but
+    for the documented refusals above (939 agree, 14 documented
+    refusals, none disagree).
+  The schemas that do not compile or import are listed, by reason, in a
+  checked-in golden file.
+- **Agreement with Python's `jsonschema` (Hegel, `schema_agreement.ml`)**:
+  - corpus schemas: values drawn from the imported types, with scalars
+    from pools built around every number and string in the schema (both
+    sides of each bound), are written by the codec; `jsonschema` accepts
+    the JSON exactly when the codec's strict read does, and the read gives
+    back the value. The same JSON with one node changed (`null`, a
+    fraction, a string, a property dropped or added, an empty list) is
+    checked the same way, allowing only the documented refusals;
+  - generated schemas: one to three keywords drawn uniformly from every
+    supported keyword, nested; the predicate's verdict is `jsonschema`'s;
+  - generated schemas, imported: the types file checks, and the codec
+    reads an instance (drawn, or written from the type and perturbed)
+    only if `jsonschema` accepts it, and refuses a valid one only as
+    documented;
+  - examples of every rule of the importer's own, with the verdict
+    `jsonschema`'s, not written by hand.
+- **Golden imports** of the corpus schemas (types, report, name map).
+- **Mutants** of the predicate compiler, the importer and the codec: of
+  27 tried, 25 are caught by the properties, the examples or the suite;
+  one is equivalent (it skipped a residue the corpus types do not have)
+  and one did not compile. The tests found a dozen importer and codec
+  bugs before they were committed, each now covered.
 
 ## Importers to come
 

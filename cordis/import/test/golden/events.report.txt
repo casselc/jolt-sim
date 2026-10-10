@@ -1,0 +1,5 @@
+Deleted_reason: the value "user" is the case User
+Deleted_reason: the value "expired" is the case Expired
+Deleted_payload: keywords the types cannot hold (if, then, else): dyn, checked by the whole schema
+EventItemDeleted_payload: keywords the types cannot hold (if, then, else): dyn, checked by the whole schema
+(all): where the schema gives no maxLength, maxItems or maxProperties, the configured default ceiling applies

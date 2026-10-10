@@ -1,0 +1,4 @@
+Node_label: the value "leaf" is the case Leaf
+Node_label: the value "branch" is the case Branch
+Node_children[]: a recursive reference to #/$defs/node: dyn in the graph language (check_ cells do not look beneath it); the codec reads it as #/$defs/node
+(all): where the schema gives no maxLength, maxItems or maxProperties, the configured default ceiling applies

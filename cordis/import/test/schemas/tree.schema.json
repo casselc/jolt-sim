@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "tree",
+  "description": "A recursive root: the codec reads each child as a node.",
+  "$ref": "#/$defs/node",
+  "$defs": {
+    "node": {
+      "type": "object",
+      "properties": {
+        "value": { "type": "integer", "minimum": 0, "maximum": 3 },
+        "label": { "type": "string", "enum": ["leaf", "branch"] },
+        "children": { "type": "array", "items": { "$ref": "#/$defs/node" }, "maxItems": 3 }
+      },
+      "required": ["value"],
+      "additionalProperties": false
+    }
+  }
+}

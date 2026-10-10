@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "order",
+  "description": "A shop order: every row of RFC 0003's JSON Schema type table.",
+  "type": "object",
+  "properties": {
+    "id": { "type": "string", "pattern": "^ord-[0-9]+$", "maxLength": 32 },
+    "status": { "$ref": "#/$defs/status" },
+    "lines": { "type": "array", "items": { "$ref": "#/$defs/line" }, "minItems": 1, "maxItems": 50 },
+    "note": { "type": ["string", "null"], "maxLength": 200 },
+    "labels": { "type": "object", "additionalProperties": { "type": "integer", "minimum": 0 }, "maxProperties": 8 },
+    "tags": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true },
+    "payment": {
+      "oneOf": [
+        { "type": "object", "properties": { "kind": { "const": "card" }, "token": { "type": "string" } }, "required": ["kind", "token"], "additionalProperties": false },
+        { "type": "object", "properties": { "kind": { "const": "points" }, "amount": { "type": "integer", "exclusiveMinimum": 0 } }, "required": ["kind", "amount"], "additionalProperties": false }
+      ]
+    },
+    "audit": { "allOf": [ { "$ref": "#/$defs/stamp" }, { "type": "object", "properties": { "by": { "type": "string" } }, "required": ["by"] } ] },
+    "category": { "$ref": "#/$defs/category" },
+    "ship-to": { "anyOf": [ { "type": "null" }, { "$ref": "#/$defs/address" } ] },
+    "extra": { "not": { "type": "string" } },
+    "discount": { "type": "number", "minimum": 0, "maximum": 1, "multipleOf": 0.05 }
+  },
+  "required": ["id", "status", "lines"],
+  "additionalProperties": false,
+  "$defs": {
+    "status": { "enum": ["open", "closed", "on-hold"] },
+    "money": {
+      "type": "object",
+      "properties": { "currency": { "type": "string", "pattern": "^[A-Z]{3}$" }, "units": { "type": "integer" }, "nanos": { "type": "integer", "minimum": -999999999, "maximum": 999999999 } },
+      "required": ["currency", "units"],
+      "additionalProperties": false
+    },
+    "line": {
+      "type": "object",
+      "properties": { "sku": { "type": "string", "minLength": 1 }, "quantity": { "type": "integer", "minimum": 1 }, "price": { "$ref": "#/$defs/money" } },
+      "required": ["sku", "quantity"],
+      "additionalProperties": false
+    },
+    "stamp": { "type": "object", "properties": { "at": { "type": "string", "format": "date-time" } }, "required": ["at"] },
+    "category": { "type": "object", "properties": { "name": { "type": "string" }, "children": { "type": "array", "items": { "$ref": "#/$defs/category" } } }, "required": ["name"], "additionalProperties": false },
+    "address": { "type": "object", "properties": { "line1": { "type": "string" }, "postal-code": { "type": "string", "pattern": "^[0-9]{5}$" } }, "required": ["line1"], "additionalProperties": false }
+  }
+}

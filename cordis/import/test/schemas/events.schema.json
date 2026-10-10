@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "event",
+  "description": "A webhook event: an OpenAPI-style discriminator, nullable types, numeric enums and constants, a map with a pattern on its keys.",
+  "oneOf": [
+    { "$ref": "#/$defs/created" },
+    { "$ref": "#/$defs/deleted" }
+  ],
+  "discriminator": { "propertyName": "type" },
+  "$defs": {
+    "created": {
+      "type": "object",
+      "properties": {
+        "type": { "const": "item.created" },
+        "id": { "type": "integer", "minimum": 1 },
+        "priority": { "type": "integer", "enum": [1, 2, 3] },
+        "score": { "type": ["number", "null"], "exclusiveMaximum": 100 },
+        "headers": { "type": "object", "additionalProperties": { "type": "string" }, "propertyNames": { "pattern": "^[a-z-]+$" } },
+        "retry": { "type": "boolean", "const": false }
+      },
+      "required": ["type", "id"],
+      "additionalProperties": false
+    },
+    "deleted": {
+      "type": "object",
+      "properties": {
+        "type": { "const": "item.deleted" },
+        "id": { "type": "integer", "minimum": 1 },
+        "reason": { "type": "string", "enum": ["user", "expired"] },
+        "payload": { "if": { "type": "object" }, "then": { "required": ["id"] }, "else": { "type": "null" } }
+      },
+      "required": ["type", "id"],
+      "additionalProperties": false
+    }
+  }
+}

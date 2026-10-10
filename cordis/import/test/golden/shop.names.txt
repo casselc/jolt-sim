@@ -1,0 +1,92 @@
+{
+  "$root": "Order",
+  "Status": {
+    "enum": { "Open": "open", "Closed": "closed", "OnHold": "on-hold" }
+  },
+  "Money": {
+    "properties": {
+      "currency": { "json": "currency", "required": true, "nullable": false },
+      "units": { "json": "units", "required": true, "nullable": false },
+      "nanos": { "json": "nanos", "required": false, "nullable": false }
+    }
+  },
+  "Line": {
+    "properties": {
+      "sku": { "json": "sku", "required": true, "nullable": false },
+      "quantity": { "json": "quantity", "required": true, "nullable": false },
+      "price": { "json": "price", "required": false, "nullable": false }
+    }
+  },
+  "Stamp": {
+    "properties": {
+      "at": { "json": "at", "required": true, "nullable": false }
+    }
+  },
+  "Category": {
+    "properties": {
+      "name": { "json": "name", "required": true, "nullable": false },
+      "children": {
+        "json": "children",
+        "required": false,
+        "nullable": false
+      }
+    }
+  },
+  "Address": {
+    "properties": {
+      "line1": { "json": "line1", "required": true, "nullable": false },
+      "postal_code": {
+        "json": "postal-code",
+        "required": false,
+        "nullable": false
+      }
+    }
+  },
+  "OrderPaymentCard": {
+    "properties": {
+      "token": { "json": "token", "required": true, "nullable": false }
+    }
+  },
+  "OrderPaymentPoints": {
+    "properties": {
+      "amount": { "json": "amount", "required": true, "nullable": false }
+    }
+  },
+  "OrderPayment": {
+    "discriminator": "kind",
+    "cases": {
+      "Card": { "value": "card", "payload": "OrderPaymentCard" },
+      "Points": { "value": "points", "payload": "OrderPaymentPoints" }
+    }
+  },
+  "OrderAudit": {
+    "properties": {
+      "at": { "json": "at", "required": true, "nullable": false },
+      "by": { "json": "by", "required": true, "nullable": false }
+    }
+  },
+  "Order": {
+    "properties": {
+      "id": { "json": "id", "required": true, "nullable": false },
+      "status": { "json": "status", "required": true, "nullable": false },
+      "lines": { "json": "lines", "required": true, "nullable": false },
+      "note": { "json": "note", "required": false, "nullable": true },
+      "labels": { "json": "labels", "required": false, "nullable": false },
+      "tags": { "json": "tags", "required": false, "nullable": false },
+      "payment": { "json": "payment", "required": false, "nullable": false },
+      "audit": { "json": "audit", "required": false, "nullable": false },
+      "category": {
+        "json": "category",
+        "required": false,
+        "nullable": false
+      },
+      "ship_to": { "json": "ship-to", "required": false, "nullable": true },
+      "extra": { "json": "extra", "required": false, "nullable": false },
+      "discount": {
+        "json": "discount",
+        "required": false,
+        "nullable": false
+      }
+    }
+  }
+}

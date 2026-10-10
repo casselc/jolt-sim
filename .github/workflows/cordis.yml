@@ -83,11 +83,11 @@ jobs:
           (cd cel/celgo && go build -o "$RUNNER_TEMP/celgo" .)
           CELGO="$RUNNER_TEMP/celgo" opam exec -- dune build @cel/test/differential
 
-      - name: Agreement with protobuf itself (the importer, the boundary codec)
+      - name: Agreement with protobuf and jsonschema (the importers, the boundary codecs)
         run: |
           python3 -m venv "$RUNNER_TEMP/pyenv"
-          "$RUNNER_TEMP/pyenv/bin/pip" install "protobuf==7.36.1"
-          PATH="$RUNNER_TEMP/pyenv/bin:$PATH" opam exec -- dune build @import/test/agreement @cel/test/codec-agreement
+          "$RUNNER_TEMP/pyenv/bin/pip" install "protobuf==7.36.1" "jsonschema==4.26.0"
+          PATH="$RUNNER_TEMP/pyenv/bin:$PATH" opam exec -- dune build @import/test/agreement @cel/test/codec-agreement @import/test/schema-agreement
 
       - name: Model gate
         env:
