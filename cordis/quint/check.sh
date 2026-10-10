@@ -148,6 +148,16 @@ sim cutover.qnt volatileCutover noUnadmittedMix VIOLATED
 sim cutover.qnt insertConsumerFirst ordered VIOLATED
 sim cutover.qnt insertFirst singleWriter VIOLATED
 
+# ---- schedule.qnt (RFC 0006 decision 4: schedule independence, deficit round robin across graphs) --
+for inv in sameRest boundedWait; do sim schedule.qnt design "$inv" ok; done
+# Apalache: depth 6 (about 30 s) is the least at which both copies rest, so sameRest is checked
+# exhaustively there; a wait past BOUND takes 9 picks, so boundedWait rests on simulation (depth 8: over 20 min)
+VERIFY_STEPS=${SCHEDULE_VERIFY_STEPS:-6} verify schedule.qnt design safety ok
+for w in schedulesDiffered deficitCarried bothAtRest waitedToBound; do sim schedule.qnt design "not($w)" VIOLATED; done
+sim schedule.qnt positionalKey sameRest VIOLATED
+sim schedule.qnt putShared sameRest VIOLATED
+sim schedule.qnt strictPriority boundedWait VIOLATED
+
 # ---- runtime.qnt (RFC 0006: the engine's protocol, which engine runs are replayed in) ---
 sim runtime.qnt design safety ok
 for w in retried doubted refetched recoveredAwaiting gaveUp; do sim runtime.qnt design "not($w)" VIOLATED; done

@@ -523,6 +523,24 @@ or strict priority. Strict priority can starve; DRR bounds the wait of a
 ready graph by the quanta of the others, which is checkable as an
 invariant (a bounded-wait counter) since Quint does not check liveness.
 
+**Progress.** `schedule.qnt` is written and gated (below), and the
+scheduler is `Sched` in the engine library, sans-IO like the core: it holds
+each graph's deficit and which graph it is on, and the host says which
+graphs have work and what each one's next step costs (`Engine.step_cost`:
+a turn its estimate's max, which admission bounded; any other step one
+unit). A graph earns a quantum when the loop reaches it with work, runs
+while its deficit covers its next step, keeps the deficit when it does
+not, and keeps none when it has no work. A graph with work then waits at
+most `ceil(max_cost / quantum) * (graphs - 1) * (quantum + max_cost - 1)`
+picks (`Sched.bound`); with each graph's cost fixed, as in the model, the
+wait is the model's `BOUND`. `engine/test/sched_test.ml` checks the bound
+and the deficits' range over drawn work and costs, and runs two to four
+review loops under one scheduler with the host's events (syncs, sends,
+lost and duplicated receipts) interleaved at drawn points: each rests
+where it would alone, within the bound. Planted faults it catches: a
+scheduler that starts every pick from graph 0, and one that keeps an idle
+graph's deficit.
+
 ### Cost and budgets at run time
 
 The static estimate (RFC 0001 "Cost") bounds each turn at admission. At
@@ -1145,16 +1163,23 @@ mid-cutover.
 
 ### `schedule.qnt`: schedule independence and fairness
 
-Two copies of a small graph (one shared commuting key, one guarded asset,
-one emission) run under independent schedules from the same inputs and
-receipts, in one state (a product construction, since Quint checks
-invariants of one run). Several graphs share one loop under DRR.
+Two copies of one instance (three tasks, each adding its weight to one
+shared key and emitting one intent) run under independent schedules from
+the same inputs, in one state (a product construction, since Quint checks
+invariants of one run). Three graphs share one loop under DRR: graph 0
+never rests and its steps cost 3, the others' work comes and goes and
+their steps cost 1, the quantum is 2, and the bound on a wait is 8.
+Apalache checks the model to depth 6 in the gate (about 30 s; depth 8
+ran past 20 minutes): the least depth at which both copies rest, so
+`sameRest` is checked exhaustively there. A wait past the bound takes nine
+picks, so `boundedWait` rests on simulation, where the `waitedToBound`
+witness shows the bound is reached and tight.
 
 | | |
 | --- | --- |
 | Properties | `sameRest`: when both copies are quiet, their tables and their sets of released keys are equal (Theorem 80 extended to emissions); `boundedWait`: a ready graph is passed over at most a bound of picks (a safety stand-in for fairness, since liveness is not checked) |
 | Mutants | `positionalKey` (an intent key that includes the step number) → `sameRest`; `putShared` (a shared key with non-commuting `Put`, as `cordis/test`'s confluence control) → `sameRest`; `strictPriority` → `boundedWait` |
-| Witnesses | `schedulesDiffered` (the copies took different orders and still agreed), `deficitCarried` |
+| Witnesses | `schedulesDiffered` (the copies took different orders and still agreed), `deficitCarried`, `bothAtRest`, `waitedToBound` (a graph waits exactly the bound: it is tight) |
 
 ### Extensions to existing models
 

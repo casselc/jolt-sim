@@ -295,6 +295,18 @@ let ready t =
   in
   assets @ List.sort_uniq compare appends @ cutover
 
+(* what a step costs the loop, in CEL cost units, for fairness across graphs (Sched): a turn its
+   estimate's max, which admission bounded; any other step one unit *)
+let step_cost t = function
+  | Turn a -> (
+      match (Smap.find a t.slots).fiber with
+      | Running { turn; _ } -> (
+          match (List.nth (Smap.find a t.cells).turns turn).cost with
+          | Some e when e.max < Cordis_cel.Cost.inf -> max 1 e.max
+          | _ -> 1)
+      | _ -> 1)
+  | _ -> 1
+
 let quiet t = ready t = [] && t.gated = [] && Smap.for_all (fun _ s -> not (fiber_busy s.fiber)) t.slots
 
 (* ---- records -------------------------------------------------------------------------------------- *)

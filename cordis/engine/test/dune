@@ -28,3 +28,12 @@
  (deps ../../graph/examples/review.cg)
  (action
   (run %{test} ../../graph/examples/review.cg)))
+
+; Fairness across graphs: deficit round robin (RFC 0006 decision 4; quint/schedule.qnt)
+(test
+ (name sched_test)
+ (modules sched_test)
+ (libraries engine_loopback cordis_engine cordis_cel hegel alcotest)
+ (deps ../../graph/examples/review.cg)
+ (action
+  (run %{test} ../../graph/examples/review.cg)))
