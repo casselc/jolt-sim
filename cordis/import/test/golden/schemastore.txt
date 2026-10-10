@@ -1,10 +1,9 @@
-# SchemaStore: 990 schemas; 682 import (their types check); 308 are refused.
-# Instances of imported schemas: 986 positive, 561 negative; 1347 agree with jsonschema; 179 valid ones are refused as RFC 0003 documents; 21 jsonschema could not validate.
+# SchemaStore: 990 schemas; 803 import (their types check); 187 are refused.
+# Instances of imported schemas: 1213 positive, 652 negative; 1641 agree with jsonschema; 203 valid ones are refused as RFC 0003 documents; 21 jsonschema could not validate.
 # Refusals by kind:
 #    116  a remote $ref
-#    114  a recursive $ref
-#     31  a predicate over the size limit
-#     24  a pattern that uses lookaround
+#     25  a pattern that uses lookaround
+#     23  a recursive $ref
 #      7  an embedded resource
 #      5  keyword unevaluatedProperties
 #      5  a pattern that does not compile
@@ -12,12 +11,12 @@
 #      2  not a schema
 #      1  a pattern that is not ASCII
 BizTalkServerApplicationSchema: imported, 7 types, 0 instances
-abc-clinical-demand-forecast-1.0.0: refused: SubjectFlow_regions: a recursive $ref (#/definitions/RegionConfig)
-abc-clinical-demand-forecast-2.0.0: refused: SubjectFlow_regions: a recursive $ref (#/definitions/RegionConfig)
-abc-clinical-demand-forecast-3.0.0: refused: SubjectFlow_regions: a recursive $ref (#/definitions/RegionConfig)
-abc-clinical-demand-forecast-4.0.0: refused: SubjectFlow_regions: a recursive $ref (#/definitions/RegionConfig)
-abc-clinical-demand-forecast-5.0.0: refused: SubjectFlow_regions: a recursive $ref (#/definitions/RegionConfig)
-abc-clinical-demand-forecast-5.1.0: refused: SubjectFlow_regions: a recursive $ref (#/definitions/RegionConfig)
+abc-clinical-demand-forecast-1.0.0: imported, 55 types, 2 instances
+abc-clinical-demand-forecast-2.0.0: imported, 55 types, 2 instances
+abc-clinical-demand-forecast-3.0.0: imported, 57 types, 2 instances
+abc-clinical-demand-forecast-4.0.0: imported, 57 types, 2 instances
+abc-clinical-demand-forecast-5.0.0: imported, 72 types, 2 instances
+abc-clinical-demand-forecast-5.1.0: imported, 72 types, 2 instances
 abc-inventory-module-data-1.0.0: imported, 44 types, 2 instances
 abc-inventory-module-data-2.0.0: imported, 44 types, 2 instances
 abc-inventory-module-data-3.0.0: imported, 54 types, 2 instances
@@ -48,7 +47,7 @@ abc-supply-plan-7.0.0: imported, 39 types, 6 instances
 abc-supply-plan-8.0.0: imported, 33 types, 6 instances
 abc-supply-plan-9.0.0: imported, 33 types, 6 instances
 abtop: imported, 3 types, 0 instances
-accelerator: refused: Chain1_transformations[]: a recursive $ref (#/definitions/Chain-2)
+accelerator: imported, 48 types, 0 instances
 act3: imported, 2 types, 0 instances
 actionlint: imported, 5 types, 0 instances
 agripparc-1.2: imported, 5 types, 3 instances
@@ -85,7 +84,7 @@ airlock-microgateway-3.2: refused: AirlockMicrogateway32DenyRuleGroupsDenyRules_
 algovoi-compliance-receipt-v1: imported, 2 types, 10 instances
 aliases: imported, 1 types, 0 instances
 all-contributors: imported, 5 types, 10 instances
-allstar-action: refused: Allstar Action policy configuration: a recursive $ref (#/definitions/RepoSelector)
+allstar-action: imported, 19 types, 0 instances
 allstar-admin: imported, 15 types, 0 instances
 allstar-binary: imported, 14 types, 0 instances
 allstar-branch: imported, 15 types, 0 instances
@@ -101,16 +100,16 @@ any: imported, 1 types, 1 instances
 anywork-ac-1.0: refused: AnyWork Automation config: a remote $ref (base.json#/definitions/path)
 anywork-ac-1.1: imported, 5 types, 1 instances
 apibuilder: imported, 22 types, 1 instances
-apollo-router-2.17.0: refused: ConditionRouterSelector: a recursive $ref (#/definitions/ConditionRouterSelector)
-apollo-router-2.8.1: refused: ConditionRouterSelector: a recursive $ref (#/definitions/ConditionRouterSelector)
-apollo-router-2.8.2: refused: ConditionRouterSelector: a recursive $ref (#/definitions/ConditionRouterSelector)
-apollo-router-2.9.0: refused: ConditionRouterSelector: a recursive $ref (#/definitions/ConditionRouterSelector)
+apollo-router-2.17.0: imported, 546 types, 0 instances
+apollo-router-2.8.1: imported, 498 types, 0 instances
+apollo-router-2.8.2: imported, 498 types, 0 instances
+apollo-router-2.9.0: imported, 500 types, 0 instances
 app-config: imported, 189 types, 0 instances
 apple-app-site-association: imported, 8 types, 2 instances
 appsettings: imported, 29 types, 10 instances
 appsscript: imported, 30 types, 1 instances
 appveyor: imported, 23 types, 2 instances
-architectfx: refused: ArchitectFX Documents Schema: a recursive $ref (#/definitions/entity)
+architectfx: imported, 3 types, 0 instances
 artifacthub-repo: imported, 3 types, 4 instances
 asconfig-schema: imported, 7 types, 10 instances
 asmdef: imported, 3 types, 3 instances
@@ -121,13 +120,13 @@ aurora-1.0: imported, 12 types, 0 instances
 aurora-1.1: imported, 15 types, 0 instances
 aurora-1.2: imported, 17 types, 0 instances
 aurora-1.3: imported, 18 types, 0 instances
-aurora-2.0: refused: propertyDefinition: a recursive $ref (#/definitions/relationshipDefinition)
+aurora-2.0: imported, 16 types, 0 instances
 ava: imported, 5 types, 3 instances
-avro-avsc: refused: avroSchema: a recursive $ref (#/definitions/types)
+avro-avsc: imported, 21 types, 1 instances
 aws-cdk-appconfig-featureflags-1.0.0: imported, 19 types, 2 instances
 azure-containerapp-template: imported, 1 types, 2 instances
-azure-deviceupdate-import-manifest-4.0: refused: a remote $ref (azure-deviceupdate-manifest-definitions-4.0.json#/definitions/inlineStepType)
-azure-deviceupdate-import-manifest-5.0: refused: a remote $ref (azure-deviceupdate-manifest-definitions-5.0.json#/definitions/inlineStepType)
+azure-deviceupdate-import-manifest-4.0: refused: Instructions_steps[]: a remote $ref (azure-deviceupdate-manifest-definitions-4.0.json#/definitions/inlineStepType)
+azure-deviceupdate-import-manifest-5.0: refused: Instructions_steps[]: a remote $ref (azure-deviceupdate-manifest-definitions-5.0.json#/definitions/inlineStepType)
 azure-deviceupdate-manifest-definitions-4.0: imported, 11 types, 0 instances
 azure-deviceupdate-manifest-definitions-5.0: refused: a remote $ref (azure-deviceupdate-manifest-definitions-5.0.json#/definitions/compatibilityInfo)
 azure-deviceupdate-update-manifest-4: refused: a remote $ref (azure-deviceupdate-manifest-definitions-4.0.json#/definitions/file)
@@ -137,8 +136,8 @@ azure-iot-edge-deployment-1.0: imported, 7 types, 1 instances
 azure-iot-edge-deployment-2.0: imported, 9 types, 1 instances
 azure-iot-edge-deployment-template-1.0: refused: a remote $ref (azure-iot-edge-deployment-1.0.json#/definitions/moduleType)
 azure-iot-edge-deployment-template-2.0: refused: a remote $ref (azure-iot-edge-deployment-2.0.json#/definitions/moduleType)
-azure-iot-edge-deployment-template-3.0: refused: a remote $ref (azure-iot-edgeagent-deployment-1.1.json#/properties/$edgeAgent/properties/properties.desired/properties/schemaVersion)
-azure-iot-edge-deployment-template-4.0: refused: a remote $ref (azure-iot-edgeagent-deployment-1.1.json#/properties/$edgeAgent/properties/properties.desired/properties/schemaVersion)
+azure-iot-edge-deployment-template-3.0: refused: moduleSettings: a remote $ref (azure-iot-edgeagent-deployment-1.1.json#/definitions/moduleSettings/properties/image)
+azure-iot-edge-deployment-template-4.0: refused: moduleSettings: a remote $ref (azure-iot-edgeagent-deployment-1.1.json#/definitions/moduleSettings/properties/image)
 azure-iot-edgeagent-deployment-1.0: imported, 14 types, 1 instances
 azure-iot-edgeagent-deployment-1.1: imported, 16 types, 1 instances
 azure-iot-edgehub-deployment-1.0: imported, 4 types, 1 instances
@@ -146,14 +145,14 @@ azure-iot-edgehub-deployment-1.1: imported, 4 types, 1 instances
 azure-iot-edgehub-deployment-1.2: imported, 10 types, 1 instances
 babelrc: imported, 2 types, 4 instances
 backportrc: imported, 1 types, 0 instances
-bamboo-spec: refused: Bamboo CI Specification: a recursive $ref (#)
+bamboo-spec: imported, 27 types, 4 instances
 band-manifest: imported, 15 types, 2 instances
 base-04: refused: nullable-array: an embedded resource ($id "nullable-array"): references would resolve against it
 base: imported, 15 types, 0 instances
 behat: imported, 5 types, 0 instances
 bettercodehub: imported, 4 types, 4 instances
 bigconfig: imported, 33 types, 0 instances
-bigquery-table: refused: field: a recursive $ref (#/definitions/field)
+bigquery-table: imported, 6 types, 1 instances
 bitrise-step: imported, 13 types, 2 instances
 bitrise: refused: BitriseDataModel: a remote $ref (bitrise-step.json)
 block: refused: a remote $ref (https://raw.githubusercontent.com/WordPress/gutenberg/trunk/schemas/json/block.json)
@@ -177,7 +176,7 @@ buf.lock: imported, 1 types, 0 instances
 buf.plugin: imported, 23 types, 0 instances
 buf.policy: imported, 6 types, 0 instances
 buf.work: imported, 1 types, 0 instances
-bukkit-plugin: refused: Permission_children: a recursive $ref (#/definitions/permission)
+bukkit-plugin: refused: JSONSchemaForBukkitPluginYAML_main: pattern "^(?!org\\.bukkit\\.)([a-zA-Z_$][a-zA-Z\\d_$]*\\.)*[a-zA-Z_$][a-zA-Z\\d_$]*$" uses lookaround
 bun-lock: imported, 5 types, 2 instances
 bundleconfig: imported, 8 types, 1 instances
 bunfig: imported, 17 types, 0 instances
@@ -189,10 +188,10 @@ bxci.schema-2.x: imported, 42 types, 0 instances
 bxci.schema-3.x: imported, 45 types, 0 instances
 cargo-config: imported, 50 types, 0 instances
 cargo-lints-cargo: imported, 4 types, 0 instances
-cargo-lints-clippy: refused: Clippy Lints: a predicate of 915821 bytes, over the limit of 200000
-cargo-lints-rust: refused: Rust Compiler Lints: a predicate of 278849 bytes, over the limit of 200000
+cargo-lints-clippy: imported, 4 types, 0 instances
+cargo-lints-rust: imported, 4 types, 0 instances
 cargo-lints-rustdoc: imported, 4 types, 0 instances
-cargo-make: refused: env: a recursive $ref (#/definitions/env_value)
+cargo-make: imported, 18 types, 1 instances
 cargo-mutants-config: imported, 2 types, 0 instances
 cargo: refused: Lints: a remote $ref (https://www.schemastore.org/cargo-lints-rust.json)
 case_schema: imported, 9 types, 0 instances
@@ -238,13 +237,13 @@ claude-code-keybindings: imported, 7 types, 16 instances
 claude-code-launch: imported, 2 types, 1 instances
 claude-code-marketplace: imported, 9 types, 1 instances
 claude-code-plugin-manifest: imported, 6 types, 3 instances
-claude-code-settings: refused: Claude Code Settings: a predicate of 330685 bytes, over the limit of 200000
+claude-code-settings: imported, 10 types, 39 instances
 clib: imported, 1 types, 2 instances
 cloud-run-v1: imported, 50 types, 0 instances
 cloud-sdk-pipeline-config-schema: imported, 25 types, 2 instances
 cloudbuild: imported, 14 types, 3 instances
 cloudfoundry-application-manifest: imported, 20 types, 0 instances
-cloudify: refused: nodeTemplates: a recursive $ref (#/definitions/nodeTypeCloudifyAzureNodesComputeWindowsVirtualMachineProperties)
+cloudify: imported, 904 types, 56 instances
 codeclimate: imported, 5 types, 2 instances
 codecov: imported, 22 types, 7 instances
 codex-hooks: imported, 7 types, 5 instances
@@ -294,14 +293,14 @@ devinit.schema-3.0: imported, 3 types, 1 instances
 devinit.schema-4.0: imported, 3 types, 1 instances
 devinit.schema-5.0: imported, 3 types, 1 instances
 devinit.schema-6.0: imported, 3 types, 1 instances
-devup: refused: DevupJson_theme: a recursive $ref (#/$defs/ColorValue)
+devup: imported, 6 types, 1 instances
 djlint: refused: a remote $ref (https://djlint.com/schema/djlint.json)
 docfx: imported, 18 types, 3 instances
 docker-bake: imported, 8 types, 3 instances
 docker-extension-metadata: imported, 8 types, 1 instances
 dockerd: imported, 10 types, 1 instances
 docs-mcp-manifest: imported, 5 types, 1 instances
-dofigen: refused: HashMapDeepPatch_string_Stage: a recursive $ref (#/definitions/NestedMap)
+dofigen: imported, 44 types, 0 instances
 dotnet-releases-index: imported, 6 types, 2 instances
 dotnet-tools: imported, 1 types, 1 instances
 dotnetcli.host: imported, 2 types, 1 instances
@@ -321,7 +320,7 @@ drupal-recipe: refused: NewRecipeConfig_actions: not a schema: [{"$ref":"#/$defs
 drupal-routing: imported, 1 types, 0 instances
 drupal-services: imported, 1 types, 0 instances
 drush.site.yml: imported, 5 types, 0 instances
-dss-2.0.0: refused: dss2-SignRequestType: a recursive $ref (#/definitions/dss2-DocumentType)
+dss-2.0.0: imported, 55 types, 0 instances
 dtool-dataset-metadata-1.0: imported, 3 types, 1 instances
 dust: imported, 1 types, 0 instances
 easyvcr-net: imported, 5 types, 1 instances
@@ -351,15 +350,15 @@ enonic-xp-content-type-8.0.0: refused: formItemsDef: a recursive $ref (#/$defs/f
 enonic-xp-form-fragment-8.0.0-B4: refused: formItemsDef: a recursive $ref (#/$defs/fieldSetDef)
 enonic-xp-form-fragment-8.0.0-B5: refused: formItemsDef: a recursive $ref (#/$defs/fieldSetDef)
 enonic-xp-form-fragment-8.0.0: refused: formItemsDef: a recursive $ref (#/$defs/fieldSetDef)
-enonic-xp-idprovider-8.0.0-B4: refused: formItemsDef: a recursive $ref (#/$defs/fieldSetDef)
-enonic-xp-idprovider-8.0.0-B5: refused: formItemsDef: a recursive $ref (#/$defs/fieldSetDef)
-enonic-xp-idprovider-8.0.0: refused: formItemsDef: a recursive $ref (#/$defs/fieldSetDef)
+enonic-xp-idprovider-8.0.0-B4: imported, 39 types, 0 instances
+enonic-xp-idprovider-8.0.0-B5: imported, 39 types, 0 instances
+enonic-xp-idprovider-8.0.0: imported, 39 types, 0 instances
 enonic-xp-layout-8.0.0-B4: refused: formItemsDef: a recursive $ref (#/$defs/fieldSetDef)
 enonic-xp-layout-8.0.0-B5: refused: formItemsDef: a recursive $ref (#/$defs/fieldSetDef)
 enonic-xp-layout-8.0.0: refused: formItemsDef: a recursive $ref (#/$defs/fieldSetDef)
-enonic-xp-macro-8.0.0-B4: refused: formItemsDef: a recursive $ref (#/$defs/fieldSetDef)
-enonic-xp-macro-8.0.0-B5: refused: formItemsDef: a recursive $ref (#/$defs/fieldSetDef)
-enonic-xp-macro-8.0.0: refused: formItemsDef: a recursive $ref (#/$defs/fieldSetDef)
+enonic-xp-macro-8.0.0-B4: imported, 34 types, 0 instances
+enonic-xp-macro-8.0.0-B5: imported, 34 types, 0 instances
+enonic-xp-macro-8.0.0: imported, 34 types, 0 instances
 enonic-xp-mixin-8.0.0-B4: refused: formItemsDef: a recursive $ref (#/$defs/fieldSetDef)
 enonic-xp-mixin-8.0.0-B5: refused: formItemsDef: a recursive $ref (#/$defs/fieldSetDef)
 enonic-xp-mixin-8.0.0: refused: formItemsDef: a recursive $ref (#/$defs/fieldSetDef)
@@ -378,9 +377,9 @@ enonic-xp-site-8.0.0: imported, 4 types, 0 instances
 enonic-xp-style-8.0.0-B4: refused: imageStyleDef: keyword unevaluatedProperties
 enonic-xp-style-8.0.0-B5: refused: imageStyleDef: keyword unevaluatedProperties
 enonic-xp-style-8.0.0: refused: imageStyleDef: keyword unevaluatedProperties
-enonic-xp-task-8.0.0-B4: refused: formItemsDef: a recursive $ref (#/$defs/fieldSetDef)
-enonic-xp-task-8.0.0-B5: refused: formItemsDef: a recursive $ref (#/$defs/fieldSetDef)
-enonic-xp-task-8.0.0: refused: formItemsDef: a recursive $ref (#/$defs/fieldSetDef)
+enonic-xp-task-8.0.0-B4: imported, 38 types, 0 instances
+enonic-xp-task-8.0.0-B5: imported, 38 types, 0 instances
+enonic-xp-task-8.0.0: imported, 38 types, 0 instances
 enonic-xp-webapp-8.0.0-B4: imported, 3 types, 0 instances
 enonic-xp-webapp-8.0.0-B5: imported, 3 types, 0 instances
 enonic-xp-webapp-8.0.0: imported, 3 types, 0 instances
@@ -413,7 +412,7 @@ factorial-drupal-breakpoints-css-0.2.0: imported, 7 types, 2 instances
 feed-1: imported, 6 types, 3 instances
 feed: refused: item: a remote $ref (feed-1#/definitions/item/properties/content_html)
 first-timers: imported, 1 types, 2 instances
-flatpak-manifest: refused: BuildOptions_arch: a recursive $ref (#/definitions/build-options)
+flatpak-manifest: imported, 19 types, 5 instances
 fly: imported, 15 types, 1 instances
 foundryvtt-base-package-manifest: imported, 17 types, 0 instances
 foundryvtt-module-manifest: refused: JSON schema for Foundry VTT module manifest files - module.json: a remote $ref (foundryvtt-base-package-manifest.json#)
@@ -448,7 +447,7 @@ github-prompt: imported, 6 types, 6 instances
 github-release-config: imported, 5 types, 0 instances
 github-secret-scanning: imported, 1 types, 0 instances
 github-workflow-template-properties: imported, 2 types, 2 instances
-github-workflow: refused: configuration: a recursive $ref (#/definitions/configuration)
+github-workflow: imported, 40 types, 0 instances
 gitleaks: imported, 7 types, 0 instances
 gitversion: refused: a remote $ref (https://gitversion.net/schemas/6.8/GitVersion.configuration.json)
 glamour-style: imported, 10 types, 2 instances
@@ -458,14 +457,14 @@ golangci-lint: refused: a remote $ref (https://golangci-lint.run/jsonschema/gola
 gollama: imported, 1 types, 2 instances
 gpc: imported, 1 types, 2 instances
 grafana-dashboard-5.x: imported, 10 types, 0 instances
-grpc-api-gateway: refused: meshapi.gateway.openapi.Schema.Item: a recursive $ref (#/definitions/meshapi.gateway.openapi.Schema)
+grpc-api-gateway: imported, 40 types, 0 instances
 grunt-clean-task: refused: JSON schema for the Grunt clean task: a remote $ref (grunt-task#/definitions/fileFormat)
 grunt-copy-task: refused: JSON schema for the Grunt clean task: a remote $ref (grunt-task#/additionalProperties)
 grunt-cssmin-task: refused: JSON schema for the Grunt cssmin task: a remote $ref (grunt-task#/additionalProperties)
 grunt-jshint-task: refused: a remote $ref (jshintrc#)
 grunt-task: imported, 5 types, 1 instances
 grunt-watch-task: imported, 5 types, 1 instances
-hammerkit: refused: a remote $ref (base.json#/definitions/path)
+hammerkit: refused: task: a remote $ref (base.json#/definitions/path)
 hatch: imported, 23 types, 0 instances
 haxelib: refused: a remote $ref (https://raw.githubusercontent.com/HaxeFoundation/haxelib/master/schema.json)
 helmfile: imported, 20 types, 4 instances
@@ -485,37 +484,37 @@ imageoptimizer: imported, 2 types, 1 instances
 img-catapult-psp-1.0.0: imported, 4 types, 0 instances
 imgbotconfig: imported, 2 types, 1 instances
 importmap: imported, 1 types, 2 instances
-install: refused: optionDeclarationCommonProperties{}: a recursive $ref (#/definitions/optionDeclarationCommonProperties)
-intlayer: refused: contentValue: a recursive $ref (#/definitions/arrayValue)
+install: imported, 14 types, 0 instances
+intlayer: imported, 24 types, 4 instances
 jasmine: imported, 3 types, 3 instances
 jasonette: imported, 16 types, 0 instances
-jdt: refused: JSON schema for JSON Document Transforms: a recursive $ref (#)
+jdt: imported, 3 types, 1 instances
 jekyll: refused: nullable-timezone: a remote $ref (base.json#/definitions/timezone)
 jest: imported, 3 types, 1 instances
-jfrog-pipelines: refused: JFrog-Pipelines: a predicate over 200000 bytes
+jfrog-pipelines: imported, 31 types, 0 instances
 jovo-language-model: imported, 15 types, 1 instances
-jreleaser-1.10.0: refused: DistributionMap: a predicate of 257107 bytes, over the limit of 200000
-jreleaser-1.11.0: refused: DistributionMap: a predicate of 261512 bytes, over the limit of 200000
-jreleaser-1.12.0: refused: DistributionMap: a predicate of 271380 bytes, over the limit of 200000
-jreleaser-1.13.0: refused: DistributionMap: a predicate of 281908 bytes, over the limit of 200000
-jreleaser-1.13.1: refused: DistributionMap: a predicate of 281908 bytes, over the limit of 200000
-jreleaser-1.14.0: refused: DistributionMap: a predicate of 281908 bytes, over the limit of 200000
-jreleaser-1.15.0: refused: DistributionMap: a predicate of 281908 bytes, over the limit of 200000
-jreleaser-1.16.0: refused: DistributionMap: a predicate of 281908 bytes, over the limit of 200000
-jreleaser-1.17.0: refused: DistributionMap: a predicate of 287780 bytes, over the limit of 200000
-jreleaser-1.18.0: refused: DistributionMap: a predicate of 289856 bytes, over the limit of 200000
-jreleaser-1.19.0: refused: DistributionMap: a predicate of 289856 bytes, over the limit of 200000
-jreleaser-1.20.0: refused: DistributionMap: a predicate of 297102 bytes, over the limit of 200000
-jreleaser-1.21.0: refused: DistributionMap: a predicate of 297102 bytes, over the limit of 200000
-jreleaser-1.22.0: refused: DistributionMap: a predicate of 297102 bytes, over the limit of 200000
-jreleaser-1.23.0: refused: DistributionMap: a predicate of 297102 bytes, over the limit of 200000
-jreleaser-1.24.0: refused: DistributionMap: a predicate of 297102 bytes, over the limit of 200000
-jreleaser-1.25.0: refused: DistributionMap: a predicate of 297102 bytes, over the limit of 200000
-jreleaser-1.26.0: refused: DistributionMap: a predicate of 308018 bytes, over the limit of 200000
-jreleaser-1.6.0: refused: DistributionMap: a predicate of 254725 bytes, over the limit of 200000
-jreleaser-1.7.0: refused: DistributionMap: a predicate of 254725 bytes, over the limit of 200000
-jreleaser-1.8.0: refused: DistributionMap: a predicate of 255905 bytes, over the limit of 200000
-jreleaser-1.9.0: refused: DistributionMap: a predicate of 255905 bytes, over the limit of 200000
+jreleaser-1.10.0: imported, 226 types, 0 instances
+jreleaser-1.11.0: imported, 232 types, 0 instances
+jreleaser-1.12.0: imported, 235 types, 0 instances
+jreleaser-1.13.0: imported, 238 types, 0 instances
+jreleaser-1.13.1: imported, 238 types, 0 instances
+jreleaser-1.14.0: imported, 238 types, 0 instances
+jreleaser-1.15.0: imported, 238 types, 0 instances
+jreleaser-1.16.0: imported, 246 types, 0 instances
+jreleaser-1.17.0: imported, 248 types, 0 instances
+jreleaser-1.18.0: imported, 258 types, 0 instances
+jreleaser-1.19.0: imported, 258 types, 0 instances
+jreleaser-1.20.0: imported, 267 types, 0 instances
+jreleaser-1.21.0: imported, 269 types, 0 instances
+jreleaser-1.22.0: imported, 271 types, 0 instances
+jreleaser-1.23.0: imported, 271 types, 0 instances
+jreleaser-1.24.0: imported, 272 types, 0 instances
+jreleaser-1.25.0: imported, 272 types, 0 instances
+jreleaser-1.26.0: imported, 273 types, 0 instances
+jreleaser-1.6.0: imported, 223 types, 0 instances
+jreleaser-1.7.0: imported, 226 types, 0 instances
+jreleaser-1.8.0: imported, 226 types, 0 instances
+jreleaser-1.9.0: imported, 226 types, 0 instances
 jsbeautifyrc-nested: refused: a remote $ref (jsbeautifyrc#/definitions/CHJProperties)
 jsbeautifyrc: imported, 10 types, 0 instances
 jsconfig: imported, 20 types, 10 instances
@@ -526,21 +525,21 @@ jshintrc: imported, 1 types, 2 instances
 jsinspectrc: imported, 2 types, 1 instances
 json-api-1.0: refused: data: pattern "^(?!relationships$|links$)\\w[-\\w_]*$" uses lookaround
 json-patch: imported, 2 types, 2 instances
-jsone: refused: jsone-value: a recursive $ref (#)
-jsonld: refused: Graph__graph: a recursive $ref (#/definitions/common)
+jsone: imported, 4 types, 2 instances
+jsonld: imported, 4 types, 5 instances
 jsontron-0.1: imported, 3 types, 11 instances
-kestra-0.18.0: refused: io.kestra.core.models.conditions.Condition: a recursive $ref (#/definitions/io.kestra.plugin.core.condition.MultipleCondition)
-kestra-0.18.1: refused: io.kestra.core.models.conditions.Condition: a recursive $ref (#/definitions/io.kestra.plugin.core.condition.MultipleCondition)
-kestra-0.18.2: refused: io.kestra.core.models.conditions.Condition: a recursive $ref (#/definitions/io.kestra.plugin.core.condition.MultipleCondition)
-kestra-0.18.3: refused: io.kestra.core.models.conditions.Condition: a recursive $ref (#/definitions/io.kestra.plugin.core.condition.MultipleCondition)
-kestra-0.19.0: refused: io.kestra.core.models.conditions.Condition: a recursive $ref (#/definitions/io.kestra.plugin.core.condition.MultipleCondition)
+kestra-0.18.0: imported, 714 types, 0 instances
+kestra-0.18.1: imported, 714 types, 0 instances
+kestra-0.18.2: imported, 714 types, 0 instances
+kestra-0.18.3: imported, 714 types, 0 instances
+kestra-0.19.0: imported, 740 types, 0 instances
 kind-cluster: imported, 11 types, 0 instances
 knowledge-unit: imported, 10 types, 2 instances
 kode-ci-build-1.0.0: imported, 21 types, 0 instances
 kong_json_schema: imported, 47 types, 0 instances
 ksp-avc: refused: a remote $ref (https://raw.githubusercontent.com/linuxgurugamer/KSPAddonVersionChecker/master/KSP-AVC.schema.json)
 ksp-ckan: refused: a remote $ref (https://raw.githubusercontent.com/KSP-CKAN/CKAN/master/CKAN.schema)
-kubernetes-definitions: refused: io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.CustomResourceDefinition: a recursive $ref (#/definitions/io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.JSONSchemaProps)
+kubernetes-definitions: imported, 601 types, 0 instances
 kustomization: imported, 32 types, 14 instances
 kya: imported, 47 types, 0 instances
 label-commenter-config: imported, 6 types, 4 instances
@@ -559,11 +558,11 @@ linkinator-config: imported, 2 types, 2 instances
 lintstagedrc.schema: imported, 8 types, 0 instances
 linutil-tab-data: imported, 6 types, 2 instances
 linutil-tabs: imported, 1 types, 2 instances
-liquibase-3.2: refused: preConditions[]: a recursive $ref (#/definitions/preConditions)
-liquibase: refused: preConditions[]: a recursive $ref (#/definitions/preConditions)
+liquibase-3.2: imported, 68 types, 1 instances
+liquibase: imported, 68 types, 58 instances
 litertlm_manifest: imported, 15 types, 14 instances
 local.settings: imported, 4 types, 0 instances
-loki: refused: Loki: a recursive $ref (#/definitions/ruler/properties/remote_write)
+loki: imported, 164 types, 0 instances
 loobin-1.0: imported, 5 types, 1 instances
 lsd-colors: imported, 10 types, 0 instances
 lsd-config: imported, 7 types, 0 instances
@@ -584,19 +583,19 @@ lsdlschema: refused: a remote $ref (lsdlschema-4.1.json)
 luaurc: refused: Luaurc_aliases: pattern "^(?!\\.{1,2}$)(?!.*\\/)[a-zA-Z0-9\\-\\._]+$" uses lookaround
 lychee: imported, 6 types, 0 instances
 madge: imported, 5 types, 12 instances
-maestro-flow: refused: selector: a recursive $ref (#/$defs/selectorObject)
+maestro-flow: imported, 46 types, 0 instances
 mail-servers-config: imported, 5 types, 12 instances
-mapehr: refused: rules: a recursive $ref (#/definitions/element)
+mapehr: imported, 27 types, 0 instances
 markdown-link-check: imported, 4 types, 1 instances
 markdownlint: refused: a remote $ref (https://raw.githubusercontent.com/DavidAnson/markdownlint/main/schema/markdownlint-config-schema.json)
 maturin: imported, 18 types, 0 instances
 mboats-config-0.1: imported, 17 types, 1 instances
 mboats-config-0.2: imported, 15 types, 1 instances
 mdxlintrc: refused: a remote $ref (remarkrc.json#/properties/plugins)
-metaschema-draft-07-unofficial-strict: refused: condition-entity: a recursive $ref (#/definitions/condition-entity)
-metricshub-connector: refused: MetricshubConnector_monitors: a predicate of 11418331 bytes, over the limit of 200000
+metaschema-draft-07-unofficial-strict: imported, 50 types, 0 instances
+metricshub-connector: imported, 13 types, 0 instances
 metricshub: imported, 57 types, 0 instances
-micro-syntax: refused: string-or-region: a recursive $ref (#/definitions/rules)
+micro-syntax: imported, 4 types, 0 instances
 micro: imported, 4 types, 1 instances
 mimetypes: imported, 1 types, 1 instances
 minecraft-advancement: refused: a remote $ref (base.json#/definitions/path)
@@ -606,12 +605,12 @@ minecraft-custom-main-menu-mod: imported, 16 types, 2 instances
 minecraft-damage-type: imported, 4 types, 1 instances
 minecraft-dimension-type: imported, 2 types, 1 instances
 minecraft-dimension: imported, 4 types, 1 instances
-minecraft-item-modifier: refused: numberProvider: a recursive $ref (#/definitions/numberProvider)
+minecraft-item-modifier: imported, 3 types, 1 instances
 minecraft-lang: imported, 1 types, 1 instances
-minecraft-loot-table: refused: numberProvider: a recursive $ref (#/definitions/numberProvider)
+minecraft-loot-table: imported, 14 types, 1 instances
 minecraft-pack-mcmeta: refused: a remote $ref (partial-fusion-pack-metadata.json#/definitions/fusion-properties)
 minecraft-particle: imported, 1 types, 1 instances
-minecraft-predicate: refused: numberProvider: a recursive $ref (#/definitions/numberProvider)
+minecraft-predicate: imported, 26 types, 1 instances
 minecraft-recipe: imported, 9 types, 1 instances
 minecraft-tag: imported, 1 types, 1 instances
 minecraft-template-pool: imported, 7 types, 1 instances
@@ -634,15 +633,15 @@ mtaext: refused: a remote $ref (mtad.json#/properties/parameters)
 mycode: imported, 3 types, 1 instances
 neoload: refused: a remote $ref (https://raw.githubusercontent.com/Neotys-Labs/neoload-cli/master/resources/as-code.latest.schema.json)
 nest-cli: imported, 12 types, 4 instances
-netlify: refused: collectionItems: a recursive $ref (#/definitions/fields)
+netlify: imported, 11 types, 1 instances
 nightwatch: imported, 6 types, 6 instances
 ninjs-1.0: refused: IPTC ninjs - News in JSON - version 1.0 (approved on 23 October 2013): a remote $ref (http://www.iptc.org/std/ninjs/ninjs-schema_1.0.json#)
 ninjs-1.1: refused: IPTC ninjs - News in JSON - version 1.1 (approved, 2014-03-12) / document revision of 2017-09-05: syntax error corrected: a remote $ref (http://www.iptc.org/std/ninjs/ninjs-schema_1.1.json#)
 ninjs-1.2: refused: IPTC ninjs - News in JSON - version 1.2 (approved, 2019-10-16): a remote $ref (http://www.iptc.org/std/ninjs/ninjs-schema_1.2.json#)
 ninjs-1.3: refused: IPTC ninjs - News in JSON - 1.3 (approved, 13 May 2020): a remote $ref (http://www.iptc.org/std/ninjs/ninjs-schema_1.3.json#)
-ninjs-1.4: refused: IPTC ninjs - News in JSON - version 1.4 (approved, 18 May 2022): a recursive $ref (#)
-ninjs-2.0: refused: IPTC ninjs - News in JSON - version 2.0 (approved at IPTC Standards Committee October 2021): a recursive $ref (#)
-nodehawkrc: refused: NodehawkConfigurationSchemaDisplay_onBeforeStart: an embedded resource ($id "#/properties/display/properties/onBeforeStart"): references would resolve against it
+ninjs-1.4: imported, 1 types, 9 instances
+ninjs-2.0: imported, 1 types, 11 instances
+nodehawkrc: refused: NodehawkConfigurationSchema_paths: an embedded resource ($id "#/properties/paths"): references would resolve against it
 nodemon: imported, 4 types, 2 instances
 now: imported, 6 types, 1 instances
 npm-badges: imported, 3 types, 1 instances
@@ -653,7 +652,7 @@ nuejs-site: imported, 1 types, 0 instances
 nuget-project-3.3.0: imported, 4 types, 0 instances
 nuget-project: imported, 4 types, 1 instances
 nycrc: imported, 1 types, 1 instances
-ocelot: refused: JSONSchemaForOcelotJsonRoutesFileCacheOptions_TtlSeconds: an embedded resource ($id "#/properties/Routes/items/properties/FileCacheOptions/properties/TtlSeconds"): references would resolve against it
+ocelot: refused: JSONSchemaForOcelotJsonRoutes_DownstreamPathTemplate: an embedded resource ($id "#/properties/Routes/items/properties/DownstreamPathTemplate"): references would resolve against it
 odgs-data-rules: imported, 4 types, 2 instances
 odgs-ontology-graph: imported, 3 types, 2 instances
 odgs-standard-metrics: imported, 2 types, 2 instances
@@ -675,8 +674,8 @@ openutau-character: imported, 4 types, 0 instances
 openutau-ustx: imported, 16 types, 0 instances
 openweather.current: imported, 7 types, 1 instances
 openweather.roadrisk: imported, 4 types, 2 instances
-opspec-io-0.1.7: refused: inputs: a recursive $ref (#/properties/inputs/patternProperties/%5B-_.a-zA-Z0-9%5D%2B/properties/object/properties/constraints/properties/properties/additionalProperties)
-package: refused: packageExportsEntryObject: a recursive $ref (#/definitions/packageExportsEntryOrFallback)
+opspec-io-0.1.7: imported, 4 types, 0 instances
+package: refused: JSON schema for NPM package.json files: a recursive $ref (#/definitions/packageExportsEntryOrFallback)
 package.manifest-7.0.0: imported, 10 types, 0 instances
 package.manifest-8.0.0: imported, 13 types, 0 instances
 package.manifest: imported, 14 types, 5 instances
@@ -710,8 +709,8 @@ partial-inwards: refused: layerEntry: pattern "^[A-Za-z_\\u0080-\\uffff][A-Za-z0
 partial-mypy: imported, 1 types, 0 instances
 partial-pdm-dockerize: imported, 3 types, 0 instances
 partial-pdm: refused: a remote $ref (partial-pdm-dockerize.json)
-partial-pixi: refused: BuildBackend_additional_dependencies{}: a recursive $ref (#/$defs/MatchspecTable)
-partial-poe: refused: groups_map: a recursive $ref (#/definitions/task_def)
+partial-pixi: imported, 48 types, 1 instances
+partial-poe: imported, 53 types, 0 instances
 partial-poetry: refused: poetry-author-pattern: pattern "^(?:[- .,\\w\\d'\226\128\153\"():&]+)(?: <(?:.+?)>)?" is not ASCII
 partial-pyright: imported, 97 types, 0 instances
 partial-pytest: imported, 9 types, 0 instances
@@ -736,7 +735,7 @@ plagiarize-me: imported, 39 types, 1 instances
 plagiarize: imported, 2 types, 1 instances
 pm2-ecosystem: imported, 4 types, 2 instances
 pnpm-workspace: imported, 29 types, 0 instances
-pocketmine-plugin: refused: pocketmine-plugin: a recursive $ref (#/definitions/PermissionChildren)
+pocketmine-plugin: imported, 4 types, 1 instances
 podman-desktop-extension-1.27: refused: a remote $ref (https://json.schemastore.org/package.json)
 podman-desktop-extension: refused: a remote $ref (https://json.schemastore.org/package.json)
 poetry: refused: a remote $ref (partial-poetry.json)
@@ -763,11 +762,11 @@ project-1.0.0-rc1: imported, 8 types, 0 instances
 project-1.0.0-rc2: imported, 17 types, 0 instances
 project: imported, 19 types, 4 instances
 projektor: imported, 6 types, 0 instances
-prometheus-alertmanager: refused: prometheus-alertmanager: a recursive $ref (#/definitions/route)
+prometheus-alertmanager: imported, 51 types, 0 instances
 prometheus: imported, 60 types, 1 instances
 prometheus.rules: imported, 11 types, 1 instances
 prometheus.rules.test: imported, 10 types, 0 instances
-promtail: refused: Promtail: a recursive $ref (#/definitions/pipeline_stages)
+promtail: imported, 84 types, 0 instances
 proxies: refused: requestOverrides-schema: pattern "^backend\\.request\\.querystring\\.(?!<ParameterName>).+$" uses lookaround
 pterodactyl: imported, 2 types, 1 instances
 publiccode: imported, 25 types, 14 instances
@@ -775,14 +774,14 @@ pubspec: imported, 12 types, 0 instances
 pull-request-labeler-4: imported, 1 types, 3 instances
 pull-request-labeler-5: imported, 6 types, 0 instances
 pull-request-labeler: imported, 6 types, 0 instances
-pulumi: refused: configItemsType: a recursive $ref (#/$defs/configItemsType)
-putout: refused: Putout_match: a predicate over 200000 bytes
+pulumi: imported, 10 types, 0 instances
+putout: imported, 3 types, 2 instances
 pylock: imported, 15 types, 0 instances
 pyproject: refused: JSON schema for Python project metadata and configuration: a remote $ref (partial-black.json)
-pyrseas-0.8: refused: JSON schema for Pyrseas yaml files: a predicate of 207847 bytes, over the limit of 200000
+pyrseas-0.8: imported, 5 types, 0 instances
 qfconfig: imported, 4 types, 1 instances
 qodana-1.0: imported, 23 types, 1 instances
-quikrun: refused: commandValue: a recursive $ref (#/definitions/commandValue)
+quikrun: imported, 6 types, 0 instances
 qwen-code-settings: imported, 31 types, 1 instances
 radiohound-v0: imported, 3 types, 2 instances
 rc3-auth-0.0.3: imported, 2 types, 1 instances
@@ -795,24 +794,24 @@ rehyperc: refused: a remote $ref (remarkrc.json#/properties/plugins)
 remarkrc: imported, 11 types, 18 instances
 renovate-39: imported, 39 types, 0 instances
 renovate-40: imported, 40 types, 0 instances
-renovate-41: refused: JSON schema for Renovate 41.173.1 config files (https://renovatebot.com/): a recursive $ref (#)
-renovate-42: refused: JSON schema for Renovate 42.95.1 config files (https://renovatebot.com/): a recursive $ref (#)
-renovate-43: refused: Root: a recursive $ref (#/definitions/ansible)
-renovate-global-schema-41: refused: JSON schema for Renovate 41.173.1 global self-hosting configuration (https://renovatebot.com/): a recursive $ref (#)
-renovate-global-schema-42: refused: JSON schema for Renovate 42.95.1 global self-hosting configuration (https://renovatebot.com/): a recursive $ref (#)
-renovate-global-schema-43: refused: Root: a recursive $ref (#/definitions/ansible)
+renovate-41: imported, 1 types, 0 instances
+renovate-42: imported, 1 types, 0 instances
+renovate-43: imported, 379 types, 0 instances
+renovate-global-schema-41: imported, 1 types, 0 instances
+renovate-global-schema-42: imported, 1 types, 0 instances
+renovate-global-schema-43: imported, 486 types, 0 instances
 renovate-global-schema: refused: a remote $ref (https://docs.renovatebot.com/renovate-global-schema.json)
-renovate-inherited-schema-42: refused: JSON schema for Renovate 42.95.1 config files (with Inherit Config options) (https://renovatebot.com/): a recursive $ref (#)
-renovate-inherited-schema-43: refused: Root: a recursive $ref (#/definitions/ansible)
+renovate-inherited-schema-42: imported, 1 types, 0 instances
+renovate-inherited-schema-43: imported, 390 types, 0 instances
 renovate-inherited-schema: refused: a remote $ref (https://docs.renovatebot.com/renovate-inherited-schema.json)
 renovate: refused: a remote $ref (https://docs.renovatebot.com/renovate-schema.json)
 replacement-transformer: imported, 8 types, 0 instances
 replit: imported, 1 types, 1 instances
-resjson: refused: resource{}: a recursive $ref (#/definitions/resource)
+resjson: imported, 2 types, 1 instances
 revola: imported, 14 types, 4 instances
 roomodes: imported, 3 types, 1 instances
-rudder-techniques: refused: blockCall: a recursive $ref (#/$defs/item)
-ruff: refused: Options_lint: a predicate over 200000 bytes
+rudder-techniques: imported, 11 types, 0 instances
+ruff: imported, 65 types, 0 instances
 rumdl: imported, 13 types, 0 instances
 rust-project: imported, 5 types, 1 instances
 rust-toolchain: imported, 1 types, 6 instances
@@ -847,7 +846,7 @@ sarif-external-property-file: refused: a remote $ref (sarif-2.1.0-rtm.5.json#/de
 sarif: imported, 62 types, 2 instances
 scarb: imported, 34 types, 0 instances
 schema-catalog: imported, 3 types, 2 instances
-schema-draft-v4: refused: Root: a recursive $ref (#)
+schema-draft-v4: imported, 6 types, 0 instances
 schema-org-action: refused: a remote $ref (schema-org-thing.json)
 schema-org-contact-point: refused: a remote $ref (schema-org-thing.json)
 schema-org-place: refused: a remote $ref (schema-org-thing.json)
@@ -875,23 +874,23 @@ solidaritySchema: imported, 11 types, 1 instances
 solution-filter: imported, 2 types, 1 instances
 sourcehut-build-0.41.2: imported, 4 types, 0 instances
 sourcehut-build-0.65.0: imported, 4 types, 1 instances
-sourcemap-v3: refused: sectionMap: a recursive $ref (#)
+sourcemap-v3: imported, 2 types, 4 instances
 sourcery_yaml_schema: imported, 14 types, 0 instances
 specif-1.0: imported, 25 types, 1 instances
 specif-1.1: imported, 34 types, 2 instances
-specmatic: refused: ContractConfig_provides: a recursive $ref (#/definitions/ConfigValueScalarOrComposite)
+specmatic: imported, 159 types, 64 instances
 sponge-mixins: imported, 4 types, 2 instances
 sprite: imported, 5 types, 1 instances
 sqlc-2.0: imported, 18 types, 0 instances
 stackblitzrc: imported, 1 types, 1 instances
 stale: imported, 2 types, 6 instances
-starlake: refused: StarlakeV1Base: a recursive $ref (#/definitions/RestAPIEndpointV1)
+starlake: imported, 80 types, 22 instances
 staticwebapp.config: imported, 27 types, 6 instances
 streamlit-config: imported, 17 types, 0 instances
 stylelintrc: imported, 51 types, 5 instances
 stylintrc: imported, 2 types, 0 instances
 stylua: imported, 5 types, 0 instances
-sublime-syntax: refused: push: a recursive $ref (#/definitions/patterns)
+sublime-syntax: imported, 10 types, 0 instances
 swa-cli.config: imported, 2 types, 1 instances
 taplo: imported, 5 types, 0 instances
 task: imported, 15 types, 1 instances
@@ -911,11 +910,11 @@ ti8m-cdk-concrete-environments: refused: Concrete Environments Lists: a remote $
 ti8m-cdk-environment-definition: imported, 34 types, 0 instances
 tizen_workspace: imported, 1 types, 0 instances
 tldr: imported, 2 types, 1 instances
-tmlanguage: refused: pattern: a recursive $ref (#/definitions/captures)
+tmlanguage: imported, 5 types, 1 instances
 tmuxinator: imported, 1 types, 0 instances
 tombi: imported, 119 types, 0 instances
 toolinfo.1.1.0: refused: a remote $ref (https://tools.wmflabs.org/spdx/schema/licenses.json#/definitions/license)
-tox: refused: subs: a recursive $ref (#/definitions/replace_env)
+tox: imported, 18 types, 0 instances
 traefik-v2-file-provider: imported, 68 types, 1 instances
 traefik-v2: imported, 75 types, 1 instances
 traefik-v3-file-provider: imported, 70 types, 1 instances
@@ -945,11 +944,11 @@ up: imported, 19 types, 0 instances
 uplugin: imported, 11 types, 2 instances
 uproject: imported, 7 types, 3 instances
 urai-ecma: imported, 1 types, 3 instances
-utam-page-object-1.5.0: refused: pageObject: a recursive $ref (#/definitions/arg)
-utam-page-object-2.0.3: refused: pageObject: a recursive $ref (#/definitions/arg)
-utam-page-object-2.2.0: refused: pageObject: a recursive $ref (#/definitions/arg)
-utam-page-object: refused: pageObject: a recursive $ref (#/definitions/arg)
-utcm-monitor: refused: ConfigurationMonitorSchemaBaseline_resources[]: a predicate of 1495122 bytes, over the limit of 200000
+utam-page-object-1.5.0: imported, 25 types, 0 instances
+utam-page-object-2.0.3: imported, 26 types, 0 instances
+utam-page-object-2.2.0: imported, 26 types, 0 instances
+utam-page-object: imported, 26 types, 4 instances
+utcm-monitor: imported, 663 types, 1 instances
 uv: imported, 72 types, 0 instances
 uxp-manifest-5: imported, 12 types, 2 instances
 value-add-transformer: imported, 4 types, 0 instances
@@ -959,7 +958,7 @@ vespertide-migration: imported, 39 types, 1 instances
 vespertide-model: imported, 25 types, 1 instances
 vespertide: imported, 4 types, 1 instances
 vhwdebugger-binding-schema: imported, 6 types, 0 instances
-vim-addon-info: refused: otherRepository: a recursive $ref (#)
+vim-addon-info: imported, 5 types, 2 instances
 vs-2017.3.host: refused: a remote $ref (ide.host.json)
 vs-nesting: imported, 23 types, 1 instances
 vsconfig: imported, 1 types, 1 instances
@@ -976,17 +975,17 @@ web-manifest-app-info: refused: a remote $ref (web-manifest.json#/definitions/ma
 web-manifest-combined: refused: a remote $ref (web-manifest.json)
 web-manifest-share-target: imported, 6 types, 9 instances
 web-manifest: imported, 11 types, 7 instances
-web-types: refused: required-context: a recursive $ref (#/definitions/required-context)
+web-types: refused: base-contribution: a recursive $ref (#/definitions/required-context)
 webextension: imported, 13 types, 61 instances
 webjob-publish-settings: imported, 3 types, 3 instances
 webjobs-list: imported, 2 types, 2 instances
-winget-pkgs-installer-1.0.0: refused: FileExtensions: pattern "^[^\\\\/:\\*\\?\"<>\\|\\x01-\\x1f]+$" does not compile
+winget-pkgs-installer-1.0.0: refused: PackageIdentifier: pattern "^[^\\.\\s\\\\/:\\*\\?\"<>\\|\\x01-\\x1f]{1,32}(\\.[^\\.\\s\\\\/:\\*\\?\"<>\\|\\x01-\\x1f]{1,32}){1,3}$" does not compile
 winget-pkgs-locale-1.0.0: refused: WingetPkgsLocale100_PackageIdentifier: pattern "^[^\\.\\s\\\\/:\\*\\?\"<>\\|\\x01-\\x1f]{1,32}(\\.[^\\.\\s\\\\/:\\*\\?\"<>\\|\\x01-\\x1f]{1,32}){1,3}$" does not compile
 winget-pkgs-singleton-0.1: imported, 3 types, 0 instances
-winget-pkgs-singleton-1.0.0: refused: FileExtensions: pattern "^[^\\\\/:\\*\\?\"<>\\|\\x01-\\x1f]+$" does not compile
+winget-pkgs-singleton-1.0.0: refused: PackageIdentifier: pattern "^[^\\.\\s\\\\/:\\*\\?\"<>\\|\\x01-\\x1f]{1,32}(\\.[^\\.\\s\\\\/:\\*\\?\"<>\\|\\x01-\\x1f]{1,32}){1,3}$" does not compile
 winutil-applications: imported, 2 types, 2 instances
 winutil-presets: imported, 1 types, 2 instances
-workflows: refused: stepArray[]: a recursive $ref (#/definitions/step)
+workflows: imported, 25 types, 0 instances
 xs-app: imported, 23 types, 1 instances
 xunit-2.2: refused: a remote $ref (https://xunit.net/schema/v2.2/xunit.runner.schema.json)
 xunit-2.3: refused: a remote $ref (https://xunit.net/schema/v2.3/xunit.runner.schema.json)
@@ -999,5 +998,5 @@ zarf: imported, 26 types, 0 instances
 zeropress-build-pages-config-1.0: refused: absoluteWebUrl: pattern "^[Hh][Tt][Tt][Pp][Ss]?://(?!.*%(?![0-9A-Fa-f]{2}))(?!.*[\\s\\\\\\p{Cc}])(?![^?#]*\\/\\.{1,2}(?:\\/|[?#]|$))(?:\\[[0-9A-Fa-f:.]+\\]|[^/?#:@]+)(?::[0-9]+)?(?:[/?#].*)?$" uses lookaround
 zeropress-preview-data-0.7: refused: slugSegment: pattern "^(?=.*[\\p{L}\\p{Nd}])(?!\\.)(?!.*\\.\\.)(?!.*\\.$)[\\p{L}\\p{M}\\p{Nd}._-]+$" uses lookaround
 zeropress-theme-runtime-0.7: refused: httpUrl: pattern "^(?!.*%(?![0-9A-Fa-f]{2}))https?:\\/\\/(?![^\\/?#]*@)[^\\s\\\\]+$" uses lookaround
-zeropress-wxr-import-base-0.7: refused: a remote $ref (https://www.schemastore.org/zeropress-preview-data-0.7.json#/$defs/previewMeta)
-zuul: refused: NodesetModel_alternatives[]: a recursive $ref (#/definitions/NodesetModel)
+zeropress-wxr-import-base-0.7: refused: site: a remote $ref (https://www.schemastore.org/zeropress-preview-data-0.7.json#/$defs/site/properties/title)
+zuul: imported, 21 types, 0 instances
