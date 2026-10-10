@@ -32,7 +32,7 @@ let jsonschema schema instance =
   | j -> Error (J.to_string j)
 
 let has e sub = let n = String.length sub in let rec go k = k + n <= String.length e && (String.sub e k n = sub || go (k + 1)) in go 0
-let documented e = has e " has no property " || has e " is a record: " || has e " is beyond int64"
+let documented e = has e " has no property " || has e " is a record: " || has e " is beyond int64" || has e " given twice"
 
 let instances sub stem =
   let d = Filename.concat (Filename.concat dir sub) stem in

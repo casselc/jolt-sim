@@ -209,6 +209,10 @@ tests allow beyond the schema's own):
   with no `type` also admits non-objects; real schemas almost always mean
   an object, so the record requires one.
 - **Integers fit int64.** A larger integer is refused.
+- **A key appears once per object.** JSON leaves duplicate names
+  undefined and parsers disagree on which one wins (Python's keeps the
+  last), which is the material of parser-differential attacks; the codec
+  refuses them.
 
 **Null.** `[T, "null"]` and `anyOf`/`oneOf` of `T` and `null` are
 `option(T)`; whether `null` itself satisfies the schema (a `const` or

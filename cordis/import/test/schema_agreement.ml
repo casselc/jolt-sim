@@ -125,8 +125,13 @@ let keyword_swarm = ref (List.init 30 Fun.id)
 let instance_swarm = ref (List.init 7 Fun.id)
 let perturb_swarm = ref (List.init 7 Fun.id)
 
+(* Measured on this suite (seven mutants, five seeds, 1,000 cases, the
+   example database off): swarm caught as often as without it, so it is off
+   unless SWARM=1. Targeting typed locations and valid instances (on unless
+   TARGET=0) also caught about as often, but found one input shape, a key
+   given twice, that no other mode reached. *)
 let new_swarm d =
-  if Sys.getenv_opt "SWARM" <> Some "0" then begin
+  if Sys.getenv_opt "SWARM" = Some "1" then begin
     keyword_swarm := Typed_gen.swarm d 30;
     instance_swarm := Typed_gen.swarm d 7;
     perturb_swarm := Typed_gen.swarm d 7
@@ -161,11 +166,11 @@ let perturb d (j : J.t) : J.t =
   go j
 
 (* the refusals RFC 0003 documents: a property a closed record does not
-   name, a non-object where an untyped schema has properties, and an
-   integer beyond int64 *)
+   name, a non-object where an untyped schema has properties, an integer
+   beyond int64, and a key given twice in one object *)
 let refused_as_closed e =
   let has sub = let n = String.length sub in let rec go k = k + n <= String.length e && (String.sub e k n = sub || go (k + 1)) in go 0 in
-  has " has no property " || has " is a record: " || has " is beyond int64"
+  has " has no property " || has " is a record: " || has " is beyond int64" || has " given twice"
 
 let test_corpus () =
   let docs = List.map (fun p -> (p, J.from_file p)) corpus in

@@ -25,7 +25,7 @@ module C = Cordis_cel
 let failed = ref []
 let fail fmt = Printf.ksprintf (fun m -> failed := m :: !failed) fmt
 let has e sub = let n = String.length sub in let rec go k = k + n <= String.length e && (String.sub e k n = sub || go (k + 1)) in go 0
-let documented e = has e " has no property " || has e " is a record: " || has e " is beyond int64"
+let documented e = has e " has no property " || has e " is a record: " || has e " is beyond int64" || has e " given twice"
 let env = C.Checker.declare_ident (C.Checker.empty ()) "x" C.Checker.Dyn
 
 let groups dir =
