@@ -7,13 +7,14 @@ scaffolds.md, "The JSON Schema importer", "Testing").
 
 Each input line is {"schema": <schema>, "instance": <instance>}; each output
 line is {"valid": bool} or {"error": "..."} when the schema itself is not
-valid 2020-12. Formats are annotations, as the draft's default says.
-Validators are cached by schema text.
+valid. The draft is the schema's $schema (2020-12 without one). Formats
+are annotations, as the drafts' default says. Validators are cached by
+schema text.
 """
 import json
 import sys
 
-from jsonschema import Draft202012Validator
+from jsonschema import Draft202012Validator, validators
 
 _cache = {}
 
@@ -22,8 +23,9 @@ def validator(schema):
     key = json.dumps(schema, sort_keys=True)
     v = _cache.get(key)
     if v is None:
-        Draft202012Validator.check_schema(schema)
-        v = _cache[key] = Draft202012Validator(schema)
+        cls = validators.validator_for(schema, default=Draft202012Validator)
+        cls.check_schema(schema)
+        v = _cache[key] = cls(schema)
     return v
 
 

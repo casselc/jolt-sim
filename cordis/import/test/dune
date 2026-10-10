@@ -39,7 +39,7 @@
  (libraries cordis_import cordis_graph cordis_cel yojson))
 
 (rule
- (deps (glob_files json-schema-test-suite/*.json))
+ (deps (source_tree json-schema-test-suite))
  (action
   (with-stdout-to schema_suite.out
    (run %{exe:schema_suite.exe} json-schema-test-suite))))
@@ -77,3 +77,19 @@
 (rule (alias runtest) (action (diff golden/tree.report.txt tree.report.out)))
 (rule (with-stdout-to tree.names.out (run %{exe:../bin/cimport.exe} jsonschema %{dep:schemas/tree.schema.json} --print names)))
 (rule (alias runtest) (action (diff golden/tree.names.txt tree.names.out)))
+
+; The importer over SchemaStore, at a pinned commit (fetch_schemastore.sh
+; DIR fetches it, about 100 MB). Needs python3 with jsonschema:
+;   SCHEMASTORE=DIR dune build @import/test/schemastore
+(executable
+ (name schemastore)
+ (modules schemastore)
+ (libraries cordis_import cordis_graph cordis_cel unix yojson))
+
+(rule
+ (alias schemastore)
+ (deps jsvalid.py golden/schemastore.txt)
+ (action
+  (progn
+   (with-stdout-to schemastore.out (run %{exe:schemastore.exe} %{env:SCHEMASTORE=schemastore} jsvalid.py))
+   (diff golden/schemastore.txt schemastore.out))))

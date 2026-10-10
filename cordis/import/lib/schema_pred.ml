@@ -159,6 +159,11 @@ let fresh c prefix =
   c.fresh <- c.fresh + 1;
   Printf.sprintf "%s%d" prefix c.fresh
 
+(* The largest predicate compiled: references are inlined, so a schema
+   that shares definitions widely can compile to text exponential in its
+   size; past this it is refused rather than evaluated. *)
+let max_size = ref 200_000
+
 let rec pred (c : ctx) (s : J.t) (x : string) : string =
   match s with
   | `Bool true -> "true"
@@ -257,7 +262,9 @@ let rec pred (c : ctx) (s : J.t) (x : string) : string =
                   [ Printf.sprintf "(%s ? %s : %s)" (pred c sub x) t e ]
               | "$ref", `String r ->
                   if List.mem r c.refs then unsupported "a recursive $ref (%s)" r;
-                  [ pred { c with refs = r :: c.refs } (resolve c.root r) x ]
+                  let p = pred { c with refs = r :: c.refs } (resolve c.root r) x in
+                  if String.length p > !max_size then unsupported "a predicate over %d bytes" !max_size;
+                  [ p ]
               | _ -> [] (* an unknown keyword: ignored, as JSON Schema says *))
           kv
       in
@@ -267,7 +274,9 @@ let rec pred (c : ctx) (s : J.t) (x : string) : string =
 (* The predicate for [schema] (a subschema of [root]) at CEL expression [x]. *)
 let compile ?(root : J.t option) (schema : J.t) (x : string) =
   let c = { root = Option.value root ~default:schema; fresh = 0; refs = [] } in
-  pred c schema x
+  let src = pred c schema x in
+  if String.length src > !max_size then unsupported "a predicate of %d bytes, over the limit of %d" (String.length src) !max_size;
+  src
 
 (* ---- plain JSON as a CEL value ------------------------------------------------------------------------ *)
 

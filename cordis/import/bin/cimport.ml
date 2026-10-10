@@ -46,6 +46,7 @@ let () =
       match Yojson.Safe.from_string (read path) with
       | exception Yojson.Json_error m -> die "%s: not JSON: %s" path m
       | doc -> (
+          let doc = match Schema_draft.normalize doc with Ok d -> d | Error m -> die "%s: %s" path m in
           let stem = Filename.remove_extension (Filename.remove_extension (Filename.basename path)) in
           match Jsonschema.import ~name:stem doc with
           | exception Jsonschema.Refused m -> die "%s: %s" path m

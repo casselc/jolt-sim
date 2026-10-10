@@ -136,9 +136,15 @@ fields, a second member of one oneof, an unknown enum name or number.
 
 ## The JSON Schema importer
 
-Input: a JSON Schema document, draft 2020-12 (draft-07's `definitions`
-and `dependencies` are read as `$defs`, `dependentRequired` and
-`dependentSchemas`). The root and every `$defs` entry become types; the
+Input: a JSON Schema document, draft 2020-12, or draft 4, 6, 7 or
+2019-09 read as the 2020-12 keywords that mean the same
+(`cordis/import/lib/schema_draft.ml`, walking schema positions only, so
+`enum`, `const`, `default` and `examples` values are never rewritten):
+`items` as an array is `prefixItems` and `additionalItems` is `items`;
+`dependencies` is `dependentRequired` and `dependentSchemas`; a `$ref`'s
+siblings are dropped before 2019-09, as those drafts say; draft 4's
+boolean `exclusiveMinimum`/`exclusiveMaximum` become numbers and `id` is
+`$id`. Any other `$schema` is refused. The root and every `$defs` entry become types; the
 root is named by `title`, else by the file name. `$ref` resolves within
 the document (`#/$defs/X`, JSON Pointers, `$anchor`). A schema whose
 validation the boundary could not check exactly is **refused, not
@@ -244,14 +250,15 @@ order and absent `option`s as omitted members.
 
 ### Testing
 
-- **The official JSON Schema Test Suite** (`tests/draft2020-12`, vendored
-  in `cordis/import/test/json-schema-test-suite`), twice:
+- **The official JSON Schema Test Suite** (drafts 4, 6, 7, 2019-09 and
+  2020-12, vendored in `cordis/import/test/json-schema-test-suite`; the
+  earlier drafts test the draft reading), each draft twice:
   - the predicate's verdict is the suite's for every test whose schema
-    compiles (971 tests; none disagree);
+    compiles (2020-12: 971 tests; all drafts: 4,155; none disagree);
   - for every test whose schema imports, the types file checks and the
     codec reads the instance exactly when the suite calls it valid, but
-    for the documented refusals above (939 agree, 14 documented
-    refusals, none disagree).
+    for the documented refusals above (2020-12: 939 agree and 14 are
+    documented refusals; all drafts: 4,015 and 70; none disagree).
   The schemas that do not compile or import are listed, by reason, in a
   checked-in golden file.
 - **Agreement with Python's `jsonschema` (Hegel, `schema_agreement.ml`)**:
