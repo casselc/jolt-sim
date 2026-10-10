@@ -121,6 +121,7 @@ let fact (x : E.fact) =
   | E.Stream (n, vs, r) -> `List [ `String "stream"; `String n; `List (List.map value vs); `Int r ]
   | E.Answered (s, e, c) -> `List [ `String "answered"; `String s; `Int e; `Int c ]
   | E.Episode e -> `List [ `String "episode"; `Int e ]
+  | E.Budget (r, st) -> `List [ `String "budget"; `Int r; `Int st ]
 
 let of_fact (j : J.t) : E.fact =
   match j with
@@ -129,6 +130,7 @@ let of_fact (j : J.t) : E.fact =
   | `List [ `String "stream"; `String n; `List vs; r ] -> E.Stream (n, List.map of_value vs, int_ r)
   | `List [ `String "answered"; `String s; e; c ] -> E.Answered (s, int_ e, int_ c)
   | `List [ `String "episode"; e ] -> E.Episode (int_ e)
+  | `List [ `String "budget"; r; st ] -> E.Budget (int_ r, int_ st)
   | j -> bad "not a fact: %s" (J.to_string j)
 
 let record (r : E.record) = J.to_string (`Assoc [ ("v", `Int version); ("seq", `Int r.seq); ("facts", `List (List.map fact r.facts)) ])

@@ -25,6 +25,12 @@
      attempt, so a redelivered or stale receipt, or one from an attempt
      already abandoned, changes nothing (the fiber's awaited key and
      attempt are the dedup; quint/observe.qnt's applyLate);
+   - budgets (quint/budget.qnt): a turn that ends in an intent reserves its
+     kind's worst-case cost in the same record, and does not run while the
+     reservation would take the graph over its budget; a receipt settles
+     at its actual cost, once; an Uncertain intent's reservation is held;
+     an attempt abandoned for another is charged at its worst case
+     (observe.qnt's expire), so a late answer is never under-counted;
    - lost receipts (quint/observe.qnt, quint/lifecycle.qnt): an
      observational intent is attempted again, up to a bound, and then the
      computation fails; an effectful one makes the fiber Uncertain, which
@@ -44,7 +50,7 @@ type cls = Observational | Effectful
 
 type intent = { key : string; kind : string; request : V.t; cls : cls; attempt : int }
 
-type receipt = Done of V.t | Lost
+type receipt = Done of V.t * int  (** the receipt, and what it actually cost *) | Lost
 
 type fiber =
   | Ready
@@ -71,6 +77,7 @@ type fact =
   | Stream of string * V.t list * int
   | Answered of string * int * int  (** scrutinee, episode, computation *)
   | Episode of int
+  | Budget of int * int  (** reserved, settled *)
 
 type record = { seq : int; facts : fact list }
 
@@ -83,7 +90,7 @@ type event =
   | Set_input of string * V.t
   | Durable of int  (** every record up to this sequence number is durable *)
   | Receipt of string * int * receipt  (** key, attempt, what came back *)
-  | Reconciled of string * int * V.t option  (** key, attempt; the receipt, if the intent took effect *)
+  | Reconciled of string * int * (V.t * int) option  (** key, attempt; the receipt and its cost, if the intent took effect *)
 
 type action =
   | Compute of string  (** begin computing a stale asset *)
@@ -106,6 +113,10 @@ type t = {
   durable : int;
   gated : (int * intent) list;  (** intents waiting for their record to be durable *)
   refused : int;  (** appends a full stream refused *)
+  budget : int option;  (** the graph's budget, in cost units; None: unlimited *)
+  worst : string -> int;  (** an intent kind's worst-case cost: policy *)
+  reserved : int;
+  settled : int;
 }
 
 let action_name = function
@@ -128,7 +139,7 @@ let eval_init registry (e : Cordis_cel.Ast.expr option) =
       | { value = V.Error m; _ } -> err "a state initial value: %s" m
       | { value; _ } -> value)
 
-let create ?(classes = fun _ -> Effectful) ?(max_attempts = 3) (checked : Check.checked) graph =
+let create ?(classes = fun _ -> Effectful) ?(max_attempts = 3) ?budget ?(worst = fun _ -> 0) (checked : Check.checked) graph =
   let g = match List.find_opt (fun (g : Check.graph_info) -> g.gname = graph) checked.graphs with Some g -> g | None -> err "no graph %s" graph in
   let cell name = match List.find_opt (fun (c : Check.cell_info) -> c.cname = name) checked.cells with Some c -> c | None -> err "no cell %s" name in
   let cells = List.fold_left (fun m (a : Check.asset_info) -> Smap.add a.aname (cell a.acell) m) Smap.empty g.assets in
@@ -143,7 +154,8 @@ let create ?(classes = fun _ -> Effectful) ?(max_attempts = 3) (checked : Check.
   { g; cells; registry = checked.registry; classes; max_attempts;
     inputs = List.fold_left (fun m (n, _) -> Smap.add n { svalue = None; srev = 0 } m) Smap.empty g.inputs;
     streams = List.fold_left (fun m (n, _) -> Smap.add n ([], 0) m) Smap.empty g.streams;
-    slots; answered = []; episode = 0; seq = 0; durable = 0; gated = []; refused = 0 }
+    slots; answered = []; episode = 0; seq = 0; durable = 0; gated = []; refused = 0;
+    budget; worst; reserved = 0; settled = 0 }
 
 (* ---- reading -------------------------------------------------------------------------------------- *)
 
@@ -178,6 +190,14 @@ let deps t a =
 
 let fiber_busy = function Running _ | Awaiting _ | Uncertain _ -> true | Ready | Failed _ -> false
 
+(* whether reserving [w] more keeps the graph within its budget *)
+let fits t w = match t.budget with None -> true | Some b -> t.settled + t.reserved + w <= b
+
+(* the intent kind the fiber's turn ends in, if it ends in one *)
+let turn_kind t a turn =
+  let c = Smap.find a t.cells in
+  if turn < List.length c.turns - 1 then Some (snd (List.nth c.uses turn)) else None
+
 (* stale: a dependency's revision moved since it was computed, or a
    dependency is itself stale or computing (routes.qnt's verdictStale is
    draftStale or ...): a value is current only if everything beneath it is *)
@@ -208,7 +228,9 @@ let ready t =
         let a = ai.aname in
         let s = Smap.find a t.slots in
         match s.fiber with
-        | Running _ -> [ Turn a ]
+        | Running { turn; _ } -> (
+            (* a turn that ends in an intent runs only if its reservation fits *)
+            match turn_kind t a turn with Some k when not (fits t (t.worst k)) -> [] | _ -> [ Turn a ])
         | Awaiting _ | Uncertain _ | Failed _ -> []
         | Ready ->
             if not (stale t a) then []
@@ -290,7 +312,9 @@ let perform t action =
                 { key = Printf.sprintf "%s/%s#%d.%d" t.g.gname a s.computes turn; kind; request = out; cls = t.classes kind; attempt = 1 }
               in
               let s = { s with fiber = Awaiting { turn; args; receipts; basis; intent } } in
-              let t, r = record (with_slot t a s) [ Slot (a, s) ] in
+              (* the reservation is in the same record as the intent (budget.qnt's reserveAfterCommit) *)
+              let t = { (with_slot t a s) with reserved = t.reserved + t.worst kind } in
+              let t, r = record t [ Slot (a, s); Budget (t.reserved, t.settled) ] in
               ({ t with gated = t.gated @ [ (r.seq, intent) ] }, [ Persist r ])
           | Ok out ->
               let result, updates =
@@ -355,13 +379,15 @@ let awaiting t key attempt =
       | _ -> acc)
     t.slots None
 
-let resume t a (s : slot) v =
+let resume t a (s : slot) v cost =
   match s.fiber with
-  | Awaiting { turn; args; receipts; basis; _ } | Uncertain { turn; args; receipts; basis; _ } ->
+  | Awaiting { turn; args; receipts; basis; intent } | Uncertain { turn; args; receipts; basis; intent } ->
       let c = Smap.find a t.cells in
       let x = fst (List.nth c.uses turn) in
       let s = { s with fiber = Running { turn = turn + 1; args; receipts = receipts @ [ (x, v) ]; basis } } in
-      let t, r = record (with_slot t a s) [ Slot (a, s) ] in
+      (* the reservation settles at the actual cost, once: this fiber awaits the key no longer *)
+      let t = { (with_slot t a s) with reserved = t.reserved - t.worst intent.kind; settled = t.settled + cost } in
+      let t, r = record t [ Slot (a, s); Budget (t.reserved, t.settled) ] in
       (t, [ Persist r ])
   | _ -> (t, [])
 
@@ -382,26 +408,31 @@ let handle t ev =
           in
           (t, [ Persist r ]))
   | Durable seq -> release_durable { t with durable = max t.durable seq }
-  | Receipt (key, n, Done v) -> (match awaiting t key n with Some (a, s) -> resume t a s v | None -> (t, []))
+  | Receipt (key, n, Done (v, cost)) -> (match awaiting t key n with Some (a, s) -> resume t a s v cost | None -> (t, []))
   | Receipt (key, n, Lost) -> (
       match awaiting t key n with
       | Some (a, ({ fiber = Awaiting ({ intent; _ } as w); _ } as s)) -> (
+          (* the abandoned attempt is charged at its worst case: its late answer is never applied *)
+          let wc = t.worst intent.kind in
+          let charged = { t with reserved = t.reserved - wc; settled = t.settled + wc } in
           match intent.cls with
-          | Observational when intent.attempt < t.max_attempts ->
+          | Observational when intent.attempt < t.max_attempts && fits charged wc ->
               let intent = { intent with attempt = intent.attempt + 1 } in
               let s = { s with fiber = Awaiting { w with intent } } in
-              let t, r = record (with_slot t a s) [ Slot (a, s) ] in
+              let t = { (with_slot charged a s) with reserved = charged.reserved + wc } in
+              let t, r = record t [ Slot (a, s); Budget (t.reserved, t.settled) ] in
               ({ t with gated = t.gated @ [ (r.seq, intent) ] }, [ Persist r ])
           | Observational ->
-              let s = { s with fiber = Failed (Printf.sprintf "%s: %d attempts lost" intent.key intent.attempt) } in
-              let t, r = record (with_slot t a s) [ Slot (a, s) ] in
+              let why = if intent.attempt < t.max_attempts then "no budget for another attempt" else "attempts lost" in
+              let s = { s with fiber = Failed (Printf.sprintf "%s: %d %s" intent.key intent.attempt why) } in
+              let t, r = record (with_slot charged a s) [ Slot (a, s); Budget (charged.reserved, charged.settled) ] in
               (t, [ Persist r ])
           | Effectful ->
               let s = { s with fiber = Uncertain { turn = w.turn; args = w.args; receipts = w.receipts; basis = w.basis; intent } } in
               let t, r = record (with_slot t a s) [ Slot (a, s) ] in
               (t, [ Persist r; Reconcile (intent.key, intent.attempt) ]))
       | _ -> (t, []))
-  | Reconciled (key, n, Some v) -> (match awaiting t key n with Some (a, s) -> resume t a s v | None -> (t, []))
+  | Reconciled (key, n, Some (v, cost)) -> (match awaiting t key n with Some (a, s) -> resume t a s v cost | None -> (t, []))
   | Reconciled (key, n, None) -> (
       (* it did not take effect, and the outbox has fenced the key: send it again *)
       match awaiting t key n with
@@ -416,6 +447,7 @@ let failures t = Smap.fold (fun a s acc -> match s.fiber with Failed m -> (a, m)
 let stream t n = fst (Smap.find n t.streams)
 let refused t = t.refused
 let episode t = t.episode
+let spend t = (t.reserved, t.settled)
 
 (* ---- recovery ------------------------------------------------------------------------------------- *)
 
@@ -426,14 +458,15 @@ let episode t = t.episode
    awaited key and attempt make a second answer change nothing. Every
    Uncertain fiber is reconciled again. A fiber that was running re-runs
    its turn, which is deterministic. *)
-let recover ?classes ?max_attempts (checked : Check.checked) graph (records : record list) =
-  let t = create ?classes ?max_attempts checked graph in
+let recover ?classes ?max_attempts ?budget ?worst (checked : Check.checked) graph (records : record list) =
+  let t = create ?classes ?max_attempts ?budget ?worst checked graph in
   let apply t = function
     | Slot (a, s) -> { t with slots = Smap.add a s t.slots }
     | Input (n, src) -> { t with inputs = Smap.add n src t.inputs }
     | Stream (n, vs, r) -> { t with streams = Smap.add n (vs, r) t.streams }
     | Answered (s, e, c) -> { t with answered = (s, e, c) :: t.answered }
     | Episode e -> { t with episode = e }
+    | Budget (reserved, settled) -> { t with reserved; settled }
   in
   let t = List.fold_left (fun t (r : record) -> List.fold_left apply { t with seq = r.seq; durable = r.seq } r.facts) t records in
   let refused = t.refused in

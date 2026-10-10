@@ -31,6 +31,10 @@ let checked =
 
 let classes = function "llm.complete" -> E.Observational | _ -> E.Effectful
 
+(* budgets: each kind's worst case (policy) and what the world actually charges *)
+let worst = function "llm.complete" -> 5 | _ -> 1
+let actual = function "llm.complete" -> 3 | _ -> 1
+
 let str s = V.String s
 let field v f = match v with V.Map m -> V.map_find m (V.String f) | _ -> None
 let diff path patch = V.make_map [ (str "path", str path); (str "patch", str patch) ]
@@ -90,15 +94,18 @@ type host = {
   mutable unsynced : int;  (** the highest sequence appended, not yet durable *)
   mutable durable : int;
   mutable outbox : E.intent list;  (** released, not yet sent *)
-  journal : (string, V.t) Hashtbl.t;  (** effectful keys sent, and their receipts *)
+  journal : (string, V.t * int) Hashtbl.t;  (** effectful keys sent, and their receipts and costs *)
+  budget : int option;
+  mutable charged : int;  (** what the world has charged, across crashes *)
+  mutable spend_errors : string list;  (** budget.qnt's withinBudget and accounted, checked after every step *)
   effects : (string, int) Hashtbl.t;  (** times each effectful key took effect *)
   mutable inflight : (string * int * E.receipt) list;
   mutable reconciles : (string * int) list;
   mutable released_early : int;  (** intents released other than in answer to a Durable event: the output gate broken *)
 }
 
-let new_host ?(store = memory_store ()) ?(crashes = 0) t =
-  { t; recording = None; captured = []; store; crashes; codec_errors = []; last_input = None; unsynced = 0; durable = 0; outbox = []; journal = Hashtbl.create 8; effects = Hashtbl.create 8;
+let new_host ?(store = memory_store ()) ?(crashes = 0) ?budget t =
+  { budget; charged = 0; spend_errors = []; t; recording = None; captured = []; store; crashes; codec_errors = []; last_input = None; unsynced = 0; durable = 0; outbox = []; journal = Hashtbl.create 8; effects = Hashtbl.create 8;
     inflight = []; reconciles = []; released_early = 0 }
 
 let obey ?(durable = false) h cmds =
@@ -155,7 +162,7 @@ let take_ h (f : faults) ~next_input = function
          (quint/handoff.qnt's lost frames); the outbox's journal and its answers in flight survive *)
       h.outbox <- [];
       h.reconciles <- [];
-      let t, cmds = E.recover ~classes (Lazy.force checked) "review_loop" (h.store.load ()) in
+      let t, cmds = E.recover ~classes ?budget:h.budget ~worst (Lazy.force checked) "review_loop" (h.store.load ()) in
       h.t <- t;
       h.unsynced <- h.durable;
       (* releases from durable records pass the output gate *)
@@ -167,15 +174,26 @@ let take_ h (f : faults) ~next_input = function
         match i.cls with
         | E.Effectful -> (
             match Hashtbl.find_opt h.journal i.key with
-            | Some r -> r (* answered from the journal: never sent twice *)
+            | Some r -> r (* answered from the journal: never sent twice, never charged twice *)
             | None ->
-                let r = cassette i in
+                let r = (cassette i, actual i.kind) in
+                h.charged <- h.charged + snd r;
                 Hashtbl.replace h.journal i.key r;
                 Hashtbl.replace h.effects i.key (1 + Option.value (Hashtbl.find_opt h.effects i.key) ~default:0);
                 r)
-        | E.Observational -> cassette i
+        | E.Observational -> (
+            (* each attempt runs once and is charged once; the same attempt released again (after a crash)
+               is answered from the journal, as handoff.qnt has the outbox do for every key *)
+            let jkey = Printf.sprintf "%s#%d" i.key i.attempt in
+            match Hashtbl.find_opt h.journal jkey with
+            | Some r -> r
+            | None ->
+                let r = (cassette i, actual i.kind) in
+                h.charged <- h.charged + snd r;
+                Hashtbl.replace h.journal jkey r;
+                r)
       in
-      h.inflight <- h.inflight @ [ (i.key, i.attempt, if f.lose () then E.Lost else E.Done receipt) ]
+      h.inflight <- h.inflight @ [ (i.key, i.attempt, if f.lose () then E.Lost else E.Done (fst receipt, snd receipt)) ]
   | Deliver n ->
       let k, a, r = List.nth h.inflight n in
       if not (f.dup ()) then h.inflight <- List.filteri (fun m _ -> m <> n) h.inflight;
@@ -257,7 +275,13 @@ let take h f ~next_input c =
   let answer = match c with Deliver n -> (let k, a, _ = List.nth h.inflight n in Some (k, a)) | Answer (k, n) -> Some (k, n) | _ -> None in
   h.captured <- [];
   take_ h f ~next_input c;
-  project ?answer h ~before ~crashed:(c = Crash) ~synced:(c = Sync) h.captured
+  project ?answer h ~before ~crashed:(c = Crash) ~synced:(c = Sync) h.captured;
+  let reserved, settled = E.spend h.t in
+  (match h.budget with
+   | Some b when settled + reserved > b -> h.spend_errors <- Printf.sprintf "settled %d + reserved %d over the budget %d" settled reserved b :: h.spend_errors
+   | _ -> ());
+  if h.charged > settled + reserved then
+    h.spend_errors <- Printf.sprintf "the world charged %d, the books hold %d + %d" h.charged settled reserved :: h.spend_errors
 
 let start_recording h =
   h.recording <- Some [ { action = "init"; picks = []; vars = [ ("seq", int h.t.seq); ("durable", int h.durable); ("awaiting", awaiting h.t) ] } ]
@@ -309,8 +333,8 @@ let run ?(faults = no_faults) ?(limit = 5000) ?(after = 0) ?(crash_at = []) ?cha
   in
   go 0
 
-let start ?store ?crashes ?(input = diff "src/main.ml" "let x = 1") () =
-  let h = new_host ?store ?crashes (E.create ~classes (Lazy.force checked) "review_loop") in
+let start ?store ?crashes ?(budget = 1000) ?(input = diff "src/main.ml" "let x = 1") () =
+  let h = new_host ?store ?crashes ~budget (E.create ~classes ~budget ~worst (Lazy.force checked) "review_loop") in
   h.last_input <- Some input;
   feed h (E.Set_input ("request", input));
   h

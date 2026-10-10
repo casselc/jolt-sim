@@ -52,6 +52,18 @@ let example () =
   Alcotest.(check int) "repo.read once per critic computation" 3 (Hashtbl.length h.effects);
   Alcotest.(check (list string)) "records round-trip" [] h.codec_errors
 
+(* a budget too small for the loop: the critic's second computation cannot reserve its completion,
+   so the loop stops there, within its budget, with nothing reserved for an intent never sent *)
+let tight_budget () =
+  let h = start ~budget:8 () in
+  let _ = run ~pick:(fun _ -> 0) h in
+  let reserved, settled = E.spend h.t in
+  Alcotest.(check (list string)) "within the budget, every step" [] h.spend_errors;
+  Alcotest.(check bool) "settled within the budget" true (settled + reserved <= 8);
+  Alcotest.(check int) "nothing reserved" 0 reserved;
+  Alcotest.(check (option string)) "nothing shipped" None (Option.map V.to_string (E.value h.t "shipped"));
+  Alcotest.(check bool) "blocked, not at rest" false (E.quiet h.t)
+
 (* the same loop on SQLite, crashing twice part way and recovering from the file *)
 let sqlite_example () =
   let path = Filename.temp_file "cordis-engine" ".db" in
@@ -122,6 +134,8 @@ let schedules () =
         (passed || List.length (E.stream h.t "notes") = 8);
       Hegel.require tc ~msg:"shipped while the verdict fails" (passed || E.value h.t "shipped" = None);
       Hegel.require tc ~msg:("records that do not round-trip: " ^ String.concat ", " h.codec_errors) (h.codec_errors = []);
+      Hegel.require tc ~msg:("spend: " ^ String.concat "; " h.spend_errors) (h.spend_errors = []);
+      Hegel.require tc ~msg:"a reservation outlived its intent" (fst (E.spend h.t) = 0);
       Hegel.require tc ~msg:(Printf.sprintf "%d intents left before their records were durable" h.released_early) (h.released_early = 0))
 
 (* ---- the durable form ---------------------------------------------------------------------------- *)
@@ -159,5 +173,6 @@ let () =
   Alcotest.run ~argv:[| Sys.argv.(0) |] "engine-review-loop"
     [ ("example",
         [ Alcotest.test_case "the review loop reaches rest and ships" `Quick example;
-          Alcotest.test_case "on SQLite, crashing twice, it rests where the uncrashed run does" `Quick sqlite_example ]);
+          Alcotest.test_case "on SQLite, crashing twice, it rests where the uncrashed run does" `Quick sqlite_example;
+          Alcotest.test_case "a budget too small stops the loop within it" `Quick tight_budget ]);
       ("properties", [ Alcotest.test_case "every value round-trips through the durable form" `Quick codec_round_trip; Alcotest.test_case "any schedule, with faults and a changed input, rests where a fault-free run does" `Quick schedules ]) ]

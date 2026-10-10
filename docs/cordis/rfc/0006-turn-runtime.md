@@ -871,6 +871,25 @@ importers wait for the slice.
    SQLite journal, the relay (`handoff.qnt`), reservations and the
    limiter (`budget.qnt`), and a completion endpoint (halo-flash's
    OpenAI-compatible server) as the first observational effect.
+
+   **Progress.** `budget.qnt` is written and gated: a turn's record
+   reserves its intent's worst case in the same write (`reserveAfterCommit`
+   breaks `accounted` across a crash), a receipt settles once at its
+   actual cost (`settleEveryDelivery`), an Uncertain intent holds its
+   reservation (`refundOnLost`). The engine follows it: `create ?budget
+   ?worst`, a turn ending in an intent is offered only while its
+   reservation fits, the reservation rides in the turn's record, a receipt
+   (which now carries its cost) settles it, an attempt abandoned for
+   another is charged at its worst case. The review-loop host keeps the
+   world's ledger and checks after every step that settled plus reserved
+   stays within the budget and never below what the world charged; four
+   planted budget faults are caught; a budget too small for the loop stops
+   it within the budget, with nothing reserved. That check also found the
+   outbox's rule for observational intents: after a crash the engine
+   releases the awaited attempt again, so the outbox must journal each
+   observational attempt by (key, attempt) and answer a repeat from the
+   journal, or the world is charged twice for one reservation. The real
+   outbox (next) journals every key that way.
 3. **The run store, hardened.** Recovery under fault injection; the
    replay audit (5C); and a **native rollback-fidelity check**: on the
    host's own filesystem (ZFS on FreeBSD), snapshot the run store's

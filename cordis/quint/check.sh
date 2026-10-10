@@ -128,6 +128,15 @@ sim routes.qnt appendEveryRun appendOnce VIOLATED
 sim routes.qnt noCap bounded VIOLATED
 sim routes.qnt keyByValue noStall VIOLATED
 
+# ---- budget.qnt (RFC 0006: reservations with the commit, settlement once, held while Uncertain) --
+for inv in withinBudget accounted heldWhileUncertain settleOnce; do sim budget.qnt design "$inv" ok; done
+VERIFY_STEPS=${BUDGET_VERIFY_STEPS:-$VERIFY_STEPS} verify budget.qnt design safety ok
+for w in refusedForBudget settledBelowReservation uncertainHeld crashedReserved; do sim budget.qnt design "not($w)" VIOLATED; done
+sim budget.qnt reserveAfterCommit accounted VIOLATED
+sim budget.qnt refundOnLost heldWhileUncertain VIOLATED
+sim budget.qnt refundOnLost accounted VIOLATED
+sim budget.qnt settleEveryDelivery settleOnce VIOLATED
+
 # ---- runtime.qnt (RFC 0006: the engine's protocol, which engine runs are replayed in) ---
 sim runtime.qnt design safety ok
 for w in retried doubted refetched recoveredAwaiting gaveUp; do sim runtime.qnt design "not($w)" VIOLATED; done
