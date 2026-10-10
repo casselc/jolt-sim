@@ -85,6 +85,30 @@ let audit_example () =
   Alcotest.(check int) "every completion request differs" 3
     (List.length (List.filter (fun m -> count_sub m " asks " > 0) differences))
 
+(* one route arm appending to two streams: each append is keyed by its stream as well as by the
+   computation it answers, so the second is not taken for the first (routes.qnt's log append) *)
+let two_appends () =
+  let text = read Sys.argv.(1) in
+  let edit sub by text =
+    let n = String.length sub in
+    match List.find_opt (fun i -> String.sub text i n = sub) (List.init (String.length text - n) Fun.id) with
+    | Some i -> String.sub text 0 i ^ by ^ String.sub text (i + n) (String.length text - i - n)
+    | None -> failwith ("no " ^ sub)
+  in
+  let text =
+    text
+    |> edit "stream notes : string<max 500> up to 8;" "stream notes : string<max 500> up to 8;\n  stream log : string<max 500> up to 8;"
+    |> edit "Fail(r) -> notes <~ r.notes" "Fail(r) -> notes <~ r.notes, log <~ 'failed'"
+  in
+  let checked = match Cordis_graph.Patch.load text with Ok s -> s.checked | Error es -> failwith (String.concat "; " es) in
+  let h = new_host ~budget:1000 (E.create ~classes ~budget:1000 ~worst checked "review_loop") in
+  h.last_input <- Some (diff "src/main.ml" "let x = 1");
+  feed h (E.Set_input ("request", diff "src/main.ml" "let x = 1"));
+  let _ = run ~crash_at:[ 30 ] ~pick:(fun _ -> 0) h in
+  Alcotest.(check (list (pair string string))) "no failures" [] (E.failures h.t);
+  Alcotest.(check int) "two notes" 2 (List.length (E.stream h.t "notes"));
+  Alcotest.(check int) "the log has one entry per failing verdict" 2 (List.length (E.stream h.t "log"))
+
 (* the same loop on SQLite, crashing twice part way and recovering from the file *)
 let sqlite_example () =
   let path = Filename.temp_file "cordis-engine" ".db" in
@@ -199,5 +223,6 @@ let () =
         [ Alcotest.test_case "the review loop reaches rest and ships" `Quick example;
           Alcotest.test_case "on SQLite, crashing twice, it rests where the uncrashed run does" `Quick sqlite_example;
           Alcotest.test_case "a budget too small stops the loop within it" `Quick tight_budget;
-          Alcotest.test_case "the replay audit reads records against the code" `Quick audit_example ]);
+          Alcotest.test_case "the replay audit reads records against the code" `Quick audit_example;
+          Alcotest.test_case "a route arm appending to two streams appends to both" `Quick two_appends ]);
       ("properties", [ Alcotest.test_case "every value round-trips through the durable form" `Quick codec_round_trip; Alcotest.test_case "any schedule, with faults and a changed input, rests where a fault-free run does" `Quick schedules ]) ]

@@ -510,6 +510,9 @@ let check_graph env ?(broken = []) cells name items =
                       match List.assoc_opt st_name streams with
                       | None -> fail "route %s: %s is not a stream" s st_name
                       | Some elem ->
+                          (* an append is keyed by its stream and the computation it answers, so one arm
+                             appends to a stream at most once *)
+                          if List.mem (s, tag, st_name) !appends then fail "route %s, case %s: appends to %s twice" s tag st_name;
                           let vars = (match binder with Some (x, t) -> [ (x, t) ] | None -> []) in
                           let t = check_cel (cel_env env vars) (Printf.sprintf "route %s, case %s" s tag) e in
                           (match e with Hole _ -> () | Cel _ -> expect_assignable (Printf.sprintf "route %s, case %s: the value for %s" s tag st_name) elem t);

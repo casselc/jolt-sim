@@ -1188,15 +1188,51 @@ witness shows the bound is reached and tight.
   (keyed by asset name and inputs, not the cell hash) reuses an old
   revision's output → `consistent`. (Dagster's lesson that the code
   version belongs in the memo key.)
+  **Done**: a cutover admits a revision in which one cell changes; an
+  asset is also stale when its cell's hash is not the one it was computed
+  with, so the changed cell recomputes and the others keep their values;
+  witness `memoKeptAcrossCutover` (an unchanged cell hits an entry from
+  before the cutover). The engine keeps no memo table yet: its counterpart
+  is `Switch`, which clears a changed cell's basis so it recomputes, and
+  its receipt cache is the outbox's journal, keyed by intent key, which
+  carries the computation count (`graph/asset#computes.turn`) and so is
+  never reused by a recompute under new code.
 - **`routes.qnt`**: add a crash and recovery between `routeAppend` and the
   next recompute, with the answered-revisions set durable; mutant
-  `answeredInMemory` → `appendOnce`.
+  `answeredInMemory` → `appendOnce`. **Done**, with one finding: an append
+  to `notes` cannot be replayed even with the answered keys lost, since it
+  makes the scrutinee stale and its recompute is a new computation, so the
+  window exists only for an append to a stream the scrutinee does not
+  read. The model gained such a stream (a `log` appended on `Pass`), a
+  crash that keeps what the records hold, the witness `crashedBetween`,
+  and the mutant. Writing the engine test for it found that the engine
+  keyed answered appends by computation alone, so an arm appending to two
+  streams appended to one and stalled; the key now names the stream
+  (record format version 2), and the checker refuses an arm that appends
+  to one stream twice (RFC 0002, amended).
 - **`lifecycle.qnt`**: add durable versus process-scoped acquisitions and
   the recovery sweep; properties `noLeakedDurable` (at rest after
   recovery, every durable acquisition belongs to an installed fiber) and
   `releasedOnce`; mutants `noSweep`, `sweepTwice`. (Could instead be a
   separate `recovery.qnt` if the lifecycle model grows too slow for
   Apalache at depth 8.)
+  **Done, as `recovery.qnt`**: `lifecycle.qnt`'s variables are the
+  simulator's conformance target, so the extension is a model of its own.
+  A durable acquisition is recorded with a generation in the record that
+  makes it, and released by generation (a fenced release frees the thing
+  only if that generation still holds it), with the release recorded too;
+  a fiber releases its durable acquisitions before it unloads; a crash
+  drops the process-scoped ones and reinstalls some fibers; before
+  anything runs, the sweep releases every recorded acquisition whose owner
+  was not reinstalled. Properties `noLeakedDurable`, `releasedOnce` (no
+  generation released twice, since a stale release would free what
+  another fiber has since acquired) and `procOnlyWhenRun`; mutants
+  `noSweep` and `sweepTwice` (the sweep does not record its release, so
+  the next recovery, or the owner reinstalled later, releases again);
+  witnesses `sweptOrphan`, `reacquiredAfterSweep`, `crashedHolding`,
+  `recoveredOwner`. Apalache to depth 8 in about 20 s. The engine has no
+  durable acquisitions yet; the first will be yard's worktrees and
+  leases (stage 4), and they follow this model.
 
 The generated Quint module per graph (RFC 0002 "Deferred") is gate 5 of
 admission, not a precondition of the runtime; it follows stage 2.

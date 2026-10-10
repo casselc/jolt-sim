@@ -111,22 +111,26 @@ sim admission.qnt approvalByAgent narrowingApproved VIOLATED
 # ---- assets.qnt (RFC 0002: memoised assets, freshness, early cutoff) -------------------
 for inv in consistent receiptBacked atMostOnce; do sim assets.qnt design "$inv" ok; done
 verify assets.qnt design safety ok
-for w in cutoffSaved memoHit sentTwoValues; do sim assets.qnt design "not($w)" VIOLATED; done
+for w in cutoffSaved memoHit sentTwoValues memoKeptAcrossCutover; do sim assets.qnt design "not($w)" VIOLATED; done
 sim assets.qnt memoByCell consistent VIOLATED
 sim assets.qnt receiptsByCell receiptBacked VIOLATED
 sim assets.qnt noMemo atMostOnce VIOLATED
 sim assets.qnt noCutoff safety ok
+sim assets.qnt memoByName consistent VIOLATED
 
 # ---- routes.qnt (RFC 0002: guarded assets, stream appends, feedback loops) -------------
 for inv in consistent appendOnce bounded noStall; do sim routes.qnt design "$inv" ok; done
 # a loop reaches its cap in about ten steps, so check deeper than the default
 VERIFY_STEPS=${ROUTES_VERIFY_STEPS:-14} verify routes.qnt design safety ok
 for w in loopPassed capReachedAtRest withdrawn refusedWhenFull; do sim routes.qnt design "not($w)" VIOLATED; done
+# rare: it needs a pass, a log append, then a crash before anything recomputes
+STEPS=60 SAMPLES=5000 sim routes.qnt design "not(crashedBetween)" VIOLATED
 # rare: it needs a pass, then a fail
 STEPS=60 SAMPLES=20000 sim routes.qnt keepGuarded consistent VIOLATED
 sim routes.qnt appendEveryRun appendOnce VIOLATED
 sim routes.qnt noCap bounded VIOLATED
 sim routes.qnt keyByValue noStall VIOLATED
+sim routes.qnt answeredInMemory appendOnce VIOLATED
 
 # ---- budget.qnt (RFC 0006: reservations with the commit, settlement once, held while Uncertain) --
 for inv in withinBudget accounted heldWhileUncertain settleOnce; do sim budget.qnt design "$inv" ok; done
@@ -147,6 +151,14 @@ sim cutover.qnt shadowReleases noShadowEmission VIOLATED
 sim cutover.qnt volatileCutover noUnadmittedMix VIOLATED
 sim cutover.qnt insertConsumerFirst ordered VIOLATED
 sim cutover.qnt insertFirst singleWriter VIOLATED
+
+# ---- recovery.qnt (RFC 0006: durable acquisitions and the recovery sweep) --------------
+for inv in noLeakedDurable releasedOnce procOnlyWhenRun; do sim recovery.qnt design "$inv" ok; done
+# Apalache: depth 8 in about 20 s (depth 10 about 95 s); sweepTwice is caught by depth 8
+VERIFY_STEPS=${RECOVERY_VERIFY_STEPS:-8} verify recovery.qnt design safety ok
+for w in sweptOrphan reacquiredAfterSweep crashedHolding recoveredOwner; do sim recovery.qnt design "not($w)" VIOLATED; done
+sim recovery.qnt noSweep noLeakedDurable VIOLATED
+sim recovery.qnt sweepTwice releasedOnce VIOLATED
 
 # ---- schedule.qnt (RFC 0006 decision 4: schedule independence, deficit round robin across graphs) --
 for inv in sameRest boundedWait; do sim schedule.qnt design "$inv" ok; done

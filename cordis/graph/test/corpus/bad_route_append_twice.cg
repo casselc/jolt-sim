@@ -1,0 +1,4 @@
+// expect: appends to s twice
+type V = A(int) | B;
+cell f(x : int) : V = { V.A(x); }
+graph g { input x : int; stream s : int up to 4; asset v = f(x); route v { A(n) -> s <~ n, s <~ n + 1; B -> none }; }

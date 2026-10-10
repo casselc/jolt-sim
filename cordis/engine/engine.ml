@@ -15,7 +15,8 @@
      computed from; a guarded asset computes only while its guard holds and
      is withdrawn when it stops holding; a route's append is keyed by the
      scrutinee's computation (the episode, and which computation of the
-     scrutinee), so it happens once per computation however often the
+     scrutinee) and by its stream, so it happens once per computation and
+     stream (an arm may append to several streams) however often the
      route runs, even when a new computation gives the same value (a critic
      that repeats itself), and a full stream refuses it; a new input starts
      a new episode and empties the streams;
@@ -88,7 +89,7 @@ type fact =
   | Slot of string * slot
   | Input of string * source
   | Stream of string * V.t list * int
-  | Answered of string * int * int  (** scrutinee, episode, computation *)
+  | Answered of string * string * int * int  (** scrutinee, stream, episode, computation *)
   | Episode of int
   | Budget of int * int  (** reserved, settled *)
   | Cutover_begin of string  (** the candidate revision's id *)
@@ -125,7 +126,7 @@ type t = {
   inputs : source Smap.t;
   streams : (V.t list * int) Smap.t;
   slots : slot Smap.t;
-  answered : (string * int * int) list;
+  answered : (string * string * int * int) list;
   episode : int;
   seq : int;  (** the last record appended *)
   durable : int;
@@ -273,7 +274,7 @@ let ready t =
     List.filter_map
       (fun (s, case, stream, _, _) ->
         match Smap.find_opt s t.slots with
-        | Some sl when (not (stale t s)) && sl.fiber = Ready && not (List.mem (s, t.episode, sl.computes) t.answered) -> (
+        | Some sl when (not (stale t s)) && sl.fiber = Ready && not (List.mem (s, stream, t.episode, sl.computes) t.answered) -> (
             match sl.value with Some v when case_matches t s case v -> Some (Append (s, stream)) | _ -> None)
         | _ -> None)
       t.g.append_exprs
@@ -440,15 +441,15 @@ let perform t action =
       in
       let vs, r = Smap.find stream t.streams in
       let cap = Option.value (List.assoc_opt stream t.g.capacities) ~default:max_int in
-      let answered = (sc, t.episode, sl.computes) :: t.answered in
+      let answered = (sc, stream, t.episode, sl.computes) :: t.answered in
       if List.length vs >= cap then
         let t = { t with answered; refused = t.refused + 1 } in
-        let t, rcd = record t [ Answered (sc, t.episode, sl.computes) ] in
+        let t, rcd = record t [ Answered (sc, stream, t.episode, sl.computes) ] in
         (t, [ Persist rcd ])
       else
         let vs = vs @ [ x ] in
         let t = { t with answered; streams = Smap.add stream (vs, r + 1) t.streams } in
-        let t, rcd = record t [ Answered (sc, t.episode, sl.computes); Stream (stream, vs, r + 1) ] in
+        let t, rcd = record t [ Answered (sc, stream, t.episode, sl.computes); Stream (stream, vs, r + 1) ] in
         (t, [ Persist rcd ])
 
 (* ---- events --------------------------------------------------------------------------------------- *)
@@ -553,7 +554,7 @@ let recover ?classes ?max_attempts ?budget ?worst ?revision ?cell_hashes ?(revis
     | Slot (a, s) -> { t with slots = Smap.add a s t.slots }
     | Input (n, src) -> { t with inputs = Smap.add n src t.inputs }
     | Stream (n, vs, r) -> { t with streams = Smap.add n (vs, r) t.streams }
-    | Answered (s, e, c) -> { t with answered = (s, e, c) :: t.answered }
+    | Answered (s, st, e, c) -> { t with answered = (s, st, e, c) :: t.answered }
     | Episode e -> { t with episode = e }
     | Budget (reserved, settled) -> { t with reserved; settled }
     | Cutover_begin id -> { t with cutting = Some (known id) }

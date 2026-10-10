@@ -10,7 +10,8 @@
  *   asset  draft   = request + size(notes)
  *   asset  verdict = critic(draft)        Pass(d) when d == TARGET, else Fail(d)
  *   asset  shipped = gate(verdict)        d + 10
- *   route verdict { Pass(_) -> shipped; Fail(d) -> notes <~ d }
+ *   stream log     : int up to CAPL
+ *   route verdict { Pass(d) -> shipped, log <~ d; Fail(d) -> notes <~ d }
  *
  * request 2 fails once, appends, and passes; request 0 needs three appends
  * and meets the cap first; request 4 can never pass. A new request starts
@@ -42,22 +43,36 @@
  *  - CAP = false (`noCap`): an unbounded stream; request 4 loops forever ->
  *    bounded;
  *  - KEY_BY_VALUE (`keyByValue`): appends keyed by the scrutinee's value
- *    revision -> noStall.
+ *    revision -> noStall;
+ *  - ANSWERED_IN_MEMORY (`answeredInMemory`): the answered keys are not
+ *    durable, so a crash between an append and the next recompute lets
+ *    the recovered route append to the log again -> appendOnce. (An append
+ *    to notes is safe without them: it makes the scrutinee stale, and its
+ *    recompute is a new computation with a new key. The log, which the
+ *    scrutinee does not read, has only the key.)
+ * A crash and recovery may strike between any two steps (RFC 0006,
+ * "Extensions to existing models"): the records keep the request, the
+ * stream, the assets, the episode and computation counts, and the answered
+ * keys, which are written in the record of the append they answer.
  * Witnesses (checked as not(w), expected VIOLATED): loopPassed (a loop
  * appended, then passed and shipped), capReachedAtRest (a loop that never
  * passes came to rest at the cap), withdrawn (a shipped value was withdrawn),
- * refusedWhenFull.
+ * refusedWhenFull, crashedBetween (a crash struck after a log append whose
+ * computation is still current).
  */
 module routes {
   const CAP: bool
   const APPEND_ONCE: bool
   const WITHDRAW: bool
   const KEY_BY_VALUE: bool
+  const ANSWERED_IN_MEMORY: bool
 
   pure val CAPN = 2
   pure val TARGET = 3
   pure val REQUESTS: Set[int] = Set(0, 2, 4)
   pure val NONE = -1
+  pure val MAX_CRASHES = 2
+  pure val CAPL = 3
 
   type Verdict = { pass: bool, payload: int }
 
@@ -84,6 +99,10 @@ module routes {
   var dupAppends: int             // appends for a revision already answered
   var refused: int
   var withdrawals: int
+  var log: List[int]               // a stream the route appends to that the scrutinee does not read
+  var crashes: int
+  var everAnswered: Set[int]       // ghost: every append key answered, across crashes
+  var crashedAfterAppend: bool     // ghost: a crash struck between an append and the next recompute
 
   // ---- staleness --------------------------------------------------------------------------
   def draftStale: bool = draftSeen != (requestRev, notesRev)
@@ -95,11 +114,19 @@ module routes {
     )
   def akey: int = if (KEY_BY_VALUE) verdictRev else episode * 1000 + verdictRuns
   def appendPending: bool = not(verdictStale) and not(verdict.pass) and not(answered.contains(akey))
-  def quiet: bool = not(draftStale) and not(verdictStale) and not(shippedPending) and not(appendPending)
+  // the log append's key: the same computation, another append
+  def lkey: int = akey + 500
+  def logPending: bool = not(verdictStale) and verdict.pass and not(answered.contains(lkey))
+  def quiet: bool = not(draftStale) and not(verdictStale) and not(shippedPending) and not(appendPending) and not(logPending)
 
   // ---- actions ----------------------------------------------------------------------------
+  action unchangedRest = all {
+    log' = log,
+    crashes' = crashes, everAnswered' = everAnswered, crashedAfterAppend' = crashedAfterAppend,
+  }
   action unchangedCounters = all {
     appends' = appends, dupAppends' = dupAppends, refused' = refused, withdrawals' = withdrawals,
+    unchangedRest,
   }
 
   action init = all {
@@ -110,6 +137,7 @@ module routes {
     shipped' = NONE, shippedSeen' = -1,
     answered' = Set(), appends' = 0, dupAppends' = 0, refused' = 0, withdrawals' = 0,
     episode' = 0, verdictRuns' = 0,
+    log' = List(), crashes' = 0, everAnswered' = Set(), crashedAfterAppend' = false,
   }
 
   // a new request starts a new episode: the stream is emptied
@@ -172,12 +200,14 @@ module routes {
     draft' = draft, draftRev' = draftRev, draftSeen' = draftSeen,
     verdict' = verdict, verdictRev' = verdictRev, verdictSeen' = verdictSeen, answered' = answered,
     appends' = appends, dupAppends' = dupAppends, refused' = refused,
+    unchangedRest,
   }
 
   // the route's append: once per scrutinee revision (the intent's key), and
   // refused by a full stream
   action routeAppend: bool = {
     val again = answered.contains(akey)
+    val dup = everAnswered.contains(akey)
     val full = CAP and notes.length() >= CAPN
     all {
       episode' = episode, verdictRuns' = verdictRuns,
@@ -187,7 +217,9 @@ module routes {
       notesRev' = if (full) notesRev else notesRev + 1,
       answered' = answered.union(Set(akey)),
       appends' = if (full) appends else appends + 1,
-      dupAppends' = if (again and not(full)) dupAppends + 1 else dupAppends,
+      dupAppends' = if (dup and not(full)) dupAppends + 1 else dupAppends,
+      everAnswered' = everAnswered.union(Set(akey)),
+      crashes' = crashes, crashedAfterAppend' = crashedAfterAppend, log' = log,
       refused' = if (full) refused + 1 else refused,
       request' = request, requestRev' = requestRev,
       draft' = draft, draftRev' = draftRev, draftSeen' = draftSeen,
@@ -211,7 +243,51 @@ module routes {
       verdict' = verdict, verdictRev' = verdictRev, verdictSeen' = verdictSeen,
       shipped' = shipped, shippedSeen' = shippedSeen,
       episode' = episode, verdictRuns' = verdictRuns,
+      unchangedRest,
     }
+  }
+
+  // the route's other arm appends to the log on a pass: the scrutinee does
+  // not read the log, so nothing recomputes it after the append, and only
+  // the answered key stops the same computation appending again
+  action logAppend: bool = {
+    val again = answered.contains(lkey)
+    val full = log.length() >= CAPL
+    all {
+      not(verdictStale), verdict.pass,
+      APPEND_ONCE implies not(again),
+      log' = if (full) log else log.append(verdict.payload),
+      answered' = answered.union(Set(lkey)),
+      everAnswered' = everAnswered.union(Set(lkey)),
+      appends' = if (full) appends else appends + 1,
+      dupAppends' = if (everAnswered.contains(lkey) and not(full)) dupAppends + 1 else dupAppends,
+      refused' = if (full) refused + 1 else refused,
+      crashes' = crashes, crashedAfterAppend' = crashedAfterAppend, withdrawals' = withdrawals,
+      episode' = episode, verdictRuns' = verdictRuns,
+      request' = request, requestRev' = requestRev, notes' = notes, notesRev' = notesRev,
+      draft' = draft, draftRev' = draftRev, draftSeen' = draftSeen,
+      verdict' = verdict, verdictRev' = verdictRev, verdictSeen' = verdictSeen,
+      shipped' = shipped, shippedSeen' = shippedSeen,
+    }
+  }
+
+  // a crash and recovery: what the records hold survives (the request, the
+  // stream, each asset with the revisions it was computed from, the episode
+  // and the computation counts, and the answered keys, written with the
+  // append they answer); ANSWERED_IN_MEMORY loses the answered keys, as if
+  // the route kept them in memory
+  action crash = all {
+    crashes < MAX_CRASHES,
+    crashes' = crashes + 1,
+    answered' = if (ANSWERED_IN_MEMORY) Set() else answered,
+    crashedAfterAppend' = (crashedAfterAppend or (not(verdictStale) and answered.contains(lkey))),
+    everAnswered' = everAnswered, log' = log,
+    episode' = episode, verdictRuns' = verdictRuns,
+    request' = request, requestRev' = requestRev, notes' = notes, notesRev' = notesRev,
+    draft' = draft, draftRev' = draftRev, draftSeen' = draftSeen,
+    verdict' = verdict, verdictRev' = verdictRev, verdictSeen' = verdictSeen,
+    shipped' = shipped, shippedSeen' = shippedSeen,
+    appends' = appends, dupAppends' = dupAppends, refused' = refused, withdrawals' = withdrawals,
   }
 
   action idle = all {
@@ -231,7 +307,9 @@ module routes {
     recomputeShipped,
     withdrawShipped,
     routeAppend,
+    logAppend,
     replayRoute,
+    crash,
     idle,
   }
 
@@ -251,24 +329,29 @@ module routes {
   val capReachedAtRest: bool = quiet and notes.length() == CAPN and not(verdict.pass)
   val withdrawn: bool = withdrawals > 0
   val refusedWhenFull: bool = refused > 0
+  val crashedBetween: bool = crashedAfterAppend
 }
 
 module design {
-  import routes(CAP = true, APPEND_ONCE = true, WITHDRAW = true, KEY_BY_VALUE = false).* from "./routes"
+  import routes(CAP = true, APPEND_ONCE = true, WITHDRAW = true, KEY_BY_VALUE = false, ANSWERED_IN_MEMORY = false).* from "./routes"
 }
 
 module keepGuarded {
-  import routes(CAP = true, APPEND_ONCE = true, WITHDRAW = false, KEY_BY_VALUE = false).* from "./routes"
+  import routes(CAP = true, APPEND_ONCE = true, WITHDRAW = false, KEY_BY_VALUE = false, ANSWERED_IN_MEMORY = false).* from "./routes"
 }
 
 module appendEveryRun {
-  import routes(CAP = true, APPEND_ONCE = false, WITHDRAW = true, KEY_BY_VALUE = false).* from "./routes"
+  import routes(CAP = true, APPEND_ONCE = false, WITHDRAW = true, KEY_BY_VALUE = false, ANSWERED_IN_MEMORY = false).* from "./routes"
 }
 
 module noCap {
-  import routes(CAP = false, APPEND_ONCE = true, WITHDRAW = true, KEY_BY_VALUE = false).* from "./routes"
+  import routes(CAP = false, APPEND_ONCE = true, WITHDRAW = true, KEY_BY_VALUE = false, ANSWERED_IN_MEMORY = false).* from "./routes"
 }
 
 module keyByValue {
-  import routes(CAP = true, APPEND_ONCE = true, WITHDRAW = true, KEY_BY_VALUE = true).* from "./routes"
+  import routes(CAP = true, APPEND_ONCE = true, WITHDRAW = true, KEY_BY_VALUE = true, ANSWERED_IN_MEMORY = false).* from "./routes"
+}
+
+module answeredInMemory {
+  import routes(CAP = true, APPEND_ONCE = true, WITHDRAW = true, KEY_BY_VALUE = false, ANSWERED_IN_MEMORY = true).* from "./routes"
 }

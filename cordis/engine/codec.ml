@@ -9,7 +9,8 @@ module V = Cordis_cel.Value
 module E = Engine
 module J = Yojson.Safe
 
-let version = 1
+(* 2: an answered append names its stream *)
+let version = 2
 
 exception Bad of string
 
@@ -119,7 +120,7 @@ let fact (x : E.fact) =
   | E.Slot (a, s) -> `List [ `String "slot"; `String a; slot s ]
   | E.Input (n, { svalue; srev }) -> `List [ `String "input"; `String n; (match svalue with Some v -> value v | None -> `Null); `Int srev ]
   | E.Stream (n, vs, r) -> `List [ `String "stream"; `String n; `List (List.map value vs); `Int r ]
-  | E.Answered (s, e, c) -> `List [ `String "answered"; `String s; `Int e; `Int c ]
+  | E.Answered (s, st, e, c) -> `List [ `String "answered"; `String s; `String st; `Int e; `Int c ]
   | E.Episode e -> `List [ `String "episode"; `Int e ]
   | E.Budget (r, st) -> `List [ `String "budget"; `Int r; `Int st ]
   | E.Cutover_begin id -> `List [ `String "cutover-begin"; `String id ]
@@ -131,7 +132,7 @@ let of_fact (j : J.t) : E.fact =
   | `List [ `String "slot"; `String a; s ] -> E.Slot (a, of_slot s)
   | `List [ `String "input"; `String n; v; r ] -> E.Input (n, { svalue = (match v with `Null -> None | v -> Some (of_value v)); srev = int_ r })
   | `List [ `String "stream"; `String n; `List vs; r ] -> E.Stream (n, List.map of_value vs, int_ r)
-  | `List [ `String "answered"; `String s; e; c ] -> E.Answered (s, int_ e, int_ c)
+  | `List [ `String "answered"; `String s; `String st; e; c ] -> E.Answered (s, st, int_ e, int_ c)
   | `List [ `String "episode"; e ] -> E.Episode (int_ e)
   | `List [ `String "budget"; r; st ] -> E.Budget (int_ r, int_ st)
   | `List [ `String "cutover-begin"; `String id ] -> E.Cutover_begin id
