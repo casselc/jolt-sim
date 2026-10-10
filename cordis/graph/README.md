@@ -53,5 +53,7 @@ well-known types are what CEL makes of them, and recursion is native. A
 message's cost shape comes from its descriptor field by field, repeated
 fields, maps, strings and bytes bounded by the default ceiling. The
 soundness property covers the corpus's protobuf cells with messages
-generated from the descriptors. Next: the boundary codec over the
-registry (stage 3) and descriptor compatibility in admission (stage 4).
+generated from the descriptors (`../cel/test/proto_gen.ml`). The
+boundary codec over the registry is built (stage 3,
+`../cel/lib/proto_codec.ml`). Next: descriptor compatibility in admission
+(stage 4).

@@ -1,7 +1,7 @@
 # RFC 0004: Descriptor-native types
 
 Status: accepted for implementation (phase 2, build order item 6). Stages
-1 and 2 are built.
+1 to 3 are built.
 Amends RFC 0002 (types, `uses`, identity, admission) and RFC 0003 (the
 protobuf importer). Model: `cordis/quint/revisions.qnt`.
 
@@ -73,10 +73,39 @@ supply them later), singular fields by their own types.
 ## The boundary codec
 
 Values cross the boundary in protobuf binary or JSON, both ways, read and
-written from the registry: strict reading (unknown fields, two members of
-one oneof, unknown enum names and out-of-range 32-bit values are refused),
-canonical writing (proto field names; `int64` as strings; all fields with
-no presence printed).
+written from the registry (`cordis/cel/lib/proto_codec.ml`). A message's
+value is the one CEL gives it: its set fields, the well-known types in
+their CEL forms.
+
+**Reading is strict**, as a trust boundary needs. Refused: an unknown
+field (by number or by name; extensions are not read), two members of one
+oneof, an enum number or name the enum does not declare (also for proto3's
+open enums, which protobuf would keep), a 32-bit value out of range
+(including a binary varint beyond 32 bits, which protobuf would truncate),
+a missing proto2 `required` field, a string that is not UTF-8, a timestamp
+or duration out of range, a duration in any form but protobuf's
+(`-1.5s`), a fraction of more than nine digits, a duplicate JSON key, a
+`null` element, a float that rounds to infinity, and anything malformed.
+Where protobuf has a rule rather than an error it is kept: a singular
+field's last value wins and a message's occurrences merge; packed and
+unpacked repeated scalars are both read; `null` for a field is absent,
+except a `Value` (null) or a `NullValue`.
+
+**Writing is canonical**: fields in number order, map entries in key
+order (in binary and JSON); proto3 repeated scalars packed, proto2's not;
+groups framed by start and end tags; JSON with proto field names, 64-bit
+integers as strings, `NaN` and `Infinity` as strings, and every field with
+no presence printed. An `Any`'s content is written under the type its CEL
+value has (a message under its own; an `int` as an `Int64Value`, a `uint`
+as a `UInt64Value`, a `double` as a `DoubleValue`, a map as a `Struct`, a
+list as a `ListValue`, `null` as a `Value`), since CEL keeps no more than
+that. A `Value` holding `NaN` or an infinity, and a `FieldMask` path with
+no lowerCamel form, have no JSON and are refused when written.
+
+**Presence of `-0.0`.** A proto3 field with no presence is set when it
+differs from its default by bit pattern, as protobuf decides it; CEL's
+numeric equality would call `-0.0` the default and drop it. RFC 0001's
+implementation now follows protobuf here.
 
 ## Identity
 
@@ -129,9 +158,18 @@ What `revisions.qnt` checked, before implementation:
 - **Checking**: corpus programs over message types, accepted and rejected.
 - **Soundness**: for messages generated from the descriptors, every turn
   costs at most its estimate and results have their declared types (Hegel).
-- **Agreement with protobuf**: generated messages written by the codec, in
-  binary and JSON, are read by protobuf's own parser, and what it writes
-  back reads to the same message (Hegel).
+- **Agreement with protobuf**: generated messages (`cel/test/proto_gen.ml`,
+  shared with the graph soundness property) written by the codec, in
+  binary and JSON, read back to themselves; protobuf (Python, through
+  `cel/test/pbwire.py`) reads both, strictly, to the same message; and
+  what protobuf writes back, in binary and JSON, the codec reads to the
+  message it started from (Hegel, over cel-spec's `TestAllTypes` in proto2
+  and proto3 and the importer's corpus). Python's protobuf (7.36) cannot
+  read the `null` it prints for a `NullValue` element of a repeated or map
+  field, so the agreement property does not generate those; the codec's
+  examples cover them.
+- **The codec by example**: what protobuf's binary and JSON may say that
+  the codec never writes, and each refusal above.
 - **Compatibility**: examples of each row of the table above.
 - **Model**: `revisions.qnt` in the model gate, with its mutants and
   witnesses.

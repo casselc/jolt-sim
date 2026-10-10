@@ -27,6 +27,8 @@ type field = {
   map : (field * field) option;  (** key and value fields of a map field *)
   extendee : string option;
   full_name : string option;  (** extensions are addressed by full name *)
+  required : bool;  (** proto2 [required] *)
+  group : bool;  (** a proto2 group: a message, framed by start and end tags on the wire *)
 }
 
 type message = { full_name : string; syntax : string; fields : field list }
@@ -71,7 +73,7 @@ let rec field_of_json (j : Yojson.Safe.t) : field =
     name = str "name";
     json_name = (match opt "json_name" with Some n -> n | None -> str "name");
     number = J.to_int (J.member "number" j);
-    ty = str "type";
+    ty = (match str "type" with "group" -> "message" | t -> t);
     repeated = J.to_bool (J.member "repeated" j);
     type_name = opt "type_name";
     oneof = opt "oneof";
@@ -83,6 +85,8 @@ let rec field_of_json (j : Yojson.Safe.t) : field =
        | m -> Some (field_of_json (J.member "key" m), field_of_json (J.member "value" m)));
     extendee = opt "extendee";
     full_name = opt "full_name";
+    required = (match J.member "required" j with `Bool b -> b | _ -> false);
+    group = str "type" = "group";
   }
 
 let load_json (j : Yojson.Safe.t) =
@@ -177,7 +181,7 @@ let add_descriptor_set (r : registry) (bytes : string) =
           List.iter (go (if f.package = "" then "" else f.package ^ ".")) f.messages)
         files;
       let field_of syntax (m : D.message option) ?full_name (fd : D.field) : field =
-        let ty = if fd.ty >= 1 && fd.ty < Array.length type_names then type_names.(fd.ty) else "message" in
+        let ty = if fd.ty >= 1 && fd.ty < Array.length type_names && fd.ty <> 10 then type_names.(fd.ty) else "message" in
         let repeated = fd.label = D.Repeated in
         let oneof = match m, fd.oneof_index with Some m, Some i -> List.nth_opt m.oneofs i | _ -> None in
         let plain (fd : D.field) : field =
@@ -185,7 +189,7 @@ let add_descriptor_set (r : registry) (bytes : string) =
           { name = fd.name; json_name = (if fd.json_name = "" then fd.name else fd.json_name); number = fd.number; ty;
             repeated = false; type_name = (if fd.type_name = "" then None else Some (strip_dot fd.type_name));
             oneof = None; presence = fd.ty = 11 || syntax <> "proto3"; default = `Null; map = None; extendee = None;
-            full_name = None }
+            full_name = None; required = false; group = false }
         in
         let map =
           match Hashtbl.find_opt entries (strip_dot fd.type_name) with
@@ -202,11 +206,13 @@ let add_descriptor_set (r : registry) (bytes : string) =
           repeated;
           type_name = (if fd.type_name = "" then None else Some (strip_dot fd.type_name));
           oneof;
-          presence = (not repeated) && (fd.ty = 11 || oneof <> None || fd.proto3_optional || syntax <> "proto3");
+          presence = (not repeated) && (fd.ty = 11 || fd.ty = 10 || oneof <> None || fd.proto3_optional || syntax <> "proto3");
           default = (if repeated then `Null else default_json ty fd.default_value);
           map;
           extendee = (if fd.extendee = "" then None else Some (strip_dot fd.extendee));
           full_name;
+          required = fd.label = D.Required;
+          group = fd.ty = 10;
         }
       in
       let conflicts = ref [] in
@@ -581,6 +587,9 @@ let is_set (f : field) v =
   | _ when f.type_name = Some "google.protobuf.Value" && not f.repeated -> true (* null is a Value *)
   | List [||] | Map [] when f.repeated || f.map <> None -> false
   | Null when f.ty = "message" -> false
+  (* as protobuf decides it, by bit pattern: -0.0 is not the default 0.0 *)
+  | Double d when not (f.presence || f.oneof <> None) -> (
+      match default_value f with Double z -> Int64.bits_of_float d <> Int64.bits_of_float z | _ -> true)
   | _ -> f.presence || f.oneof <> None || not (Value.equal v (default_value f))
 
 (* ---- construction, selection ----------------------------------------------------------- *)

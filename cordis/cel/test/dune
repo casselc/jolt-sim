@@ -2,7 +2,7 @@
 (library
  (name cel_testgen)
  (wrapped false)
- (modules typed_gen)
+ (modules typed_gen proto_gen)
  (libraries cordis_cel yojson hegel))
 
 (executables
@@ -57,3 +57,32 @@
  (name registry_test)
  (modules registry_test)
  (libraries cordis_cel hegel alcotest))
+
+; The boundary codec's agreement with protobuf itself. Needs python3 with
+; protobuf:
+;   dune build @cel/test/codec-agreement
+(executable
+ (name codec_agreement)
+ (modules codec_agreement)
+ (libraries cordis_cel cel_testgen hegel alcotest unix yojson))
+
+(rule
+ (alias codec-agreement)
+ (deps
+  pbwire.py
+  %{project_root}/cel/conformance/descriptors.binpb
+  %{project_root}/import/test/protos/corpus.binpb)
+ (action
+  (run %{exe:codec_agreement.exe} pbwire.py %{project_root}/cel/conformance/descriptors.binpb
+   %{project_root}/import/test/protos/corpus.binpb)))
+
+; The boundary codec, by example
+(test
+ (name codec_test)
+ (modules codec_test)
+ (libraries cordis_cel alcotest yojson)
+ (deps
+  %{project_root}/cel/conformance/descriptors.binpb
+  %{project_root}/import/test/protos/corpus.binpb)
+ (action
+  (run %{test} %{project_root}/cel/conformance/descriptors.binpb %{project_root}/import/test/protos/corpus.binpb)))
