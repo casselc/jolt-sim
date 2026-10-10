@@ -832,8 +832,21 @@ importers wait for the slice.
    - staleness was direct only, so after an input change a verdict about
      the old draft could append into the new episode; it is transitive, as
      in `routes.qnt`.
-   Still to do in stage 1: the SQLite store, crash injection with
-   recovery from the records, and ITF traces checked against the models.
+   Crash and recovery followed: `Store` (in memory, and SQLite with one
+   transaction per sync), `Codec` (records as versioned JSON, every value
+   exact), and `Engine.recover`, which rebuilds memory from the durable
+   records, releases again every intent a durable record still awaits, and
+   reconciles every Uncertain fiber. The property now crashes at drawn
+   steps, dropping the engine, every unsynced record and every message not
+   yet taken by the outbox; an example runs the loop on an SQLite file
+   with two crashes. The host keeps an input until it is durable and sends
+   it again after a crash, as any sender to the system must. Planted
+   recovery faults are caught (no re-release, no reconcile, a lossy
+   double); one is equivalent here: forgetting answered appends cannot
+   duplicate a note in a loop, since an append makes its scrutinee stale,
+   and needs a graph whose route appends to a stream its scrutinee does
+   not read. Still to do in stage 1: ITF traces of these runs checked
+   against `lifecycle.qnt`, `engine.qnt` and `observe.qnt`.
 2. **A real model behind the outbox.** The outbox process with its
    SQLite journal, the relay (`handoff.qnt`), reservations and the
    limiter (`budget.qnt`), and a completion endpoint (halo-flash's

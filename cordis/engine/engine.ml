@@ -416,3 +416,34 @@ let failures t = Smap.fold (fun a s acc -> match s.fiber with Failed m -> (a, m)
 let stream t n = fst (Smap.find n t.streams)
 let refused t = t.refused
 let episode t = t.episode
+
+(* ---- recovery ------------------------------------------------------------------------------------- *)
+
+(* Rebuild an instance from its durable records (quint/engine.qnt's crash:
+   memory is the durable state). Every intent a durable record awaits is
+   released again, under the same key and attempt: the outbox answers it
+   from its journal if it was sent (quint/handoff.qnt), and the fiber's
+   awaited key and attempt make a second answer change nothing. Every
+   Uncertain fiber is reconciled again. A fiber that was running re-runs
+   its turn, which is deterministic. *)
+let recover ?classes ?max_attempts (checked : Check.checked) graph (records : record list) =
+  let t = create ?classes ?max_attempts checked graph in
+  let apply t = function
+    | Slot (a, s) -> { t with slots = Smap.add a s t.slots }
+    | Input (n, src) -> { t with inputs = Smap.add n src t.inputs }
+    | Stream (n, vs, r) -> { t with streams = Smap.add n (vs, r) t.streams }
+    | Answered (s, e, c) -> { t with answered = (s, e, c) :: t.answered }
+    | Episode e -> { t with episode = e }
+  in
+  let t = List.fold_left (fun t (r : record) -> List.fold_left apply { t with seq = r.seq; durable = r.seq } r.facts) t records in
+  let refused = t.refused in
+  let cmds =
+    Smap.fold
+      (fun _ s acc ->
+        match s.fiber with
+        | Awaiting { intent; _ } -> Release intent :: acc
+        | Uncertain { intent; _ } -> Reconcile (intent.key, intent.attempt) :: acc
+        | _ -> acc)
+      t.slots []
+  in
+  ({ t with refused }, List.rev cmds)
