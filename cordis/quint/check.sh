@@ -135,6 +135,20 @@ sim revisions.qnt carryAlways stateReadable VIOLATED
 sim revisions.qnt noApproval breakingApproved VIOLATED
 sim revisions.qnt insertFirst singleWriter VIOLATED
 
+# ---- frames.qnt (RFC 0005: a frame consumed in batches, one committed turn each) -------
+for inv in accConsistent contiguous cursorMatches revsInOrder accTyped effectsOnce endAfterAll noRowLost bufferBounded; do
+  sim frames.qnt design "$inv" ok
+done
+verify frames.qnt design safety ok
+for w in someEnded carried drained restarted redelivered bufferFull abandoned; do sim frames.qnt design "not($w)" VIOLATED; done
+sim frames.qnt splitCommit contiguous VIOLATED
+sim frames.qnt midBatch accConsistent VIOLATED
+sim frames.qnt carryAny accTyped VIOLATED
+sim frames.qnt noDedup effectsOnce VIOLATED
+sim frames.qnt endEarly endAfterAll VIOLATED
+sim frames.qnt refuseAdvances noRowLost VIOLATED
+sim frames.qnt keepAcc accConsistent VIOLATED
+
 # conformance: simulator runs replayed in the model
 conform() { # label scenario mutant expect(pass|fail) extra-args...
   local label=$1 scenario=$2 mutant=$3 expect=$4; shift 4

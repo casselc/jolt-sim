@@ -1,6 +1,7 @@
 # RFC 0005: XML and XSD, CSV, and typed data frames
 
-Status: proposed; not scheduled. Records the design so that later work
+Status: proposed; not scheduled. Revision 2 settles the frames design
+(below) and its model. Records the design so that later work
 starts from it. Extends RFC 0003 (translating importers) and follows the
 pattern RFC 0004 set for protobuf. Each part needs a revision of this RFC,
 accepted, before it is built, and the frames part needs a Quint model
@@ -175,34 +176,136 @@ such as JSON-in-cell, which is reported.
 sequence of rows of a record type `T`, stored by column, and possibly far
 larger than any single turn may cost.
 
-- **What a frame means.** It means the rows it holds, in order.
-  - CEL evaluates row by row.
-  - Columnar execution, such as compiling a subset of CEL to Arrow compute
-    kernels, is a later optimisation. It must give the same answers.
-- **What a frame input is.** It is not a `list(T)`. It is a **stream of
-  batches**, each a `list(T) <max B>`, plus an end marker.
-  - A cell that consumes a frame runs one turn per batch.
-  - The turn's cost estimate is taken over `B` rows.
-  - Its state carries the accumulator between batches.
-  - So the cost bound is per batch, and a frame's total is the number of
-    batches times the estimate. This reuses RFC 0002's turns, state and
-    streams with capacity.
-- **What a frame output is.** It is a stream of batches written to a file
-  (Parquet or Vortex) or to Arrow IPC.
-  - Writing settings are policy, not code: row group size, compression,
-    encodings.
+Revision 2 of this section takes in a survey of how batch and streaming
+systems delimit, commit, upgrade and end their batches (Rama, Flink,
+Beam/Dataflow, Kafka Streams, Timely/Differential, Materialize, Feldera,
+Temporal, Spark), kept at `docs/cordis/research/STREAMING-PRIOR-ART.md`.
+Each rule below names the system it follows. The model,
+`cordis/quint/frames.qnt`, checks them, and is in the model gate.
 
-**Model first.** Batching makes the runtime stateful in new ways, so
-`quint/frames.qnt` is written before this part is built. It checks:
+**What a frame means.** It means the rows it holds, in order.
+- CEL evaluates row by row.
+- Columnar execution, such as compiling a subset of CEL to Arrow compute
+  kernels, is a later optimisation. It must give the same answers.
 
-- every batch is processed exactly once;
-- the end marker follows every batch;
-- a revision cutover happens only between batches, and the accumulator
-  crosses it under RFC 0004's `stateReadable` rule;
-- a crash resumes from the last committed batch;
-- a full stream refuses rather than drops.
+**What a frame input is.** It is not a `list(T)`. It is a stream of
+**batches**, each a `list(T)` of at most `B` rows, and a cell that
+consumes a frame runs one turn per batch, its state carrying the
+accumulator between them. The rules:
 
-It would have mutants and witnesses, as the other models do.
+1. **A batch is an interval of the source, logged before it runs.** Each
+   batch is identified by its half-open interval `[lo, hi)` of row
+   positions (a row group's index and offset, for Parquet), and the
+   interval is durable before the batch's turn reads it. Replay after a
+   crash then re-reads the same batches. (Rama fixes a microbatch's offset
+   range at its first read; Spark writes `offsets/<id>` before running;
+   Materialize's remap binds offsets durably.)
+2. **A turn commits one atomic record**: the accumulator, the cursor `hi`,
+   the revision that computed it, and the turn's intents. A turn computed
+   but not committed is lost to a crash and re-run from the last commit;
+   cells are pure CEL, so re-running gives the same record. Exactly-once
+   is "roll back to the last commit and replay" (Kafka Streams' commit of
+   output, changelog and offsets in one transaction; Rama's microbatch
+   commit). The model's `splitCommit` mutant writes the cursor after the
+   state and double-counts a batch.
+3. **Effects are observed once, not turns run once.** A turn may run twice
+   before it commits. Each intent is keyed by `(stream, generation, lo,
+   index)`, the batch form of RFC 0002's "an append is keyed by the
+   scrutinee's revision"; the outbox delivers at least once and the
+   receiver's receipts make each key observed once (Flink's two-phase
+   sinks: staged intent, then receipt). The generation changes on a
+   restart (rule 5), so a re-read frame's intents are new ones.
+4. **`B` is a ceiling, and the runtime chooses each batch.** `B` is
+   policy, not code, and each batch has `min(B, budget / row cost, the
+   rest of the row group)` rows: a large row group is split, which rule 1
+   makes safe. The cost estimate is taken over `B`, so it bounds every
+   batch. A handler must therefore give the same answer for **any**
+   partition of the input into batches (Beam's bundles, which users do not
+   size): a Hegel property folds random batchings of generated frames and
+   compares them with one batch.
+5. **A revision cuts over at a commit, by one of three modes**, recorded
+   in the commit record so a replay knows which revision computed which
+   batch (Temporal's patch markers):
+   - **carry**: the next turn runs on the new revision with the carried
+     accumulator. Allowed only when the new revision reads the
+     accumulator's type (RFC 0004's `stateReadable`); a turn computed but
+     not committed by the old revision is dropped, never committed under
+     the new (`midBatch` mutant). The result is the old revision's fold
+     over `[0, k)` continued by the new one's over `[k, ...)`.
+   - **drain**: the frame finishes on the old revision; the next frame
+     runs on the new (Temporal's pinned workflows; Dataflow's drain).
+   - **restart**: the accumulator is dropped and the frame re-read from 0
+     on the new revision, as a new generation (Kafka Streams' new
+     `application.id`). The default when the accumulator's type changed.
+
+   This **amends RFC 0002**, which says the outcome of admission is that
+   of a cold start of the new revision. That holds for every cell but a
+   frame consumer under carry, whose outcome is the mixed fold above;
+   RFC 0002 points here.
+6. **State that is buffered is state.** Batches planned but not yet
+   consumed are typed by `T`; a revision that changes a frame's `T` must
+   migrate or refuse them, under the same `stateReadable` rule as cell
+   state (Dataflow refuses an update that changes a buffered coder).
+   Migration follows Rama's `PState.migrated`: named, idempotent, applied
+   on read, its work charged to turns.
+7. **The accumulator is bounded.** A static estimate over `B` rows holds
+   only if a turn's work does not grow with the accumulator. The
+   accumulator's type must carry size bounds (`<max n>`), or the cost
+   estimator charges a per-turn state term; scanning an unbounded
+   accumulator is O(state), not O(B) (the differential/DBSP lesson).
+8. **A full buffer stops the reader; it does not refuse rows.** A
+   source-fed frame applies backpressure by not advancing the reader's
+   position (Kafka's pull, Flink's credits), so no row is lost
+   (`refuseAdvances` mutant). RFC 0002's refuse-and-report stays for route
+   appends on feedback loops, where refusal is the meaning; a refusal is
+   always a definite "not appended" (Rama's acknowledged append that
+   throws but was written is the ambiguity to avoid).
+9. **The end of input is a committed turn.** When the last batch has
+   committed, the input is closed (Beam's watermark at +∞; Materialize's
+   `upper = ∞`) and an end turn runs exactly once, flushing the
+   accumulator, as its own commit with its own intents and its own cost
+   estimate (`on_end`). An end turn that runs before the last commit
+   (`endEarly` mutant) misses rows; one not committed loses or duplicates
+   its output (Flink's FLIP-147).
+10. **A new input abandons the frame.** RFC 0002 empties a graph's streams
+    when an input changes; a frame half consumed at that moment is
+    abandoned and its accumulator discarded (`keepAcc` mutant), and the
+    next frame runs on any revision admitted by drain.
+11. **Combiners, for parallelism.** A cell may declare its accumulator a
+    combiner: `zero`, and an associative `combine(a, b)` over the state
+    type. Only then may the runtime split a frame over several fibers and
+    merge their partials (Rama's two-phase aggregation, which applies only
+    when every aggregator is a combiner; Beam's `mergeAccumulators`).
+    Other cells consume sequentially. Hegel checks `combine`'s
+    associativity and `fold(xs ++ ys) == combine(fold(xs), fold(ys))`.
+12. **One frame input per cell**, for now. A cell with two would need a
+    cursor per input in its commit record, or aligned markers (Flink's
+    barriers); that waits for a use.
+
+**What a frame output is.** It is a stream of batches written to a file
+(Parquet or Vortex) or to Arrow IPC. Writing settings are policy, not
+code: row group size, compression, encodings. A written row group is an
+intent, so it is committed and observed once by rules 2 and 3.
+
+**The model.** `frames.qnt` is one frame of four rows, a ceiling of two
+rows a batch, one planned batch buffered at most, three revisions (one
+with a new meaning and one with a new accumulator type), crashes, at-least-
+once delivery and a second input. It checks:
+
+| Property | Rule |
+| --- | --- |
+| `accConsistent`: the accumulator is the fold of the committed batches, each under its recorded revision | 2, 5, 10 |
+| `contiguous`, `cursorMatches`: the committed batches partition `[0, cursor)` | 1, 2 |
+| `revsInOrder`: revisions change only between commits | 5 |
+| `accTyped`: the accumulator is of the type the live revision reads | 5 |
+| `effectsOnce`: each intent is observed once | 3 |
+| `endAfterAll`: the end turn follows the last commit | 9 |
+| `noRowLost`, `bufferBounded` | 8 |
+
+Witnesses show a frame ending, a carried cutover, a drain, a restart, a
+redelivery, a full buffer and an abandoned frame; seven mutants, each
+named above, are each caught by the property beside it. Apalache checks
+the design to depth 8.
 
 ### Libraries
 
@@ -234,8 +337,8 @@ from the imported type:
    functions over a record form.
 3. **Schemaless XML:** a generic node type (which waits for references),
    or refuse.
-4. **The batch size `B`:** fixed per graph, a policy number, or chosen per
-   input from the file's row groups.
+4. ~~**The batch size `B`**~~: answered in revision 2: a policy ceiling,
+   with the runtime choosing each batch below it ("Frames", rule 4).
 5. **Which first?** Each costs more than the one before: CSV (smallest),
    then XSD/XML, then frames. Frames also wait for the turn runtime
    (phase 3).
@@ -248,6 +351,7 @@ from the imported type:
    - the agreement property.
 2. XSD import and the XML codec, without recursion.
 3. Recursion in XSD, and the XML node type, once RFC 0002 has references.
-4. `frames.qnt`, then the Arrow import and the batch semantics in the turn
-   runtime.
+4. The Arrow import and the batch semantics in the turn runtime, under
+   `frames.qnt` (written: revision 2), with the batching-invariance and
+   combiner properties in Hegel.
 5. The Parquet and Vortex codecs.

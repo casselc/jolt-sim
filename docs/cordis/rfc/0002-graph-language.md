@@ -274,7 +274,11 @@ A patch that applies is admitted through these gates, in order:
 A revision that passes goes live; one that needs approval waits until it
 is approved; anything else is refused. Then the old fibers retire and the
 new ones are inserted; by Cordis's confluence result the outcome is that of
-a cold start of the new revision.
+a cold start of the new revision. The one exception is a cell consuming a
+frame in batches whose accumulator is carried across the cutover: its
+outcome is the old revision's fold up to the cutover, continued by the
+new one's (RFC 0005, "Frames", rule 5, which also offers drain and
+restart).
 
 ## Compilation to the kernel
 
