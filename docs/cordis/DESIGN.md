@@ -23,8 +23,8 @@ Every choice below was argued in the companion docs or in conversation. Each row
 | Enforcement | The hypervisor trap is the only way out of a guest; hypercalls and Wasm imports become intent frames | Trusting cells to emit intents | A compromised cell cannot bypass a device it does not have |
 | Host language | OCaml 5.4 mainline; OxCaml modes as erasable annotations, checked in an OxCaml build | OxCaml only; Clojure core | Mainline builds everywhere; modes add static confinement where available |
 | Cell bodies | CEL, extended only by macros and acyclic function libraries; Wasm components for the rest | A custom SCI-like interpreter; DataWeave-style recursion | CEL has a spec, a conformance suite and a static cost bound; recursion would lose the bound |
-| Graph language | ML syntax: row types, effect rows in the arrow, variants with exhaustive routes, assets, `use`, typed holes | EDN graphs with Malli | Types do the schema chain, effect checking and dispatch coverage as inference |
-| Identity | Every definition addressed by the hash of its normalised syntax tree; names point at hashes; stored in Irmin | Name-and-version pins | Edits cannot break bystanders; replay, cache and anti-weakening keys come free |
+| Graph language | A thin declaration layer around CEL (RFC 0002 rev 2): named record and variant types, declared cell signatures with effect rows, typed streams with capacities, routes with exhaustive cases, assets, `use`, typed holes | EDN graphs with Malli; revision 1's ML bodies and Hindley–Milner inference | One expression language, one checker, one cost model; signatures are declared, so inference is needed only at the wiring |
+| Identity | Every definition addressed by the SHA-256 of its canonical text and of the definitions it names; names point at hashes; definitions in files (Irmin deferred) | Name-and-version pins | Edits cannot break bystanders; replay, cache and anti-weakening keys come free |
 | Caching | Assets memoised by (cell hash, input hashes); freshness drives reactivity | Task graphs that always re-run | Soaks and replays recompute only what changed |
 | Schemas | One internal type form; importers for protobuf, JSON Schema, OpenAPI, AsyncAPI; CEL residue for what types cannot say | CUE as the schema IR | CUE is pre-1.0, has no cost bound, no row or effect types, no OCaml binding |
 | CUE | Offline import front end and deployment config only | Runtime use; linking libcue | Its strength is normalisation and merging; libcue embeds the Go runtime |
@@ -36,7 +36,7 @@ Every choice below was argued in the companion docs or in conversation. Each row
 | Platform | Your FreeBSD platform as built: a VM and jail per agent, child jails per tool call, central pf, ZFS clones and snapshots per step; OxCaml in a Linux jail now, a native port later | Linux hosts | Your platform; the port is 7 to 14 person-weeks |
 | Export | Open Workflow Specification (Serverless Workflow 1.0) as a lossy export | Importing from it | It lacks Uncertain, compensation and cost bounds |
 | Guests | MirageOS unikernels on Solo5, plus Wasm cells | Small Linux or FreeBSD guests | Granted devices are the declared capabilities; hypercalls make the trap exact and the narrow tender possible |
-| Serialization | EDN for authoring; the Preserves data model and canonical binary for hashing, trap frames and journals | Canonical EDN with deterministic CBOR; JSON, Transit, Protobuf as the store | Agents keep EDN; one canonical binary, annotations outside the hash, and a capability slot; we own small OCaml and Clojure codecs tested against the Preserves sample suite |
+| Serialization | The graph language's canonical text as the hash input now; Preserves deferred until the capability slot is needed (caps work) | Preserves from the start; canonical EDN with deterministic CBOR; JSON, Transit, Protobuf as the store | Canonical text plus SHA-256 already gives identity; Preserves has no OCaml or Clojure library and one main maintainer, so its codecs wait for the one job only it does ("Serialization") |
 
 ## The model
 
@@ -69,41 +69,50 @@ Four languages, each doing one job: a typed graph language for wiring, CEL for m
 
 | Tier | Job | Bound | Confinement |
 | --- | --- | --- | --- |
-| Graph language (ML syntax) | Wiring, routes, signatures, functors, assets | Typechecked at admission | Capability and effect rows |
+| Graph language (declarations around CEL) | Wiring, routes, signatures, streams, assets | Typechecked at admission | Capability and effect rows |
 | CEL | Most cell bodies; guards, invariants, schema residue | Static cost estimate at admission; runtime limit | Only declared variables and functions exist |
 | Wasm component | Loops, recursion, heavy parsing | Fuel | Only WIT imports, each one trapped |
 | Cedar | Allow or deny at the trap | Terminates, no I/O | Schema-validated; analysable |
 
 ### The graph language
 
-Row-typed records replace mycelium's schema chain, effect rows in the arrow replace `:requires` and `:effects`, and variants with exhaustive routes replace dispatch coverage checks. Our own checker (Hindley–Milner with row and effect polymorphism) runs at admission; nothing is compiled natively, so old definitions are simply garbage on reload.
+Specified in [RFC 0002](rfc/0002-graph-language.md) (revision 2, as built in `cordis/graph`). Named record and variant types replace mycelium's schema chain, effect rows on a cell's signature replace `:requires` and `:effects`, and routes with exhaustive cases replace dispatch coverage checks. Every expression is CEL; the graph language is the declarations around it. Signatures are declared, so the checker infers only at the wiring. It runs at admission; nothing is compiled natively, so old definitions are simply garbage on reload.
 
-```ocaml
-cell critic : { diff : Diff.t; state : { attempts : int } }
-           ->{ Llm.complete, Repo.read } Verdict.t =
-  let ctx = Repo.read diff.path
-  use resp = Llm.complete { prompt = [ctx; diff.patch]; max_tokens = 4000 }
-  let r = Review.parse resp ?? Review.unparseable
-  (if r.verdict == Pass then Pass r else Fail r)
-    with state.attempts := state.attempts + 1
+From `cordis/graph/examples/review.cg`:
 
-graph review_loop (Author : AUTHOR) = {
-  asset draft   = Author.write
-  asset verdict = critic draft      ~fresh:on_change
-  asset shipped = gate verdict
-  route verdict {
-    Pass _ -> shipped
-    Fail r -> draft <~ r.notes
-  }
-  invariant (critic before gate)
+```
+type Verdict = Pass(Review) | Fail(Review);
+
+effect repo.read(string) : Text;
+effect llm.complete(Prompt) : Text;
+
+cell critic(diff : Diff) : Verdict
+  ! { repo.read, llm.complete }
+  state { attempts : int = 0; }
+= {
+  use ctx  = repo.read(diff.path);
+  use resp = llm.complete(Prompt{prompt: [ctx.text, diff.patch], max_tokens: 4000});
+  let r    = Review{passed: resp.text.startsWith('LGTM'), notes: resp.text};
+  r.passed ? Verdict.Pass(r) : Verdict.Fail(r)
+    with state.attempts := state.attempts + 1;
+}
+
+graph review_loop {
+  input  request : Diff;
+  stream notes : string<max 500> up to 8;
+  asset  draft   = write(request, notes) ~fresh:on_change;
+  asset  verdict = critic(draft);
+  asset  shipped = gate(verdict);
+  route verdict { Pass(_) -> shipped; Fail(r) -> notes <~ r.notes };
+  invariant critic before gate;
 }
 ```
 
 - **`use`** splits a body into a chain of CEL turns at each wait; each `use` is a commit point.
-- **`with`** updates a path; **`??`** supplies a fallback for an optional value.
-- **Assets** are the acyclic, memoised part of the graph; **routes** carry loops back into an asset's inputs.
+- **`with`** updates a state field; records are built with CEL's message-literal syntax (`Review{…}`).
+- **Assets** are the acyclic, memoised part of the graph; **streams** are typed, named and bounded (`up to 8`), and **routes** append to them, closing loops back into an asset's inputs.
 - **Typed holes** (`?todo`) type-check and run as pending, so agents and scaffolds can leave work unfinished.
-- **Edits** are structural patches on the syntax tree, guarded by the expected hash, as upstream mycelium's `myc patch` does. A patch that narrows a signature needs approval.
+- **Edits** are patches guarded by the expected hash of each definition they replace, as upstream mycelium's `myc patch` does. A patch that narrows a signature needs approval.
 
 ### Cells in CEL
 
@@ -152,6 +161,8 @@ unless { context has approval
 
 ### Serialization
 
+**Status (RFC 0006 revision 2): Preserves is deferred.** Identity today is RFC 0002's canonical text and its SHA-256, and the run store's commit records carry that text with a format version. Preserves is adopted when the capability slot is needed (the caps work, build-order item 3d's implementation), and only the hashing input changes then. The analysis below is kept as the reason Preserves remains the eventual choice.
+
 Use EDN where agents and people read and write, and Preserves for everything that is hashed or crosses the trap. Its data model and canonical binary give content addresses, frames and journals in one format. The format has five jobs:
 
 - text that agents and people read and write;
@@ -176,7 +187,7 @@ No single format is best at all five.
 
 The recommendation, in three layers:
 
-1. **Authoring and review: EDN** (or the ML surface, which round-trips to it). Agents already write it.
+1. **Authoring and review: EDN** (or the graph language's text, which RFC 0002 prints canonically). Agents already write it.
 2. **Hashing: the Preserves data model and canonical binary.** EDN converts by a fixed, tested mapping, and annotations carry provenance outside the hash.
 3. **Trap frames and journals: Preserves binary as well,** so a value has the same bytes whether it is hashed, sent or journalled. Deterministic CBOR is no longer needed.
 
@@ -325,7 +336,7 @@ val apply  : registry -> Fiber_id.t -> rule -> registry * Ctx.t inverse list
 - **Masked teardown.** Unloading runs protected from cancellation, so an inverse is never torn halfway.
 - **Assets.** Outputs are memoised by (cell hash, input hashes). The memo for emission cells is the replay cassette in simulation and an idempotent receipt cache in production. An asset's freshness rule re-targets the fibers that read it.
 - **Reactivity.** A key gains an acquire hook when some fiber's committed view first names it and a release hook when the last one drops it, as Lwd does.
-- **Versioned userspace.** Graphs, cells, libraries and policy live in Irmin under their hashes: a branch per candidate revision, a reset to roll back.
+- **Versioned userspace.** Graphs, cells, libraries and policy are addressed by their hashes: a candidate revision is a set of hashes beside the live one, and rolling back is pointing back. Definitions live in files for now; Irmin remains the candidate store when branching needs more than that (RFC 0002 "Deferred").
 
 ### The outbox
 
@@ -534,11 +545,13 @@ Plain Quint modules beside the lifecycle model, each with a design instance, mut
 **Phase 2: languages and imports**
 
 4. **CEL evaluator** with the cost estimator, the macro extensions and function libraries, tested against cel-spec conformance and cel-go.
-5. **Graph language checker:** row and effect types, routes, assets, `use`, typed holes, structural patches; definitions stored by hash in Irmin.
+5. **Graph language checker** (built, RFC 0002 rev 2): declared types and effect rows, streams, routes, assets, `use`, typed holes, hash-guarded patches; definitions addressed by hash, in files.
 6. **Importers,** protobuf first, then JSON Schema, OpenAPI and AsyncAPI, with CUE offline as a front end; then generators for Hegel from the same type form.
 7. **Scaffolders** for services and CRD controllers, reusing the importers; Quint and Cedar stubs generated alongside.
 
 **Phase 3: emissions and enforcement**
+
+Built as a vertical slice first ([RFC 0006](rfc/0006-turn-runtime.md) revision 2, "Staged build plan"): the review loop end to end, an LLM intent through a loopback outbox, a crash and recovery checked against the models; then the items below widen it.
 
 8. **Outbox and intents,** ported from jolt-sim's commit-gated session and JS1 receipts; LLM calls first, with cassettes; compensation declarations.
 9. **Cedar at the trap,** through a small Rust C wrapper or a Wasm component; partial-evaluation residuals cached per graph hash; Cedar Analysis in the change gates.
@@ -571,7 +584,7 @@ Open questions:
 
 - **Restoring one snapshot into several VMs** is now a platform feature requirement. Until it lands, soak testing in branched futures runs in the simulator; the outbox's fork IDs are designed for it already.
 - **Trusting tool annotations.** Intent kinds come first from the hosted MCP servers' tool annotations (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`) and A2A agent cards. `pf` rules decide, the stricter of the two wins, and disagreements are flagged. Open: whether a third-party server with missing annotations defaults to emission.
-- **Preserves codecs.** Who writes and maintains the OCaml and Clojure codecs, and whether Preserves Schema code generation is worth its 2–3 weeks.
+- **Preserves codecs** (deferred, RFC 0006 rev 2). Who writes and maintains the OCaml and Clojure codecs when the capability slot needs them, and whether Preserves Schema code generation is worth its 2–3 weeks.
 - **Which parked work lands first:** the decide stack on `canonical`, the JS1 contract, or jolt-sim's Jolt 0.7.16 drafts.
 - **Clojure as the agents' language.** EDN keeps samizdat's cells and graphs round-tripping; the ML surface is for checking and authoring.
 

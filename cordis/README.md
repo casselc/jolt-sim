@@ -17,6 +17,10 @@ simulator that checks one against the other.
 | `hegel/` | The oracle over a Hegel test case, so failing runs shrink. | 3 |
 | `bin/` | `cordis-sim`: run a campaign, print its verdict, write ITF traces. | 3 |
 | `cel/` | CEL for cells (RFC 0001): parser, macros, evaluator, actual cost; cel-spec conformance and a differential test against cel-go. See `cel/README.md`. | phase 2, 4 |
+| `graph/` | The graph language (RFC 0002 rev 2): parser, printer, hashes, checker, cost budgets, compatibility, hash-guarded patches, compilation to the kernel; `cgraph`. Descriptor-native protobuf types across revisions (RFC 0004). | phase 2, 5 |
+| `import/` | Importers (RFC 0003): protobuf, and JSON Schema drafts 4 to 2020-12 with a compiled CEL predicate, an interpreter and a strict codec; `cimport`. Checked against the official JSON Schema Test Suite, Python's `jsonschema` (Hegel) and SchemaStore. | phase 2, 6 |
+| `quint/admission.qnt`, `assets.qnt`, `routes.qnt`, `revisions.qnt` | Phase 2's models: concurrent edits, memoisation and freshness, guarded assets and feedback loops, descriptor-native revisions (RFCs 0002 and 0004). | phase 2 |
+| `quint/frames.qnt`, `observe.qnt` | Frames consumed in batches (RFC 0005 rev 2); observational emissions, which retry under reservations instead of reconciling (RFC 0006 rev 2). Written before their implementations. | phase 3 |
 | `test/` | Alcotest suites: kernel and `Order` units, simulator campaigns, confluence, replay; Hegel properties with a negative control. | |
 
 ## Running it
@@ -28,7 +32,8 @@ npm i -g @informalsystems/quint           # 0.33
 # quintgo, from casselc/observability:
 (cd observability/quintgo && go build -o "$HOME/bin/quintgo" ./cmd/quintgo)
 
-dune build && dune test                    # 18 tests, about a second
+dune build && dune test                    # 13 Alcotest suites (~300 cases) plus the conformance
+                                           # and golden checks; seconds from a clean build
 dune exec -- cordis-sim --runs 500         # a campaign over the chain scenario
 dune exec -- cordis-sim --scenario random --fibers 6 --runs 1000
 dune exec -- cordis-sim --mutant blind-retry   # exits 1: at most once is violated
@@ -55,6 +60,8 @@ not run counts as a pass.
 | Branches: only the chosen branch's emissions take effect, once; only it gets real receipts; every intent is answered | — | `branches.qnt` `safety`; mutants `releaseEarly`, `releaseEarlyNoDedup`, `noForkIds` | `:sampled`; `:exhausted` to 8 steps |
 | Gateway: no call has an outside effect twice; remote tools leave only through the outbox | — | `gateway.qnt` `safety`; mutants `ungated`, `missingIsInternal` | `:sampled`; `:exhausted` to 8 steps |
 | Capabilities: attenuation never widens | — | `caps.qnt` `safety`; mutants `uncoveredCaveats`, `unionCaveats` | `:sampled`; `:exhausted` to 8 steps |
+| Frames: each batch committed once with its cursor and revision; cutover only at commits; the accumulator typed by the live revision; intents observed once; the end turn after the last batch; no row lost to a full buffer | — | `frames.qnt` `safety`; mutants `splitCommit`, `midBatch`, `carryAny`, `noDedup`, `endEarly`, `refuseAdvances`, `keepAcc` | `:sampled`; `:exhausted` to 8 steps |
+| Observational emissions: an effectful intent takes effect once; one answer applied per intent; spend within budget and never under-counted; an observational intent never Uncertain | — | `observe.qnt` `safety`; mutants `misclassify`, `refundLost`, `noReserve`, `applyLate`, and `oneClass` (the single-class rule) | `:sampled`; `:exhausted` to 8 steps |
 | Conformance: a simulator run is a run of the model | — | `quintgo validate` replays ITF traces; a blind-retry run claiming to be the design is rejected | `:monitored` |
 
 ## What the simulator found
