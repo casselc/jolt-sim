@@ -1,0 +1,2 @@
+// expect: unknown protobuf type acme.shop.v1.Order
+cell f(o : acme.shop.v1.Order) : int = { 1; }

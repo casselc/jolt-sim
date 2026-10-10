@@ -52,6 +52,7 @@ type tdef = Alias of ty | Variant of (string * ty option) list
 
 type item =
   | Uses of string * string  (** alias, sha256:... *)
+  | Uses_descriptors of string  (** a FileDescriptorSet, by sha256:... (RFC 0004) *)
   | Type_def of string * tdef
   | Effect of string * ty * ty  (** kind, request, receipt *)
   | Cell of cell
@@ -61,5 +62,6 @@ type file = item list
 
 let item_name = function
   | Uses (a, _) -> a
+  | Uses_descriptors h -> h
   | Type_def (n, _) | Effect (n, _, _) | Graph (n, _) -> n
   | Cell c -> c.name

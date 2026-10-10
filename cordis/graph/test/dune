@@ -1,7 +1,8 @@
 (library
  (name graph_testlib)
  (wrapped false)
- (modules str_replace))
+ (modules str_replace corpus_store)
+ (libraries cordis_cel))
 
 ; Hegel properties of the syntax: round trip, formatting, hashes
 (test
@@ -16,7 +17,7 @@
  (libraries cordis_graph cordis_cel graph_testlib alcotest)
  (deps
   (glob_files corpus/*.cg)
-  (glob_files corpus/libs/*.cel))
+  (glob_files corpus/libs/*))
  (action
   (run %{test} corpus)))
 
@@ -27,7 +28,7 @@
  (libraries cordis_graph cordis_cel cel_testgen graph_testlib hegel alcotest)
  (deps
   (glob_files corpus/*.cg)
-  (glob_files corpus/libs/*.cel)
+  (glob_files corpus/libs/*)
   %{project_root}/graph/examples/review.cg)
  (action
   (run %{test} corpus %{project_root}/graph/examples/review.cg)))
@@ -39,7 +40,7 @@
  (libraries cordis_graph cordis_cel cel_testgen graph_testlib hegel alcotest)
  (deps
   (glob_files corpus/*.cg)
-  (glob_files corpus/libs/*.cel)
+  (glob_files corpus/libs/*)
   %{project_root}/graph/examples/review.cg)
  (action
   (run %{test} corpus %{project_root}/graph/examples/review.cg)))

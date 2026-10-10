@@ -1,0 +1,3 @@
+// expect: defined differently by two descriptor sets
+uses descriptors HASH(shop.binpb);
+uses descriptors HASH(shop_removed.binpb);

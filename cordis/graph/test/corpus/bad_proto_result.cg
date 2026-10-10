@@ -1,0 +1,3 @@
+// expect: the result has type acme.shop.v1.Money, not acme.shop.v1.Order
+uses descriptors HASH(shop.binpb);
+cell f(x : int) : acme.shop.v1.Order = { acme.shop.v1.Money{units: x}; }

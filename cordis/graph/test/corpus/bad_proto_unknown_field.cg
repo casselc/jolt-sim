@@ -1,0 +1,3 @@
+// expect: undefined field 'nope'
+uses descriptors HASH(shop.binpb);
+cell f(o : acme.shop.v1.Order) : string = { o.nope; }

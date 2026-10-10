@@ -1,0 +1,17 @@
+// expect: ok
+uses descriptors HASH(shop.binpb);
+cell total(o : acme.shop.v1.Order) : int = { o.lines.fold(n, 0, l, n + int(l.quantity)); }
+cell money(units : int) : acme.shop.v1.Money = { acme.shop.v1.Money{currency: 'EUR', units: units}; }
+cell has_note(o : acme.shop.v1.Order) : bool = { has(o.note); }
+cell by_card(o : acme.shop.v1.Order) : bool = { has(o.card_token) && o.status == acme.shop.v1.Status.STATUS_OPEN; }
+cell tree_size(c : acme.shop.v1.Category) : int = { size(c.children) + c.children.fold(n, 0, k, n + size(k.children)); }
+cell placed_at(o : acme.shop.v1.Order) : timestamp = { o.placed; }
+graph g {
+  input o : acme.shop.v1.Order;
+  input c : acme.shop.v1.Category;
+  asset t = total(o);
+  asset n = has_note(o);
+  asset k = by_card(o);
+  asset m = money(t);
+  asset s = tree_size(c);
+}

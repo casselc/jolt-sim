@@ -208,7 +208,10 @@ let rec ty st =
         expect st ")";
         Option t
     | n when List.mem n scalars -> Scalar (n, bound st)
-    | n -> Named n
+    | n ->
+        (* a protobuf full name: acme.shop.v1.Order *)
+        let rec dotted acc = if cur st = '.' && is_ident_start (at st 1) then (st.pos <- st.pos + 1; dotted (acc ^ "." ^ ident st)) else acc in
+        Named (dotted n)
 
 (* ---- cells --------------------------------------------------------------------------------- *)
 
@@ -422,6 +425,12 @@ let hash st =
 
 let item st =
   if accept_word st "uses" then begin
+    if accept_word st "descriptors" then begin
+      let h = hash st in
+      expect st ";";
+      Uses_descriptors h
+    end
+    else
     let a = ident st in
     expect st "=";
     let h = hash st in

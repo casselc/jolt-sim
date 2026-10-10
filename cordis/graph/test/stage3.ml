@@ -31,9 +31,7 @@ let load_ok text =
 let corpus_stores =
   lazy
     (let corpus = Sys.argv.(1) and example = Sys.argv.(2) in
-     let lib = read (Filename.concat corpus "libs/text.cel") in
-     let lib_hash = "sha256:" ^ Cordis_cel.Sha256.digest lib in
-     let options = { Check.default_options with libraries = (fun h -> if h = lib_hash then Some lib else None) } in
+     let options = { Check.default_options with store = Corpus_store.store corpus } in
      let oks =
        Array.to_list (Sys.readdir corpus)
        |> List.filter (fun f -> String.length f > 3 && String.sub f 0 3 = "ok_")
@@ -41,7 +39,7 @@ let corpus_stores =
      in
      List.map
        (fun p ->
-         match Patch.load ~options (Str_replace.all ~sub:"LIBHASH" ~by:lib_hash (read p)) with
+         match Patch.load ~options (Corpus_store.substitute corpus (read p)) with
          | Ok s -> (p, s)
          | Error es -> failwith (p ^ ": " ^ String.concat "; " es))
        (example :: oks))

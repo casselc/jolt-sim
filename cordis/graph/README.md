@@ -16,10 +16,10 @@ in it is CEL, parsed and checked by [`../cel`](../cel).
 | `lib/compile.ml` | Compilation to kernel components, and a run of them under the kernel's rules with what it must show |
 | `lib/compat.ml` | Replacement compatibility: what changed between revisions, and what needs approval |
 | `lib/patch.ml` | Hash-guarded patches (`replace NAME@HASH`, `add`, `remove NAME@HASH`) and admission |
-| `bin/cgraph.ml` | `cgraph fmt`, `hash`, `check`, `run FILE`; `cgraph diff OLD NEW`; `cgraph admit LIVE PATCH [--approved]` |
+| `bin/cgraph.ml` | `cgraph fmt`, `hash`, `check`, `run FILE`; `cgraph diff OLD NEW`; `cgraph admit LIVE PATCH [--approved]`; `--store DIR` names the directory whose files `uses` finds by hash |
 | `examples/review.cg` | The review loop of RFC 0002 |
 | `test/props.ml` | Hegel: print/parse round trip, formatting invariance (spacing, comments, CEL spelling), hash sensitivity |
-| `test/corpus/` | Programs the checker must accept (`ok_*`) or reject with a given error (`bad_*`), one rule each |
+| `test/corpus/` | Programs the checker must accept (`ok_*`) or reject with a given error (`bad_*`), one rule each; `libs/` is their content store (a library text, descriptor sets), named in a program as `HASH(file)` |
 | `test/soundness.ml` | Hegel: for inputs of the declared types, every turn costs at most its estimate and results have their declared types, over the corpus and over generated cells |
 | `test/stage3.ml` | Hegel: compiled graphs run to quiet under any interleaving with assets provided, effect rows kept and statically accepted invariants held (random graphs with random invariants); admission as `admission.qnt` states it; compatibility examples |
 
@@ -42,3 +42,16 @@ What routes and streams do at run time (guards that compute or withdraw,
 appends keyed by the scrutinee's revision, full streams refusing, a new
 input emptying the streams) is specified in RFC 0002 revision 2 and checked
 in `quint/routes.qnt`, ahead of the turn runtime that will implement it.
+
+**Protobuf types** ([RFC 0004](../../docs/cordis/rfc/0004-descriptor-native-types.md),
+stage 2): a file attaches descriptor sets with `uses descriptors
+sha256:<hex>;`, and its signatures name messages and enums by full name
+(`o : acme.shop.v1.Order`). The file is checked with a registry built from
+just those sets, and values are protobuf messages under CEL's proto
+semantics: messages are nominal, enums are `int`, oneofs are fields, the
+well-known types are what CEL makes of them, and recursion is native. A
+message's cost shape comes from its descriptor field by field, repeated
+fields, maps, strings and bytes bounded by the default ceiling. The
+soundness property covers the corpus's protobuf cells with messages
+generated from the descriptors. Next: the boundary codec over the
+registry (stage 3) and descriptor compatibility in admission (stage 4).

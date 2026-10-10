@@ -59,15 +59,21 @@ type graph_info = {
   effect_row : string list;
 }
 
-type checked = { cells : cell_info list; graphs : graph_info list; types : (string * C.t) list }
+type checked = {
+  cells : cell_info list;
+  graphs : graph_info list;
+  types : (string * C.t) list;
+  registry : Cordis_cel.Proto.registry;
+      (** the revision's descriptor registry: bind it to evaluate its turns *)
+}
 
 type options = {
-  libraries : string -> string option;  (** library text by hash *)
+  store : string -> string option;  (** content by hash: library texts, descriptor sets *)
   default_size : int;  (** the size bound of an unbounded string, bytes, list or map *)
   budget : int;  (** a turn's cost ceiling *)
 }
 
-let default_options = { libraries = (fun _ -> None); default_size = 1024; budget = 1_000_000 }
+let default_options = { store = (fun _ -> None); default_size = 1024; budget = 1_000_000 }
 
 (* ---- types ----------------------------------------------------------------------------------- *)
 
@@ -94,6 +100,13 @@ let rec resolve env ?(visiting = []) ?(open_ok = false) (t : ty) : C.t =
       if open_ && not open_ok then fail "an open record { ..; .. } is allowed only as a cell parameter";
       C.Record (List.map (fun (f, t) -> (f, r t)) fs, open_)
   | Var v -> C.Opaque ("'" ^ v, [])
+  | Named n when String.contains n '.' -> (
+      (* a protobuf message or enum, from the revision's registry (RFC 0004) *)
+      match Cordis_cel.Proto.find_message n with
+      | Some _ -> C.message_type n
+      | None ->
+          if Cordis_cel.Proto.enum_exists n then C.enum_type n
+          else fail "unknown protobuf type %s (not in the attached descriptor sets)" n)
   | Named n -> (
       if List.mem n visiting then fail "type %s refers to itself (recursion goes through a reference, RFC 0003)" n;
       match List.assoc_opt n env.defs with
@@ -145,6 +158,7 @@ let rec shape env ?(visiting = []) (t : ty) : Cordis_cel.Cost.shape =
       { K.lo = n; hi = n; elem = lazy (join_all (List.map (fun (_, t) -> sh t) fs)); key = lazy (names (List.map fst fs));
         fields = List.map (fun (f, t) -> (f, lazy (sh t))) fs }
   | Named n when List.mem n visiting -> K.bounded d
+  | Named n when String.contains n '.' -> proto_shape env n
   | Named n -> (
       match List.assoc_opt n env.defs with
       | Some (Type_def (_, Alias t)) -> shape env ~visiting:(n :: visiting) t
@@ -154,6 +168,38 @@ let rec shape env ?(visiting = []) (t : ty) : Cordis_cel.Cost.shape =
             elem = lazy (join_all (names (List.map fst cs) :: List.map (shape env ~visiting:(n :: visiting)) payloads));
             key = lazy (names [ "tag"; "value" ]) }
       | _ -> K.bounded d)
+
+(* A protobuf message's shape, field by field from its descriptor: repeated
+   and map fields, strings and bytes bounded by the default ceiling
+   (protobuf has none). A message value has size 1; recursion is fine, the
+   fields being lazy. *)
+and proto_shape env name : Cordis_cel.Cost.shape =
+  let module K = Cordis_cel.Cost in
+  let module P = Cordis_cel.Proto in
+  let d = env.options.default_size in
+  let rec scalar_of (f : P.field) =
+    match f.ty, f.type_name with
+    | ("string" | "bytes"), _ -> K.sized 0 d
+    | "message", Some t -> (
+        match t with
+        | "google.protobuf.Timestamp" | "google.protobuf.Duration" -> K.scalar
+        | t when P.wrapper_scalar t <> None -> { K.scalar with elem = lazy (K.sized 0 d) }
+        | "google.protobuf.Struct" | "google.protobuf.Value" | "google.protobuf.ListValue" | "google.protobuf.Any" -> K.bounded d
+        | t -> message t)
+    | _ -> K.scalar
+  and field_shape (f : P.field) =
+    match f.map with
+    | Some (k, v) -> { K.lo = 0; hi = d; elem = lazy (scalar_of v); key = lazy (scalar_of k); fields = [] }
+    | None -> if f.repeated then { K.lo = 0; hi = d; elem = lazy (scalar_of f); key = lazy K.scalar; fields = [] } else scalar_of f
+  and message t =
+    match P.find_message t with
+    | None -> K.bounded d
+    | Some m ->
+        let fs = List.map (fun (f : P.field) -> (f.name, lazy (field_shape f))) m.fields in
+        { K.lo = 1; hi = 1; fields = fs; key = lazy K.bottom;
+          elem = lazy (List.fold_left (fun a (_, s) -> K.join a (Lazy.force s)) K.bottom fs) }
+  in
+  message name
 
 (* ---- CEL expressions ------------------------------------------------------------------------- *)
 
@@ -504,7 +550,7 @@ let check ?(options = default_options) (file : file) =
     List.filter_map
       (function
         | Uses (alias, h) -> (
-            match options.libraries h with
+            match options.store h with
             | None -> err alias (Printf.sprintf "library %s is not available" h); None
             | Some text -> (
                 match Cordis_cel.Library.load ~expect:h text with
@@ -513,6 +559,25 @@ let check ?(options = default_options) (file : file) =
         | _ -> None)
       file
   in
+  (* the revision's registry: the well-known types and the attached sets *)
+  let sets =
+    List.filter_map
+      (function
+        | Uses_descriptors h -> (
+            match options.store h with
+            | None -> err h "descriptor set is not available"; None
+            | Some bytes ->
+                if "sha256:" ^ Cordis_cel.Sha256.digest bytes <> h then (err h "descriptor set does not match its hash"; None)
+                else Some bytes)
+        | _ -> None)
+      file
+  in
+  let registry =
+    match Cordis_cel.Proto.of_descriptor_sets sets with
+    | Ok r -> r
+    | Error m -> err "descriptors" m; Cordis_cel.Proto.create ()
+  in
+  Cordis_cel.Proto.with_registry registry @@ fun () ->
   let env = { defs; options; libs } in
   let guard where f = match f () with v -> Some v | exception Fail m -> err where m; None in
   let types =
@@ -530,4 +595,4 @@ let check ?(options = default_options) (file : file) =
     let broken = List.filter_map (function Cell c when not (List.exists (fun ci -> ci.cname = c.name) cells) -> Some c.name | _ -> None) file in
     List.filter_map (function Graph (n, items) -> guard ("graph " ^ n) (fun () -> check_graph env ~broken cells n items) | _ -> None) file
   in
-  if !errors = [] then Ok { cells; graphs; types } else Error (List.rev !errors)
+  if !errors = [] then Ok { cells; graphs; types; registry } else Error (List.rev !errors)

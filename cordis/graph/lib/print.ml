@@ -84,6 +84,7 @@ let gitem = function
 
 let item = function
   | Uses (a, h) -> Printf.sprintf "uses %s = %s;" a h
+  | Uses_descriptors h -> Printf.sprintf "uses descriptors %s;" h
   | Type_def (n, d) -> Printf.sprintf "type %s = %s;" n (tdef d)
   | Effect (k, req, r) -> Printf.sprintf "effect %s(%s) : %s;" k (ty req) (ty r)
   | Cell c -> cell c
@@ -128,7 +129,7 @@ let rec cel_refs (e : Cordis_cel.Ast.expr) =
 let expr_refs = function Cel { ast; _ } -> cel_refs ast | Hole _ -> []
 
 let refs = function
-  | Uses _ -> []
+  | Uses _ | Uses_descriptors _ -> []
   | Type_def (_, Alias t) -> ty_refs t
   | Type_def (_, Variant cs) -> List.concat_map (fun (_, p) -> match p with Some t -> ty_refs t | None -> []) cs
   | Effect (_, a, b) -> ty_refs a @ ty_refs b
@@ -154,6 +155,10 @@ let refs = function
    reference back into a cycle contributes its name only. *)
 let hashes (items : file) =
   let defs = List.map (fun i -> (item_name i, i)) items in
+  (* a protobuf full name (it has a dot) is defined by the attached
+     descriptor sets: a definition naming one depends on all of them *)
+  let sets = List.filter_map (function Uses_descriptors h -> Some h | _ -> None) items in
+  let refs i = List.concat_map (fun n -> if String.contains n '.' then sets else [ n ]) (refs i) in
   let memo = Hashtbl.create 16 in
   let rec hash visiting name =
     match Hashtbl.find_opt memo name with

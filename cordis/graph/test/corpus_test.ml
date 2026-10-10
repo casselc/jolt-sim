@@ -1,20 +1,14 @@
 (* The checker's corpus (docs/cordis/rfc/0002-graph-language.md, "Testing"):
    each corpus/*.cg file starts with "// expect: ok" or "// expect: <text>",
-   a fragment the checker's errors must contain. Libraries the programs
-   import are corpus/libs/*.cel, found by their hash; a program names one
-   as LIBHASH. *)
+   a fragment the checker's errors must contain. Libraries and descriptor
+   sets the programs attach are corpus/libs/*, found by their hash; a
+   program names one as HASH(file) (corpus_store.ml). *)
 
 open Cordis_graph
 
 let dir = Sys.argv.(1)
 let read path = In_channel.with_open_text path In_channel.input_all
 
-let libraries =
-  let libs = Filename.concat dir "libs" in
-  List.map (fun f -> read (Filename.concat libs f)) (Array.to_list (Sys.readdir libs) |> List.filter (fun f -> Filename.check_suffix f ".cel"))
-
-let by_hash h = List.find_opt (fun t -> "sha256:" ^ Cordis_cel.Sha256.digest t = h) libraries
-let lib_hash = match libraries with t :: _ -> "sha256:" ^ Cordis_cel.Sha256.digest t | [] -> ""
 
 let contains s frag =
   let n = String.length frag in
@@ -25,11 +19,11 @@ let case file () =
   let text = read (Filename.concat dir file) in
   let first = List.hd (String.split_on_char '\n' text) in
   let expect = String.trim (String.sub first 11 (String.length first - 11)) in
-  let text = Str_replace.all ~sub:"LIBHASH" ~by:lib_hash text in
+  let text = Corpus_store.substitute dir text in
   let outcome =
     match Parse.file text with
     | Error m -> Error [ "parse: " ^ m ]
-    | Ok f -> Result.map (fun _ -> ()) (Check.check ~options:{ Check.default_options with libraries = by_hash } f)
+    | Ok f -> Result.map (fun _ -> ()) (Check.check ~options:{ Check.default_options with store = Corpus_store.store dir } f)
   in
   match expect, outcome with
   | "ok", Ok () -> ()

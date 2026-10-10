@@ -1,0 +1,4 @@
+// expect: but f's parameter takes
+uses descriptors HASH(shop.binpb);
+cell f(o : acme.shop.v1.Order) : int = { 1; }
+graph g { input m : acme.shop.v1.Money; asset a = f(m); }

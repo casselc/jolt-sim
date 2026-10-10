@@ -22,6 +22,66 @@ let read path = In_channel.with_open_text path In_channel.input_all
 
 (* ---- values of a declared type ------------------------------------------------------------------ *)
 
+(* A protobuf message, from its descriptor in the bound registry: each field
+   set or not, at most one member per oneof, 32-bit values in range. *)
+let rec proto_message (d : Typed_gen.draw) depth name : V.t =
+  let module P = Cordis_cel.Proto in
+  match P.find_message name with
+  | None -> V.Null
+  | Some m ->
+      let scalar (f : P.field) =
+        match f.ty, f.type_name with
+        | ("int32" | "sint32" | "sfixed32"), _ -> V.Int (Int64.of_int (d.pick 2001 - 1000))
+        | ("int64" | "sint64" | "sfixed64"), _ -> V.Int (Typed_gen.choose d [ 0L; 7L; -9223372036854775808L ])
+        | ("uint32" | "fixed32"), _ -> V.Uint (Int64.of_int (d.pick 2001))
+        | ("uint64" | "fixed64"), _ -> V.Uint (Typed_gen.choose d [ 0L; 9L ])
+        | ("double" | "float"), _ -> V.Double (float_of_int (d.pick 201 - 100) /. 8.)
+        | "bool", _ -> V.Bool (d.pick 2 = 0)
+        | "string", _ -> V.String (Typed_gen.choose d [ ""; "a"; "LGTM ok"; "héllo" ])
+        | "bytes", _ -> V.Bytes (String.init (d.pick 4) (fun _ -> Char.chr (d.pick 256)))
+        | "enum", Some t -> (
+            match Hashtbl.find_opt (P.enums ()) t with
+            | Some vs -> V.Int (Int64.of_int (snd (Typed_gen.choose d vs)))
+            | None -> V.Int 0L)
+        | "message", Some "google.protobuf.Timestamp" -> Cordis_cel.Eval.call_function "timestamp" [ V.Int 1700000000L ]
+        | "message", Some "google.protobuf.Duration" -> Cordis_cel.Eval.call_function "duration" [ V.String "90s" ]
+        | "message", Some t when P.wrapper_scalar t <> None -> (
+            match P.wrapper_scalar t with
+            | Some ("int32" | "int64") -> V.Int 3L
+            | Some ("uint32" | "uint64") -> V.Uint 3L
+            | Some ("float" | "double") -> V.Double 0.5
+            | Some "bool" -> V.Bool true
+            | Some "bytes" -> V.Bytes "b"
+            | _ -> V.String "w")
+        | "message", Some ("google.protobuf.Struct") -> V.make_map [ (V.String "k", V.String "v") ]
+        | "message", Some ("google.protobuf.Value" | "google.protobuf.ListValue" | "google.protobuf.Any") -> V.Null
+        | "message", Some t -> if depth <= 0 then V.Null else proto_message d (depth - 1) t
+        | _ -> V.Null
+      in
+      let chosen = Hashtbl.create 4 in
+      let assigns =
+        List.filter_map
+          (fun (f : P.field) ->
+            let skip = d.pick 3 = 0 || (match f.oneof with Some o -> Hashtbl.mem chosen o | None -> false) in
+            if skip then None
+            else
+              let v =
+                match f.map with
+                | Some (k, vf) ->
+                    let keys = List.sort_uniq compare (List.init (d.pick 3) (fun _ -> scalar k)) in
+                    V.make_map (List.map (fun key -> (key, scalar vf)) keys)
+                | None -> if f.repeated then V.List (Array.init (d.pick 3) (fun _ -> scalar f)) else scalar f
+              in
+              (* a null where a message was wanted is no value: leave the field unset *)
+              if v = V.Null then None
+              else begin
+                Option.iter (fun o -> Hashtbl.replace chosen o ()) f.oneof;
+                Some (f.name, v)
+              end)
+          m.fields
+      in
+      match P.make name assigns with V.Error e -> failwith ("generating " ^ name ^ ": " ^ e) | v -> v
+
 let rec value (d : Typed_gen.draw) defs ?(depth = 3) (t : ty) : V.t =
   let len b = d.pick (1 + min 6 (Option.value b ~default:6)) in
   let v = value d defs ~depth:(depth - 1) in
@@ -41,6 +101,7 @@ let rec value (d : Typed_gen.draw) defs ?(depth = 3) (t : ty) : V.t =
       (match V.make_map (List.map (fun key -> (key, v t)) keys) with V.Map _ as m -> m | _ -> V.Map [])
   | Option t -> V.Optional (if d.pick 2 = 0 then None else Some (v t))
   | Record (fs, _) -> (match V.make_map (List.map (fun (f, t) -> (V.String f, v t)) fs) with V.Map _ as m -> m | e -> e)
+  | Named n when String.contains n '.' -> proto_message d 2 n
   | Named n -> (
       match List.assoc_opt n defs with
       | Some (Type_def (_, Alias t)) -> value d defs ~depth t
@@ -57,6 +118,9 @@ let rec value (d : Typed_gen.draw) defs ?(depth = 3) (t : ty) : V.t =
 let rec admits (t : C.t) (x : V.t) =
   match t, x with
   | C.Dyn, _ | C.Opaque _, _ -> true
+  | C.Message n, V.Message { tname; _ } -> n = tname
+  | (C.Message _ | C.Wrapper _), V.Null -> true
+  | C.Wrapper t, x -> admits t x
   | C.Bool, V.Bool _ | C.Int, V.Int _ | C.Uint, V.Uint _ | C.Double, V.Double _ | C.String, V.String _
   | C.Bytes, V.Bytes _ | C.Timestamp, V.Timestamp _ | C.Duration, V.Duration _ | C.Null, V.Null ->
       true
@@ -79,6 +143,8 @@ let rec admits (t : C.t) (x : V.t) =
 (* ---- the property, for one checked file ------------------------------------------------------------ *)
 
 let check_cells tc (file : file) (r : Check.checked) =
+  (* the revision's registry, for generating and evaluating *)
+  Cordis_cel.Proto.with_registry r.registry @@ fun () ->
   let defs = List.map (fun i -> (item_name i, i)) file in
   let d = Typed_gen.of_hegel tc in
   List.iter
@@ -126,9 +192,7 @@ let check_cells tc (file : file) (r : Check.checked) =
 (* Files: the example and the accepted corpus, with the corpus library. *)
 let files =
   let corpus = Sys.argv.(1) and example = Sys.argv.(2) in
-  let lib = read (Filename.concat corpus "libs/text.cel") in
-  let lib_hash = "sha256:" ^ Cordis_cel.Sha256.digest lib in
-  let options = { Check.default_options with libraries = (fun h -> if h = lib_hash then Some lib else None) } in
+  let options = { Check.default_options with store = Corpus_store.store corpus } in
   let oks =
     Array.to_list (Sys.readdir corpus)
     |> List.filter (fun f -> String.length f > 3 && String.sub f 0 3 = "ok_")
@@ -136,7 +200,7 @@ let files =
   in
   List.map
     (fun path ->
-      let text = Str_replace.all ~sub:"LIBHASH" ~by:lib_hash (read path) in
+      let text = Corpus_store.substitute corpus (read path) in
       match Parse.file text with
       | Error m -> failwith (path ^ ": " ^ m)
       | Ok f -> (

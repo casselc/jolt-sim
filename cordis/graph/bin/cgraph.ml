@@ -9,7 +9,11 @@
      cgraph diff OLD NEW          what changed, and what needs approval
      cgraph admit LIVE PATCH [--approved]
                                   admit a patch against a live file; prints
-                                  the new revision when it goes live *)
+                                  the new revision when it goes live
+
+   --store DIR (before the command) is the content store: what `uses`
+   names by hash (library texts, descriptor sets) is looked up among DIR's
+   files by the SHA-256 of their bytes. *)
 
 open Cordis_graph
 module C = Cordis_cel.Checker
@@ -18,8 +22,25 @@ let read path = In_channel.with_open_text path In_channel.input_all
 
 let die fmt = Printf.ksprintf (fun m -> prerr_endline m; exit 1) fmt
 
+(* --store DIR, taken off the front of the arguments *)
+let store, argv =
+  match Array.to_list Sys.argv with
+  | prog :: "--store" :: dir :: rest ->
+      let files =
+        Array.to_list (Sys.readdir dir)
+        |> List.map (Filename.concat dir)
+        |> List.filter (fun f -> not (Sys.is_directory f))
+        |> List.map (fun f ->
+               let s = In_channel.with_open_bin f In_channel.input_all in
+               ("sha256:" ^ Cordis_cel.Sha256.digest s, s))
+      in
+      ((fun h -> List.assoc_opt h files), prog :: rest)
+  | args -> ((fun _ -> None), args)
+
+let options = { Check.default_options with store }
+
 let load path =
-  match Patch.load (read path) with Ok s -> s | Error es -> die "%s" (String.concat "\n" (List.map (fun e -> path ^ ": " ^ e) es))
+  match Patch.load ~options (read path) with Ok s -> s | Error es -> die "%s" (String.concat "\n" (List.map (fun e -> path ^ ": " ^ e) es))
 
 let show_checked (r : Check.checked) =
   List.iter
@@ -51,10 +72,10 @@ let show_change = function
   | Compat.Compatible n -> Printf.printf "compatible  %s\n" n
   | Compat.Needs_approval (n, rs) -> Printf.printf "APPROVAL    %s: %s\n" n (String.concat "; " rs)
 
-let usage () = die "usage: cgraph (fmt|hash|check|run) FILE | cgraph diff OLD NEW | cgraph admit LIVE PATCH [--approved]"
+let usage () = die "usage: cgraph [--store DIR] (fmt|hash|check|run) FILE | cgraph diff OLD NEW | cgraph admit LIVE PATCH [--approved]"
 
 let () =
-  match Array.to_list Sys.argv with
+  match argv with
   | [ _; "fmt"; path ] -> print_string (Print.file (match Parse.file (read path) with Ok f -> f | Error m -> die "%s:%s" path m))
   | [ _; "hash"; path ] -> (
       match Parse.file (read path) with
@@ -83,7 +104,7 @@ let () =
       match Patch.parse (read patch_path) with
       | Error m -> die "%s: %s" patch_path m
       | Ok p -> (
-          match Patch.admit ~approved live p with
+          match Patch.admit ~options ~approved live p with
           | Patch.Live (s, changes) ->
               List.iter show_change changes;
               Printf.printf "live: %s\n" (Patch.revision s.file);
