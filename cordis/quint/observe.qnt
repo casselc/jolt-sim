@@ -19,12 +19,20 @@
  *    charged at the worst case; its answer is never applied. Attempts are
  *    bounded; when they run out the fiber fails, as nothing is uncertain.
  *
+ *  - a **keyed** intent (Key; RFC 0003 revision 4: an HTTP PUT or DELETE,
+ *    or a POST carrying an idempotency key) is sent again after a lost
+ *    receipt with the same identity, and the world applies it at most once
+ *    by that identity: a resend of an intent that already took effect runs
+ *    nothing and charges nothing. Each send reserves as an observational
+ *    attempt does. When its sends run out it is Uncertain, not Failed,
+ *    since it may have taken effect.
+ *
  * One fiber emits the intents KIND[0], KIND[1], ... in order. The world
  * may run an attempt or not, answer it or lose the answer, and answer
  * late. Real spend is a ghost: what the world actually charged.
  *
  * Properties:
- *  - effectOnce: an effectful intent takes effect at most once;
+ *  - effectOnce: an effectful or keyed intent takes effect at most once;
  *  - receiptOnce: one answer is applied per intent;
  *  - withinBudget: settled plus reserved spend never exceeds the budget;
  *  - accounted: real spend never exceeds settled plus reserved spend (a
@@ -42,9 +50,14 @@
  *    applied -> receiptOnce;
  *  - ONE_CLASS (`oneClass`): DESIGN.md's rule before this class, every
  *    lost receipt is Uncertain -> obsNeverUncertain (an inference call
- *    waits on a reconcile no provider can answer).
+ *    waits on a reconcile no provider can answer);
+ *  - KEY_IGNORED (`keyIgnored`): the world does not deduplicate a keyed
+ *    intent (a server that ignores the idempotency key, or a POST policy
+ *    wrongly granted the class) -> effectOnce.
  * Witnesses (checked as not(w), expected VIOLATED): retriedThenDone,
- * lateSettled, exhausted, effectfulUncertain, reconciled.
+ * lateSettled, exhausted, effectfulUncertain, reconciled, keyedResent (a
+ * keyed intent sent again completed), keyedDeduplicated (a resend found the
+ * intent already applied), keyedUncertainW.
  */
 module observe {
   const MISCLASSIFY: bool
@@ -52,11 +65,12 @@ module observe {
   const NO_RESERVE: bool
   const APPLY_LATE: bool
   const ONE_CLASS: bool
+  const KEY_IGNORED: bool
 
-  type Kind = Obs | Eff
+  type Kind = Obs | Eff | Key
   type Phase = Ready | Sent | Lost | Uncertain | Failed | Done
 
-  pure val KIND: List[Kind] = [Obs, Eff, Obs]
+  pure val KIND: List[Kind] = [Obs, Eff, Key]
   pure val N = 3
   pure val R = 2          // an attempt's worst-case cost: its reservation
   pure val B = 9          // the fiber's budget
@@ -65,6 +79,8 @@ module observe {
 
   // how the runtime treats an intent: by its declared kind, unless misclassified
   pure def retryable(k: Kind): bool = (k == Obs and not(ONE_CLASS)) or MISCLASSIFY
+  // sent again with the same identity after a lost receipt, while sends remain
+  pure def resendable(k: Kind): bool = k == Key and not(ONE_CLASS)
 
   type Attempt = { intent: int, n: int, ran: bool, cost: int, live: bool }
 
@@ -80,6 +96,7 @@ module observe {
     effects: List[int],      // ghost: per intent, times it took effect
     applied: List[int],      // per intent, answers applied
     lates: int, retries: int, reconciles: int,
+    resent: int, deduped: int, keyedUncertain: bool,
   }
 
   var s: S
@@ -88,6 +105,7 @@ module observe {
     pc: 0, phase: Ready, tries: 0, cur: NONE, attempts: List(),
     reserved: 0, settled: 0, real: 0, effects: [0, 0, 0], applied: [0, 0, 0],
     lates: 0, retries: 0, reconciles: 0,
+    resent: 0, deduped: 0, keyedUncertain: false,
   }
 
   pure def inc(l: List[int], i: int): List[int] = l.replaceAt(i, l[i] + 1)
@@ -102,6 +120,7 @@ module observe {
       attempts: s.attempts.append({ intent: s.pc, n: s.tries, ran: false, cost: 0, live: true }),
       reserved: if (NO_RESERVE) s.reserved else s.reserved + R,
       retries: if (s.phase == Lost) s.retries + 1 else s.retries,
+      resent: if (s.phase == Lost and KIND[s.pc] == Key) s.resent + 1 else s.resent,
     },
   }
 
@@ -110,12 +129,17 @@ module observe {
     nondet a = s.attempts.indices().oneOf()
     nondet c = 1.to(R).oneOf()
     val at = s.attempts[a]
+    // a keyed intent already applied: the world answers from what it kept, running and charging nothing
+    val dedup = KIND[at.intent] == Key and not(KEY_IGNORED)
+      and s.attempts.indices().exists(b => b != a and s.attempts[b].intent == at.intent and s.attempts[b].ran)
+    val cost = if (dedup) 0 else c
     all {
       at.live, not(at.ran),
       s' = { ...s,
-        attempts: s.attempts.replaceAt(a, { ...at, ran: true, cost: c }),
-        real: s.real + c,
-        effects: if (KIND[at.intent] == Eff) inc(s.effects, at.intent) else s.effects,
+        attempts: s.attempts.replaceAt(a, { ...at, ran: true, cost: cost }),
+        real: s.real + cost,
+        effects: if (KIND[at.intent] != Obs and not(dedup)) inc(s.effects, at.intent) else s.effects,
+        deduped: if (dedup) s.deduped + 1 else s.deduped,
       },
     }
   }
@@ -150,8 +174,11 @@ module observe {
   action lose: bool = all {
     s.phase == Sent,
     s' = { ...s,
-      phase: if (retryable(KIND[s.pc])) (if (s.tries < MAXA) Lost else Failed) else Uncertain,
+      phase: if (retryable(KIND[s.pc])) (if (s.tries < MAXA) Lost else Failed)
+             else if (resendable(KIND[s.pc]) and s.tries < MAXA) Lost
+             else Uncertain,
       cur: NONE,
+      keyedUncertain: s.keyedUncertain or (KIND[s.pc] == Key and not(s.tries < MAXA)),
     },
   }
 
@@ -174,16 +201,18 @@ module observe {
   action reconcile: bool = {
     nondet a = s.attempts.indices().oneOf()
     val at = s.attempts[a]
+    // asked by key, the world reports whether any send of the intent took effect
+    val took = s.attempts.indices().exists(b => s.attempts[b].intent == s.pc and s.attempts[b].ran)
     all {
       s.phase == Uncertain, at.intent == s.pc, at.live,
       s' = { ...s,
         attempts: s.attempts.replaceAt(a, { ...at, live: false }),
         reserved: if (NO_RESERVE) s.reserved else s.reserved - R,
         settled: s.settled + (if (at.ran) at.cost else 0),
-        pc: if (at.ran) s.pc + 1 else s.pc,
-        phase: if (at.ran) Ready else Failed,
+        pc: if (took) s.pc + 1 else s.pc,
+        phase: if (took) Ready else Failed,
         tries: 0,
-        applied: if (at.ran) inc(s.applied, at.intent) else s.applied,
+        applied: if (took) inc(s.applied, at.intent) else s.applied,
         reconciles: s.reconciles + 1,
       },
     }
@@ -194,7 +223,7 @@ module observe {
   action step = any { send, worldRuns, answer, lose, expire, reconcile, idle }
 
   // ---- properties -------------------------------------------------------------------------
-  val effectOnce: bool = 0.to(N - 1).forall(i => KIND[i] == Eff implies s.effects[i] <= 1)
+  val effectOnce: bool = 0.to(N - 1).forall(i => KIND[i] != Obs implies s.effects[i] <= 1)
   val receiptOnce: bool = s.applied.foldl(true, (ok, n) => ok and n <= 1)
   val withinBudget: bool = s.settled + s.reserved <= B
   val accounted: bool = s.real <= s.settled + s.reserved
@@ -207,23 +236,29 @@ module observe {
   val exhausted: bool = s.phase == Failed and s.pc < N and KIND[s.pc] == Obs
   val effectfulUncertain: bool = s.phase == Uncertain
   val reconciled: bool = s.reconciles > 0 and s.pc > 1
+  val keyedResent: bool = s.resent > 0 and s.pc == N
+  val keyedDeduplicated: bool = s.deduped > 0
+  val keyedUncertainW: bool = s.keyedUncertain
 }
 
 module design {
-  import observe(MISCLASSIFY = false, REFUND_LOST = false, NO_RESERVE = false, APPLY_LATE = false, ONE_CLASS = false).* from "./observe"
+  import observe(MISCLASSIFY = false, REFUND_LOST = false, NO_RESERVE = false, APPLY_LATE = false, ONE_CLASS = false, KEY_IGNORED = false).* from "./observe"
 }
 module misclassify {
-  import observe(MISCLASSIFY = true, REFUND_LOST = false, NO_RESERVE = false, APPLY_LATE = false, ONE_CLASS = false).* from "./observe"
+  import observe(MISCLASSIFY = true, REFUND_LOST = false, NO_RESERVE = false, APPLY_LATE = false, ONE_CLASS = false, KEY_IGNORED = false).* from "./observe"
 }
 module refundLost {
-  import observe(MISCLASSIFY = false, REFUND_LOST = true, NO_RESERVE = false, APPLY_LATE = false, ONE_CLASS = false).* from "./observe"
+  import observe(MISCLASSIFY = false, REFUND_LOST = true, NO_RESERVE = false, APPLY_LATE = false, ONE_CLASS = false, KEY_IGNORED = false).* from "./observe"
 }
 module noReserve {
-  import observe(MISCLASSIFY = false, REFUND_LOST = false, NO_RESERVE = true, APPLY_LATE = false, ONE_CLASS = false).* from "./observe"
+  import observe(MISCLASSIFY = false, REFUND_LOST = false, NO_RESERVE = true, APPLY_LATE = false, ONE_CLASS = false, KEY_IGNORED = false).* from "./observe"
 }
 module applyLate {
-  import observe(MISCLASSIFY = false, REFUND_LOST = false, NO_RESERVE = false, APPLY_LATE = true, ONE_CLASS = false).* from "./observe"
+  import observe(MISCLASSIFY = false, REFUND_LOST = false, NO_RESERVE = false, APPLY_LATE = true, ONE_CLASS = false, KEY_IGNORED = false).* from "./observe"
 }
 module oneClass {
-  import observe(MISCLASSIFY = false, REFUND_LOST = false, NO_RESERVE = false, APPLY_LATE = false, ONE_CLASS = true).* from "./observe"
+  import observe(MISCLASSIFY = false, REFUND_LOST = false, NO_RESERVE = false, APPLY_LATE = false, ONE_CLASS = true, KEY_IGNORED = false).* from "./observe"
+}
+module keyIgnored {
+  import observe(MISCLASSIFY = false, REFUND_LOST = false, NO_RESERVE = false, APPLY_LATE = false, ONE_CLASS = false, KEY_IGNORED = true).* from "./observe"
 }

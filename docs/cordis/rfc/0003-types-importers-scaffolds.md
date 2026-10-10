@@ -1,12 +1,12 @@
 # RFC 0003: The type IR, importers and scaffolds
 
-Status: revision 3 (the JSON Schema importer specified). **For protobuf,
+Status: revision 3 (the JSON Schema importer specified); revision 4
+(the OpenAPI importer) proposed. **For protobuf,
 superseded by [RFC 0004](0004-descriptor-native-types.md)**:
 graphs use protobuf descriptors directly, and the translating importer
 described below (implemented in `cordis/import`) remains as a report tool
-showing what a schema would lose as graph-language records. The JSON
-Schema, OpenAPI and AsyncAPI importers and the scaffolders remain as
-designed in revision 1. Design context: [DESIGN.md](../DESIGN.md)
+showing what a schema would lose as graph-language records. The
+AsyncAPI importer and the scaffolders remain as designed in revision 1. Design context: [DESIGN.md](../DESIGN.md)
 "Schemas" and "Scaffolding".
 
 ## Revision history
@@ -32,6 +32,14 @@ importer", below). It adds one idea revision 2 did not need: the
 CEL predicate over the instance's plain JSON form, which is both the
 residue of what the types cannot say and the codec's check at the
 boundary. It is tested against the official JSON Schema Test Suite.
+
+**Revision 4** (proposed) specifies the OpenAPI importer ("The OpenAPI
+importer", below): an operation becomes an effect whose request and
+response types come from the JSON Schema importer, and whose retry class
+comes from its method. It adds one thing the runtime did not have, a
+third retry class, **keyed**, for a non-idempotent operation that accepts
+an idempotency key; that class is stateful, so it is modelled
+(`observe.qnt`) before it is built.
 
 **Why no Quint model.** An importer is a pure function from a schema to a
 file: no state, no concurrency, no partial failure. What can go wrong is a
@@ -368,19 +376,113 @@ order and absent `option`s as omitted members.
   and one did not compile. The tests found a dozen importer and codec
   bugs before they were committed, each now covered.
 
+## The OpenAPI importer
+
+An OpenAPI document describes a service the agent calls. The importer
+writes, for one document:
+
+- a **types file**: the JSON Schema importer's types for every schema the
+  operations use (`components.schemas` and inline ones), and per
+  operation a request record and a response variant;
+- an **effect per operation**, `effect <service>.<op>(<Op>Request) :
+  <Op>Response;`, with a check cell for each as for any imported type;
+- the **operation map**, beside the name map: per effect, the method, the
+  path template, where each request field goes (path, query, header,
+  cookie, body) and how it is serialised, the media type, the status code
+  of each response case, the credential's scheme name, the retry class,
+  and the servers;
+- the **report**, as for JSON Schema, plus every operation skipped and why.
+
+The outbox's `http` executor reads the operation map: it renders an intent
+into a request, sends it only to a listed server, adds the credential it
+holds for the scheme, and turns the response into the response variant.
+The graph never sees a credential or a URL.
+
+### Requests and responses
+
+| OpenAPI | Graph language | Notes |
+| --- | --- | --- |
+| path, query, header and cookie parameters | fields of `<Op>Request`, named by the JSON Schema importer's rules; optional unless `required` (path parameters always are) | the name map records each field's location and wire name |
+| `requestBody` with `application/json` | a field `body` of the schema's type (optional unless `required`) | |
+| `requestBody` with `text/plain` or `application/octet-stream` | `body : string` or `body : bytes` | |
+| any other media type | the operation is skipped, reported | form and multipart encodings come later |
+| parameter `style`/`explode` | the defaults (`simple` for path and header, `form` with explode for query) and `deepObject` for query objects | any other style skips the operation, reported |
+| responses | `<Op>Response`, a variant with a case per documented status (`S200(T)`, `S404(T)`; a case carries the JSON body's type, or nothing), and `Other(HttpOther)` for `default` and any status not documented: `{status : int; body : dyn}` | a status range (`2XX`) is a case `S2XX` |
+| a header parameter named in `securitySchemes`, `Authorization`, or a cookie the scheme uses | not a field: the executor adds it | reported, so it is visible that the graph cannot set it |
+| `servers` | the operation map's allowlist, with server variables at their defaults | variables are reported; the allowlist is what the gateway and `pf` rules are generated from |
+| `operationId` | the effect's name (`<service>.<camelCase id>`) | without one, method and path (`get_pets_by_id`), reported |
+| callbacks, links, webhooks | not imported | reported |
+
+An HTTP error status is a **definite answer**: a `404` is a receipt whose
+value is the `S404` case, and the cell decides what it means. Only a
+failure to get a response at all (no connection, a timeout, a reset after
+the request may have gone) is a lost receipt.
+
+### OpenAPI 3.0 and 3.1
+
+3.1's schemas are JSON Schema 2020-12 and go to the JSON Schema importer
+as they are. 3.0's Schema Object is a dialect, and most published
+documents are 3.0, so the importer rewrites a 3.0 schema to 2020-12 first,
+the well-known way: `nullable: true` adds `null` to the type,
+`exclusiveMinimum: true` with `minimum` becomes a numeric
+`exclusiveMinimum` (likewise the maximum), `example` is dropped, and
+`x-` extensions are kept as annotations. Swagger 2.0 is refused (convert
+it with the usual tools first).
+
+### Retry classes
+
+The engine has two classes (RFC 0006): an **observational** intent is
+sent again after a lost receipt, as a new attempt; an **effectful** one
+goes Uncertain until a reconcile asks the world whether it took effect.
+HTTP adds a third case, which the method and the document decide:
+
+| Operation | Class | After a lost receipt |
+| --- | --- | --- |
+| `GET`, `HEAD`, `OPTIONS` | observational | a new attempt |
+| `PUT`, `DELETE` | **keyed** (idempotent by method) | sent again, the same request |
+| `POST`, `PATCH` with an `Idempotency-Key` header parameter (or the policy's name for one) | **keyed** | sent again with the same key, which the executor sets to the intent's key |
+| any other `POST` or `PATCH` | effectful | Uncertain; reconciled by a read the policy names (an operation and the field to match), else it waits for a person |
+
+A keyed intent is sent again with the same identity (the intent's key; a
+new attempt number only for the journal), and the server applies it at
+most once, so at-most-once rests on the server keeping its promise. Each
+send reserves its worst case, as an observational attempt does; a resend
+the server deduplicates is charged nothing, and an abandoned send that
+never answers is charged its worst case, so spend is never under-counted.
+When the sends run out the intent is Uncertain, not failed, since it may
+have taken effect, and it is reconciled by key. Policy grants the keyed
+class per operation (a cell cannot claim it, as with the observational
+class), because a server that ignores the key turns a resend into a
+second effect. `observe.qnt` has the class: witnesses `keyedResent`,
+`keyedDeduplicated` and `keyedUncertainW`, and the mutant `keyIgnored`
+(the server does not deduplicate), which breaks `effectOnce`. The model
+is checked with Apalache to depth 8 (about 40 s).
+
+### Testing
+
+- **Corpus**: the APIs.guru OpenAPI directory (several thousand public
+  documents, mostly 3.0): the share imported, the share of operations
+  skipped by reason, and every types file passing the checker.
+- **Agreement with an OpenAPI implementation (Hegel)**: for each imported
+  operation, request values generated from its request type, rendered by
+  the executor's encoder, are accepted by `openapi-core`'s request
+  validator against the document; response values generated from each
+  case, rendered as an HTTP response, are accepted by its response
+  validator and read back by the executor to the same value.
+- **End to end**: a stub server for a small document, a graph calling it
+  through `cordis-outbox` with crashes, as `e2e.sh`; a keyed operation
+  against a server that deduplicates (one effect however often resent) and
+  one that does not (the planted fault the model predicts).
+
 ## Importers to come
 
 | Source | Maps to | Lossy where |
 | --- | --- | --- |
 | JSON Schema (2020-12) | specified above | |
-| OpenAPI 3.1 | schemas via the JSON Schema importer; each operation to an effect (an intent kind) | callbacks and links are reported, not imported |
+| OpenAPI 3.0 and 3.1 | specified above | |
 | AsyncAPI 3 | channels and send or receive operations to the graph's inputs and effects | bindings beyond the message payload are reported |
 | XSD, CSV (with Table Schema), Arrow (for Parquet and Vortex) | see [RFC 0005](0005-xml-csv-frames.md) (proposed) | |
 
-From OpenAPI, per operation: the method sets the retry rule (GET, PUT,
-DELETE idempotent; POST only with an idempotency-key header), the security
-scheme names the credential the outbox holds, and `servers` becomes the
-egress allowlist that the `pf` rules and the gateway are generated from.
 
 ## Scaffolds
 

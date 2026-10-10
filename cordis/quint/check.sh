@@ -202,12 +202,13 @@ sim frames.qnt keepAcc accConsistent VIOLATED
 # ---- observe.qnt (RFC 0006 rev 2: observational emissions retry under reservations) --
 for inv in effectOnce receiptOnce withinBudget accounted obsNeverUncertain; do sim observe.qnt design "$inv" ok; done
 verify observe.qnt design safety ok
-for w in retriedThenDone lateSettled exhausted effectfulUncertain reconciled; do sim observe.qnt design "not($w)" VIOLATED; done
+for w in retriedThenDone lateSettled exhausted effectfulUncertain reconciled keyedResent keyedDeduplicated keyedUncertainW; do sim observe.qnt design "not($w)" VIOLATED; done
 sim observe.qnt misclassify effectOnce VIOLATED
 sim observe.qnt refundLost accounted VIOLATED
 sim observe.qnt noReserve withinBudget VIOLATED
 sim observe.qnt applyLate receiptOnce VIOLATED
 sim observe.qnt oneClass obsNeverUncertain VIOLATED
+sim observe.qnt keyIgnored effectOnce VIOLATED
 
 # ---- engine.qnt (RFC 0006: the turn commit protocol) -------------------------------------
 for inv in releasedOnlyDurable effectMatchesCommit commitAtomic receiptOnce uncertainSurvives; do sim engine.qnt design "$inv" ok; done
