@@ -129,7 +129,7 @@ let classify replacement =
   | Error m -> `Error m
   | Ok p -> (
       match Patch.admit live p with
-      | Patch.Live (_, _) -> `Live
+      | Patch.Live (_, _, _) -> `Live
       | Patch.Awaiting_approval (_, needs) -> `Approval (String.concat "; " (List.concat_map snd needs))
       | Patch.Refused es -> `Error (String.concat "; " es))
 
@@ -207,7 +207,7 @@ let test_admission () =
             | Error m -> Hegel.require tc ~msg:("an agent's patch does not parse: " ^ m) false
             | Ok p -> (
                 match Patch.admit ~approved before p with
-                | Patch.Live (s, _) ->
+                | Patch.Live (s, _, _) ->
                     (* it was based on what was live: nothing was lost *)
                     Hegel.require tc ~msg:"a patch went live over a revision it did not see"
                       (Print.hashes before.file = Print.hashes snapshot.file || List.assoc name (Print.hashes before.file) = List.assoc name (Print.hashes snapshot.file));

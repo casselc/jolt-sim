@@ -44,3 +44,13 @@
   %{project_root}/graph/examples/review.cg)
  (action
   (run %{test} corpus %{project_root}/graph/examples/review.cg)))
+
+; Descriptor changes across revisions, as quint/revisions.qnt states it
+(test
+ (name revisions_test)
+ (modules revisions_test)
+ (libraries cordis_graph cordis_cel cel_testgen graph_testlib hegel alcotest)
+ (deps
+  (glob_files corpus/libs/*))
+ (action
+  (run %{test} corpus)))

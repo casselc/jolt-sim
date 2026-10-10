@@ -8,7 +8,15 @@
    did), and its effect row is no larger. A change that narrows an input,
    widens the effects, changes a variant's cases or an effect's types, or
    replaces a library function's signature needs approval: it is the
-   graph-level form of Cedar Analysis's "More Permissive". *)
+   graph-level form of Cedar Analysis's "More Permissive".
+
+   Protobuf types (docs/cordis/rfc/0004-descriptor-native-types.md,
+   "Revisions") are compared descriptor by descriptor (Proto_compat): a
+   definition whose types reach a breaking descriptor change needs
+   approval, even though the type's name, and so its signature, is the
+   same. Each cell's state is carried across the change when the new type
+   reads it and migrated (today: reset to its initial value) otherwise
+   ([state_plan]; quint/revisions.qnt's stateReadable). *)
 
 open Syntax
 module C = Cordis_cel.Checker
@@ -51,6 +59,16 @@ let type_reasons (o : C.t option) (n : C.t option) =
   | Some o, Some n when not (fits o n && fits n o) -> [ Printf.sprintf "changes the type from %s to %s" (C.to_string o) (C.to_string n) ]
   | _ -> []
 
+(* The protobuf types a definition, or a type, names. *)
+let proto_roots (r : Cordis_cel.Proto.registry) names =
+  List.sort_uniq compare (List.filter_map (fun n -> if String.contains n '.' then Cordis_cel.Proto_compat.type_of_name r n else None) names)
+
+let proto_reasons (o : Check.checked) (n : Check.checked) names =
+  Cordis_cel.Proto_compat.compare ~old_:o.registry ~new_:n.registry (proto_roots o.registry names)
+  |> Cordis_cel.Proto_compat.breaking
+  |> List.map Cordis_cel.Proto_compat.describe
+  |> List.sort_uniq compare
+
 (* Compare two checked revisions, definition by definition. *)
 let diff ~(old_file : file) ~(old_checked : Check.checked) ~(new_file : file) ~(new_checked : Check.checked) =
   let oh = Print.hashes old_file and nh = Print.hashes new_file in
@@ -76,6 +94,13 @@ let diff ~(old_file : file) ~(old_checked : Check.checked) ~(new_file : file) ~(
         | _ -> [])
     | _ -> [ "changes what kind of definition it is" ]
   in
+  (* a breaking change in the descriptors of the protobuf types it names *)
+  let changed n =
+    let local = changed n in
+    match item old_file n with
+    | Some i -> local @ List.filter (fun r -> not (List.mem r local)) (proto_reasons old_checked new_checked (Print.refs i))
+    | None -> local
+  in
   let names = List.sort_uniq compare (List.map fst oh @ List.map fst nh) in
   List.map
     (fun n ->
@@ -85,5 +110,33 @@ let diff ~(old_file : file) ~(old_checked : Check.checked) ~(new_file : file) ~(
       | Some a, Some b when a = b -> Unchanged n
       | _ -> (match changed n with [] -> Compatible n | reasons -> Needs_approval (n, reasons)))
     names
+
+(* What admission does with each cell's state: carry it across, or migrate
+   it because the new types cannot read it. *)
+type state_move = Carry | Migrate of string list  (** why *)
+
+let state_plan ~(old_file : file) ~(old_checked : Check.checked) ~(new_file : file) ~(new_checked : Check.checked) =
+  List.filter_map
+    (fun (o : Check.cell_info) ->
+      match List.find_opt (fun (x : Check.cell_info) -> x.cname = o.cname) new_checked.cells with
+      | None -> None
+      | Some n when o.state = [] || n.state = [] -> ignore n; None
+      | Some n ->
+          let decl file = List.find_map (function Cell c when c.name = o.cname -> Some c | _ -> None) file in
+          let field_ty file f = Option.bind (decl file) (fun c -> List.find_map (fun (g, t, _) -> if g = f then Some t else None) c.state) in
+          let reasons =
+            List.concat_map
+              (fun (f, ot) ->
+                match List.assoc_opt f n.state with
+                | None -> []
+                | Some nt ->
+                    (if fits nt ot then [] else [ Printf.sprintf "state field %s: %s does not read %s" f (C.to_string nt) (C.to_string ot) ])
+                    @ (match field_ty old_file f, field_ty new_file f with
+                       | Some t, _ -> List.map (fun r -> "state field " ^ f ^ ": " ^ r) (proto_reasons old_checked new_checked (Print.ty_refs t))
+                       | None, _ -> []))
+              o.state
+          in
+          Some (o.cname, if reasons = [] then Carry else Migrate reasons))
+    old_checked.cells
 
 let needs_approval changes = List.filter_map (function Needs_approval (n, rs) -> Some (n, rs) | _ -> None) changes

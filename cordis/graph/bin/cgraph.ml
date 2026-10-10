@@ -105,8 +105,13 @@ let () =
       | Error m -> die "%s: %s" patch_path m
       | Ok p -> (
           match Patch.admit ~options ~approved live p with
-          | Patch.Live (s, changes) ->
+          | Patch.Live (s, changes, plan) ->
               List.iter show_change changes;
+              List.iter
+                (function
+                  | c, Compat.Carry -> Printf.printf "state       %s: carried\n" c
+                  | c, Compat.Migrate rs -> Printf.printf "state       %s: migrated (reset): %s\n" c (String.concat "; " rs))
+                plan;
               Printf.printf "live: %s\n" (Patch.revision s.file);
               print_string (Print.file s.file)
           | Patch.Awaiting_approval (_, needs) ->

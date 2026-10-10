@@ -2,7 +2,7 @@
 (library
  (name cel_testgen)
  (wrapped false)
- (modules typed_gen proto_gen)
+ (modules typed_gen proto_gen desc_build desc_changes)
  (libraries cordis_cel yojson hegel))
 
 (executables
@@ -86,3 +86,10 @@
   %{project_root}/import/test/protos/corpus.binpb)
  (action
   (run %{test} %{project_root}/cel/conformance/descriptors.binpb %{project_root}/import/test/protos/corpus.binpb)))
+
+; Descriptor compatibility: the table by example; compatible changes read
+; every old message
+(test
+ (name proto_compat_test)
+ (modules proto_compat_test)
+ (libraries cordis_cel cel_testgen hegel alcotest))

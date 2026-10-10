@@ -103,30 +103,44 @@ let rec ty_refs = function
   | Named n -> [ n ]
 
 (* identifiers a CEL tree mentions as call targets or type names: library
-   aliases (alias.f(x)), variant constructors (T.Case(x)), record literals *)
-let rec cel_refs (e : Cordis_cel.Ast.expr) =
+   aliases (alias.f(x)), variant constructors (T.Case(x)), record literals,
+   and dotted paths that may name a protobuf type or enum constant
+   (pkg.Enum.VALUE). A path rooted at a variable in scope ([bound]) is a
+   field selection, not a name. *)
+let rec cel_refs ?(bound = []) (e : Cordis_cel.Ast.expr) =
   let open Cordis_cel.Ast in
+  let rec path (e : expr) =
+    match e.kind with
+    | Ident n -> Some n
+    | Select { operand; field; test_only = false } -> Option.map (fun p -> p ^ "." ^ field) (path operand)
+    | _ -> None
+  in
+  let root p = match String.index_opt p '.' with Some i -> String.sub p 0 i | None -> p in
+  let named p = if List.mem (root p) bound then [] else [ p ] in
   let here =
     match e.kind with
-    | Call { target = Some { kind = Ident n; _ }; _ } -> [ n ]
-    | Select { operand = { kind = Ident n; _ }; _ } -> [ n ]
+    | Call { target = Some { kind = Ident n; _ }; _ } -> named n
+    | Select { operand = { kind = Ident n; _ }; _ } -> named n @ Option.fold ~none:[] ~some:named (path e)
+    | Select _ -> Option.fold ~none:[] ~some:named (path e)
     | Struct_lit { tname; _ } -> [ tname ]
     | _ -> []
   in
+  let r = cel_refs ~bound in
   let below =
     match e.kind with
     | Const _ | Ident _ -> []
-    | Select s -> cel_refs s.operand
-    | Call c -> (match c.target with Some t -> cel_refs t | None -> []) @ List.concat_map cel_refs c.args
-    | List_lit es -> List.concat_map cel_refs es
-    | Map_lit kvs -> List.concat_map (fun (k, v) -> cel_refs k @ cel_refs v) kvs
-    | Struct_lit s -> List.concat_map (fun (_, x, _) -> cel_refs x) s.fields
+    | Select s -> r s.operand
+    | Call c -> (match c.target with Some t -> r t | None -> []) @ List.concat_map r c.args
+    | List_lit es -> List.concat_map r es
+    | Map_lit kvs -> List.concat_map (fun (k, v) -> r k @ r v) kvs
+    | Struct_lit s -> List.concat_map (fun (_, x, _) -> r x) s.fields
     | Comprehension c ->
-        List.concat_map cel_refs [ c.range; c.accu_init; c.loop_cond; c.loop_step; c.result ]
+        let inner = cel_refs ~bound:(c.iter_var :: c.accu_var :: Option.to_list c.iter_var2 @ bound) in
+        r c.range @ r c.accu_init @ List.concat_map inner [ c.loop_cond; c.loop_step; c.result ]
   in
   here @ below
 
-let expr_refs = function Cel { ast; _ } -> cel_refs ast | Hole _ -> []
+let expr_refs ?bound = function Cel { ast; _ } -> cel_refs ?bound ast | Hole _ -> []
 
 let refs = function
   | Uses _ | Uses_descriptors _ -> []
@@ -134,6 +148,11 @@ let refs = function
   | Type_def (_, Variant cs) -> List.concat_map (fun (_, p) -> match p with Some t -> ty_refs t | None -> []) cs
   | Effect (_, a, b) -> ty_refs a @ ty_refs b
   | Cell c ->
+      (* the cell's variables: its parameters, state, lets and uses *)
+      let bound =
+        "state" :: List.map fst c.params @ List.map (function Let (x, _) | Use (x, _, _) -> x) c.body
+      in
+      let expr_refs = expr_refs ~bound in
       List.concat_map (fun (_, t) -> ty_refs t) c.params
       @ ty_refs c.result @ c.effects
       @ List.concat_map (fun (_, t, e) -> ty_refs t @ expr_refs e) c.state

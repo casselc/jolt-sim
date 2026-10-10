@@ -160,3 +160,18 @@ and message_of ~depth d name (m : P.message) : V.t option =
         match P.make name assigns with
         | V.Error e -> failwith ("generating " ^ name ^ ": " ^ e)
         | v -> Some v
+
+(* Structural equality: the same constructors, doubles bit for bit, maps
+   in any order. CEL's equality would let 1 equal 1.0. *)
+let rec same (a : V.t) (b : V.t) =
+  match a, b with
+  | V.Double x, V.Double y -> Int64.bits_of_float x = Int64.bits_of_float y
+  | V.List xs, V.List ys -> Array.length xs = Array.length ys && Array.for_all2 same xs ys
+  | V.Map xs, V.Map ys ->
+      List.length xs = List.length ys && List.for_all (fun (k, v) -> List.exists (fun (k', v') -> same k k' && same v v') ys) xs
+  | V.Message x, V.Message y ->
+      x.tname = y.tname && List.length x.fields = List.length y.fields
+      && List.for_all2 (fun (n, v) (n', v') -> n = n' && same v v') x.fields y.fields
+  | V.Int x, V.Int y | V.Uint x, V.Uint y -> x = y
+  | V.Enum x, V.Enum y -> x.tname = y.tname && x.num = y.num
+  | _ -> a = b

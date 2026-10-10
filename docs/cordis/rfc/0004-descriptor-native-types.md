@@ -1,7 +1,7 @@
 # RFC 0004: Descriptor-native types
 
 Status: accepted for implementation (phase 2, build order item 6). Stages
-1 to 3 are built.
+1 to 4 are built; stage 5 remains.
 Amends RFC 0002 (types, `uses`, identity, admission) and RFC 0003 (the
 protobuf importer). Model: `cordis/quint/revisions.qnt`.
 
@@ -112,7 +112,10 @@ implementation now follows protobuf here.
 A definition that names a protobuf type depends on the `uses descriptors`
 items that define it, so its hash covers theirs (RFC 0002 "Identity"): a
 changed descriptor set changes the hash of every cell and graph that uses
-its types, which invalidates their memos.
+its types, which invalidates their memos. A dotted path in a CEL body counts as a name
+unless it starts at a variable in scope (a parameter, `state`, a `let` or
+`use`, a comprehension variable), so a cell that only selects fields of
+its own values does not depend on the sets.
 
 ## Revisions
 
@@ -142,12 +145,33 @@ What `revisions.qnt` checked, before implementation:
 
 | Change | Classification |
 | --- | --- |
-| a field added | compatible |
+| a field added (not `required`) | compatible |
 | an enum value added | compatible |
+| a proto2 `required` field relaxed | compatible |
 | a field removed, or its number, type or cardinality changed | breaking |
-| a field renamed (its JSON form changes) | breaking |
-| an enum value removed or renumbered | breaking |
+| a field renamed, or its JSON name changed (its JSON form changes) | breaking |
+| a field given or deprived of presence, moved into or out of a oneof, made `required`, or given a new default | breaking |
+| a `required` field added | breaking |
+| an enum value removed, renamed or renumbered | breaking |
+| the file's syntax changed | breaking |
+| any of these in a type a field holds, at any depth | as the change |
 | a message or enum removed while a definition names it | refused by the checker |
+
+The rule is conservative: compatible means the new descriptor reads
+every message the old one wrote, under the codec's strict reading, in
+binary and JSON, to the same value; some changes called breaking (`int32`
+to `int64`) also read every old message, but none called compatible fails
+to (`cel/lib/proto_compat.ml`).
+
+**As built.** `Compat` compares the two revisions' registries over the
+protobuf types each definition names (in its signature, its state, or its
+body, as a message literal or an enum constant) and every type those
+reach. A breaking change makes the definition need approval with the
+change as the reason (`acme.shop.v1.Order: field note (6) removed`),
+though its signature reads the same. Admission returns a **state plan**
+with the new revision: per stateful cell, `Carry`, or `Migrate` with the
+reasons; `cgraph admit` prints it. Migration is the reset to the initial
+value until migration cells exist.
 
 ## Testing
 
@@ -170,7 +194,18 @@ What `revisions.qnt` checked, before implementation:
   examples cover them.
 - **The codec by example**: what protobuf's binary and JSON may say that
   the codec never writes, and each refusal above.
-- **Compatibility**: examples of each row of the table above.
+- **Compatibility**: examples of each row of the table above; and
+  (Hegel) for any sequence of the changes, when nothing breaking is found,
+  every message the old descriptors write (binary and JSON) the new ones
+  read to itself (`cel/test/proto_compat_test.ml`).
+- **Revisions** (Hegel, `graph/test/revisions_test.ml`): a patch swapping
+  the attached set for a changed one, admitted as `revisions.qnt` says: a
+  breaking change goes live only approved (its `noApproval` mutant, as a
+  code mutant, fails it); state is carried only when old state reads under
+  the new descriptors (`carryAlways`), and migrated only across a breaking
+  change; the live registry is untouched; the hash of a cell naming the
+  type changes and of one naming none does not. Examples over the shop
+  corpus's real sets.
 - **Model**: `revisions.qnt` in the model gate, with its mutants and
   witnesses.
 

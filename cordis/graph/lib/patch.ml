@@ -29,7 +29,8 @@ type patch = op list
 type store = { file : file; checked : Check.checked }
 
 type outcome =
-  | Live of store * Compat.change list
+  | Live of store * Compat.change list * (string * Compat.state_move) list
+      (** the new revision, what changed, and what happens to each cell's state *)
   | Awaiting_approval of store * (string * string list) list  (** the candidate, and what needs approval *)
   | Refused of string list
 
@@ -121,9 +122,10 @@ let admit ?(options = Check.default_options) ?(approved = false) (live : store) 
       | Ok checked -> (
           let candidate = { file; checked } in
           let changes = Compat.diff ~old_file:live.file ~old_checked:live.checked ~new_file:file ~new_checked:checked in
+          let plan = Compat.state_plan ~old_file:live.file ~old_checked:live.checked ~new_file:file ~new_checked:checked in
           match Compat.needs_approval changes with
-          | [] -> Live (candidate, changes)
-          | needs -> if approved then Live (candidate, changes) else Awaiting_approval (candidate, needs)))
+          | [] -> Live (candidate, changes, plan)
+          | needs -> if approved then Live (candidate, changes, plan) else Awaiting_approval (candidate, needs)))
 
 let load ?(options = Check.default_options) text =
   match Parse.file text with

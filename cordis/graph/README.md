@@ -21,6 +21,7 @@ in it is CEL, parsed and checked by [`../cel`](../cel).
 | `test/props.ml` | Hegel: print/parse round trip, formatting invariance (spacing, comments, CEL spelling), hash sensitivity |
 | `test/corpus/` | Programs the checker must accept (`ok_*`) or reject with a given error (`bad_*`), one rule each; `libs/` is their content store (a library text, descriptor sets), named in a program as `HASH(file)` |
 | `test/soundness.ml` | Hegel: for inputs of the declared types, every turn costs at most its estimate and results have their declared types, over the corpus and over generated cells |
+| `test/revisions_test.ml` | Hegel: descriptor changes across revisions, as `revisions.qnt` states it (approval, state carried or migrated, the live registry untouched, identity); the shop corpus by example |
 | `test/stage3.ml` | Hegel: compiled graphs run to quiet under any interleaving with assets provided, effect rows kept and statically accepted invariants held (random graphs with random invariants); admission as `admission.qnt` states it; compatibility examples |
 
 ## Status
@@ -55,5 +56,7 @@ fields, maps, strings and bytes bounded by the default ceiling. The
 soundness property covers the corpus's protobuf cells with messages
 generated from the descriptors (`../cel/test/proto_gen.ml`). The
 boundary codec over the registry is built (stage 3,
-`../cel/lib/proto_codec.ml`). Next: descriptor compatibility in admission
-(stage 4).
+`../cel/lib/proto_codec.ml`). Admission classifies descriptor changes
+(stage 4): a breaking change to a type a definition names needs approval,
+and each stateful cell's state is carried or migrated
+(`test/revisions_test.ml`).
