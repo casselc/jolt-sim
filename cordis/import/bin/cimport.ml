@@ -1,7 +1,7 @@
 (* cimport: schema importers (docs/cordis/rfc/0003-types-importers-scaffolds.md).
 
      cimport protobuf SET.binpb [--out DIR | --print types|report|names]
-     cimport jsonschema SCHEMA.json [--out DIR | --print types|report|names]
+     cimport jsonschema SCHEMA.json [--with FILE|DIR]... [--out DIR | --print types|report|names]
 
    reads a FileDescriptorSet and writes DIR/types.cg (the types and their
    check_ cells), DIR/report.txt (what was approximated) and DIR/names.json
@@ -38,17 +38,41 @@ let emit rest types report names =
       write "report.txt" report;
       write "names.json" names
   | [] -> print_string types; print_string "\n// ---- report\n"; print_string report
-  | _ -> die "usage: cimport (protobuf SET.binpb | jsonschema SCHEMA.json) [--out DIR | --print types|report|names]"
+  | _ -> die "usage: cimport (protobuf SET.binpb | jsonschema SCHEMA.json [--with FILE|DIR]...) [--out DIR | --print types|report|names]"
 
 let () =
   match Array.to_list Sys.argv with
   | _ :: "jsonschema" :: path :: rest -> (
+      (* --with FILE|DIR: further documents references may name, each
+         under its $id (or its file: URI) *)
+      let rec split acc = function
+        | "--with" :: p :: r -> split (p :: acc) r
+        | r -> (List.rev acc, r)
+      in
+      let withs, rest = split [] rest in
+      let files =
+        List.concat_map
+          (fun p ->
+            if Sys.is_directory p then
+              Sys.readdir p |> Array.to_list |> List.filter (fun f -> Filename.check_suffix f ".json") |> List.sort compare |> List.map (Filename.concat p)
+            else [ p ])
+          withs
+      in
+      let file_uri p = "file://" ^ (if Filename.is_relative p then Filename.concat (Sys.getcwd ()) p else p) in
+      let others =
+        List.filter_map
+          (fun p ->
+            match Yojson.Safe.from_string (read p) with
+            | d -> (match Schema_draft.normalize d with Ok d -> Some (file_uri p, d) | Error _ -> None)
+            | exception Yojson.Json_error _ -> None)
+          files
+      in
       match Yojson.Safe.from_string (read path) with
       | exception Yojson.Json_error m -> die "%s: not JSON: %s" path m
       | doc -> (
           let doc = match Schema_draft.normalize doc with Ok d -> d | Error m -> die "%s: %s" path m in
           let stem = Filename.remove_extension (Filename.remove_extension (Filename.basename path)) in
-          match Jsonschema.import ~name:stem doc with
+          match Jsonschema.import ~name:stem ~uri:(file_uri path) ~others doc with
           | exception Jsonschema.Refused m -> die "%s: %s" path m
           | imp ->
               let types = Cordis_graph.Print.file (Jsonschema.types_file imp) in

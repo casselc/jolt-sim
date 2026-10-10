@@ -48,7 +48,10 @@ let rec walk d (s : J.t) : J.t =
       let kv =
         (* a $ref's siblings mean nothing before 2019-09 *)
         if d <> D2019 && d <> D2020 && List.mem_assoc "$ref" kv then
-          List.filter (fun (k, _) -> List.mem k [ "$ref"; "$defs"; "definitions"; "$schema"; "$id"; "id"; "title"; "description" ]) kv
+          (* even a sibling $id: it does not change the base the $ref
+             resolves against. $defs and definitions stay, since other
+             references may point into them *)
+          List.filter (fun (k, _) -> List.mem k [ "$ref"; "$defs"; "definitions"; "$schema"; "title"; "description" ]) kv
         else kv
       in
       let kv =

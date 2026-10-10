@@ -47,22 +47,20 @@ let matches re s =
 let nat = P.nat
 let num j = match number j with Some f -> f | None -> P.unsupported "not a number: %s" (J.to_string j)
 
-let rec valid ~(root : J.t) ~(stack : (string * J.t) list) (s : J.t) (x : J.t) : bool =
+let rec valid ~(docs : P.docs) ~(stack : (string * J.t) list) (s : J.t) (x : J.t) : bool =
   match s with
   | `Bool b -> b
   | `Assoc kv ->
       let get k = List.assoc_opt k kv in
       let obj = match x with `Assoc o -> Some o | _ -> None and arr = match x with `List a -> Some a | _ -> None in
       let str = match x with `String s -> Some s | _ -> None and n = number x in
-      let v = valid ~root ~stack in
+      let v = valid ~docs ~stack in
       List.for_all
         (fun (k, a) ->
           if k = "$schema" then
             match a with
             | `String ("https://json-schema.org/draft/2020-12/schema" | "http://json-schema.org/draft-07/schema#" | "http://json-schema.org/draft-07/schema") -> true
             | _ -> P.unsupported "a custom metaschema (%s)" (J.to_string a)
-          else if k = "$id" && a <> (match root with `Assoc rk -> Option.value (List.assoc_opt "$id" rk) ~default:`Null | _ -> `Null) then
-            P.unsupported "an embedded resource ($id %s): references would resolve against it" (J.to_string a)
           else if List.mem k P.ignored || k = "$schema" then true
           else if List.mem k P.refused then P.unsupported "keyword %s" k
           else
@@ -133,7 +131,7 @@ let rec valid ~(root : J.t) ~(stack : (string * J.t) list) (s : J.t) (x : J.t) :
                 else (match get "else" with Some e -> v e x | None -> true)
             | "$ref", `String r ->
                 if List.exists (fun (r', y) -> r' = r && y == x) stack then raise (Loop r);
-                valid ~root ~stack:((r, x) :: stack) (P.resolve root r) x
+                valid ~docs ~stack:((r, x) :: stack) (P.resolve docs r) x
             | _ -> true)
         kv
   | _ -> P.unsupported "not a schema: %s" (J.to_string s)
@@ -141,8 +139,8 @@ let rec valid ~(root : J.t) ~(stack : (string * J.t) list) (s : J.t) (x : J.t) :
 (* Whether the interpreter reads [schema] (a subschema of [root]): every
    keyword it can reach, each reference target once, checked statically
    for what the boundary does not read, as Schema_pred refuses it. *)
-let supported ?(root : J.t option) (schema : J.t) =
-  let root = Option.value root ~default:schema in
+let supported ?docs (schema : J.t) =
+  let docs, schema = match docs with Some d -> (d, schema) | None -> let d = P.documents schema in (d, P.main_doc d) in
   let seen = Hashtbl.create 16 in
   let one = [ "not"; "if"; "then"; "else"; "contains"; "propertyNames"; "additionalProperties"; "items" ] in
   let many = [ "allOf"; "anyOf"; "oneOf"; "prefixItems" ] in
@@ -157,8 +155,6 @@ let supported ?(root : J.t option) (schema : J.t) =
               (match a with
                | `String ("https://json-schema.org/draft/2020-12/schema" | "http://json-schema.org/draft-07/schema#" | "http://json-schema.org/draft-07/schema") -> ()
                | _ -> P.unsupported "a custom metaschema (%s)" (J.to_string a))
-            else if k = "$id" && a <> (match root with `Assoc rk -> Option.value (List.assoc_opt "$id" rk) ~default:`Null | _ -> `Null) then
-              P.unsupported "an embedded resource ($id %s): references would resolve against it" (J.to_string a)
             else if List.mem k P.refused then P.unsupported "keyword %s" k
             else
               match k, a with
@@ -172,7 +168,7 @@ let supported ?(root : J.t option) (schema : J.t) =
               | "$ref", `String r ->
                   if not (Hashtbl.mem seen r) then begin
                     Hashtbl.replace seen r ();
-                    walk (P.resolve root r)
+                    walk (P.resolve docs r)
                   end
               | k, sub when List.mem k one -> walk sub
               | k, `List subs when List.mem k many -> List.iter walk subs
@@ -186,8 +182,9 @@ let supported ?(root : J.t option) (schema : J.t) =
 
 (* Whether [x] satisfies [schema] (a subschema of [root]); Unsupported
    for what the boundary does not read, as Schema_pred. *)
-let check ?(root : J.t option) (schema : J.t) (x : J.t) =
-  match valid ~root:(Option.value root ~default:schema) ~stack:[] schema x with
+let check ?docs (schema : J.t) (x : J.t) =
+  let docs, schema = match docs with Some d -> (d, schema) | None -> let d = P.documents schema in (d, P.main_doc d) in
+  match valid ~docs ~stack:[] schema x with
   | b -> Ok b
   | exception Loop r -> Error (Printf.sprintf "the reference %s returns to itself without consuming the instance" r)
   | exception P.Unsupported m -> Error m

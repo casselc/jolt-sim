@@ -112,13 +112,13 @@ let rec of_json (imp : import) (t : t) (j : J.t) : V.t =
   | Bool, `Bool b -> V.Bool b
   | Dyn, j -> dyn j
   | Checked s, j -> (
-      match Schema_eval.check ~root:imp.doc s j with
+      match Schema_eval.check ~docs:imp.docs s j with
       | Ok true -> dyn j
       | Ok false -> bad "the value does not satisfy its schema: %s" (J.to_string j)
       | Error e -> bad "%s" e)
   | Rec k, j -> (
       (* the referenced type, residue and all; kept as plain JSON *)
-      let n = match List.assoc_opt k imp.by_def with Some n -> n | None -> bad "no type for %s" k in
+      let n = match List.assoc_opt (Jsonschema.canon k) imp.by_def with Some n -> n | None -> bad "no type for %s" k in
       ignore (of_json imp (Named n) j : V.t);
       dyn j)
   | Opt (Dyn | Rec _ | Checked _), `Null -> V.Optional (Some V.Null) (* null is a value of dyn *)

@@ -51,7 +51,7 @@ type import = {
       (** graph name -> the type's own residue at x, not looking into the named types it holds: the
           codec checks each named value it reads against its own *)
   root : string;  (** the root schema's type *)
-  doc : J.t;  (** the schema document, which Checked locations' references resolve in *)
+  docs : P.docs;  (** the documents, as loaded, which references resolve in *)
   by_def : (string * string) list;  (** schema reference -> graph name *)
   report : (string * string) list;  (** location, what was approximated *)
 }
@@ -95,7 +95,7 @@ let nat = function Some (`Int n) when n >= 0 -> Some n | _ -> None
 (* ---- the import ---------------------------------------------------------------------------------- *)
 
 type ctx = {
-  doc : J.t;
+  docs : P.docs;
   mutable defs : (string * def) list;  (** reversed *)
   mutable residues : (string * (string -> string list)) list;
   mutable report : (string * string) list;  (** reversed *)
@@ -103,6 +103,13 @@ type ctx = {
   mutable by_def : (string * string) list;  (** schema reference -> graph name *)
   mutable names : string list;
 }
+
+(* a reference as the report shows it: relative to the main document, so
+   the report does not depend on where the schema was read from *)
+let shown c r =
+  let m = c.docs.Schema_pred.main in
+  let n = String.length m in
+  if n > 0 && String.length r > n && String.sub r 0 n = m && r.[n] = '#' then String.sub r n (String.length r - n) else r
 
 let say c loc fmt = Printf.ksprintf (fun m -> if not (List.mem (loc, m) c.report) then c.report <- (loc, m) :: c.report) fmt
 
@@ -137,10 +144,10 @@ let named n r = (Named n, fun p -> if !inline_named then spend (r p) else [])
    Checked location the codec checks by interpretation, its check_T
    residue the predicate with each recursive edge cut; else refused. *)
 let dyn_location c loc (s : J.t) : t * (string -> string list) =
-  match P.compile ~root:c.doc s "x" with
-  | _ -> (Dyn, fun p -> match P.compile ~root:c.doc s p with "true" -> [] | src -> [ src ])
+  match P.compile ~docs:c.docs s "x" with
+  | _ -> (Dyn, fun p -> match P.compile ~docs:c.docs s p with "true" -> [] | src -> [ src ])
   | exception P.Unsupported why -> (
-      match Schema_eval.supported ~root:c.doc s with
+      match Schema_eval.supported ~docs:c.docs s with
       | Error why2 -> raise (Refused (Printf.sprintf "%s: %s" loc (if why2 = why then why else why2)))
       | Ok () ->
           say c loc "%s: checked at the boundary by the interpreter; check_ cells check it only up to each recursive edge" why;
@@ -148,7 +155,7 @@ let dyn_location c loc (s : J.t) : t * (string -> string list) =
             fun p ->
               if not !inline_named then []
               else
-                match P.compile ~root:c.doc ~cut:true s p with
+                match P.compile ~docs:c.docs ~cut:true s p with
                 | "true" -> []
                 | src -> [ src ]
                 | exception P.Unsupported why2 ->
@@ -165,12 +172,15 @@ exception Fall_back
    location the interpreter checks *)
 let scalar_residue c loc s =
   let s = without s [ "type" ] in
-  match P.compile ~root:c.doc s "x" with
-  | _ -> fun p -> (match P.compile ~root:c.doc s p with "true" -> [] | src -> [ src ])
+  match P.compile ~docs:c.docs s "x" with
+  | _ -> fun p -> (match P.compile ~docs:c.docs s p with "true" -> [] | src -> [ src ])
   | exception P.Unsupported why ->
-      if Schema_eval.supported ~root:c.doc s = Ok () then raise Fall_back
+      if Schema_eval.supported ~docs:c.docs s = Ok () then raise Fall_back
       else (* the boundary could not check it: refused, not approximated *)
         raise (Refused (Printf.sprintf "%s: %s" loc why))
+
+(* a reference's canonical form: an empty fragment is no fragment *)
+let canon r = if String.length r > 0 && r.[String.length r - 1] = '#' then String.sub r 0 (String.length r - 1) else r
 
 (* the name a definition takes from its reference: the last pointer segment *)
 let ref_base r =
@@ -283,7 +293,7 @@ and admits_null c seen s =
       match get s "type", get s "$ref" with
       | Some (`String t), _ -> t = "null"
       | Some (`List ts), _ -> List.mem (`String "null") ts
-      | None, Some (`String r) when not (List.mem r seen) -> (match P.resolve c.doc r with t -> admits_null c (r :: seen) t | exception P.Unsupported _ -> true)
+      | None, Some (`String r) when not (List.mem r seen) -> (match P.resolve c.docs r with t -> admits_null c (r :: seen) t | exception P.Unsupported _ -> true)
       | None, _ -> (
           match get s "enum", get s "const" with
           | Some (`List vs), _ -> List.mem `Null vs
@@ -301,7 +311,7 @@ and nullable c ~loc ~whole s =
       (* whether null itself satisfies the schema (const, enum, not, ... see
          it too): decided now, since null is one value *)
       let null_ok =
-        match Schema_eval.check ~root:c.doc whole `Null with
+        match Schema_eval.check ~docs:c.docs whole `Null with
         | Ok b -> b
         | Error why -> raise (Refused (Printf.sprintf "%s: %s" loc why))
       in
@@ -312,7 +322,7 @@ and nullable c ~loc ~whole s =
           | inner, true -> [ Printf.sprintf "(!%s.hasValue() || %s)" p (conj inner) ]
           | inner, false -> [ Printf.sprintf "(%s.hasValue() && %s)" p (conj (inner @ [ "true" ])) ] )
 
-and deref c s = match get s "$ref" with Some (`String r) when only s [ "$ref" ] -> (try P.resolve c.doc r with P.Unsupported m -> raise (Refused m)) | _ -> s
+and deref c s = match get s "$ref" with Some (`String r) when only s [ "$ref" ] -> (try P.resolve c.docs r with P.Unsupported m -> raise (Refused m)) | _ -> s
 
 and plain_object s =
   get s "properties" <> None && only s [ "type"; "properties"; "required"; "additionalProperties" ]
@@ -323,9 +333,9 @@ and plain_object s =
    translated once; a reference back into one being translated is a
    recursive edge. *)
 and reference c ~loc s =
-  let r = match get s "$ref" with Some (`String r) -> r | _ -> "" in
+  let r = match get s "$ref" with Some (`String r) -> canon r | _ -> "" in
   if List.mem r c.visiting then begin
-    say c loc "a recursive reference to %s: dyn in the graph language (check_ cells do not look beneath it); the codec reads it as %s" r r;
+    say c loc "a recursive reference to %s: dyn in the graph language (check_ cells do not look beneath it); the codec reads it as %s" (shown c r) (shown c r);
     (Rec r, fun _ -> [])
   end
   else
@@ -339,8 +349,8 @@ and define ?name c r =
   match List.assoc_opt r c.by_def with
   | Some n -> n
   | None ->
-      let schema = match P.resolve c.doc r with s -> s | exception P.Unsupported m -> raise (Refused m) in
-      let schema = if r = "#" || r = "" then without schema [ "$defs"; "definitions" ] else schema in
+      let schema = match P.resolve c.docs r with s -> s | exception P.Unsupported m -> raise (Refused m) in
+      let schema = if r = c.docs.main then without schema [ "$defs"; "definitions" ] else schema in
       let base = match name with Some n -> n | None -> ref_base r in
       c.visiting <- r :: c.visiting;
       let n =
@@ -488,19 +498,22 @@ and variant c ~loc _s bs disc =
   c.residues <- (name, residue) :: c.residues;
   named name residue
 
-let import ?(name = "Root") (doc : J.t) =
-  let c = { doc; defs = []; residues = []; report = []; visiting = []; by_def = []; names = []; } in
+(* Import the document [docs.main] of a loaded set (P.documents): many
+   imports can share one set. *)
+let rec import_docs ?(name = "Root") (docs : P.docs) =
+  let doc = P.main_doc docs in
+  let c = { docs; defs = []; residues = []; report = []; visiting = []; by_def = []; names = []; } in
   let root_name = match get doc "title" with Some (`String t) -> t | _ -> name in
   (* every $defs entry, then the root, which is the reference "#" *)
   (* a key as a JSON Pointer segment in a URI fragment: ~ is ~0, / is ~1,
      % is %25 *)
   let segment k = P.replace ~sub:"%" ~by:"%25" (P.replace ~sub:"/" ~by:"~1" (P.replace ~sub:"~" ~by:"~0" k)) in
   let defs =
-    (match get doc "$defs" with Some (`Assoc ds) -> List.map (fun (k, _) -> "#/$defs/" ^ segment k) ds | _ -> [])
-    @ match get doc "definitions" with Some (`Assoc ds) -> List.map (fun (k, _) -> "#/definitions/" ^ segment k) ds | _ -> []
+    (match get doc "$defs" with Some (`Assoc ds) -> List.map (fun (k, _) -> docs.main ^ "#/$defs/" ^ segment k) ds | _ -> [])
+    @ match get doc "definitions" with Some (`Assoc ds) -> List.map (fun (k, _) -> docs.main ^ "#/definitions/" ^ segment k) ds | _ -> []
   in
   List.iter (fun r -> ignore (define c r)) defs;
-  let root = define ~name:root_name c "#" in
+  let root = define ~name:root_name c docs.main in
   let bounded = ref false in
   let rec unbounded = function
     | Str None | Lst (_, None) | Mp (_, None) | Dyn | Rec _ | Checked _ -> true
@@ -541,7 +554,14 @@ let import ?(name = "Root") (doc : J.t) =
   in
   inline_named := true;
   budget := max_int;
-  { defs; residue; local; root; doc; by_def = c.by_def; report = List.rev c.report }
+  { defs; residue; local; root; docs; by_def = c.by_def; report = List.rev c.report }
+
+(* Import [doc], given under [uri]; [others] are the further documents its
+   references may name, each under its URI ("" to rely on its $id). *)
+and import ?name ?uri ?others (doc : J.t) = import_docs ?name (P.documents ?uri ?others doc)
+
+(* Import the document under [uri] in a shared set. *)
+let import_in ?name (docs : P.docs) uri = import_docs ?name { docs with main = uri }
 
 (* ---- the types file ------------------------------------------------------------------------------- *)
 

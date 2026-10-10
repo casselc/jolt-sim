@@ -145,14 +145,22 @@ Input: a JSON Schema document, draft 2020-12, or draft 4, 6, 7 or
 siblings are dropped before 2019-09, as those drafts say; draft 4's
 boolean `exclusiveMinimum`/`exclusiveMaximum` become numbers and `id` is
 `$id`. Any other `$schema` is refused. The root and every `$defs` entry become types; the
-root is named by `title`, else by the file name. `$ref` resolves within
-the document (`#/$defs/X`, JSON Pointers, `$anchor`). A schema whose
-validation the boundary could not check exactly is **refused, not
-approximated**: a remote `$ref`, an embedded resource (a nested `$id`,
-which would change how references resolve), `$dynamicRef`,
-`unevaluatedProperties`, `unevaluatedItems`, a custom metaschema, and a
-pattern with no RE2 counterpart (lookaround, backreferences, Unicode
-property classes).
+root is named by `title`, else by the file name. **Documents.** An import reads a set of documents: the schema, and any
+others it names (`cimport jsonschema SCHEMA --with FILE|DIR`). Nothing is
+fetched over the network. Each document has an absolute URI (its `$id`,
+resolved against the URI it was given under), and when it is loaded
+every `$ref` in it is rewritten to an absolute URI, resolved by RFC 3986
+against the base its position has (the nearest enclosing `$id`), and
+every resource (`$id`) and anchor (`$anchor`) is indexed by absolute URI.
+After loading, resolving a reference is a lookup: a document, then a
+JSON Pointer or an anchor in it. A reference to a document not in the set
+is refused, naming it.
+
+A schema whose validation the boundary could not check exactly is
+**refused, not approximated**: a reference to a document not given,
+`$dynamicRef`, `unevaluatedProperties`, `unevaluatedItems`, a custom
+metaschema, and a pattern with no RE2 counterpart (lookaround,
+backreferences, Unicode property classes).
 
 ### The validation predicate
 
@@ -285,11 +293,15 @@ order and absent `option`s as omitted members.
   2020-12, vendored in `cordis/import/test/json-schema-test-suite`; the
   earlier drafts test the draft reading), each draft twice:
   - the predicate's verdict is the suite's for every test whose schema
-    compiles (2020-12: 971 tests; all drafts: 4,155; none disagree);
+    compiles (2020-12: 1,030 tests; all drafts: 4,366; none disagree);
+  - the interpreter's verdict is the suite's for every test whose schema
+    it reads (2020-12: 1,038; all drafts: 4,404; none disagree);
   - for every test whose schema imports, the types file checks and the
     codec reads the instance exactly when the suite calls it valid, but
-    for the documented refusals above (2020-12: 939 agree and 14 are
-    documented refusals; all drafts: 4,015 and 70; none disagree).
+    for the documented refusals above (2020-12: 1,010 agree and 14 are
+    documented refusals; all drafts: 4,278 and 70; none disagree).
+  The suite's remote documents are loaded under
+  `http://localhost:1234/`, as the suite serves them.
   The schemas that do not compile or import are listed, by reason, in a
   checked-in golden file.
 - **Agreement with Python's `jsonschema` (Hegel, `schema_agreement.ml`)**:

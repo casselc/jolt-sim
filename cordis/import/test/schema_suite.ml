@@ -51,8 +51,32 @@ let groups dir =
                gs
          | _ -> failwith (file ^ ": not a list of groups"))
 
+(* The suite's remotes, as served at http://localhost:1234/: every file
+   under DIR/remotes, under its path, read in [draft]. *)
+let remotes root draft =
+  let base = Filename.concat root "remotes" in
+  let rec files rel =
+    let d = if rel = "" then base else Filename.concat base rel in
+    Sys.readdir d |> Array.to_list |> List.sort compare
+    |> List.concat_map (fun f ->
+           let r = if rel = "" then f else rel ^ "/" ^ f in
+           if Sys.is_directory (Filename.concat base r) then files r else if Filename.check_suffix f ".json" then [ r ] else [])
+  in
+  if Sys.file_exists base then
+    List.filter_map
+      (fun r ->
+        match Schema_draft.normalize ?default:(Schema_draft.draft_named draft) (J.from_file (Filename.concat base r)) with
+        | Ok d -> Some ("http://localhost:1234/" ^ r, d)
+        | Error _ -> None)
+      (files "")
+  else []
+
+let others = ref []
+
 let run draft dir =
   let gs = groups dir in
+  others := remotes (Filename.dirname dir) draft;
+  let others = !others in
   (* the predicate *)
   let passed = ref 0 and skipped = ref [] and skipped_tests = ref 0 in
   (* the interpreter *)
@@ -69,19 +93,21 @@ let run draft dir =
           not_imported := Printf.sprintf "%s: %s" where why :: !not_imported;
           not_imported_tests := !not_imported_tests + List.length tests
       | Ok schema -> (
-          (match Schema_eval.supported schema with
+          let docs = Schema_pred.documents ~others schema in
+          let main = Schema_pred.main_doc docs in
+          (match Schema_eval.supported ~docs main with
            | Error why ->
                eval_skipped := Printf.sprintf "%s: %s" where why :: !eval_skipped;
                eval_skipped_tests := !eval_skipped_tests + List.length tests
            | Ok _ ->
                List.iter
                  (fun (tdesc, data, valid) ->
-                   match Schema_eval.check schema data with
+                   match Schema_eval.check ~docs main data with
                    | Ok b when b = valid -> incr eval_agree
                    | Ok b -> fail "%s: %s: the interpreter gives %b, expected %b\n  data: %s" where tdesc b valid (J.to_string data)
                    | Error e -> fail "%s: %s: the interpreter: %s" where tdesc e)
                  tests);
-          (match Schema_pred.compile schema "x" with
+          (match Schema_pred.compile ~docs main "x" with
            | exception Schema_pred.Unsupported why ->
                skipped := Printf.sprintf "%s: %s" where why :: !skipped;
                skipped_tests := !skipped_tests + List.length tests
@@ -100,7 +126,7 @@ let run draft dir =
                                fail "%s: %s: the predicate gives %s, expected %b\n  data: %s\n  predicate: %s" where tdesc (C.Value.to_string value) valid (J.to_string data) src
                            | Error e -> fail "%s: %s: %s" where tdesc e)
                          tests)));
-          match Jsonschema.import schema with
+          match Jsonschema.import ~others schema with
           | exception (Jsonschema.Refused why | Schema_pred.Unsupported why) ->
               not_imported := Printf.sprintf "%s: %s" where why :: !not_imported;
               not_imported_tests := !not_imported_tests + List.length tests

@@ -88,6 +88,6 @@
 
 (rule
  (alias schemastore)
- (deps jsvalid.py golden/schemastore.txt)
+ (deps jsvalid.py golden/schemastore.txt (source_tree metaschemas))
  (action
   (run %{exe:schemastore.exe} %{env:SCHEMASTORE=schemastore} jsvalid.py --expect golden/schemastore.txt)))

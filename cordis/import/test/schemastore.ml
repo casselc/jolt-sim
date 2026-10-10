@@ -20,7 +20,12 @@ module J = Yojson.Safe
 
 let dir = Sys.argv.(1)
 let jsvalid = Sys.argv.(2)
-let proc = lazy (Unix.open_process_args "python3" [| "python3"; jsvalid |])
+let metaschemas = Filename.concat (Filename.dirname jsvalid) "metaschemas"
+let schemas_dir = Filename.concat dir "src/schemas/json"
+
+(* the validator, with every SchemaStore schema and the metaschemas as the
+   documents references may name *)
+let proc = lazy (Unix.open_process_args "python3" [| "python3"; jsvalid; schemas_dir; metaschemas |])
 
 let jsonschema schema instance =
   let ic, oc = Lazy.force proc in
@@ -57,8 +62,27 @@ let kind why =
   | None -> why
 
 let () =
-  let schemas_dir = Filename.concat dir "src/schemas/json" in
   let files = Sys.readdir schemas_dir |> Array.to_list |> List.filter (fun f -> Filename.check_suffix f ".json") |> List.sort compare in
+  (* one set of documents: every schema, under SchemaStore's URL for it
+     (its $id, if it has one, too), and the metaschemas under theirs *)
+  let docs = Schema_pred.empty_docs () in
+  List.iter
+    (fun f ->
+      match J.from_file (Filename.concat metaschemas f) with
+      | doc -> (match Schema_draft.normalize doc with Ok d -> ignore (Schema_pred.add docs d) | Error _ -> ())
+      | exception _ -> ())
+    (Sys.readdir metaschemas |> Array.to_list |> List.filter (fun f -> Filename.check_suffix f ".json"));
+  let uris =
+    List.filter_map
+      (fun f ->
+        match J.from_file (Filename.concat schemas_dir f) with
+        | doc -> (
+            match Schema_draft.normalize doc with
+            | Ok d -> Some (f, Schema_pred.add docs ~uri:("https://json.schemastore.org/" ^ f) d)
+            | Error _ -> None)
+        | exception _ -> None)
+      files
+  in
   let imported = ref 0 and refused = Hashtbl.create 16 and failures = ref [] in
   let agree = ref 0 and documented_n = ref 0 and positive = ref 0 and negative = ref 0 and unvalidated = ref 0 in
   let lines =
@@ -78,7 +102,11 @@ let () =
             match Schema_draft.normalize original with
             | Error why -> refuse why
             | Ok doc -> (
-                match Jsonschema.import ~name:stem doc with
+                (* added again, so that its $id, which other versions of it
+                   may share, names it while it is imported *)
+                ignore uris;
+                let base = Schema_pred.add docs ~uri:("https://json.schemastore.org/" ^ f) doc in
+                match Jsonschema.import_in ~name:stem docs base with
                 | exception (Jsonschema.Refused why | Schema_pred.Unsupported why) -> refuse why
                 | exception e -> failures := Printf.sprintf "%s: the importer raised %s" stem (Printexc.to_string e) :: !failures; stem ^ ": raised"
                 | imp -> (
