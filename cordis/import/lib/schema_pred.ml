@@ -165,7 +165,12 @@ let ignored =
 
 let refused = [ "$dynamicRef"; "$dynamicAnchor"; "$recursiveRef"; "$recursiveAnchor"; "unevaluatedProperties"; "unevaluatedItems" ]
 
-type ctx = { root : J.t; mutable fresh : int; refs : string list  (** the $refs being expanded, for recursion *) }
+type ctx = {
+  root : J.t;
+  mutable fresh : int;
+  refs : string list;  (** the $refs being expanded, for recursion *)
+  cut : bool;  (** a recursive $ref compiles to true (checked to that edge only) instead of being refused *)
+}
 
 let fresh c prefix =
   c.fresh <- c.fresh + 1;
@@ -273,10 +278,11 @@ let rec pred (c : ctx) (s : J.t) (x : string) : string =
                   let e = match get "else" with Some s -> pred c s x | None -> "true" in
                   [ Printf.sprintf "(%s ? %s : %s)" (pred c sub x) t e ]
               | "$ref", `String r ->
+                  if List.mem r c.refs && c.cut then [ "true" ] else begin
                   if List.mem r c.refs then unsupported "a recursive $ref (%s)" r;
                   let p = pred { c with refs = r :: c.refs } (resolve c.root r) x in
                   if String.length p > !max_size then unsupported "a predicate over %d bytes" !max_size;
-                  [ p ]
+                  [ p ] end
               | _ -> [] (* an unknown keyword: ignored, as JSON Schema says *))
           kv
       in
@@ -284,8 +290,8 @@ let rec pred (c : ctx) (s : J.t) (x : string) : string =
   | _ -> unsupported "not a schema: %s" (J.to_string s)
 
 (* The predicate for [schema] (a subschema of [root]) at CEL expression [x]. *)
-let compile ?(root : J.t option) (schema : J.t) (x : string) =
-  let c = { root = Option.value root ~default:schema; fresh = 0; refs = [] } in
+let compile ?(root : J.t option) ?(cut = false) (schema : J.t) (x : string) =
+  let c = { root = Option.value root ~default:schema; fresh = 0; refs = []; cut } in
   let src = pred c schema x in
   if String.length src > !max_size then unsupported "a predicate of %d bytes, over the limit of %d" (String.length src) !max_size;
   src

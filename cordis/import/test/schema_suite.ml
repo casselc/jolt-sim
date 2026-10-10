@@ -55,6 +55,8 @@ let run draft dir =
   let gs = groups dir in
   (* the predicate *)
   let passed = ref 0 and skipped = ref [] and skipped_tests = ref 0 in
+  (* the interpreter *)
+  let eval_agree = ref 0 and eval_skipped = ref [] and eval_skipped_tests = ref 0 in
   (* the importer and codec *)
   let agree = ref 0 and refused_valid = ref 0 and not_imported = ref [] and not_imported_tests = ref 0 in
   List.iter
@@ -67,6 +69,18 @@ let run draft dir =
           not_imported := Printf.sprintf "%s: %s" where why :: !not_imported;
           not_imported_tests := !not_imported_tests + List.length tests
       | Ok schema -> (
+          (match Schema_eval.supported schema with
+           | Error why ->
+               eval_skipped := Printf.sprintf "%s: %s" where why :: !eval_skipped;
+               eval_skipped_tests := !eval_skipped_tests + List.length tests
+           | Ok _ ->
+               List.iter
+                 (fun (tdesc, data, valid) ->
+                   match Schema_eval.check schema data with
+                   | Ok b when b = valid -> incr eval_agree
+                   | Ok b -> fail "%s: %s: the interpreter gives %b, expected %b\n  data: %s" where tdesc b valid (J.to_string data)
+                   | Error e -> fail "%s: %s: the interpreter: %s" where tdesc e)
+                 tests);
           (match Schema_pred.compile schema "x" with
            | exception Schema_pred.Unsupported why ->
                skipped := Printf.sprintf "%s: %s" where why :: !skipped;
@@ -105,18 +119,21 @@ let run draft dir =
                     tests)))
     gs;
   Printf.printf "# %s: the predicate: %d tests agree; %d tests in %d groups do not compile.\n" draft !passed !skipped_tests (List.length !skipped);
+  Printf.printf "# %s: the interpreter: %d tests agree; %d tests in %d groups are not read.\n" draft !eval_agree !eval_skipped_tests (List.length !eval_skipped);
   Printf.printf "# %s: the importer and codec: %d tests agree; %d valid instances are refused as RFC 0003 documents; %d tests in %d groups do not import.\n"
     draft !agree !refused_valid !not_imported_tests (List.length !not_imported);
-  (List.rev !skipped, List.rev !not_imported)
+  (List.rev !skipped, List.rev !eval_skipped, List.rev !not_imported)
 
 let () =
   let root = Sys.argv.(1) in
   let drafts = [ "draft2020-12"; "draft2019-09"; "draft7"; "draft6"; "draft4" ] in
   let results = List.map (fun d -> (d, run d (Filename.concat root d))) drafts in
   List.iter
-    (fun (d, (skipped, not_imported)) ->
+    (fun (d, (skipped, eval_skipped, not_imported)) ->
       Printf.printf "\n## %s: schemas the predicate does not compile\n" d;
       List.iter print_endline skipped;
+      Printf.printf "\n## %s: schemas the interpreter does not read\n" d;
+      List.iter print_endline eval_skipped;
       Printf.printf "\n## %s: schemas that do not import\n" d;
       List.iter print_endline not_imported)
     results;

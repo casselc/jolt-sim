@@ -39,7 +39,7 @@ let rec to_json (imp : import) (t : t) (v : V.t) : J.t =
   | Int, V.Int i -> if Int64.abs i < 9007199254740992L then `Int (Int64.to_int i) else `Intlit (Int64.to_string i)
   | Num, V.Double d -> if Float.is_finite d then `Float d else bad "%s has no JSON form" (V.to_string v)
   | Bool, V.Bool b -> `Bool b
-  | (Dyn | Rec _), v -> plain v
+  | (Dyn | Rec _ | Checked _), v -> plain v
   | Opt t, V.Optional (Some x) -> to_json imp t x
   | Opt _, V.Optional None -> `Null
   | Lst (t, _), V.List xs -> `List (Array.to_list (Array.map (to_json imp t) xs))
@@ -111,12 +111,17 @@ let rec of_json (imp : import) (t : t) (j : J.t) : V.t =
   | Num, (`Int _ | `Intlit _ | `Float _) -> Schema_pred.value j
   | Bool, `Bool b -> V.Bool b
   | Dyn, j -> dyn j
+  | Checked s, j -> (
+      match Schema_eval.check ~root:imp.doc s j with
+      | Ok true -> dyn j
+      | Ok false -> bad "the value does not satisfy its schema: %s" (J.to_string j)
+      | Error e -> bad "%s" e)
   | Rec k, j -> (
       (* the referenced type, residue and all; kept as plain JSON *)
       let n = match List.assoc_opt k imp.by_def with Some n -> n | None -> bad "no type for %s" k in
       ignore (of_json imp (Named n) j : V.t);
       dyn j)
-  | Opt (Dyn | Rec _), `Null -> V.Optional (Some V.Null) (* null is a value of dyn *)
+  | Opt (Dyn | Rec _ | Checked _), `Null -> V.Optional (Some V.Null) (* null is a value of dyn *)
   | Opt _, `Null -> V.Optional None
   | Opt t, j -> V.Optional (Some (of_json imp t j))
   | Lst (t, _), `List xs -> V.List (Array.of_list (List.map (of_json imp t) xs))
@@ -157,7 +162,7 @@ and read_record imp n fs kv =
          let x =
            match List.assoc_opt f.json kv with
            | None -> if f.required then bad "%s: %s is required" n f.json else V.Optional None
-           | Some `Null when not (f.nullable || (match f.ty with Dyn | Rec _ | Opt (Dyn | Rec _) -> true | _ -> false)) -> (
+           | Some `Null when not (f.nullable || (match f.ty with Dyn | Rec _ | Checked _ | Opt (Dyn | Rec _ | Checked _) -> true | _ -> false)) -> (
                (* refused by the type it would have, which says why *)
                let inner = match f.ty with Opt t -> t | t -> t in
                match of_json imp inner `Null with _ -> bad "%s: %s may not be null" n f.json)

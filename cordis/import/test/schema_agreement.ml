@@ -88,7 +88,7 @@ let rec value (imp : Jsonschema.import) d depth (t : Jsonschema.t) : V.t =
   | Int -> V.Int (choose d !ints)
   | Num -> V.Double (choose d !nums)
   | Bool -> V.Bool (d.pick 2 = 0)
-  | Dyn -> Schema_pred.value (plain d 2)
+  | Dyn | Checked _ -> Schema_pred.value (plain d 2)
   | Rec k ->
       (* the referenced type's values, or anything *)
       if depth > 0 && d.pick 2 = 0 then
@@ -261,6 +261,15 @@ let rec schema ?(top = true) d depth : J.t =
               (* sometimes a name the properties do not list *)
               @ if d.pick 4 = 0 then [ `String "zz" ] else [])) ]
         @ if d.pick 2 = 0 then [ ("additionalProperties", `Bool false) ] else []
+    | 29 when top && d.pick 2 = 0 ->
+        (* recursive: a tree, or nested lists, of a leaf type *)
+        let leaf = sub () in
+        let node =
+          if d.pick 2 = 0 then
+            `Assoc [ ("type", `String "object"); ("properties", `Assoc [ ("v", leaf); ("kids", `Assoc [ ("type", `String "array"); ("items", `Assoc [ ("$ref", `String "#/$defs/d") ]) ]) ]) ]
+          else `Assoc [ ("anyOf", `List [ leaf; `Assoc [ ("type", `String "array"); ("items", `Assoc [ ("$ref", `String "#/$defs/d") ]) ] ]) ]
+        in
+        [ ("$defs", `Assoc [ ("d", node) ]); ("$ref", `String "#/$defs/d") ]
     | _ when top -> [ ("$defs", `Assoc [ ("d", sub ()) ]); ("$ref", `String "#/$defs/d") ]
     | _ -> [ ("type", `String "string") ]
   in
@@ -290,9 +299,23 @@ let test_predicate () =
       new_swarm d;
       let s = schema d (1 + d.pick 3) in
       pools_for s;
-      match Schema_pred.compile s "x" with
-      | exception Schema_pred.Unsupported _ -> ()
-      | src ->
+      let interpreted = Schema_eval.supported s = Ok () in
+      let compiled = match Schema_pred.compile s "x" with src -> Some src | exception Schema_pred.Unsupported _ -> None in
+      (* the interpreter reads whatever the predicate compiles *)
+      if compiled <> None then Hegel.require tc ~msg:("the interpreter refuses a schema the predicate compiles: " ^ J.to_string s) interpreted;
+      for _ = 1 to 6 do
+        let i = instance d 3 in
+        (* the interpreter against jsonschema, recursion included *)
+        if interpreted then
+          (match jsonschema s i, Schema_eval.check s i with
+           | Ok valid, Ok b ->
+               Hegel.require tc ~msg:(Printf.sprintf "schema %s\ninstance %s\njsonschema %b, the interpreter %b" (J.to_string s) (J.to_string i) valid b) (valid = b)
+           | Error e, _ -> Hegel.require tc ~msg:("jsonschema: " ^ e ^ "\n" ^ J.to_string s) false
+           | _, Error e -> Hegel.require tc ~msg:("the interpreter: " ^ e ^ "\n" ^ J.to_string s) false)
+      done;
+      match compiled with
+      | None -> ()
+      | Some src ->
       for _ = 1 to 6 do
         let i = instance d 2 in
         match jsonschema s i, Cordis_cel.Cel.eval ~vars:[ ("x", Schema_pred.value i) ] src with
@@ -320,7 +343,7 @@ let test_import () =
           if Sys.getenv_opt "TARGET" <> Some "0" then begin
             let rec typed (t : Jsonschema.t) =
               match t with
-              | Dyn -> 0
+              | Dyn | Checked _ -> 0
               | Rec _ -> 1
               | Opt t | Lst (t, _) | Mp (t, _) -> 1 + typed t
               | _ -> 1

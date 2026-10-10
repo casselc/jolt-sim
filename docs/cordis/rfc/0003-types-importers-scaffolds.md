@@ -174,6 +174,22 @@ applies to, so a predicate never errors:
 | `$ref` | the target's predicate, inlined; a recursive reference has no predicate (CEL has no recursion), so its schema is refused for validation and reported |
 | `format`, `title`, `description`, `default`, `examples`, `deprecated`, `readOnly`, `writeOnly`, `$comment` | none: annotations (2020-12's default) |
 
+### The interpreter
+
+The same keyword semantics are also an OCaml interpreter
+(`cordis/import/lib/schema_eval.ml`), which the codec uses at `dyn`
+locations. Unlike the compiled predicate it follows a recursive `$ref`,
+and it has no size limit, so a `dyn` location whose subschema recurses
+or whose predicate would be too large is still checked exactly at the
+boundary. A reference that returns to itself at the same place in the
+instance (a loop that consumes nothing) is an error, not a hang. Inside
+graphs, a `check_T` cell carries the compiled predicate with each
+recursive edge cut to `true`, which the report states, or none if it
+would not fit. The interpreter and the compiled predicate must agree
+wherever the predicate compiles (Hegel, over generated schemas and
+instances), and the interpreter is held to the official suite and to
+Python's `jsonschema` like the predicate.
+
 ### Types
 
 The types are the structural part of the schema, the predicate the rest:

@@ -24,6 +24,9 @@ type t =
   | Lst of t * int option
   | Mp of t * int option  (** map(string, T) *)
   | Rec of string  (** a recursive schema reference: dyn in the graph language; the codec reads it as the referenced type *)
+  | Checked of J.t
+      (** dyn in the graph language, its value checked at the boundary by the interpreter against this
+          subschema: where the compiled predicate cannot go (recursion, size) *)
 
 type field = {
   name : string;  (** in the graph language *)
@@ -48,6 +51,7 @@ type import = {
       (** graph name -> the type's own residue at x, not looking into the named types it holds: the
           codec checks each named value it reads against its own *)
   root : string;  (** the root schema's type *)
+  doc : J.t;  (** the schema document, which Checked locations' references resolve in *)
   by_def : (string * string) list;  (** schema reference -> graph name *)
   report : (string * string) list;  (** location, what was approximated *)
 }
@@ -128,13 +132,28 @@ let spend (ps : string list) =
 
 let named n r = (Named n, fun p -> if !inline_named then spend (r p) else [])
 
-(* The whole validation predicate, for a dyn location. *)
-let full c loc (s : J.t) p =
-  match P.compile ~root:c.doc s p with
-  | src -> if src = "true" then [] else [ src ]
-  | exception P.Unsupported why ->
-      (* the boundary could not check it: refused, not approximated *)
-      raise (Refused (Printf.sprintf "%s: %s" loc why))
+(* A dyn location: checked by the whole validation predicate where it
+   compiles; else, where the interpreter reads it (recursion, size), a
+   Checked location the codec checks by interpretation, its check_T
+   residue the predicate with each recursive edge cut; else refused. *)
+let dyn_location c loc (s : J.t) : t * (string -> string list) =
+  match P.compile ~root:c.doc s "x" with
+  | _ -> (Dyn, fun p -> match P.compile ~root:c.doc s p with "true" -> [] | src -> [ src ])
+  | exception P.Unsupported why -> (
+      match Schema_eval.supported ~root:c.doc s with
+      | Error _ -> raise (Refused (Printf.sprintf "%s: %s" loc why))
+      | Ok () ->
+          say c loc "%s: checked at the boundary by the interpreter; check_ cells check it only up to each recursive edge" why;
+          ( Checked s,
+            fun p ->
+              if not !inline_named then []
+              else
+                match P.compile ~root:c.doc ~cut:true s p with
+                | "true" -> []
+                | src -> [ src ]
+                | exception P.Unsupported why2 ->
+                    say c loc "check_ cells do not check it: %s" why2;
+                    [] ))
 
 (* A scalar's residue: its keywords, but not the type the graph language
    already holds. *)
@@ -176,7 +195,7 @@ let rec translate c ~loc (s : J.t) : t * (string -> string list) =
           (* oneOf: null must match only the null branch *)
           if get s "oneOf" <> None && admits_null c [] inner then begin
             say c loc "oneOf of null and a type that admits null: dyn, checked by the whole schema";
-            (Dyn, full c loc s)
+            dyn_location c loc s
           end
           else nullable c ~loc ~whole:s inner
       | Some (`String "string") when only s [ "type"; "minLength"; "maxLength"; "pattern"; "enum"; "const" ] -> (
@@ -195,7 +214,7 @@ let rec translate c ~loc (s : J.t) : t * (string -> string list) =
           | Some (`Float _) -> (Num, scalar_residue c loc s)
           | _ ->
               say c loc "a constant of no scalar type: dyn, checked by the whole schema";
-              (Dyn, full c loc s))
+              dyn_location c loc s)
       | Some (`String "integer") when only s [ "type"; "minimum"; "maximum"; "exclusiveMinimum"; "exclusiveMaximum"; "multipleOf"; "enum"; "const" ] ->
           (Int, scalar_residue c loc s)
       | Some (`String "number") when only s [ "type"; "minimum"; "maximum"; "exclusiveMinimum"; "exclusiveMaximum"; "multipleOf"; "enum"; "const" ] ->
@@ -242,7 +261,7 @@ let rec translate c ~loc (s : J.t) : t * (string -> string list) =
           named name (record c ~loc ~name (`Assoc [ ("type", `String "object"); ("properties", `Assoc props); ("required", `List required) ]))
       | _ ->
           say c loc "%s: dyn, checked by the whole schema" (if keys s = [] then "no type" else "keywords the types cannot hold (" ^ String.concat ", " (keys s) ^ ")");
-          (Dyn, full c loc s))
+          dyn_location c loc s)
   | _ -> raise (Refused (loc ^ ": not a schema"))
 
 (* whether a schema may admit null, judged from its type keywords and
@@ -267,14 +286,14 @@ and nullable c ~loc ~whole s =
   match t with
   | Opt _ -> (t, r)
   (* dyn holds null already *)
-  | Dyn | Rec _ -> (Dyn, full c loc whole)
+  | Dyn | Rec _ | Checked _ -> dyn_location c loc whole
   | _ ->
       (* whether null itself satisfies the schema (const, enum, not, ... see
          it too): decided now, since null is one value *)
       let null_ok =
-        match P.compile ~root:c.doc whole "x" with
-        | src -> (match Cordis_cel.Cel.eval ~vars:[ ("x", Cordis_cel.Value.Null) ] src with Ok { value = Cordis_cel.Value.Bool b; _ } -> b | _ -> true)
-        | exception P.Unsupported why -> raise (Refused (Printf.sprintf "%s: %s" loc why))
+        match Schema_eval.check ~root:c.doc whole `Null with
+        | Ok b -> b
+        | Error why -> raise (Refused (Printf.sprintf "%s: %s" loc why))
       in
       ( Opt t,
         fun p ->
@@ -474,7 +493,7 @@ let import ?(name = "Root") (doc : J.t) =
   let root = define ~name:root_name c "#" in
   let bounded = ref false in
   let rec unbounded = function
-    | Str None | Lst (_, None) | Mp (_, None) | Dyn | Rec _ -> true
+    | Str None | Lst (_, None) | Mp (_, None) | Dyn | Rec _ | Checked _ -> true
     | Opt t -> unbounded t
     | Lst (t, _) | Mp (t, _) -> unbounded t
     | _ -> false
@@ -512,7 +531,7 @@ let import ?(name = "Root") (doc : J.t) =
   in
   inline_named := true;
   budget := max_int;
-  { defs; residue; local; root; by_def = c.by_def; report = List.rev c.report }
+  { defs; residue; local; root; doc; by_def = c.by_def; report = List.rev c.report }
 
 (* ---- the types file ------------------------------------------------------------------------------- *)
 
@@ -521,7 +540,7 @@ let rec graph_ty = function
   | Int -> S.Scalar ("int", None)
   | Num -> S.Scalar ("double", None)
   | Bool -> S.Scalar ("bool", None)
-  | Dyn | Rec _ -> S.Scalar ("dyn", None)
+  | Dyn | Rec _ | Checked _ -> S.Scalar ("dyn", None)
   | Named n -> S.Named n
   | Opt t -> S.Option (graph_ty t)
   | Lst (t, n) -> S.List (graph_ty t, n)
