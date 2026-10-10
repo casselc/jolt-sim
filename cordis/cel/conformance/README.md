@@ -228,3 +228,18 @@ Of the passing error tests, ~117 have an expected message that is not a
 substring of cel-go's (e.g. spec `divide by zero` vs cel-go
 `division by zero`; `--verbose` lists them). The spec treats messages as
 informal.
+
+## The descriptor set
+
+`descriptors.binpb` is the `FileDescriptorSet` of the same commit's
+`proto/` tree, with its imports, compiled by `grpc_tools.protoc`:
+
+```sh
+cd $SCRATCH/src/cel-spec/proto
+python3 -m grpc_tools.protoc -I. -I"$(python3 -c 'import grpc_tools, os; print(os.path.join(os.path.dirname(grpc_tools.__file__), "_proto"))')" \
+  --include_imports --descriptor_set_out=descriptors.binpb $(find . -name '*.proto' | sed 's|^./||' | sort)
+```
+
+The suite runs a second time against it (`conformance.exe --descriptor-set`),
+so the registry loaded from binary descriptors (RFC 0004) is held to the
+same 2527 tests as the JSON export.

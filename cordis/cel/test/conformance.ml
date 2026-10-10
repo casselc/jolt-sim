@@ -149,7 +149,7 @@ let check_consistency file t (value : Value.t) cost =
 
 let run_test file section (t : Yojson.Safe.t) =
   (* cel-spec's enums file has a legacy (ints) and a strong (typed) half *)
-  Proto.strong_enums := String.length section >= 6 && String.sub section 0 6 = "strong";
+  Proto.set_strong_enums (String.length section >= 6 && String.sub section 0 6 = "strong");
   let str k = J.to_string (J.member k t) in
   let expr = str "expr" in
   match (if !no_skip then None else List.assoc_opt file file_skips), J.member "typed_result" t with
@@ -187,15 +187,24 @@ let run_test file section (t : Yojson.Safe.t) =
 
 let () =
   let dir = ref "" and verbose = ref false and only = ref "" and fail_on_fail = ref false in
+  let descriptor_set = ref "" in
   Arg.parse
     [ ("--verbose", Arg.Set verbose, "print every failure");
       ("--file", Arg.Set_string only, "run one file");
       ("--fail-on-fail", Arg.Set fail_on_fail, "exit 1 on any failure");
       ("--no-skip", Arg.Set no_skip, "run the files skipped as a whole, to see how they fail");
-      ("--check-all", Arg.Set check_all, "type-check every test that evaluates to a value") ]
+      ("--check-all", Arg.Set check_all, "type-check every test that evaluates to a value");
+      ( "--descriptor-set",
+        Arg.Set_string descriptor_set,
+        "read the protos from a binary FileDescriptorSet (a registry, RFC 0004) instead of descriptors.json" ) ]
     (fun d -> dir := d)
     "conformance.exe DIR";
-  Proto.load (Filename.concat (Filename.dirname !dir) "descriptors.json");
+  if !descriptor_set = "" then Proto.load (Filename.concat (Filename.dirname !dir) "descriptors.json")
+  else begin
+    match Proto.of_descriptor_sets [ In_channel.with_open_bin !descriptor_set In_channel.input_all ] with
+    | Ok r -> Domain.DLS.set Proto.key r (* for the rest of the run *)
+    | Error m -> prerr_endline m; exit 2
+  end;
   let files =
     Sys.readdir !dir |> Array.to_list |> List.filter (fun f -> Filename.check_suffix f ".json") |> List.sort compare
   in

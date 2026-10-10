@@ -28,6 +28,17 @@
  (action
   (run %{exe:conformance.exe} %{project_root}/cel/conformance/simple --fail-on-fail)))
 
+; The same suite, with the protos read from a binary FileDescriptorSet into
+; a registry (RFC 0004) instead of the JSON export
+(rule
+ (alias runtest)
+ (deps
+  %{project_root}/cel/conformance/descriptors.binpb
+  (glob_files %{project_root}/cel/conformance/simple/*.json))
+ (action
+  (run %{exe:conformance.exe} %{project_root}/cel/conformance/simple --descriptor-set
+   %{project_root}/cel/conformance/descriptors.binpb --fail-on-fail)))
+
 ; The differential test needs the cel-go reference evaluator (cel/celgo):
 ;   CELGO=/path/to/celgo dune build @cel/test/differential
 (rule
@@ -40,3 +51,9 @@
  (name extensions_test)
  (modules extensions_test)
  (libraries cordis_cel alcotest))
+
+; Registries as values: isolation, also across domains; conflicts
+(test
+ (name registry_test)
+ (modules registry_test)
+ (libraries cordis_cel hegel alcotest))

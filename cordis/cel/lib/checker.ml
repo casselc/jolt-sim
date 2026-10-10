@@ -423,7 +423,7 @@ let rec field_type (f : Proto.field) =
   | None -> if f.repeated then List (element_type f) else element_type f
 
 (* Enum values are ints, or typed values under strong enums. *)
-and enum_type name = if !Proto.strong_enums then Opaque (name, []) else Int
+and enum_type name = if Proto.strong_enums () then Opaque (name, []) else Int
 
 and element_type (f : Proto.field) =
   match f.ty, f.type_name with

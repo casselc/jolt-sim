@@ -31,10 +31,37 @@ type field = {
 
 type message = { full_name : string; syntax : string; fields : field list }
 
-let messages : (string, message) Hashtbl.t = Hashtbl.create 64
-let enums : (string, (string * int) list) Hashtbl.t = Hashtbl.create 16
-let extensions : (string, field) Hashtbl.t = Hashtbl.create 16
-let strong_enums = ref false
+(* ---- registries (docs/cordis/rfc/0004-descriptor-native-types.md) ---------------------- *)
+
+(* A registry: the messages, enums and extensions a revision's descriptor
+   sets define. Every check and evaluation runs with one bound (for its
+   dynamic extent, per domain), so a candidate revision's descriptors are
+   never seen by the live one. The default registry is the one [load]
+   fills, for the conformance suite and for callers that bind none. *)
+type registry = {
+  messages : (string, message) Hashtbl.t;
+  enums : (string, (string * int) list) Hashtbl.t;
+  extensions : (string, field) Hashtbl.t;
+  mutable strong : bool;  (** enum values as typed enums rather than ints *)
+}
+
+let create () =
+  { messages = Hashtbl.create 64; enums = Hashtbl.create 16; extensions = Hashtbl.create 16; strong = false }
+
+let default = create ()
+let key = Domain.DLS.new_key (fun () -> default)
+let current () = Domain.DLS.get key
+
+let with_registry r f =
+  let saved = current () in
+  Domain.DLS.set key r;
+  Fun.protect ~finally:(fun () -> Domain.DLS.set key saved) f
+
+let messages () = (current ()).messages
+let enums () = (current ()).enums
+let extensions () = (current ()).extensions
+let strong_enums () = (current ()).strong
+let set_strong_enums b = (current ()).strong <- b
 
 module J = Yojson.Safe.Util
 
@@ -61,29 +88,154 @@ let rec field_of_json (j : Yojson.Safe.t) : field =
 let load_json (j : Yojson.Safe.t) =
   List.iter
     (fun (name, m) ->
-      Hashtbl.replace messages name
+      Hashtbl.replace (messages ()) name
         { full_name = name; syntax = J.to_string (J.member "syntax" m);
           fields = List.map field_of_json (J.to_list (J.member "fields" m)) })
     (J.to_assoc (J.member "messages" j));
   List.iter
     (fun (name, e) ->
-      Hashtbl.replace enums name
+      Hashtbl.replace (enums ()) name
         (List.map (function `List [ `String n; `Int v ] -> (n, v) | _ -> ("", 0)) (J.to_list (J.member "values" e))))
     (J.to_assoc (J.member "enums" j));
   List.iter
-    (fun x -> let f = field_of_json x in Hashtbl.replace extensions (Option.get f.full_name) f)
+    (fun x -> let f = field_of_json x in Hashtbl.replace (extensions ()) (Option.get f.full_name) f)
     (J.to_list (J.member "extensions" j))
 
 let load path = load_json (Yojson.Safe.from_file path)
-let find_message name = Hashtbl.find_opt messages name
+let find_message name = Hashtbl.find_opt (messages ()) name
 
 let find_field (m : message) name =
   match List.find_opt (fun f -> f.name = name) m.fields with
   | Some f -> Some f
   | None -> (
-      match Hashtbl.find_opt extensions name with
+      match Hashtbl.find_opt (extensions ()) name with
       | Some f when f.extendee = Some m.full_name -> Some f
       | _ -> None)
+
+(* ---- registries from FileDescriptorSets ---------------------------------------------- *)
+
+let type_names =
+  [| ""; "double"; "float"; "int64"; "uint64"; "int32"; "fixed64"; "fixed32"; "bool"; "string"; "group";
+     "message"; "bytes"; "uint32"; "enum"; "sfixed32"; "sfixed64"; "sint32"; "sint64" |]
+
+let strip_dot s = if String.length s > 0 && s.[0] = '.' then String.sub s 1 (String.length s - 1) else s
+
+(* A C-escaped default for bytes, as protoc writes it. *)
+let unescape_c s =
+  let b = Buffer.create (String.length s) and i = ref 0 and n = String.length s in
+  while !i < n do
+    if s.[!i] = '\\' && !i + 1 < n then begin
+      let c = s.[!i + 1] in
+      (match c with
+       | 'n' -> Buffer.add_char b '\n'; i := !i + 2
+       | 'r' -> Buffer.add_char b '\r'; i := !i + 2
+       | 't' -> Buffer.add_char b '\t'; i := !i + 2
+       | '0' .. '7' ->
+           let j = ref (!i + 1) and v = ref 0 in
+           while !j < n && !j < !i + 4 && s.[!j] >= '0' && s.[!j] <= '7' do v := (!v * 8) + Char.code s.[!j] - 48; incr j done;
+           Buffer.add_char b (Char.chr (!v land 255)); i := !j
+       | 'x' ->
+           let j = ref (!i + 2) and v = ref 0 in
+           let hex c = match c with '0' .. '9' -> Some (Char.code c - 48) | 'a' .. 'f' -> Some (Char.code c - 87) | 'A' .. 'F' -> Some (Char.code c - 55) | _ -> None in
+           while !j < n && !j < !i + 4 && hex s.[!j] <> None do v := (!v * 16) + Option.get (hex s.[!j]); incr j done;
+           Buffer.add_char b (Char.chr (!v land 255)); i := !j
+       | c -> Buffer.add_char b c; i := !i + 2)
+    end
+    else (Buffer.add_char b s.[!i]; incr i)
+  done;
+  Buffer.contents b
+
+(* protoc's default_value text, as the JSON loader's default *)
+let default_json ty text : Yojson.Safe.t =
+  if text = "" then `Null
+  else
+    match ty with
+    | "bool" -> `Bool (text = "true")
+    | "string" -> `String text
+    | "bytes" -> `String (unescape_c text)
+    | "enum" -> `String text
+    | "double" | "float" ->
+        `Assoc [ ("double", match text with "inf" -> `String "Infinity" | "-inf" -> `String "-Infinity" | "nan" -> `String "NaN" | t -> `Float (float_of_string t)) ]
+    | _ -> (match int_of_string_opt text with Some n -> `Int n | None -> `Intlit text)
+
+(* Add a FileDescriptorSet's definitions to a registry. A full name already
+   there must be defined identically. *)
+let add_descriptor_set (r : registry) (bytes : string) =
+  match Descriptor_set.set_of_string bytes with
+  | Result.Error m -> Result.Error m
+  | Result.Ok files -> (
+      let module D = Descriptor_set in
+      let entries = Hashtbl.create 16 in
+      (* map entry messages, by full name, to read map fields *)
+      List.iter
+        (fun (f : D.file) ->
+          let rec go scope (m : D.message) =
+            let full = scope ^ m.mname in
+            Hashtbl.replace entries full m;
+            List.iter (go (full ^ ".")) m.nested
+          in
+          List.iter (go (if f.package = "" then "" else f.package ^ ".")) f.messages)
+        files;
+      let field_of syntax (m : D.message option) ?full_name (fd : D.field) : field =
+        let ty = if fd.ty >= 1 && fd.ty < Array.length type_names then type_names.(fd.ty) else "message" in
+        let repeated = fd.label = D.Repeated in
+        let oneof = match m, fd.oneof_index with Some m, Some i -> List.nth_opt m.oneofs i | _ -> None in
+        let plain (fd : D.field) : field =
+          let ty = type_names.(fd.ty) in
+          { name = fd.name; json_name = (if fd.json_name = "" then fd.name else fd.json_name); number = fd.number; ty;
+            repeated = false; type_name = (if fd.type_name = "" then None else Some (strip_dot fd.type_name));
+            oneof = None; presence = fd.ty = 11 || syntax <> "proto3"; default = `Null; map = None; extendee = None;
+            full_name = None }
+        in
+        let map =
+          match Hashtbl.find_opt entries (strip_dot fd.type_name) with
+          | Some e when e.map_entry && repeated ->
+              let k = List.find (fun (x : D.field) -> x.number = 1) e.fields and v = List.find (fun (x : D.field) -> x.number = 2) e.fields in
+              Some (plain k, plain v)
+          | _ -> None
+        in
+        {
+          name = fd.name;
+          json_name = (if fd.json_name = "" then fd.name else fd.json_name);
+          number = fd.number;
+          ty;
+          repeated;
+          type_name = (if fd.type_name = "" then None else Some (strip_dot fd.type_name));
+          oneof;
+          presence = (not repeated) && (fd.ty = 11 || oneof <> None || fd.proto3_optional || syntax <> "proto3");
+          default = (if repeated then `Null else default_json ty fd.default_value);
+          map;
+          extendee = (if fd.extendee = "" then None else Some (strip_dot fd.extendee));
+          full_name;
+        }
+      in
+      let conflicts = ref [] in
+      let put tbl name v = match Hashtbl.find_opt tbl name with Some old when old <> v -> conflicts := name :: !conflicts | _ -> Hashtbl.replace tbl name v in
+      List.iter
+        (fun (f : D.file) ->
+          let syntax = f.syntax in
+          let rec go scope (m : D.message) =
+            let full = scope ^ m.mname in
+            put r.messages full { full_name = full; syntax; fields = List.map (field_of syntax (Some m)) m.fields };
+            List.iter (fun (e : D.enum) -> put r.enums (full ^ "." ^ e.ename) e.values) m.enums;
+            List.iter (fun (x : D.field) -> let fn = full ^ "." ^ x.name in put r.extensions fn (field_of syntax None ~full_name:fn x)) m.extensions;
+            List.iter (go (full ^ ".")) m.nested
+          in
+          let scope = if f.package = "" then "" else f.package ^ "." in
+          List.iter (go scope) f.messages;
+          List.iter (fun (e : D.enum) -> put r.enums (scope ^ e.ename) e.values) f.fenums;
+          List.iter (fun (x : D.field) -> let fn = scope ^ x.name in put r.extensions fn (field_of syntax None ~full_name:fn x)) f.fextensions)
+        files;
+      match !conflicts with
+      | [] -> Result.Ok ()
+      | names -> Result.Error ("defined differently by two descriptor sets: " ^ String.concat ", " (List.sort_uniq compare names)))
+
+(* A registry with the well-known types and the given sets. *)
+let of_descriptor_sets ?(strong = false) (sets : string list) =
+  let r = create () in
+  r.strong <- strong;
+  List.fold_left (fun acc set -> Result.bind acc (fun () -> add_descriptor_set r set)) (add_descriptor_set r Wkt_set.data) sets
+  |> Result.map (fun () -> r)
 
 (* An enum value by qualified name: pkg.Enum.VALUE or pkg.Msg.Enum.VALUE. *)
 let enum_constant name =
@@ -91,8 +243,8 @@ let enum_constant name =
   | None -> None
   | Some i -> (
       let enum = String.sub name 0 i and v = String.sub name (i + 1) (String.length name - i - 1) in
-      match Hashtbl.find_opt enums enum with
-      | Some vs -> Option.map (fun n -> if !strong_enums then Enum { tname = enum; num = n } else Int (Int64.of_int n)) (List.assoc_opt v vs)
+      match Hashtbl.find_opt (enums ()) enum with
+      | Some vs -> Option.map (fun n -> if strong_enums () then Enum { tname = enum; num = n } else Int (Int64.of_int n)) (List.assoc_opt v vs)
       | None -> None)
 
 (* ---- protobuf wire primitives --------------------------------------------------------- *)
@@ -131,7 +283,7 @@ let wire_scalar (f : field) wire s pos =
   | ("int32" | "int64" | "enum"), 0 ->
       let v = varint s pos in
       let v = if f.ty = "int64" then v else Int64.of_int32 (Int64.to_int32 v) in
-      if f.ty = "enum" && !strong_enums then Enum { tname = Option.get f.type_name; num = Int64.to_int v } else Int v
+      if f.ty = "enum" && strong_enums () then Enum { tname = Option.get f.type_name; num = Int64.to_int v } else Int v
   | ("uint32" | "uint64"), 0 -> Uint (if f.ty = "uint32" then Int64.logand (varint s pos) 0xFFFFFFFFL else varint s pos)
   | ("sint32" | "sint64"), 0 -> Int (zigzag (varint s pos))
   | "bool", 0 -> Bool (varint s pos <> 0L)
@@ -147,11 +299,11 @@ let wire_scalar (f : field) wire s pos =
 
 (* An enum value from an int (in int32 range) or a name, for strong enums'
    constructors: pkg.Enum(2), pkg.Enum('NAME'). *)
-let enum_exists name = Hashtbl.mem enums name
+let enum_exists name = Hashtbl.mem (enums ()) name
 
 let make_enum name (v : Value.t) =
-  let mk n = if !strong_enums then Enum { tname = name; num = n } else Int (Int64.of_int n) in
-  match v, Hashtbl.find_opt enums name with
+  let mk n = if strong_enums () then Enum { tname = name; num = n } else Int (Int64.of_int n) in
+  match v, Hashtbl.find_opt (enums ()) name with
   | Int i, Some _ ->
       if Int64.compare i (-2147483648L) < 0 || Int64.compare i 2147483647L > 0 then Error "range error"
       else mk (Int64.to_int i)
@@ -293,11 +445,11 @@ and default_value (f : field) =
     | "enum", Some t -> (
         let n =
           match f.default with
-          | `String name -> (match Hashtbl.find_opt enums t with Some vs -> Option.value (List.assoc_opt name vs) ~default:0 | None -> 0)
+          | `String name -> (match Hashtbl.find_opt (enums ()) t with Some vs -> Option.value (List.assoc_opt name vs) ~default:0 | None -> 0)
           | `Int n -> n
-          | _ -> (match Hashtbl.find_opt enums t with Some ((_, n) :: _) -> n | _ -> 0)
+          | _ -> (match Hashtbl.find_opt (enums ()) t with Some ((_, n) :: _) -> n | _ -> 0)
         in
-        if !strong_enums then Enum { tname = t; num = n } else Int (Int64.of_int n))
+        if strong_enums () then Enum { tname = t; num = n } else Int (Int64.of_int n))
     | ty, _ -> (
         match f.default with
         | `Null -> zero_scalar ty
@@ -386,7 +538,7 @@ and convert_element (f : field) v =
   | "message", Some t -> convert_message t v
   | "enum", Some t -> (
       match v with
-      | Int i -> if Int64.compare i (-2147483648L) < 0 || Int64.compare i 2147483647L > 0 then Error "range error" else Ok (if !strong_enums then Enum { tname = t; num = Int64.to_int i } else v)
+      | Int i -> if Int64.compare i (-2147483648L) < 0 || Int64.compare i 2147483647L > 0 then Error "range error" else Ok (if strong_enums () then Enum { tname = t; num = Int64.to_int i } else v)
       | Enum { tname; _ } when tname = t -> Ok v
       | _ -> Error "no such overload: enum field")
   | ty, _ -> convert_scalar ty v
@@ -495,7 +647,7 @@ let rec of_json tname (j : Yojson.Safe.t) : Value.t =
               (fun (k, v) ->
                 match List.find_opt (fun f -> f.json_name = k || f.name = k) m.fields with
                 | Some f -> Some (f.name, field_of_json_value f v)
-                | None -> (match Hashtbl.find_opt extensions (String.sub k 1 (max 0 (String.length k - 2))) with
+                | None -> (match Hashtbl.find_opt (extensions ()) (String.sub k 1 (max 0 (String.length k - 2))) with
                            | Some f -> Some (Option.get f.full_name, field_of_json_value f v)
                            | None -> None))
               kv
@@ -517,11 +669,11 @@ and element_of_json (f : field) j =
       let n =
         match j with
         | `Int n -> n
-        | `String name -> (match Hashtbl.find_opt enums t with Some vs -> Option.value (List.assoc_opt name vs) ~default:0 | None -> 0)
+        | `String name -> (match Hashtbl.find_opt (enums ()) t with Some vs -> Option.value (List.assoc_opt name vs) ~default:0 | None -> 0)
         | _ -> 0
       in
       if t = "google.protobuf.NullValue" then Null
-      else if !strong_enums then Enum { tname = t; num = n } else Int (Int64.of_int n))
+      else if strong_enums () then Enum { tname = t; num = n } else Int (Int64.of_int n))
   | ty, _ -> scalar_of_json ty j
 
 and scalar_of_json ty (j : Yojson.Safe.t) =
