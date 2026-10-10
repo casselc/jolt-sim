@@ -12,6 +12,8 @@
    its budget, a failed computation, or intents the limiter has deferred
    for longer than --max-wait) it prints why and exits 2. A deferred
    intent was definitely not sent, so its wait is not a loss.
+   --audit re-evaluates every recorded turn before resuming (RFC 0006
+   decision 5C) and refuses to resume records the graph did not write.
    --crash-after N exits abruptly after N engine actions, and
    --crash-after-receipts N right after applying the Nth receipt, before
    its record is synced: a test's crashes, losing what was not synced. *)
@@ -45,7 +47,7 @@ let rec to_json (v : V.t) : J.t =
 
 let () =
   let graph = ref "" and name = ref "" and store = ref "" and socket = ref "" and inputs = ref [] in
-  let observational = ref [] and worst = ref [] and budget = ref None and timeout = ref 30. and crash_after = ref 0 and crash_receipts = ref 0 and max_wait = ref 0. in
+  let observational = ref [] and worst = ref [] and budget = ref None and timeout = ref 30. and crash_after = ref 0 and crash_receipts = ref 0 and max_wait = ref 0. and audit = ref false and dump = ref false in
   let pair s = match String.index_opt s '=' with Some i -> (String.sub s 0 i, String.sub s (i + 1) (String.length s - i - 1)) | None -> failwith ("expected K=V: " ^ s) in
   Arg.parse
     [ ("--graph", Arg.Set_string graph, "FILE"); ("--name", Arg.Set_string name, "GRAPH"); ("--store", Arg.Set_string store, "DB");
@@ -55,6 +57,8 @@ let () =
       ("--budget", Arg.Int (fun n -> budget := Some n), "N"); ("--timeout", Arg.Set_float timeout, "SECONDS");
       ("--crash-after", Arg.Set_int crash_after, "N");
       ("--crash-after-receipts", Arg.Set_int crash_receipts, "N");
+      ("--dump-records", Arg.Set dump, " print the store's durable records, one per line, and exit");
+      ("--audit", Arg.Set audit, " audit the durable records against the graph before resuming, and refuse on a difference");
       ("--max-wait", Arg.Set_float max_wait, "SECONDS how long to wait on intents the limiter deferred (0: forever)") ]
     (fun _ -> ()) "cordis-run --graph FILE --name GRAPH --store DB --socket PATH --input NAME=JSON";
   let checked =
@@ -66,6 +70,20 @@ let () =
   let worst k = Option.value (List.assoc_opt k !worst) ~default:0 in
   let st = Store.Sqlite.create !store in
   let durable = Store.Sqlite.load st in
+  if !dump then begin
+    (* the store's logical content: what a rollback must restore exactly, whatever the bytes on disk *)
+    List.iter (fun r -> print_endline (Codec.record r)) durable;
+    exit 0
+  end;
+  if !audit && durable <> [] then begin
+    (* resuming records on code that did not write them is a cutover, which is admission's, not recovery's *)
+    match Engine.audit ~classes ?budget:!budget ~worst checked !name durable with
+    | [] -> ()
+    | ds ->
+        List.iter (fun d -> prerr_endline ("cordis-run: audit: " ^ d)) ds;
+        prerr_endline "cordis-run: the records were not written by this graph; not resuming";
+        exit 2
+  end;
   let t, cmds =
     if durable = [] then (Engine.create ~classes ?budget:!budget ~worst checked !name, [])
     else Engine.recover ~classes ?budget:!budget ~worst checked !name durable

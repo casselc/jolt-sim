@@ -952,6 +952,26 @@ importers wait for the slice.
    refuses resumes on it only because a workspace's drift is a different
    question. `handoff.qnt` assumes rollback is exact; this check is what
    makes the assumption evidence, not hope.
+
+   **Progress.** The replay audit is `Engine.audit`: every turn the
+   durable records show is evaluated again from what the earlier record
+   held and must give what was recorded (the same request, the same result,
+   a failure that fails again). The review-loop property audits every run,
+   crashes included; an example reads one run's records against a graph
+   whose critic asks for a different `max_tokens` and finds every
+   completion request; `cordis-run --audit` refuses to resume records the
+   graph did not write, since that is a cutover, admission's business, and
+   the end-to-end test checks the refusal. `cordis-run --dump-records`
+   prints the store's logical content. `cordis/ops/rollback-fidelity.sh`
+   is the native check, to run as root on the FreeBSD host: it snapshots a
+   fresh dataset holding the run store, runs on, rolls back and remounts,
+   and compares the record dumps (not `written@`), then resumes from the
+   rolled-back store and requires the loop to ship with exactly three
+   completions, the outbox's journal (outside the dataset) answering what
+   the rollback re-released. Its predictions are stated in its header. It
+   has been dry-run here against a stand-in `zfs` (a dataset is a
+   directory; it passes, and fails as it should when the stand-in's
+   rollback does nothing); it has not yet run on ZFS.
 4. **Hosting on yard.** 8A on FreeBSD as a yard client: the agent's VM or
    jail, and the outbox jail as a yard service jail (SR1: a service spec,
    suspend and resume by ZFS snapshot, refusal on workspace drift with an

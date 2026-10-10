@@ -480,3 +480,50 @@ let recover ?classes ?max_attempts ?budget ?worst (checked : Check.checked) grap
       t.slots []
   in
   ({ t with refused }, List.rev cmds)
+
+(* ---- the replay audit ----------------------------------------------------------------------------- *)
+
+(* RFC 0006 decision 5C: the records are the truth, and replay is an audit
+   off the recovery path. Every turn the records show (a fiber that was
+   Running turn k, and is next Awaiting turn k's intent, or Ready with a
+   value after the last turn) is evaluated again from what the earlier
+   record held (its arguments, receipts and the cell's state) and must give
+   what was recorded: the same request, or the same result and state.
+   Cells are pure CEL, so a difference means nondeterminism, or records
+   read against a graph whose code is not the code that wrote them. A turn
+   that failed is checked to fail again. Returns the differences found. *)
+let audit ?classes ?max_attempts ?budget ?worst (checked : Check.checked) graph (records : record list) =
+  let t0 = create ?classes ?max_attempts ?budget ?worst checked graph in
+  let problems = ref [] in
+  let say fmt = Printf.ksprintf (fun m -> problems := m :: !problems) fmt in
+  let last = Hashtbl.create 8 in
+  List.iter
+    (fun (r : record) ->
+      List.iter
+        (function
+          | Slot (a, s) ->
+              (match Hashtbl.find_opt last a, s.fiber with
+               | Some ({ fiber = Running { turn; args; receipts; _ }; _ } as before), after -> (
+                   let t = { t0 with slots = Smap.add a before t0.slots } in
+                   let c = Smap.find a t.cells in
+                   let last_turn = turn = List.length c.turns - 1 in
+                   match after, eval_turn t a ~turn ~args ~receipts with
+                   | Awaiting { intent; turn = k; _ }, Ok req when k = turn && not last_turn ->
+                       if not (V.equal req intent.request) then
+                         say "record %d: %s turn %d asks %s, the record says %s" r.seq a turn (V.to_string req) (V.to_string intent.request)
+                   | Ready, Ok out when last_turn ->
+                       let result = match c.updated, out with [], v -> v | _, V.List xs -> xs.(0) | _, v -> v in
+                       if s.value = None || not (V.equal result (Option.get s.value)) then
+                         say "record %d: %s's last turn gives %s, the record says %s" r.seq a (V.to_string result)
+                           (match s.value with Some v -> V.to_string v | None -> "nothing")
+                   | Failed _, Error _ -> ()
+                   | Failed m, Ok _ -> say "record %d: %s failed (%s), but its turn %d evaluates" r.seq a m turn
+                   | _, Error m -> say "record %d: %s turn %d no longer evaluates: %s" r.seq a turn m
+                   | (Running _ | Uncertain _), _ -> ()
+                   | _ -> ())
+               | _ -> ());
+              Hashtbl.replace last a s
+          | _ -> ())
+        r.facts)
+    records;
+  List.rev !problems

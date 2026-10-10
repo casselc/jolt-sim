@@ -64,6 +64,27 @@ let tight_budget () =
   Alcotest.(check (option string)) "nothing shipped" None (Option.map V.to_string (E.value h.t "shipped"));
   Alcotest.(check bool) "blocked, not at rest" false (E.quiet h.t)
 
+(* the audit reads records against the code: a run's records read against a graph whose critic asks
+   for a different max_tokens show every critic turn that asked *)
+let audit_example () =
+  let h = start () in
+  let _ = run ~pick:(fun _ -> 0) h in
+  let records = h.store.load () in
+  Alcotest.(check (list string)) "the records audit clean against their own graph" []
+    (E.audit ~classes ~budget:1000 ~worst (Lazy.force checked) "review_loop" records);
+  let text = read Sys.argv.(1) in
+  let changed =
+    let sub = "max_tokens: 4000" in
+    match List.find_opt (fun i -> String.sub text i (String.length sub) = sub) (List.init (String.length text - String.length sub) Fun.id) with
+    | Some i -> String.sub text 0 i ^ "max_tokens: 4001" ^ String.sub text (i + String.length sub) (String.length text - i - String.length sub)
+    | None -> text
+  in
+  Alcotest.(check bool) "the graph was changed" true (changed <> text);
+  let other = match Cordis_graph.Patch.load changed with Ok s -> s.checked | Error es -> failwith (String.concat "; " es) in
+  let differences = E.audit ~classes ~budget:1000 ~worst other "review_loop" records in
+  Alcotest.(check int) "every completion request differs" 3
+    (List.length (List.filter (fun m -> count_sub m " asks " > 0) differences))
+
 (* the same loop on SQLite, crashing twice part way and recovering from the file *)
 let sqlite_example () =
   let path = Filename.temp_file "cordis-engine" ".db" in
@@ -135,6 +156,9 @@ let schedules () =
       Hegel.require tc ~msg:"shipped while the verdict fails" (passed || E.value h.t "shipped" = None);
       Hegel.require tc ~msg:("records that do not round-trip: " ^ String.concat ", " h.codec_errors) (h.codec_errors = []);
       Hegel.require tc ~msg:("spend: " ^ String.concat "; " h.spend_errors) (h.spend_errors = []);
+      (* the replay audit (decision 5C): every recorded turn evaluates again to what was recorded *)
+      let differences = E.audit ~classes ~budget:1000 ~worst (Lazy.force checked) "review_loop" (h.store.load ()) in
+      Hegel.require tc ~msg:("the audit: " ^ String.concat "; " differences) (differences = []);
       Hegel.require tc ~msg:"a reservation outlived its intent" (fst (E.spend h.t) = 0);
       Hegel.require tc ~msg:(Printf.sprintf "%d intents left before their records were durable" h.released_early) (h.released_early = 0))
 
@@ -174,5 +198,6 @@ let () =
     [ ("example",
         [ Alcotest.test_case "the review loop reaches rest and ships" `Quick example;
           Alcotest.test_case "on SQLite, crashing twice, it rests where the uncrashed run does" `Quick sqlite_example;
-          Alcotest.test_case "a budget too small stops the loop within it" `Quick tight_budget ]);
+          Alcotest.test_case "a budget too small stops the loop within it" `Quick tight_budget;
+          Alcotest.test_case "the replay audit reads records against the code" `Quick audit_example ]);
       ("properties", [ Alcotest.test_case "every value round-trips through the durable form" `Quick codec_round_trip; Alcotest.test_case "any schedule, with faults and a changed input, rests where a fault-free run does" `Quick schedules ]) ]
