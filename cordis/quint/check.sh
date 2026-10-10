@@ -118,13 +118,15 @@ sim assets.qnt noMemo atMostOnce VIOLATED
 sim assets.qnt noCutoff safety ok
 
 # ---- routes.qnt (RFC 0002: guarded assets, stream appends, feedback loops) -------------
-for inv in consistent appendOnce bounded; do sim routes.qnt design "$inv" ok; done
+for inv in consistent appendOnce bounded noStall; do sim routes.qnt design "$inv" ok; done
 # a loop reaches its cap in about ten steps, so check deeper than the default
 VERIFY_STEPS=${ROUTES_VERIFY_STEPS:-14} verify routes.qnt design safety ok
 for w in loopPassed capReachedAtRest withdrawn refusedWhenFull; do sim routes.qnt design "not($w)" VIOLATED; done
-sim routes.qnt keepGuarded consistent VIOLATED
+# rare: it needs a pass, then a fail
+STEPS=60 SAMPLES=20000 sim routes.qnt keepGuarded consistent VIOLATED
 sim routes.qnt appendEveryRun appendOnce VIOLATED
 sim routes.qnt noCap bounded VIOLATED
+sim routes.qnt keyByValue noStall VIOLATED
 
 # ---- revisions.qnt (RFC 0004: descriptor-native types across graph revisions) ----------
 for inv in ownRegistry stateReadable breakingApproved singleWriter; do sim revisions.qnt design "$inv" ok; done

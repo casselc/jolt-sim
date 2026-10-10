@@ -81,7 +81,7 @@ obligations, each of which a model already checks.
 | `admission.qnt` | `liveAdmitted`, `noLostUpdate`, `narrowingApproved` | run only revisions admission made live; a revision change is a recorded event, never a file swap |
 | `assets.qnt` | `consistent`, `receiptBacked`, `atMostOnce` (`memoByCell`, `receiptsByCell`, `noMemo`) | memoise by (cell hash, input hashes); the emission memo is the receipt cache, keyed by the value sent; early cutoff |
 | `revisions.qnt` | `ownRegistry`, `stateReadable`, `breakingApproved`, `singleWriter` (`globalRegistry`, `carryAlways`, `noApproval`, `insertFirst`) | each fiber evaluates with its own revision's registry; state crosses a revision only when the new type reads it; retire before insert |
-| `routes.qnt` | `consistent`, `appendOnce`, `bounded` (`keepGuarded`, `appendEveryRun`, `noCap`) | withdraw a guarded asset when its guard stops holding; key an append by the scrutinee's revision; refuse an append to a full stream; a new input empties the streams |
+| `routes.qnt` | `consistent`, `appendOnce`, `bounded`, `noStall` (`keepGuarded`, `appendEveryRun`, `noCap`, `keyByValue`) | withdraw a guarded asset when its guard stops holding; staleness is transitive; key an append by the scrutinee's computation (episode, computation), not its value revision; refuse an append to a full stream; a new input empties the streams |
 | `frames.qnt` | `accConsistent`, `contiguous`, `cursorMatches`, `revsInOrder`, `accTyped`, `effectsOnce`, `endAfterAll`, `noRowLost`, `bufferBounded` | RFC 0005 rules 1 to 10: durable batch intervals, one atomic record per turn, intents keyed `(stream, generation, lo, index)`, cutover at a commit, a committed end turn, backpressure that loses no row |
 
 Three further facts constrain every option:
@@ -813,6 +813,27 @@ importers wait for the slice.
      the existing `cordis/sim` becomes a host of this core.
    Hegel: compiled graphs reach the same rest as a from-scratch
    evaluation, under random schedules and crashes.
+   **Progress.** The core is `cordis/engine` (`Engine`): `ready`,
+   `perform`, `handle`, and the commands `Persist`, `Release`, `Reconcile`.
+   Its test (`engine/test/review_loop.ml`) runs the checked
+   `review.cg` against a loopback host: a store synced when the host
+   chooses, an outbox that journals effectful keys and answers again from
+   the journal, lost and duplicated receipts, an input changed part way
+   through. Hegel checks that any such run rests where a fault-free run of
+   the final input does, that `noStall` holds, that effectful keys take
+   effect once, and that no intent leaves before its record is durable;
+   seven planted engine bugs are each caught. Running it found three
+   faults, each now fixed and covered:
+   - an append keyed by the scrutinee's value revision stops a loop whose
+     critic repeats itself (RFC 0002 amended; `routes.qnt`'s `noStall`);
+   - receipts matched by key alone let a duplicated loss notice from one
+     attempt advance another: a receipt carries its attempt and applies
+     only to the awaited one, as `observe.qnt` already said;
+   - staleness was direct only, so after an input change a verdict about
+     the old draft could append into the new episode; it is transitive, as
+     in `routes.qnt`.
+   Still to do in stage 1: the SQLite store, crash injection with
+   recovery from the records, and ITF traces checked against the models.
 2. **A real model behind the outbox.** The outbox process with its
    SQLite journal, the relay (`handoff.qnt`), reservations and the
    limiter (`budget.qnt`), and a completion endpoint (halo-flash's

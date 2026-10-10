@@ -1,0 +1,3 @@
+(library
+ (name cordis_engine)
+ (libraries cordis_cel cordis_graph))

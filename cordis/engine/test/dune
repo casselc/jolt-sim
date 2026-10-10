@@ -1,0 +1,8 @@
+; The review loop on the sans-IO engine, in memory (RFC 0006 rev 2, stage 1)
+(test
+ (name review_loop)
+ (modules review_loop)
+ (libraries cordis_engine cordis_graph cordis_cel hegel alcotest)
+ (deps ../../graph/examples/review.cg)
+ (action
+  (run %{test} ../../graph/examples/review.cg)))

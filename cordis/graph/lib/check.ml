@@ -36,6 +36,10 @@ type cell_info = {
   state : (string * C.t) list;
   turns : turn list;
   holes : string list;
+  inits : (string * Ast.expr option) list;  (** each state field's initial value, lowered (None: a hole) *)
+  uses : (string * string) list;  (** (variable, effect kind) per use, in order: turn i+1 reads the first i+1 *)
+  updated : string list;
+      (** the state fields the last turn updates, in order: its program gives [result; u1; ...] when non-empty *)
 }
 
 type asset_info = {
@@ -57,6 +61,9 @@ type graph_info = {
   capacities : (string * int) list;  (** each stream's capacity *)
   befores : (string * string) list;  (** invariant c1 before c2 *)
   effect_row : string list;
+  append_exprs : (string * string * string * string option * Ast.expr option) list;
+      (** (scrutinee, case, stream, binder, the appended value lowered): the runtime form of [appends] *)
+  route_cases : (string * string list) list;  (** each routed asset's explicitly named cases; "_" takes the rest *)
 }
 
 type checked = {
@@ -355,7 +362,10 @@ let check_cell env (c : Syntax.cell) =
     in
     { index = i; emits = Option.map fst ends; pending; cost; program }
   in
-  { cname = c.name; params; result; effects = c.effects; state; turns = List.init n_turns turn; holes = List.rev !holes }
+  { cname = c.name; params; result; effects = c.effects; state; turns = List.init n_turns turn; holes = List.rev !holes;
+    inits = List.map (fun (f, _, e) -> (f, Option.map renumber (lowered e))) c.state;
+    uses = List.map (fun (x, k, _) -> (x, k)) uses;
+    updated = List.map fst c.updates }
 
 (* ---- graphs ---------------------------------------------------------------------------------- *)
 
@@ -457,7 +467,11 @@ let check_graph env ?(broken = []) cells name items =
     | Some x -> List.mem b x.deps || List.exists (fun d -> depends_on d b) x.deps
   in
   (* routes *)
-  let guards = Hashtbl.create 8 and appends = ref [] in
+  let guards = Hashtbl.create 8 and appends = ref [] and append_exprs = ref [] and route_cases = ref [] in
+  let lowered = function
+    | Hole _ -> None
+    | Cel { ast; _ } -> Some (renumber (Lower.lower ~records:(records env) ~variants:(variants env) ast))
+  in
   let routed = Hashtbl.create 4 in
   List.iter
     (function
@@ -467,6 +481,7 @@ let check_graph env ?(broken = []) cells name items =
           let st = match Hashtbl.find_opt types s with Some t -> t | None -> fail "route %s: unknown asset %s" s s in
           let cs = match st with C.Variant cs -> cs | t -> fail "route %s: %s has type %s, not a variant" s s (C.to_string t) in
           let tags = List.filter_map (function Case (t, _), _ -> Some t | Wild, _ -> None) cases in
+          route_cases := (s, tags) :: !route_cases;
           List.iter (fun t -> if List.length (List.filter (( = ) t) tags) > 1 then fail "route %s: case %s twice" s t) tags;
           let wild = List.exists (function Wild, _ -> true | _ -> false) cases in
           (match List.filter (fun (c, _) -> not (List.mem c tags)) cs with
@@ -498,7 +513,8 @@ let check_graph env ?(broken = []) cells name items =
                           let vars = (match binder with Some (x, t) -> [ (x, t) ] | None -> []) in
                           let t = check_cel (cel_env env vars) (Printf.sprintf "route %s, case %s" s tag) e in
                           (match e with Hole _ -> () | Cel _ -> expect_assignable (Printf.sprintf "route %s, case %s: the value for %s" s tag st_name) elem t);
-                          appends := (s, tag, st_name) :: !appends))
+                          appends := (s, tag, st_name) :: !appends;
+                          append_exprs := (s, tag, st_name, Option.map fst binder, lowered e) :: !append_exprs))
                 acts)
             cases
       | _ -> ())
@@ -534,7 +550,8 @@ let check_graph env ?(broken = []) cells name items =
     List.sort_uniq compare (List.concat_map (fun a -> (List.find (fun c -> c.cname = a.acell) cells).effects) assets)
   in
   let befores = List.filter_map (function Before (a, b) -> Some (a, b) | _ -> None) items in
-  { gname = name; inputs; streams; assets; appends = List.rev !appends; capacities; befores; effect_row }
+  { gname = name; inputs; streams; assets; appends = List.rev !appends; capacities; befores; effect_row;
+    append_exprs = List.rev !append_exprs; route_cases = List.rev !route_cases }
 
 (* ---- files ----------------------------------------------------------------------------------- *)
 

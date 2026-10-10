@@ -23,7 +23,7 @@ What changed, and why:
 | Anonymous records `{ prompt = …; … }` | Records are named types, built with CEL's message-literal syntax (`Prompt{prompt: …}`); a CEL map literal is not a record | CEL has no record literal; message literals give construction a checked shape |
 | HM with Rémy rows; pass-through rows `.. 'r` | Declared signatures; type variables instantiated per use and unified at the wiring; width subtyping for open records in parameters only | Every cell is annotated, so inference is needed only at the wiring; pass-through needs a record-spread operator CEL lacks (deferred) |
 | `draft <~ r.notes` appends to an asset | Explicit, typed streams with a capacity: `stream notes : string up to 8;` | A stream must be named and typed to be checked; `routes.qnt` shows a feedback loop needs a capacity to come to rest |
-| Routes undefined at run time | A guard computes or withdraws its asset; an append is keyed by the scrutinee's revision; a full stream refuses; a new input empties the streams | Checked in `routes.qnt` (consistent, appendOnce, bounded) |
+| Routes undefined at run time | A guard computes or withdraws its asset; an append is keyed by the scrutinee's computation (amended, below); a full stream refuses; a new input empties the streams | Checked in `routes.qnt` (consistent, appendOnce, bounded, noStall) |
 | Identity by canonical Preserves; Irmin store | Identity by SHA-256 of canonical text (and of the definitions named); definitions in files | The Preserves codec and Irmin are later work; only the hashing input will change |
 | Admission gates listed | Admission built for parse, check, cost budget and compatibility; hash-guarded patches | Cedar Analysis, the Quint gate per graph and soak follow with phase 3 |
 
@@ -213,10 +213,20 @@ steps, before the turn runtime implements it:
   the graph for the current inputs and streams (`consistent`). Keeping the
   old value instead (`keepGuarded`) breaks this: a `shipped` from an
   earlier `Pass` would outlive the `Fail` that replaced it.
-- **An append is keyed by the scrutinee's revision.** The route's
-  `route.append` intent carries the revision it answers, so re-running the
-  route (a restart, a redelivery) appends nothing new (`appendOnce`).
-  Appending on every run (`appendEveryRun`) duplicates notes.
+- **An append is keyed by the scrutinee's computation:** the episode, and
+  which computation of the scrutinee in it. The route's `route.append`
+  intent carries that key, so re-running the route (a restart, a
+  redelivery) appends nothing new (`appendOnce`); appending on every run
+  (`appendEveryRun`) duplicates notes. Revision 2 first keyed it by the
+  scrutinee's *revision*, which moves only when the value changes. Running
+  the review loop on the engine (RFC 0006, stage 1) showed why that is
+  wrong: a critic that gives the same verdict for a new draft (an LLM
+  repeating itself) keeps the revision, so the route treats it as answered
+  and the loop stops early. `routes.qnt` now has such a critic, the
+  property `noStall` (a failing loop rests only at its cap), and the
+  mutant `keyByValue`, which breaks it. The episode is in the key because a
+  new request can give a draft equal to an earlier one, which recomputes
+  nothing downstream yet still needs an answer.
 - **A full stream refuses.** A stream on a feedback loop has a capacity; an
   append to a full stream is refused (and reported), so a loop whose critic
   never passes still comes to rest, at the cap (`bounded`, witness
