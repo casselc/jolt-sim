@@ -41,7 +41,12 @@ type def =
 
 type import = {
   defs : (string * def) list;  (** graph name -> definition, in emission order *)
-  residue : (string * string) list;  (** graph name -> the residue's CEL source at x *)
+  residue : (string * string) list;
+      (** graph name -> the check_T cell's residue at x, every reachable type's inlined (CEL has no calls
+          between cells); a type whose inlined residue would be too large has none, reported *)
+  local : (string * string) list;
+      (** graph name -> the type's own residue at x, not looking into the named types it holds: the
+          codec checks each named value it reads against its own *)
   root : string;  (** the root schema's type *)
   by_def : (string * string) list;  (** schema reference -> graph name *)
   report : (string * string) list;  (** location, what was approximated *)
@@ -106,6 +111,23 @@ let fresh_name c base =
 
 let conj = function [] -> "true" | [ p ] -> p | ps -> "(" ^ String.concat " && " ps ^ ")"
 
+(* Residues are generated in one of two modes: inlined (a named type's
+   residue written out where it is held, for check_T cells) or local (a
+   named type contributes nothing; the codec checks it where it reads it).
+   Inlined generation is bounded: shared definitions make it exponential. *)
+let inline_named = ref true
+
+exception Too_large
+
+let budget = ref max_int
+
+let spend (ps : string list) =
+  List.iter (fun p -> budget := !budget - String.length p) ps;
+  if !budget < 0 then raise Too_large;
+  ps
+
+let named n r = (Named n, fun p -> if !inline_named then spend (r p) else [])
+
 (* The whole validation predicate, for a dyn location. *)
 let full c loc (s : J.t) p =
   match P.compile ~root:c.doc s p with
@@ -152,7 +174,7 @@ let rec translate c ~loc (s : J.t) : t * (string -> string list) =
           let a, b = match get s "anyOf", get s "oneOf" with Some (`List [ a; b ]), _ | _, Some (`List [ a; b ]) -> (a, b) | _ -> assert false in
           let inner = if is_null a then b else a in
           (* oneOf: null must match only the null branch *)
-          if get s "oneOf" <> None && (match fst (translate { c with report = c.report } ~loc inner) with Opt _ | Dyn | Rec _ -> true | _ -> false) then begin
+          if get s "oneOf" <> None && admits_null c [] inner then begin
             say c loc "oneOf of null and a type that admits null: dyn, checked by the whole schema";
             (Dyn, full c loc s)
           end
@@ -189,7 +211,7 @@ let rec translate c ~loc (s : J.t) : t * (string -> string list) =
       | (Some (`String "object") | None) when get s "properties" <> None && only s [ "type"; "properties"; "required"; "additionalProperties" ]
                                              && (match get s "additionalProperties" with None | Some (`Bool _) -> true | _ -> false) ->
           let name = fresh_name c loc in
-          (Named name, record c ~loc ~name s)
+          named name (record c ~loc ~name s)
       | (Some (`String "object") | None) when only s [ "type"; "additionalProperties"; "maxProperties"; "minProperties"; "propertyNames" ]
                                              && (match get s "additionalProperties" with Some (`Assoc _) | Some (`Bool true) -> true | _ -> false) ->
           let vt, vr = translate c ~loc:(loc ^ "{}") (Option.get (get s "additionalProperties")) in
@@ -217,11 +239,28 @@ let rec translate c ~loc (s : J.t) : t * (string -> string list) =
           in
           let required = List.sort_uniq compare (List.concat_map (fun b -> match get b "required" with Some (`List r) -> r | _ -> []) bs) in
           let name = fresh_name c loc in
-          (Named name, record c ~loc ~name (`Assoc [ ("type", `String "object"); ("properties", `Assoc props); ("required", `List required) ]))
+          named name (record c ~loc ~name (`Assoc [ ("type", `String "object"); ("properties", `Assoc props); ("required", `List required) ]))
       | _ ->
           say c loc "%s: dyn, checked by the whole schema" (if keys s = [] then "no type" else "keywords the types cannot hold (" ^ String.concat ", " (keys s) ^ ")");
           (Dyn, full c loc s))
   | _ -> raise (Refused (loc ^ ": not a schema"))
+
+(* whether a schema may admit null, judged from its type keywords and
+   references: when unsure, yes (the caller then falls back to dyn) *)
+and admits_null c seen s =
+  match s with
+  | `Bool b -> b
+  | _ -> (
+      match get s "type", get s "$ref" with
+      | Some (`String t), _ -> t = "null"
+      | Some (`List ts), _ -> List.mem (`String "null") ts
+      | None, Some (`String r) when not (List.mem r seen) -> (match P.resolve c.doc r with t -> admits_null c (r :: seen) t | exception P.Unsupported _ -> true)
+      | None, _ -> (
+          match get s "enum", get s "const" with
+          | Some (`List vs), _ -> List.mem `Null vs
+          | _, Some v -> v = `Null
+          | _ -> true)
+      | Some _, _ -> true)
 
 and nullable c ~loc ~whole s =
   let t, r = translate c ~loc s in
@@ -262,8 +301,9 @@ and reference c ~loc s =
   end
   else
     let n = define c r in
-    ( (match List.assoc_opt n c.defs with Some (Alias t) -> t | _ -> Named n),
-      fun p -> match List.assoc_opt n c.residues with Some r -> r p | None -> [] )
+    let res p = match List.assoc_opt n c.residues with Some r -> r p | None -> [] in
+    (* an alias is read as its type, so its residue is always written out *)
+    match List.assoc_opt n c.defs with Some (Alias t) -> (t, res) | _ -> named n res
 
 (* the type for the schema reference r names, translated once *)
 and define ?name c r =
@@ -417,7 +457,7 @@ and variant c ~loc _s bs disc =
     match arms with [] -> [] | arms -> [ Printf.sprintf "match %s { %s; _ -> true }" p (String.concat "; " arms) ]
   in
   c.residues <- (name, residue) :: c.residues;
-  (Named name, residue)
+  named name residue
 
 let import ?(name = "Root") (doc : J.t) =
   let c = { doc; defs = []; residues = []; report = []; visiting = []; by_def = []; names = []; } in
@@ -445,8 +485,31 @@ let import ?(name = "Root") (doc : J.t) =
     c.defs;
   if !bounded then say c "(all)" "where the schema gives no maxLength, maxItems or maxProperties, the configured default ceiling applies";
   let defs = List.rev c.defs in
-  let residue = List.filter_map (fun (n, _) -> match List.assoc_opt n c.residues with Some r -> (match r "x" with [] -> None | ps -> Some (n, conj ps)) | None -> None) defs in
-  { defs; residue; root; by_def = c.by_def; report = List.rev c.report }
+  let gen inline n r =
+    inline_named := inline;
+    budget := if inline then 400_000 else max_int;
+    match r "x" with [] -> None | ps -> Some (n, conj ps)
+  in
+  let local = List.filter_map (fun (n, _) -> Option.bind (List.assoc_opt n c.residues) (gen false n)) defs in
+  let residue =
+    List.filter_map
+      (fun (n, _) ->
+        match List.assoc_opt n c.residues with
+        | None -> None
+        | Some r -> (
+            (* the graph checker's bound on a cell's expression, counted as it
+               counts (Library.inline's default) *)
+            let fits (_, src) = match Cordis_cel.Cel.parse src with Ok e -> Cordis_cel.Library.size e <= 10_000 | Error _ -> true in
+            match (match gen true n r with Some v when not (fits v) -> raise Too_large | v -> v) with
+            | v -> v
+            | exception Too_large ->
+                say c n "check_%s is not written: its residue, every type it holds written out, is too large for a cell; the codec checks it type by type" n;
+                None))
+      defs
+  in
+  inline_named := true;
+  budget := max_int;
+  { defs; residue; local; root; by_def = c.by_def; report = List.rev c.report }
 
 (* ---- the types file ------------------------------------------------------------------------------- *)
 

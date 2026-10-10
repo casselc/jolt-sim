@@ -150,6 +150,9 @@ type env = {
   functions : (string * (bool * t list * t) list) list;  (** name -> (receiver, params, result) *)
   container : string;
   subst : (int, t) Hashtbl.t;
+  trail : (int * t option) list ref;
+      (** every change to [subst], newest first, with the binding it replaced: an overload that does not
+          fit is undone back to a mark, at the cost of what it changed, not of the whole table *)
   mutable next : int;
   types : (int, t) Hashtbl.t;  (** expression id -> inferred type, for the cost estimator *)
   named : (string * t) list;  (** the graph language's declared records and variants, by name *)
@@ -201,7 +204,28 @@ let rec occurs env i t =
   | Record (fs, _) -> List.exists (fun (_, t) -> occurs env i t) fs
   | _ -> false
 
-let bind env i t = if not (occurs env i t) then Hashtbl.replace env.subst i t
+let set env i t =
+  env.trail := (i, Hashtbl.find_opt env.subst i) :: !(env.trail);
+  Hashtbl.replace env.subst i t
+
+(* Undo every change made since [mark] (a former value of the trail). *)
+let undo_to env mark =
+  let rec go l =
+    if l != mark then
+      match l with
+      | (i, old) :: rest ->
+          (match old with Some u -> Hashtbl.replace env.subst i u | None -> Hashtbl.remove env.subst i);
+          go rest
+      | [] -> ()
+  in
+  go !(env.trail);
+  env.trail := mark
+
+let reset_subst env =
+  Hashtbl.reset env.subst;
+  env.trail := []
+
+let bind env i t = if not (occurs env i t) then set env i t
 
 let is_primitive = function Bool | Int | Uint | Double | String | Bytes -> true | _ -> false
 let nullable = function Wrapper _ | Message _ | Timestamp | Duration | Opt _ | Null | Dyn -> true | _ -> false
@@ -312,7 +336,7 @@ let rec flexible env p a =
        | Var _ -> assignable env p a
        | _ ->
            assignable env bound a
-           && (Hashtbl.replace env.subst i (most_general env bound a); true))
+           && (set env i (most_general env bound a); true))
   | List x -> (match resolve env a with List y -> flexible env x y | _ -> assignable env p a)
   | Type x -> (match resolve env a with Type y -> flexible env x y | _ -> assignable env p a)
   | Opt x -> (match resolve env a with Opt y -> flexible env x y | _ -> assignable env p a)
@@ -405,7 +429,7 @@ let standard : (string * (bool * t list * t) list) list Lazy.t =
 (* ---- declarations ------------------------------------------------------------------------ *)
 
 let empty ?(container = "") () =
-  { idents = []; functions = []; container; subst = Hashtbl.create 16; next = 0; types = Hashtbl.create 64; named = [] }
+  { idents = []; functions = []; container; subst = Hashtbl.create 16; trail = ref []; next = 0; types = Hashtbl.create 64; named = [] }
 
 let declare_ident env name ty = { env with idents = (name, ty) :: env.idents }
 
@@ -504,11 +528,10 @@ let resolve_call env name ~receiver args =
   let candidates =
     List.filter (fun (r, ps, _) -> r = receiver && List.length ps = List.length args) (overloads env name)
   in
-  let restore s = Hashtbl.reset env.subst; Hashtbl.iter (Hashtbl.replace env.subst) s in
   let result =
     List.fold_left
       (fun result o ->
-        let saved = Hashtbl.copy env.subst in
+        let saved = !(env.trail) in
         let ps, res = instantiate env (let _, ps, res = o in (ps, res)) in
         if List.for_all2 (flexible env) ps args then
           let r = substitute env res in
@@ -516,7 +539,7 @@ let resolve_call env name ~receiver args =
           | None -> Some r
           | Some Dyn -> result
           | Some r0 -> if r0 = r then result else Some Dyn
-        else (restore saved; result))
+        else (undo_to env saved; result))
       None candidates
   in
   match result with
@@ -760,14 +783,14 @@ and select_type env ot field =
    substitution table, so it starts empty, and no binding from an earlier
    check can leak into this one. *)
 let check env (e : Ast.expr) =
-  Hashtbl.reset env.subst;
+  reset_subst env;
   match infer env [] e with
   | t -> Ok (finalize env t)
   | exception Check_error m -> Error m
 
 (* The checked type and the type of every subexpression, by id. *)
 let check_types env (e : Ast.expr) =
-  Hashtbl.reset env.subst;
+  reset_subst env;
   Hashtbl.reset env.types;
   match infer env [] e with
   | t ->

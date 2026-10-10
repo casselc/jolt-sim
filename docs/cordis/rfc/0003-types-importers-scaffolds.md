@@ -242,6 +242,17 @@ bounds; a missing bound gets the default ceiling, reported once.
 
 ### Residue and the codec
 
+Each type has two residues. Its **local residue** checks its own
+keywords and does not look into the named types it holds; the codec
+checks every named value it reads against its own, so the boundary
+checks everything in time linear in the document. Its **`check_T` cell**
+writes out every reachable type's residue inline, since a cell cannot
+call another; where definitions are widely shared that is exponential,
+so it is generated under a budget and written only if it fits the graph
+checker's bound (10,000 nodes, counted as the checker counts). A type
+whose cell does not fit is reported: the boundary still checks it, but a
+graph cannot gate on it.
+
 `check_T` is the predicate's typed residue: the keywords the type does
 not capture, over the typed value (a field of an `option` checked only
 when present), with any `dyn` location checked by its whole predicate.

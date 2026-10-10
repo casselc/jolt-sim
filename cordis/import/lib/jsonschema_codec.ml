@@ -75,7 +75,7 @@ and record_members imp fs m =
 
 (* whether a value of type n satisfies the rest of its schema *)
 let satisfies (imp : import) n (v : V.t) =
-  match List.assoc_opt n imp.residue with
+  match List.assoc_opt n imp.local with
   | None -> Ok ()
   | Some src -> (
       match Cordis_cel.Cel.eval ~vars:[ ("x", v) ] src with
@@ -114,15 +114,21 @@ let rec of_json (imp : import) (t : t) (j : J.t) : V.t =
   | Rec k, j -> (
       (* the referenced type, residue and all; kept as plain JSON *)
       let n = match List.assoc_opt k imp.by_def with Some n -> n | None -> bad "no type for %s" k in
-      let v = of_json imp (Named n) j in
-      match satisfies imp n v with Ok () -> dyn j | Error e -> bad "%s" e)
+      ignore (of_json imp (Named n) j : V.t);
+      dyn j)
   | Opt (Dyn | Rec _), `Null -> V.Optional (Some V.Null) (* null is a value of dyn *)
   | Opt _, `Null -> V.Optional None
   | Opt t, j -> V.Optional (Some (of_json imp t j))
   | Lst (t, _), `List xs -> V.List (Array.of_list (List.map (of_json imp t) xs))
   | Mp (t, _), `Assoc kv -> no_duplicates "a map" kv; V.make_map (List.map (fun (k, x) -> (V.String k, of_json imp t x)) kv)
   | Named n, j -> (
-      match def imp n, j with
+      (* a named value is checked against its own residue where it is read *)
+      let v = named_value imp n j in
+      match satisfies imp n v with Ok () -> v | Error e -> bad "%s" e)
+  | _, j -> bad "not of its type: %s" (J.to_string j)
+
+and named_value imp n j =
+  match def imp n, j with
       | Record fs, `Assoc kv -> read_record imp n fs kv
       | Enum cases, `String s -> (
           match List.find_opt (fun (_, v) -> v = s) cases with
@@ -140,8 +146,7 @@ let rec of_json (imp : import) (t : t) (j : J.t) : V.t =
           | _ -> bad "%s: no %s" n disc)
       | Alias t, j -> of_json imp t j
       | Record _, j -> bad "%s is a record: %s is not an object" n (J.to_string j)
-      | _, j -> bad "not a %s: %s" n (J.to_string j))
-  | _, j -> bad "not of its type: %s" (J.to_string j)
+      | _, j -> bad "not a %s: %s" n (J.to_string j)
 
 and read_record imp n fs kv =
   no_duplicates n kv;
@@ -163,7 +168,7 @@ and read_record imp n fs kv =
 
 let read (imp : import) n (j : J.t) =
   match of_json imp (Named n) j with
-  | v -> Result.bind (satisfies imp n v) (fun () -> Ok v)
+  | v -> Ok v
   | exception Bad m -> Error m
 
 let write (imp : import) n v = match to_json imp (Named n) v with j -> Ok j | exception Bad m -> Error m
