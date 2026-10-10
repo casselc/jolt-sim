@@ -6,3 +6,10 @@
  (deps e2e.sh stub_llm.py %{bin:cordis-run} %{bin:cordis-outbox} ../../graph/examples/review.cg)
  (action
   (run bash %{dep:e2e.sh} %{bin:cordis-run} %{bin:cordis-outbox} %{dep:../../graph/examples/review.cg} %{dep:stub_llm.py})))
+
+; The central limiter shared by two agents (outbox.qnt's withinLimit)
+(rule
+ (alias e2e)
+ (deps limiter.sh stub_llm.py %{bin:cordis-run} %{bin:cordis-outbox} %{bin:cordis-limiter} ../../graph/examples/review.cg)
+ (action
+  (run bash %{dep:limiter.sh} %{bin:cordis-run} %{bin:cordis-outbox} %{bin:cordis-limiter} %{dep:../../graph/examples/review.cg} %{dep:stub_llm.py})))

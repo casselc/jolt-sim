@@ -5,12 +5,14 @@
    from it, never run twice. An effectful intent is journaled by its key;
    an observational one by key and attempt, since each attempt runs once
    (RFC 0006, "Observational emissions"). A row still [Sent] when the
-   outbox restarts became [Unknown]: it may or may not have taken effect. *)
+   outbox restarts became [Unknown]: it may or may not have taken effect.
+   A row [Waiting] has no token from the limiter yet: nothing was sent, so
+   it waits on across a restart (outbox.qnt's WaitGrant). *)
 
-type state = Sent | Done | Unknown | Fenced
+type state = Waiting | Sent | Done | Unknown | Fenced
 
-let state_name = function Sent -> "sent" | Done -> "done" | Unknown -> "unknown" | Fenced -> "fenced"
-let state_of = function "sent" -> Sent | "done" -> Done | "unknown" -> Unknown | "fenced" -> Fenced | s -> failwith ("journal state " ^ s)
+let state_name = function Waiting -> "waiting" | Sent -> "sent" | Done -> "done" | Unknown -> "unknown" | Fenced -> "fenced"
+let state_of = function "waiting" -> Waiting | "sent" -> Sent | "done" -> Done | "unknown" -> Unknown | "fenced" -> Fenced | s -> failwith ("journal state " ^ s)
 
 type row = { jkey : string; state : state; value : string option; cost : int }
 
@@ -46,9 +48,20 @@ let find db jkey =
 let step_done db st what = check db (Sqlite3.step st) what
 
 (* journal before running: the row is durable when this returns *)
-let begin_ db ~jkey ~key ~attempt ~kind ~request =
-  with_stmt db "INSERT INTO journal (jkey, key, attempt, kind, request, state) VALUES (?, ?, ?, ?, ?, 'sent')"
-    [ `T jkey; `T key; `I attempt; `T kind; `T request ] (fun st -> step_done db st "insert")
+let begin_ ?(state = Sent) db ~jkey ~key ~attempt ~kind ~request =
+  with_stmt db "INSERT INTO journal (jkey, key, attempt, kind, request, state) VALUES (?, ?, ?, ?, ?, ?)"
+    [ `T jkey; `T key; `I attempt; `T kind; `T request; `T (state_name state) ] (fun st -> step_done db st "insert")
+
+(* the rows waiting for a token: (jkey, key, attempt, kind, request) *)
+let waiting db =
+  with_stmt db "SELECT jkey, key, attempt, kind, request FROM journal WHERE state = 'waiting' ORDER BY rowid" [] (fun st ->
+      let rec go acc =
+        match Sqlite3.step st with
+        | Sqlite3.Rc.ROW ->
+            go ((Sqlite3.column_text st 0, Sqlite3.column_text st 1, Int64.to_int (Sqlite3.column_int64 st 2), Sqlite3.column_text st 3, Sqlite3.column_text st 4) :: acc)
+        | _ -> List.rev acc
+      in
+      go [])
 
 let finish db ~jkey ~value ~cost =
   with_stmt db "UPDATE journal SET state = 'done', value = ?, cost = ? WHERE jkey = ?" [ `T value; `I cost; `T jkey ] (fun st -> step_done db st "finish")

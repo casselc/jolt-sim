@@ -8,12 +8,20 @@
                         {"op":"receipt","key":K,"attempt":N,"value":V,"cost":C}
                         {"op":"lost","key":K,"attempt":N}    the outcome is unknown
                         {"op":"reconciled","key":K,"attempt":N,"receipt":null|{"value":V,"cost":C}}
+                        {"op":"deferred","key":K,"attempt":N}  no token from the limiter yet:
+                                                               definitely not sent; it runs once granted
 
    An intent is journaled before it runs and acknowledged once journaled;
    a released-again intent is answered from the journal and never runs
    twice (an observational one is journaled per attempt). An intent whose
    run failed, or was cut off by a restart, is answered as lost: the engine
-   retries an observational kind and reconciles an effectful one. *)
+   retries an observational kind and reconciles an effectful one.
+
+   With a limiter, a journaled intent runs only once it holds a token for
+   its emission (agent and journal key); until then it waits, the engine
+   is told it is deferred, and the token is asked for again on every tick.
+   Once journaled an intent is the outbox's: if the engine has gone, it
+   still runs, and its receipt is journaled for the engine's return. *)
 
 module E = Cordis_engine.Engine
 module Codec = Cordis_engine.Codec
@@ -26,40 +34,67 @@ let ka key attempt = [ ("key", `String key); ("attempt", `Int attempt) ]
 
 let receipt_frame key attempt (value, cost) = frame "receipt" (ka key attempt @ [ ("value", Codec.value value); ("cost", `Int cost) ])
 
-let handle_intent journal executors (i : E.intent) send =
+type ctx = {
+  journal : Journal.t;
+  executors : (string * Executors.t) list;
+  limiter : string option;  (** the limiter's socket *)
+  agent : string;
+}
+
+(* run a journaled, granted intent once, and journal its receipt *)
+let run_now ctx ~jkey ~key ~attempt ~kind ~request send =
+  Journal.set_state ctx.journal ~jkey Journal.Sent;
+  match List.assoc_opt kind ctx.executors with
+  | None ->
+      Journal.set_state ctx.journal ~jkey Journal.Unknown;
+      send (frame "lost" (ka key attempt))
+  | Some (x : Executors.t) -> (
+      match x.run request with
+      | (v, cost) ->
+          Journal.finish ctx.journal ~jkey ~value:(J.to_string (Codec.value v)) ~cost;
+          send (receipt_frame key attempt (v, cost))
+      | exception e ->
+          prerr_endline ("outbox: " ^ kind ^ ": " ^ Printexc.to_string e);
+          Journal.set_state ctx.journal ~jkey Journal.Unknown;
+          send (frame "lost" (ka key attempt)))
+
+let granted ctx jkey =
+  match ctx.limiter with None -> true | Some socket -> Limiter.ask ~socket ~emission:(ctx.agent ^ "/" ^ jkey)
+
+let handle_intent ctx (i : E.intent) send =
   let k = jkey i in
-  match Journal.find journal k with
+  match Journal.find ctx.journal k with
   | Some { state = Journal.Done; value = Some v; cost; _ } ->
       send (frame "ack" (ka i.key i.attempt));
       send (receipt_frame i.key i.attempt (Codec.of_value (J.from_string v), cost))
+  | Some { state = Journal.Waiting; _ } ->
+      send (frame "ack" (ka i.key i.attempt));
+      send (frame "deferred" (ka i.key i.attempt))
   | Some _ ->
       send (frame "ack" (ka i.key i.attempt));
       send (frame "lost" (ka i.key i.attempt))
-  | None -> (
-      Journal.begin_ journal ~jkey:k ~key:i.key ~attempt:i.attempt ~kind:i.kind ~request:(J.to_string (Codec.value i.request));
+  | None ->
+      Journal.begin_ ~state:Journal.Waiting ctx.journal ~jkey:k ~key:i.key ~attempt:i.attempt ~kind:i.kind
+        ~request:(J.to_string (Codec.value i.request));
       send (frame "ack" (ka i.key i.attempt));
-      match List.assoc_opt i.kind executors with
-      | None ->
-          Journal.set_state journal ~jkey:k Journal.Unknown;
-          send (frame "lost" (ka i.key i.attempt))
-      | Some (x : Executors.t) -> (
-          match x.run i.request with
-          | (v, cost) ->
-              Journal.finish journal ~jkey:k ~value:(J.to_string (Codec.value v)) ~cost;
-              send (receipt_frame i.key i.attempt (v, cost))
-          | exception e ->
-              prerr_endline ("outbox: " ^ i.kind ^ ": " ^ Printexc.to_string e);
-              Journal.set_state journal ~jkey:k Journal.Unknown;
-              send (frame "lost" (ka i.key i.attempt))))
+      if granted ctx k then run_now ctx ~jkey:k ~key:i.key ~attempt:i.attempt ~kind:i.kind ~request:i.request send
+      else send (frame "deferred" (ka i.key i.attempt))
 
-let handle_reconcile journal executors key attempt send =
+(* every tick: ask again for the waiting rows' tokens, and run what is granted *)
+let retry_waiting ctx send =
+  List.iter
+    (fun (jkey, key, attempt, kind, request) ->
+      if granted ctx jkey then run_now ctx ~jkey ~key ~attempt ~kind ~request:(Codec.of_value (J.from_string request)) send)
+    (Journal.waiting ctx.journal)
+
+let handle_reconcile ctx key attempt send =
+  let journal = ctx.journal and executors = ctx.executors in
   let reply r = send (frame "reconciled" (ka key attempt @ [ ("receipt", r) ])) in
   let some (v, c) = `Assoc [ ("value", Codec.value v); ("cost", `Int c) ] in
   match Journal.find journal key with
   | Some { state = Journal.Done; value = Some v; cost; _ } -> reply (some (Codec.of_value (J.from_string v), cost))
   | Some { state = Journal.Unknown | Journal.Sent; _ } -> (
       let req = Option.map (fun s -> Codec.of_value (J.from_string s)) (Journal.request journal key) in
-      (* the executor of the journaled kind reads the world *)
       let kind =
         Journal.with_stmt journal "SELECT kind FROM journal WHERE jkey = ?" [ `T key ] (fun st ->
             match Sqlite3.step st with Sqlite3.Rc.ROW -> Some (Sqlite3.column_text st 0) | _ -> None)
@@ -76,36 +111,60 @@ let handle_reconcile journal executors key attempt send =
       | _ -> reply `Null)
   | _ -> reply `Null
 
-(* serve one engine connection after another, forever *)
-let serve ~socket ~journal ~executors =
-  (* an engine that dies mid-answer must not take the outbox with it: a write to its closed socket
-     is an error on that connection, not a signal that ends the process *)
+(* serve one engine at a time (a new connection replaces the old), and tick for waiting tokens *)
+let serve ?limiter ?(agent = "agent") ~socket ~journal ~executors () =
+  let ctx = { journal; executors; limiter; agent } in
+  (* an engine that dies mid-answer must not take the outbox with it *)
   Sys.set_signal Sys.sigpipe Sys.Signal_ignore;
   (try Sys.remove socket with Sys_error _ -> ());
-  let fd = Unix.socket Unix.PF_UNIX Unix.SOCK_STREAM 0 in
-  Unix.bind fd (Unix.ADDR_UNIX socket);
-  Unix.listen fd 4;
+  let lfd = Unix.socket Unix.PF_UNIX Unix.SOCK_STREAM 0 in
+  Unix.bind lfd (Unix.ADDR_UNIX socket);
+  Unix.listen lfd 4;
   print_endline "ready";
   flush stdout;
-  let rec loop () =
-    let c, _ = Unix.accept fd in
-    let ic = Unix.in_channel_of_descr c and oc = Unix.out_channel_of_descr c in
-    (* once journaled, an intent is the outbox's: if the engine has gone, it still runs and its receipt is
-       journaled, to answer the engine when it comes back; only the connection is given up *)
-    let alive = ref true in
-    let send j = if !alive then try output_string oc (J.to_string j ^ "\n"); flush oc with Sys_error _ | Unix.Unix_error _ -> alive := false in
-    (try
-       while !alive do
-         let line = input_line ic in
-         let open J.Util in
-         let j = J.from_string line in
-         match j |> member "op" |> to_string with
-         | "intent" -> handle_intent journal executors (Codec.of_intent (j |> member "intent")) send
-         | "reconcile" -> handle_reconcile journal executors (j |> member "key" |> to_string) (j |> member "attempt" |> to_int) send
-         | op -> prerr_endline ("outbox: unknown op " ^ op)
-       done
-     with End_of_file | Sys_error _ | Unix.Unix_error _ -> ());
-    (try Unix.close c with Unix.Unix_error _ -> ());
-    loop ()
+  let client = ref None in
+  let buf = Buffer.create 4096 and chunk = Bytes.create 4096 in
+  let drop () = (match !client with Some (fd, _) -> (try Unix.close fd with Unix.Unix_error _ -> ()) | None -> ()); client := None; Buffer.clear buf in
+  (* a send to an engine that has gone gives up the connection, not the intent *)
+  let send j =
+    match !client with
+    | Some (_, oc) -> (try output_string oc (J.to_string j ^ "\n"); flush oc with Sys_error _ | Unix.Unix_error _ -> drop ())
+    | None -> ()
   in
-  loop ()
+  let handle_line line =
+    match J.from_string line with
+    | j -> (
+        let open J.Util in
+        match j |> member "op" |> to_string with
+        | "intent" -> handle_intent ctx (Codec.of_intent (j |> member "intent")) send
+        | "reconcile" -> handle_reconcile ctx (j |> member "key" |> to_string) (j |> member "attempt" |> to_int) send
+        | op -> prerr_endline ("outbox: unknown op " ^ op))
+    | exception _ -> prerr_endline "outbox: a frame that is not JSON"
+  in
+  let rec lines () =
+    let s = Buffer.contents buf in
+    match String.index_opt s '\n' with
+    | Some i ->
+        Buffer.clear buf;
+        Buffer.add_string buf (String.sub s (i + 1) (String.length s - i - 1));
+        handle_line (String.sub s 0 i);
+        lines ()
+    | None -> ()
+  in
+  while true do
+    let fds = lfd :: (match !client with Some (fd, _) -> [ fd ] | None -> []) in
+    let readable, _, _ = try Unix.select fds [] [] 0.5 with Unix.Unix_error (Unix.EINTR, _, _) -> ([], [], []) in
+    if List.mem lfd readable then begin
+      drop ();
+      let c, _ = Unix.accept lfd in
+      client := Some (c, Unix.out_channel_of_descr c)
+    end;
+    (match !client with
+     | Some (fd, _) when List.mem fd readable -> (
+         match Unix.read fd chunk 0 (Bytes.length chunk) with
+         | 0 -> drop ()
+         | k -> Buffer.add_subbytes buf chunk 0 k; lines ()
+         | exception Unix.Unix_error _ -> drop ())
+     | _ -> ());
+    retry_waiting ctx send
+  done

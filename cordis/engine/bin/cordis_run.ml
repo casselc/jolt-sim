@@ -9,7 +9,9 @@
                 [--timeout SECONDS] [--crash-after N]
 
    On rest it prints each asset's value as JSON and exits 0; blocked (by
-   its budget, or a failed computation) it prints why and exits 2.
+   its budget, a failed computation, or intents the limiter has deferred
+   for longer than --max-wait) it prints why and exits 2. A deferred
+   intent was definitely not sent, so its wait is not a loss.
    --crash-after N exits abruptly after N engine actions, and
    --crash-after-receipts N right after applying the Nth receipt, before
    its record is synced: a test's crashes, losing what was not synced. *)
@@ -43,7 +45,7 @@ let rec to_json (v : V.t) : J.t =
 
 let () =
   let graph = ref "" and name = ref "" and store = ref "" and socket = ref "" and inputs = ref [] in
-  let observational = ref [] and worst = ref [] and budget = ref None and timeout = ref 30. and crash_after = ref 0 and crash_receipts = ref 0 in
+  let observational = ref [] and worst = ref [] and budget = ref None and timeout = ref 30. and crash_after = ref 0 and crash_receipts = ref 0 and max_wait = ref 0. in
   let pair s = match String.index_opt s '=' with Some i -> (String.sub s 0 i, String.sub s (i + 1) (String.length s - i - 1)) | None -> failwith ("expected K=V: " ^ s) in
   Arg.parse
     [ ("--graph", Arg.Set_string graph, "FILE"); ("--name", Arg.Set_string name, "GRAPH"); ("--store", Arg.Set_string store, "DB");
@@ -52,7 +54,8 @@ let () =
       ("--worst", Arg.String (fun s -> let k, n = pair s in worst := (k, int_of_string n) :: !worst), "KIND=N");
       ("--budget", Arg.Int (fun n -> budget := Some n), "N"); ("--timeout", Arg.Set_float timeout, "SECONDS");
       ("--crash-after", Arg.Set_int crash_after, "N");
-      ("--crash-after-receipts", Arg.Set_int crash_receipts, "N") ]
+      ("--crash-after-receipts", Arg.Set_int crash_receipts, "N");
+      ("--max-wait", Arg.Set_float max_wait, "SECONDS how long to wait on intents the limiter deferred (0: forever)") ]
     (fun _ -> ()) "cordis-run --graph FILE --name GRAPH --store DB --socket PATH --input NAME=JSON";
   let checked =
     match Cordis_graph.Patch.load (In_channel.with_open_text !graph In_channel.input_all) with
@@ -103,6 +106,7 @@ let () =
   (* the sender keeps an input until it is durable: set again after a crash, it changes nothing *)
   List.iter (fun (n, j) -> feed (Engine.Set_input (n, of_json (J.from_string j)))) !inputs;
   let actions = ref 0 and receipts = ref 0 in
+  let deferred = Hashtbl.create 8 and waited = ref 0. in
   let sync () =
     let d = Store.Sqlite.sync st in
     feed (Engine.Durable d)
@@ -144,7 +148,15 @@ let () =
         | None when Buffer.length pending > 0 -> loop ()
         | None ->
             if Sys.getenv_opt "CORDIS_RUN_TRACE" <> None then prerr_endline "cordis-run: timed out waiting";
-            List.iter (fun (i : Engine.intent) -> feed (Engine.Receipt (i.key, i.attempt, Engine.Lost))) (awaited ());
+            let live = List.filter (fun (i : Engine.intent) -> not (Hashtbl.mem deferred (i.key, i.attempt))) (awaited ()) in
+            if live = [] && awaited () <> [] then begin
+              waited := !waited +. !timeout;
+              if !max_wait > 0. && !waited >= !max_wait then begin
+                prerr_endline "cordis-run: blocked (the limiter has deferred every intent it awaits)";
+                exit 2
+              end
+            end;
+            List.iter (fun (i : Engine.intent) -> feed (Engine.Receipt (i.key, i.attempt, Engine.Lost))) live;
             Engine.Smap.iter
               (fun _ (s : Engine.slot) -> match s.fiber with Engine.Uncertain { intent; _ } -> obey [ Engine.Reconcile (intent.key, intent.attempt) ] | _ -> ())
               !t.slots;
@@ -155,7 +167,10 @@ let () =
             let j = J.from_string line in
             let key = j |> member "key" |> to_string and attempt = j |> member "attempt" |> to_int in
             let receipts_before = !receipts in
-            (match j |> member "op" |> to_string with
+            let op = j |> member "op" |> to_string in
+            if op = "deferred" then Hashtbl.replace deferred (key, attempt) () else if op <> "ack" then Hashtbl.remove deferred (key, attempt);
+            if op <> "deferred" && op <> "ack" then waited := 0.;
+            (match op with
              | "receipt" -> incr receipts; feed (Engine.Receipt (key, attempt, Engine.Done (Codec.of_value (j |> member "value"), j |> member "cost" |> to_int)))
              | "lost" -> feed (Engine.Receipt (key, attempt, Engine.Lost))
              | "reconciled" -> (

@@ -921,8 +921,26 @@ importers wait for the slice.
      answering;
    - and, the engine gone, it abandoned an intent it had journaled; it now
      runs it and journals the receipt for the engine's return.
-   Still to come in stage 2: the central limiter, and a run against
-   halo-flash itself.
+   The central limiter followed (`cordis-limiter`, decision 4F), as
+   `outbox.qnt` has it: a ledger of grants keyed by emission (agent and
+   journal key) in SQLite, so an emission asked for again gets its grant
+   back and never a second token, and a new one is granted only while the
+   window's count is under the limit (one window forever is the model's
+   LIMIT; fixed windows give a rate). An outbox with a limiter journals an
+   intent as waiting, runs it once granted, and asks again for waiting
+   tokens on every tick, across restarts; the engine is told the intent is
+   deferred, a definite "not sent", which its runner does not take for a
+   loss. `outbox/test/limiter.sh` shares one limiter between two agents
+   whose loops need twelve emissions against a limit of ten (one held by a
+   probe that asks for one emission three times): the first ships using
+   exactly six grants through two crashes, the second is granted the three
+   left and stops blocked by the limiter, and exactly nine emissions run.
+   Planted faults it catches: a limiter that grants a repeated emission
+   again, an outbox that runs without a grant, and limits counted per
+   agent (`outbox.qnt`'s `localLimits`). The outbox's serve loop became
+   select-based with its own line buffer, as the runner's had to.
+   Still to come in stage 2: a run against halo-flash itself, which needs
+   its hardware.
 3. **The run store, hardened.** Recovery under fault injection; the
    replay audit (5C); and a **native rollback-fidelity check**: on the
    host's own filesystem (ZFS on FreeBSD), snapshot the run store's

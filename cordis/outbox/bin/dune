@@ -1,4 +1,11 @@
 (executable
  (name cordis_outbox)
  (public_name cordis-outbox)
+ (modules cordis_outbox)
+ (libraries cordis_outbox))
+
+(executable
+ (name cordis_limiter)
+ (public_name cordis-limiter)
+ (modules cordis_limiter)
  (libraries cordis_outbox))
