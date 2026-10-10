@@ -41,12 +41,20 @@ let instances sub stem =
     |> List.filter_map (fun f -> match J.from_file (Filename.concat d f) with j -> Some (f, j) | exception _ -> None)
   else []
 
-(* a refusal's kind, for the summary: the reason without its location *)
+(* a refusal's kind, for the summary: the phrase that names the reason,
+   without the location, names and sizes around it *)
+let kinds =
+  [ "a recursive $ref"; "a remote $ref"; "an embedded resource"; "a predicate of"; "a predicate over"; "a custom metaschema";
+    "a metaschema this importer does not read"; "keyword unevaluatedProperties"; "keyword unevaluatedItems";
+    "keyword $dynamicRef"; "keyword $recursiveRef"; "uses lookaround"; "uses a backreference"; "uses a Unicode property class";
+    "is not ASCII"; "does not compile"; "not a schema"; "the schema false admits nothing"; "no such anchor"; "not JSON" ]
+
 let kind why =
-  let why = match String.index_opt why ':' with Some i when i < 60 && not (has (String.sub why 0 i) " ") -> String.trim (String.sub why (i + 1) (String.length why - i - 1)) | _ -> why in
-  let cut = [ "("; "\""; "#"; "http" ] in
-  let first = List.fold_left (fun acc c -> match String.index_opt why c.[0] with Some i when i < acc -> i | _ -> acc) (String.length why) cut in
-  String.trim (String.sub why 0 first)
+  match List.find_opt (fun k -> has why k) kinds with
+  | Some "a predicate of" | Some "a predicate over" -> "a predicate over the size limit"
+  | Some ("uses lookaround" | "uses a backreference" | "uses a Unicode property class" | "is not ASCII" | "does not compile" as k) -> "a pattern that " ^ k
+  | Some k -> k
+  | None -> why
 
 let () =
   let schemas_dir = Filename.concat dir "src/schemas/json" in
