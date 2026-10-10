@@ -1,9 +1,8 @@
-# SchemaStore: 990 schemas; 893 import (their types check); 97 are refused.
-# Instances of imported schemas: 1462 positive, 681 negative; 1886 agree with jsonschema; 220 valid ones are refused as RFC 0003 documents; 37 jsonschema could not validate.
+# SchemaStore: 990 schemas; 919 import (their types check); 71 are refused.
+# Instances of imported schemas: 1469 positive, 681 negative; 1893 agree with jsonschema; 220 valid ones are refused as RFC 0003 documents; 37 jsonschema could not validate.
 # Refusals by kind:
 #     29  a remote $ref
 #     29  a pattern that uses lookaround
-#     26  keyword unevaluatedProperties
 #      5  a pattern that does not compile
 #      3  the schema false admits nothing
 #      3  not a schema
@@ -339,42 +338,42 @@ enonic-xp-api-8.0.0: imported, 4 types, 0 instances
 enonic-xp-application-8.0.0-B4: imported, 3 types, 0 instances
 enonic-xp-application-8.0.0-B5: imported, 3 types, 0 instances
 enonic-xp-application-8.0.0: imported, 3 types, 0 instances
-enonic-xp-cms-8.0.0-B4: refused: formItemsDef: keyword unevaluatedProperties
-enonic-xp-cms-8.0.0-B5: refused: formItemsDef: keyword unevaluatedProperties
-enonic-xp-cms-8.0.0: refused: formItemsDef: keyword unevaluatedProperties
-enonic-xp-content-type-8.0.0-B4: refused: formItemsDef: keyword unevaluatedProperties
-enonic-xp-content-type-8.0.0-B5: refused: formItemsDef: keyword unevaluatedProperties
-enonic-xp-content-type-8.0.0: refused: formItemsDef: keyword unevaluatedProperties
-enonic-xp-form-fragment-8.0.0-B4: refused: formItemsDef: keyword unevaluatedProperties
-enonic-xp-form-fragment-8.0.0-B5: refused: formItemsDef: keyword unevaluatedProperties
-enonic-xp-form-fragment-8.0.0: refused: formItemsDef: keyword unevaluatedProperties
+enonic-xp-cms-8.0.0-B4: imported, 40 types, 0 instances
+enonic-xp-cms-8.0.0-B5: imported, 40 types, 0 instances
+enonic-xp-cms-8.0.0: imported, 40 types, 0 instances
+enonic-xp-content-type-8.0.0-B4: imported, 39 types, 0 instances
+enonic-xp-content-type-8.0.0-B5: imported, 39 types, 0 instances
+enonic-xp-content-type-8.0.0: imported, 39 types, 0 instances
+enonic-xp-form-fragment-8.0.0-B4: imported, 39 types, 0 instances
+enonic-xp-form-fragment-8.0.0-B5: imported, 39 types, 0 instances
+enonic-xp-form-fragment-8.0.0: imported, 39 types, 0 instances
 enonic-xp-idprovider-8.0.0-B4: imported, 39 types, 0 instances
 enonic-xp-idprovider-8.0.0-B5: imported, 39 types, 0 instances
 enonic-xp-idprovider-8.0.0: imported, 39 types, 0 instances
-enonic-xp-layout-8.0.0-B4: refused: formItemsDef: keyword unevaluatedProperties
-enonic-xp-layout-8.0.0-B5: refused: formItemsDef: keyword unevaluatedProperties
-enonic-xp-layout-8.0.0: refused: formItemsDef: keyword unevaluatedProperties
+enonic-xp-layout-8.0.0-B4: imported, 39 types, 0 instances
+enonic-xp-layout-8.0.0-B5: imported, 39 types, 0 instances
+enonic-xp-layout-8.0.0: imported, 39 types, 0 instances
 enonic-xp-macro-8.0.0-B4: imported, 34 types, 0 instances
 enonic-xp-macro-8.0.0-B5: imported, 34 types, 0 instances
 enonic-xp-macro-8.0.0: imported, 34 types, 0 instances
-enonic-xp-mixin-8.0.0-B4: refused: formItemsDef: keyword unevaluatedProperties
-enonic-xp-mixin-8.0.0-B5: refused: formItemsDef: keyword unevaluatedProperties
-enonic-xp-mixin-8.0.0: refused: formItemsDef: keyword unevaluatedProperties
-enonic-xp-page-8.0.0-B4: refused: formItemsDef: keyword unevaluatedProperties
-enonic-xp-page-8.0.0-B5: refused: formItemsDef: keyword unevaluatedProperties
-enonic-xp-page-8.0.0: refused: formItemsDef: keyword unevaluatedProperties
-enonic-xp-part-8.0.0-B4: refused: formItemsDef: keyword unevaluatedProperties
-enonic-xp-part-8.0.0-B5: refused: formItemsDef: keyword unevaluatedProperties
-enonic-xp-part-8.0.0: refused: formItemsDef: keyword unevaluatedProperties
+enonic-xp-mixin-8.0.0-B4: imported, 39 types, 0 instances
+enonic-xp-mixin-8.0.0-B5: imported, 39 types, 0 instances
+enonic-xp-mixin-8.0.0: imported, 39 types, 0 instances
+enonic-xp-page-8.0.0-B4: imported, 39 types, 0 instances
+enonic-xp-page-8.0.0-B5: imported, 39 types, 0 instances
+enonic-xp-page-8.0.0: imported, 39 types, 0 instances
+enonic-xp-part-8.0.0-B4: imported, 39 types, 0 instances
+enonic-xp-part-8.0.0-B5: imported, 39 types, 0 instances
+enonic-xp-part-8.0.0: imported, 39 types, 0 instances
 enonic-xp-service-8.0.0-B4: imported, 2 types, 0 instances
 enonic-xp-service-8.0.0-B5: imported, 2 types, 0 instances
 enonic-xp-service-8.0.0: imported, 2 types, 0 instances
 enonic-xp-site-8.0.0-B4: imported, 4 types, 0 instances
 enonic-xp-site-8.0.0-B5: imported, 4 types, 0 instances
 enonic-xp-site-8.0.0: imported, 4 types, 0 instances
-enonic-xp-style-8.0.0-B4: refused: imageStyleDef: keyword unevaluatedProperties
-enonic-xp-style-8.0.0-B5: refused: imageStyleDef: keyword unevaluatedProperties
-enonic-xp-style-8.0.0: refused: imageStyleDef: keyword unevaluatedProperties
+enonic-xp-style-8.0.0-B4: imported, 5 types, 0 instances
+enonic-xp-style-8.0.0-B5: imported, 5 types, 0 instances
+enonic-xp-style-8.0.0: imported, 5 types, 0 instances
 enonic-xp-task-8.0.0-B4: imported, 38 types, 0 instances
 enonic-xp-task-8.0.0-B5: imported, 38 types, 0 instances
 enonic-xp-task-8.0.0: imported, 38 types, 0 instances
@@ -951,7 +950,7 @@ uv: imported, 72 types, 0 instances
 uxp-manifest-5: imported, 12 types, 2 instances
 value-add-transformer: imported, 4 types, 0 instances
 vault: imported, 3 types, 1 instances
-vector: refused: codecs::common::length_delimited::LengthDelimitedCoderOptions: keyword unevaluatedProperties
+vector: imported, 355 types, 1 instances
 vespertide-migration: imported, 39 types, 1 instances
 vespertide-model: imported, 25 types, 1 instances
 vespertide: imported, 4 types, 1 instances
@@ -989,7 +988,7 @@ xunit-2.2: refused: a remote $ref (https://xunit.net/schema/v2.2/xunit.runner.sc
 xunit-2.3: refused: a remote $ref (https://xunit.net/schema/v2.3/xunit.runner.schema.json): no document https://xunit.net/schema/v2.3/xunit.runner.schema.json was given
 xunit.runner.schema: refused: a remote $ref (https://xunit.net/schema/current/xunit.runner.schema.json): no document https://xunit.net/schema/current/xunit.runner.schema.json was given
 yamlfmt: imported, 11 types, 0 instances
-yamllint: refused: yamllint: keyword unevaluatedProperties
+yamllint: imported, 4 types, 6 instances
 yap: refused: YapJsonProjects_name: pattern "^(?!\\.)(?!\\./).+" uses lookaround
 youtrack-app: imported, 12 types, 9 instances
 zarf: imported, 26 types, 0 instances
