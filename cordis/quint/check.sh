@@ -159,6 +159,18 @@ sim observe.qnt noReserve withinBudget VIOLATED
 sim observe.qnt applyLate receiptOnce VIOLATED
 sim observe.qnt oneClass obsNeverUncertain VIOLATED
 
+# ---- engine.qnt (RFC 0006: the turn commit protocol) -------------------------------------
+for inv in releasedOnlyDurable effectMatchesCommit commitAtomic receiptOnce uncertainSurvives; do sim engine.qnt design "$inv" ok; done
+VERIFY_STEPS=${ENGINE_VERIFY_STEPS:-$VERIFY_STEPS} verify engine.qnt design safety ok
+for w in crashBeforeRelease groupCommitted receiptRedelivered recoveredUncertain allDone; do sim engine.qnt design "not($w)" VIOLATED; done
+sim engine.qnt releaseEarly releasedOnlyDurable VIOLATED
+sim engine.qnt releaseEarly effectMatchesCommit VIOLATED
+sim engine.qnt splitRecord commitAtomic VIOLATED
+sim engine.qnt unkeyedReceipt receiptOnce VIOLATED
+sim engine.qnt forgetUncertain uncertainSurvives VIOLATED
+# an equivalent mutant: keyed receipts make the fiber's durable state the dedup
+sim engine.qnt dedupInMemory safety ok
+
 # conformance: simulator runs replayed in the model
 conform() { # label scenario mutant expect(pass|fail) extra-args...
   local label=$1 scenario=$2 mutant=$3 expect=$4; shift 4

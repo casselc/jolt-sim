@@ -1,7 +1,7 @@
 # RFC 0006: The turn runtime
 
-Status: proposed, revision 2; options, with a recommendation not yet
-accepted. Phase 3 (DESIGN.md build
+Status: revision 2, accepted (2026-10-10): the recommendation below is
+the design; the options stay as the record of what was weighed. Phase 3 (DESIGN.md build
 order items 8 and 10, with the trap side of 9). Design context:
 [DESIGN.md](../DESIGN.md) "The runtime", "The outbox", "Where the outbox
 runs", "Hosting"; [RFC 0002](0002-graph-language.md) "Routes and streams at
@@ -857,18 +857,43 @@ checked against it.
 
 See Decision 3, "Observational emissions". In the gate.
 
-### `engine.qnt`: the turn commit protocol
+### `engine.qnt`: the turn commit protocol (written)
 
-The lifecycle of `lifecycle.qnt` joined to a durable log: a turn is
-computed, its record appended, made durable (possibly in a group), its
-intents released, its receipt recorded, and the next turn run; a crash
-may strike between any two of these, losing everything not durable.
+Fibers run turns; each turn is one record carrying the fiber's whole
+state, its intent and any receipt it applies; records become durable a
+prefix at a time (group commit, and a crash after part of a group); the
+outbox sends each key once and answers again from its journal; a lost
+receipt makes the fiber Uncertain durably. A turn's input is
+nondeterministic (it stands for `ctx.now` and arrival order), so a turn
+re-run after a crash may commit a different intent under the same key:
+that is what the output gate prevents. Because the outbox deduplicates by
+key, the failure is not a second effect but an effect that no durable
+record backs, and the properties say that.
 
 | | |
 | --- | --- |
-| Properties | `releasedOnlyDurable`: no intent is released whose record is not durable; `commitAtomic`: no durable state without its intents, cursor, episode and reservation, and the reverse; `atMostOnce` (as `lifecycle.qnt`), across crashes; `receiptOnce`: a receipt changes a fiber's state once, however often delivered; `episodeDurable`: every released key's episode is at most the durable episode; `uncertainSurvives`: a fiber Uncertain before a crash is Uncertain after recovery; `recoveredIsCommitted`: after recovery, each fiber's state is its last durable record's |
-| Mutants | `releaseBeforeDurable` (no output gate) → `releasedOnlyDurable`, and with a crash `atMostOnce`; `episodeInMemory` → `atMostOnce`; `receiptNotJournaled` (applied but not recorded, then redelivered) → `receiptOnce`; `forgetUncertain` (recovery resets Uncertain to Inactive) → `atMostOnce`; `stateThenIntents` (two writes) → `commitAtomic` |
-| Witnesses | `crashAfterDurableBeforeRelease`, `groupCommitted` (two records in one durable step), `receiptRedelivered`, `recoveredUncertain` |
+| Properties | `releasedOnlyDurable`: every key sent is in a durable record; `effectMatchesCommit`: what was sent under a key is what the durable record under that key says; `commitAtomic`: a durably Awaiting fiber's intent is durable with it; `receiptOnce`: at most one durable record applies each key's receipt; `uncertainSurvives`: a durably Uncertain fiber leaves Uncertain only through a receipt or reconcile record |
+| Mutants | `releaseEarly` (no output gate) → `releasedOnlyDurable` and `effectMatchesCommit`; `splitRecord` (state and intent in two records) → `commitAtomic`; `unkeyedReceipt` (a receipt matched to its fiber, not its key) → `receiptOnce`; `forgetUncertain` → `uncertainSurvives` |
+| Witnesses | `crashBeforeRelease`, `groupCommitted`, `receiptRedelivered`, `recoveredUncertain`, `allDone` |
+
+What writing it changed from the plan above:
+
+- **`receiptNotJournaled` is an equivalent mutant.** Deduplicating
+  receipts against a volatile set instead of the journal breaks nothing,
+  because a receipt applies only to a fiber awaiting exactly its key, and
+  the awaited key is durable state: the fiber's record is the dedup. The
+  run store therefore needs no receipt table of its own, provided receipts
+  are matched by key; `unkeyedReceipt` is the mutant that matters. The
+  gate checks `dedupInMemory` as expected to hold.
+- **Episodes are not in this model.** Every record carries the fiber's
+  whole state, episode included, so by the output gate an episode is
+  durable before any of its intents can be sent; `episodeInMemory` has
+  nothing to break here. That is an argument, not a check: restarts and
+  episodes stay in `lifecycle.qnt`, which found the episode must be in the
+  key, and the slice's conformance traces cover both.
+- **`atMostOnce` is the outbox's.** With the outbox sending each key once,
+  a second effect needs a second key for one emission; that is
+  `handoff.qnt`'s `keyFromClock`, not this model's.
 
 ### `handoff.qnt`: the run store to the outbox journal
 
