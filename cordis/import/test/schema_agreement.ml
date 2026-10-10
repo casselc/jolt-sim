@@ -121,7 +121,7 @@ let rec same (a : V.t) (b : V.t) =
 
 (* the swarm for one test case: which keyword families, instance kinds and
    perturbations it may draw (Typed_gen.swarm) *)
-let keyword_swarm = ref (List.init 30 Fun.id)
+let keyword_swarm = ref (List.init 31 Fun.id)
 let instance_swarm = ref (List.init 7 Fun.id)
 let perturb_swarm = ref (List.init 7 Fun.id)
 
@@ -132,7 +132,7 @@ let perturb_swarm = ref (List.init 7 Fun.id)
    given twice, that no other mode reached. *)
 let new_swarm d =
   if Sys.getenv_opt "SWARM" = Some "1" then begin
-    keyword_swarm := Typed_gen.swarm d 30;
+    keyword_swarm := Typed_gen.swarm d 31;
     instance_swarm := Typed_gen.swarm d 7;
     perturb_swarm := Typed_gen.swarm d 7
   end
@@ -261,6 +261,28 @@ let rec schema ?(top = true) d depth : J.t =
               (* sometimes a name the properties do not list *)
               @ if d.pick 4 = 0 then [ `String "zz" ] else [])) ]
         @ if d.pick 2 = 0 then [ ("additionalProperties", `Bool false) ] else []
+    (* the interpreter only: what the sibling and nested keywords evaluated decides *)
+    | 30 when d.pick 2 = 0 ->
+        (* properties evaluated beside it, in an applicator, or by a branch of if *)
+        let ps () = `Assoc [ ("properties", `Assoc (List.map (fun p -> (p, sub ())) (List.filter (fun _ -> d.pick 2 = 0) props))) ] in
+        let around =
+          match d.pick 4 with
+          | 0 -> [ ("properties", `Assoc [ (choose d props, sub ()) ]) ]
+          | 1 -> [ (choose d [ "allOf"; "anyOf"; "oneOf" ], `List [ ps (); ps () ]) ]
+          | 2 when d.pick 2 = 0 -> [ ("if", ps ()); ("then", ps ()); ("else", ps ()) ]
+          | 2 -> [ ("if", `Assoc [ ("properties", `Assoc (List.map (fun p -> (p, `Bool true)) props)) ]) ]
+          | _ -> [ ("patternProperties", `Assoc [ (choose d patterns, sub ()) ]) ]
+        in
+        around @ [ ("unevaluatedProperties", if d.pick 2 = 0 then `Bool false else sub ()) ]
+    | 30 ->
+        let around =
+          match d.pick 4 with
+          | 0 -> [ ("prefixItems", `List [ sub () ]) ]
+          | 1 -> [ ("contains", sub ()) ]
+          | 2 -> [ (choose d [ "allOf"; "anyOf"; "oneOf" ], `List [ `Assoc [ ("prefixItems", `List [ sub (); sub () ]) ]; `Assoc [ ("contains", sub ()) ] ]) ]
+          | _ -> if d.pick 2 = 0 then [ ("items", sub ()) ] else []
+        in
+        around @ [ ("unevaluatedItems", if d.pick 2 = 0 then `Bool false else sub ()) ]
     | 29 when top && d.pick 2 = 0 ->
         (* recursive: a tree, or nested lists, of a leaf type *)
         let leaf = sub () in
@@ -303,8 +325,25 @@ let test_predicate () =
       let compiled = match Schema_pred.compile s "x" with src -> Some src | exception Schema_pred.Unsupported _ -> None in
       (* the interpreter reads whatever the predicate compiles *)
       if compiled <> None then Hegel.require tc ~msg:("the interpreter refuses a schema the predicate compiles: " ^ J.to_string s) interpreted;
-      for _ = 1 to 6 do
-        let i = instance d 3 in
+      (* an unevaluated* keyword decides only on objects and arrays whose
+         members other keywords evaluated: draw more of those *)
+      let annotating =
+        let t = J.to_string s and sub = "\"unevaluated" in
+        let n = String.length sub in
+        let rec go k = k + n <= String.length t && (String.sub t k n = sub || go (k + 1)) in
+        go 0
+      in
+      for k = 1 to if annotating then 12 else 6 do
+        let i =
+          if k > 6 then begin
+            let saved = !instance_swarm in
+            instance_swarm := [ 5; 6 ];
+            let i = instance d 3 in
+            instance_swarm := saved;
+            i
+          end
+          else instance d 3
+        in
         (* the interpreter against jsonschema, recursion included *)
         if interpreted then
           (match jsonschema s i, Schema_eval.check s i with
@@ -414,7 +453,20 @@ let examples : (string * string list) list =
     ({|{"$ref": "#/$defs/n", "$defs": {"n": {"type": "object", "properties": {"v": {"type": "integer", "maximum": 3}, "c": {"type": "array", "items": {"$ref": "#/$defs/n"}}}, "required": ["v"], "additionalProperties": false}}}|},
      [ {|{"v": 1}|}; {|{"v": 1, "c": [{"v": 2}]}|}; {|{"v": 1, "c": [{"v": 9}]}|}; {|{"v": 1, "c": [{"x": 1}]}|}; {|{"v": 1, "c": [3]}|} ]);
     ({|{"type": "number", "multipleOf": 0.1}|}, [ "0.3"; "0.2"; "1"; "0.35" ]);
-    ({|{"type": "array", "prefixItems": [{"type": "integer"}], "items": false}|}, [ "[1]"; "[1, 2]"; "[]"; {|["a"]|} ]) ]
+    ({|{"type": "array", "prefixItems": [{"type": "integer"}], "items": false}|}, [ "[1]"; "[1, 2]"; "[]"; {|["a"]|} ]);
+    (* unevaluatedProperties: a closed record assembled by allOf, read by the interpreter *)
+    ({|{"type": "object", "allOf": [{"properties": {"a": {"type": "string"}}}, {"properties": {"b": {"type": "integer"}}}], "unevaluatedProperties": false}|},
+      [ {|{"a": "x", "b": 1}|}; {|{"a": "x", "c": 1}|}; {|{}|}; {|{"b": "x"}|} ]);
+    (* unevaluatedItems sees what contains matched *)
+    ({|{"type": "array", "contains": {"type": "string"}, "unevaluatedItems": {"type": "integer"}}|}, [ {|["a", 1]|}; {|["a", true]|}; "[1]" ]);
+    (* items evaluates every item, so unevaluatedItems sees none *)
+    ({|{"items": {"type": "string"}, "unevaluatedItems": false}|}, [ {|["a", "b"]|}; "[]"; "[1]" ]);
+    (* a passing if annotates; then adds to it *)
+    ({|{"if": {"properties": {"a": true}}, "then": {"properties": {"b": true}}, "unevaluatedProperties": false}|},
+      [ {|{"a": 1, "b": 2}|}; {|{"a": 1, "c": 2}|}; {|{"b": 2}|} ]);
+    (* every passing branch of anyOf annotates, not only the first *)
+    ({|{"anyOf": [{"properties": {"a": true}}, {"properties": {"b": true}}], "unevaluatedProperties": false}|},
+      [ {|{"a": 1, "b": 2}|}; {|{"a": 1, "c": 2}|} ]) ]
 
 let example_tests =
   List.mapi

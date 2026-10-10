@@ -1,9 +1,9 @@
 # draft2020-12: the predicate: 1030 tests agree; 271 tests in 106 groups do not compile.
-# draft2020-12: the interpreter: 1038 tests agree; 258 tests in 101 groups are not read.
-# draft2020-12: the importer and codec: 1010 tests agree; 14 valid instances are refused as RFC 0003 documents; 277 tests in 106 groups do not import.
+# draft2020-12: the interpreter: 1237 tests agree; 59 tests in 28 groups are not read.
+# draft2020-12: the importer and codec: 1209 tests agree; 14 valid instances are refused as RFC 0003 documents; 78 tests in 33 groups do not import.
 # draft2019-09: the predicate: 1018 tests agree; 243 tests in 90 groups do not compile.
-# draft2019-09: the interpreter: 1026 tests agree; 230 tests in 85 groups are not read.
-# draft2019-09: the importer and codec: 998 tests agree; 14 valid instances are refused as RFC 0003 documents; 249 tests in 90 groups do not import.
+# draft2019-09: the interpreter: 1210 tests agree; 46 tests in 15 groups are not read.
+# draft2019-09: the importer and codec: 1182 tests agree; 14 valid instances are refused as RFC 0003 documents; 65 tests in 20 groups do not import.
 # draft7: the predicate: 903 tests agree; 26 tests in 12 groups do not compile.
 # draft7: the interpreter: 911 tests agree; 18 tests in 9 groups are not read.
 # draft7: the importer and codec: 883 tests agree; 14 valid instances are refused as RFC 0003 documents; 32 tests in 12 groups do not import.
@@ -146,84 +146,11 @@ draft2020-12/dynamicRef.json: $ref to $dynamicRef finds detached $dynamicAnchor:
 draft2020-12/dynamicRef.json: $dynamicRef points to a boolean schema: keyword $dynamicRef
 draft2020-12/dynamicRef.json: $dynamicRef skips over intermediate resources - direct reference: keyword $dynamicRef
 draft2020-12/dynamicRef.json: $dynamicRef avoids the root of each schema, but scopes are still registered: keyword $dynamicRef
-draft2020-12/not.json: collect annotations inside a 'not', even if collection is disabled: keyword unevaluatedProperties
 draft2020-12/pattern.json: pattern with Unicode property escape requires unicode mode: pattern "^\\p{Letter}+$" uses a Unicode property class
 draft2020-12/patternProperties.json: patternProperties with Unicode property escape: pattern "^\\p{Letter}+$" uses a Unicode property class
 draft2020-12/ref.json: remote ref, containing refs itself: a remote $ref (https://json-schema.org/draft/2020-12/schema): no document https://json-schema.org/draft/2020-12/schema was given
-draft2020-12/ref.json: ref creates new scope when adjacent to keywords: keyword unevaluatedProperties
-draft2020-12/unevaluatedItems.json: unevaluatedItems true: keyword unevaluatedItems
-draft2020-12/unevaluatedItems.json: unevaluatedItems false: keyword unevaluatedItems
-draft2020-12/unevaluatedItems.json: unevaluatedItems as schema: keyword unevaluatedItems
-draft2020-12/unevaluatedItems.json: unevaluatedItems with uniform items: keyword unevaluatedItems
-draft2020-12/unevaluatedItems.json: unevaluatedItems with tuple: keyword unevaluatedItems
-draft2020-12/unevaluatedItems.json: unevaluatedItems with items and prefixItems: keyword unevaluatedItems
-draft2020-12/unevaluatedItems.json: unevaluatedItems with items: keyword unevaluatedItems
-draft2020-12/unevaluatedItems.json: unevaluatedItems with nested tuple: keyword unevaluatedItems
-draft2020-12/unevaluatedItems.json: unevaluatedItems with nested items: keyword unevaluatedItems
-draft2020-12/unevaluatedItems.json: unevaluatedItems with nested prefixItems and items: keyword unevaluatedItems
-draft2020-12/unevaluatedItems.json: unevaluatedItems with nested unevaluatedItems: keyword unevaluatedItems
-draft2020-12/unevaluatedItems.json: unevaluatedItems with anyOf: keyword unevaluatedItems
-draft2020-12/unevaluatedItems.json: unevaluatedItems with oneOf: keyword unevaluatedItems
-draft2020-12/unevaluatedItems.json: unevaluatedItems with not: keyword unevaluatedItems
-draft2020-12/unevaluatedItems.json: unevaluatedItems with if/then/else: keyword unevaluatedItems
-draft2020-12/unevaluatedItems.json: unevaluatedItems with boolean schemas: keyword unevaluatedItems
-draft2020-12/unevaluatedItems.json: unevaluatedItems with $ref: keyword unevaluatedItems
-draft2020-12/unevaluatedItems.json: unevaluatedItems before $ref: keyword unevaluatedItems
-draft2020-12/unevaluatedItems.json: unevaluatedItems with $dynamicRef: keyword unevaluatedItems
-draft2020-12/unevaluatedItems.json: unevaluatedItems can't see inside cousins: keyword unevaluatedItems
-draft2020-12/unevaluatedItems.json: item is evaluated in an uncle schema to unevaluatedItems: keyword unevaluatedItems
-draft2020-12/unevaluatedItems.json: unevaluatedItems depends on adjacent contains: keyword unevaluatedItems
-draft2020-12/unevaluatedItems.json: unevaluatedItems depends on multiple nested contains: keyword unevaluatedItems
-draft2020-12/unevaluatedItems.json: unevaluatedItems and contains interact to control item dependency relationship: keyword unevaluatedItems
-draft2020-12/unevaluatedItems.json: unevaluatedItems with minContains = 0: keyword unevaluatedItems
-draft2020-12/unevaluatedItems.json: non-array instances are valid: keyword unevaluatedItems
-draft2020-12/unevaluatedItems.json: unevaluatedItems with null instance elements: keyword unevaluatedItems
-draft2020-12/unevaluatedItems.json: unevaluatedItems can see annotations from if without then and else: keyword unevaluatedItems
-draft2020-12/unevaluatedItems.json: Evaluated items collection needs to consider instance location: keyword unevaluatedItems
-draft2020-12/unevaluatedProperties.json: unevaluatedProperties true: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: unevaluatedProperties schema: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: unevaluatedProperties false: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: unevaluatedProperties with adjacent properties: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: unevaluatedProperties with adjacent patternProperties: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: unevaluatedProperties with adjacent bool additionalProperties: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: unevaluatedProperties with adjacent non-bool additionalProperties: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: unevaluatedProperties with nested properties: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: unevaluatedProperties with nested patternProperties: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: unevaluatedProperties with nested additionalProperties: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: unevaluatedProperties with nested unevaluatedProperties: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: unevaluatedProperties with anyOf: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: unevaluatedProperties with oneOf: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: unevaluatedProperties with not: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: unevaluatedProperties with if/then/else: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: unevaluatedProperties with if/then/else, then not defined: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: unevaluatedProperties with if/then/else, else not defined: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: unevaluatedProperties with dependentSchemas: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: unevaluatedProperties with boolean schemas: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: unevaluatedProperties with $ref: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: unevaluatedProperties before $ref: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: unevaluatedProperties with $dynamicRef: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: unevaluatedProperties can't see inside cousins: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: unevaluatedProperties can't see inside cousins (reverse order): keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: nested unevaluatedProperties, outer false, inner true, properties outside: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: nested unevaluatedProperties, outer false, inner true, properties inside: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: nested unevaluatedProperties, outer true, inner false, properties outside: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: nested unevaluatedProperties, outer true, inner false, properties inside: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: cousin unevaluatedProperties, true and false, true with properties: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: cousin unevaluatedProperties, true and false, false with properties: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: property is evaluated in an uncle schema to unevaluatedProperties: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: in-place applicator siblings, allOf has unevaluated: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: in-place applicator siblings, anyOf has unevaluated: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: unevaluatedProperties + single cyclic ref: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: unevaluatedProperties + ref inside allOf / oneOf: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: dynamic evalation inside nested refs: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: non-object instances are valid: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: unevaluatedProperties with null valued instance properties: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: unevaluatedProperties not affected by propertyNames: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: unevaluatedProperties can see annotations from if without then and else: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: dependentSchemas with unevaluatedProperties: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: Evaluated properties collection needs to consider instance location: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: Evaluated properties collection needs to consider instance location with patternProperties: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: Evaluated properties collection needs to consider instance location with additionalProperties: keyword unevaluatedProperties
+draft2020-12/unevaluatedItems.json: unevaluatedItems with $dynamicRef: keyword $dynamicRef
+draft2020-12/unevaluatedProperties.json: unevaluatedProperties with $dynamicRef: keyword $dynamicRef
 
 ## draft2020-12: schemas that do not import
 draft2020-12/additionalProperties.json: non-ASCII pattern with additionalProperties: Root: pattern "^\195\161" is not ASCII
@@ -250,86 +177,13 @@ draft2020-12/dynamicRef.json: $ref to $dynamicRef finds detached $dynamicAnchor:
 draft2020-12/dynamicRef.json: $dynamicRef points to a boolean schema: false: the schema false admits nothing
 draft2020-12/dynamicRef.json: $dynamicRef skips over intermediate resources - direct reference: Item_content: keyword $dynamicRef
 draft2020-12/dynamicRef.json: $dynamicRef avoids the root of each schema, but scopes are still registered: stuff: keyword $dynamicRef
-draft2020-12/not.json: collect annotations inside a 'not', even if collection is disabled: Root: keyword unevaluatedProperties
 draft2020-12/pattern.json: pattern with Unicode property escape requires unicode mode: Root: pattern "^\\p{Letter}+$" uses a Unicode property class
 draft2020-12/patternProperties.json: patternProperties with Unicode property escape: Root: pattern "^\\p{Letter}+$" uses a Unicode property class
 draft2020-12/properties.json: properties with boolean schema: Root_bar: the schema false admits nothing
 draft2020-12/ref.json: remote ref, containing refs itself: a remote $ref (https://json-schema.org/draft/2020-12/schema): no document https://json-schema.org/draft/2020-12/schema was given
 draft2020-12/ref.json: $ref to boolean schema false: bool: the schema false admits nothing
-draft2020-12/ref.json: ref creates new scope when adjacent to keywords: A: keyword unevaluatedProperties
-draft2020-12/unevaluatedItems.json: unevaluatedItems true: Root: keyword unevaluatedItems
-draft2020-12/unevaluatedItems.json: unevaluatedItems false: Root: keyword unevaluatedItems
-draft2020-12/unevaluatedItems.json: unevaluatedItems as schema: Root: keyword unevaluatedItems
-draft2020-12/unevaluatedItems.json: unevaluatedItems with uniform items: Root: keyword unevaluatedItems
-draft2020-12/unevaluatedItems.json: unevaluatedItems with tuple: Root: keyword unevaluatedItems
-draft2020-12/unevaluatedItems.json: unevaluatedItems with items and prefixItems: Root: keyword unevaluatedItems
-draft2020-12/unevaluatedItems.json: unevaluatedItems with items: Root: keyword unevaluatedItems
-draft2020-12/unevaluatedItems.json: unevaluatedItems with nested tuple: Root: keyword unevaluatedItems
-draft2020-12/unevaluatedItems.json: unevaluatedItems with nested items: Root: keyword unevaluatedItems
-draft2020-12/unevaluatedItems.json: unevaluatedItems with nested prefixItems and items: Root: keyword unevaluatedItems
-draft2020-12/unevaluatedItems.json: unevaluatedItems with nested unevaluatedItems: Root: keyword unevaluatedItems
-draft2020-12/unevaluatedItems.json: unevaluatedItems with anyOf: Root: keyword unevaluatedItems
-draft2020-12/unevaluatedItems.json: unevaluatedItems with oneOf: Root: keyword unevaluatedItems
-draft2020-12/unevaluatedItems.json: unevaluatedItems with not: Root: keyword unevaluatedItems
-draft2020-12/unevaluatedItems.json: unevaluatedItems with if/then/else: Root: keyword unevaluatedItems
-draft2020-12/unevaluatedItems.json: unevaluatedItems with boolean schemas: Root: keyword unevaluatedItems
-draft2020-12/unevaluatedItems.json: unevaluatedItems with $ref: Root: keyword unevaluatedItems
-draft2020-12/unevaluatedItems.json: unevaluatedItems before $ref: Root: keyword unevaluatedItems
 draft2020-12/unevaluatedItems.json: unevaluatedItems with $dynamicRef: derived: keyword $dynamicAnchor
-draft2020-12/unevaluatedItems.json: unevaluatedItems can't see inside cousins: Root: keyword unevaluatedItems
-draft2020-12/unevaluatedItems.json: item is evaluated in an uncle schema to unevaluatedItems: Root: keyword unevaluatedItems
-draft2020-12/unevaluatedItems.json: unevaluatedItems depends on adjacent contains: Root: keyword unevaluatedItems
-draft2020-12/unevaluatedItems.json: unevaluatedItems depends on multiple nested contains: Root: keyword unevaluatedItems
-draft2020-12/unevaluatedItems.json: unevaluatedItems and contains interact to control item dependency relationship: Root: keyword unevaluatedItems
-draft2020-12/unevaluatedItems.json: unevaluatedItems with minContains = 0: Root: keyword unevaluatedItems
-draft2020-12/unevaluatedItems.json: non-array instances are valid: Root: keyword unevaluatedItems
-draft2020-12/unevaluatedItems.json: unevaluatedItems with null instance elements: Root: keyword unevaluatedItems
-draft2020-12/unevaluatedItems.json: unevaluatedItems can see annotations from if without then and else: Root: keyword unevaluatedItems
-draft2020-12/unevaluatedItems.json: Evaluated items collection needs to consider instance location: Root: keyword unevaluatedItems
-draft2020-12/unevaluatedProperties.json: unevaluatedProperties true: Root: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: unevaluatedProperties schema: Root: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: unevaluatedProperties false: Root: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: unevaluatedProperties with adjacent properties: Root: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: unevaluatedProperties with adjacent patternProperties: Root: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: unevaluatedProperties with adjacent bool additionalProperties: Root: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: unevaluatedProperties with adjacent non-bool additionalProperties: Root: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: unevaluatedProperties with nested properties: Root: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: unevaluatedProperties with nested patternProperties: Root: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: unevaluatedProperties with nested additionalProperties: Root: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: unevaluatedProperties with nested unevaluatedProperties: Root: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: unevaluatedProperties with anyOf: Root: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: unevaluatedProperties with oneOf: Root: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: unevaluatedProperties with not: Root: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: unevaluatedProperties with if/then/else: Root: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: unevaluatedProperties with if/then/else, then not defined: Root: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: unevaluatedProperties with if/then/else, else not defined: Root: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: unevaluatedProperties with dependentSchemas: Root: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: unevaluatedProperties with boolean schemas: Root: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: unevaluatedProperties with $ref: Root: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: unevaluatedProperties before $ref: Root: keyword unevaluatedProperties
 draft2020-12/unevaluatedProperties.json: unevaluatedProperties with $dynamicRef: derived: keyword $dynamicAnchor
-draft2020-12/unevaluatedProperties.json: unevaluatedProperties can't see inside cousins: Root: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: unevaluatedProperties can't see inside cousins (reverse order): Root: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: nested unevaluatedProperties, outer false, inner true, properties outside: Root: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: nested unevaluatedProperties, outer false, inner true, properties inside: Root: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: nested unevaluatedProperties, outer true, inner false, properties outside: Root: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: nested unevaluatedProperties, outer true, inner false, properties inside: Root: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: cousin unevaluatedProperties, true and false, true with properties: Root: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: cousin unevaluatedProperties, true and false, false with properties: Root: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: property is evaluated in an uncle schema to unevaluatedProperties: Root: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: in-place applicator siblings, allOf has unevaluated: Root: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: in-place applicator siblings, anyOf has unevaluated: Root: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: unevaluatedProperties + single cyclic ref: Root: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: unevaluatedProperties + ref inside allOf / oneOf: Root: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: dynamic evalation inside nested refs: one: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: non-object instances are valid: Root: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: unevaluatedProperties with null valued instance properties: Root: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: unevaluatedProperties not affected by propertyNames: Root: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: unevaluatedProperties can see annotations from if without then and else: Root: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: dependentSchemas with unevaluatedProperties: Root: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: Evaluated properties collection needs to consider instance location: Root: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: Evaluated properties collection needs to consider instance location with patternProperties: Root: keyword unevaluatedProperties
-draft2020-12/unevaluatedProperties.json: Evaluated properties collection needs to consider instance location with additionalProperties: Root: keyword unevaluatedProperties
 draft2020-12/vocabulary.json: schema that uses custom metaschema with with no validation vocabulary: a metaschema this importer does not read: //localhost:1234/draft2020-12/metaschema-no-validation.json
 draft2020-12/vocabulary.json: ignore unrecognized optional vocabulary: a metaschema this importer does not read: //localhost:1234/draft2020-12/metaschema-optional-vocabulary.json
 
@@ -428,7 +282,6 @@ draft2019-09/vocabulary.json: ignore unrecognized optional vocabulary: a metasch
 ## draft2019-09: schemas the interpreter does not read
 draft2019-09/additionalProperties.json: non-ASCII pattern with additionalProperties: pattern "^\195\161" is not ASCII
 draft2019-09/defs.json: validate definition against metaschema: a remote $ref (https://json-schema.org/draft/2019-09/schema): no document https://json-schema.org/draft/2019-09/schema was given
-draft2019-09/not.json: collect annotations inside a 'not', even if collection is disabled: keyword unevaluatedProperties
 draft2019-09/recursiveRef.json: $recursiveRef without $recursiveAnchor works like $ref: keyword $recursiveRef
 draft2019-09/recursiveRef.json: $recursiveRef without using nesting: keyword $recursiveAnchor
 draft2019-09/recursiveRef.json: $recursiveRef with nesting: keyword $recursiveAnchor
@@ -439,84 +292,14 @@ draft2019-09/recursiveRef.json: $recursiveRef with no $recursiveAnchor in the ou
 draft2019-09/recursiveRef.json: multiple dynamic paths to the $recursiveRef keyword: keyword $recursiveAnchor
 draft2019-09/recursiveRef.json: dynamic $recursiveRef destination (not predictable at schema compile time): keyword $recursiveAnchor
 draft2019-09/ref.json: remote ref, containing refs itself: a remote $ref (https://json-schema.org/draft/2019-09/schema): no document https://json-schema.org/draft/2019-09/schema was given
-draft2019-09/ref.json: ref creates new scope when adjacent to keywords: keyword unevaluatedProperties
 draft2019-09/ref.json: $ref with $recursiveAnchor: keyword $recursiveAnchor
-draft2019-09/unevaluatedItems.json: unevaluatedItems true: keyword unevaluatedItems
-draft2019-09/unevaluatedItems.json: unevaluatedItems false: keyword unevaluatedItems
-draft2019-09/unevaluatedItems.json: unevaluatedItems as schema: keyword unevaluatedItems
-draft2019-09/unevaluatedItems.json: unevaluatedItems with uniform items: keyword unevaluatedItems
-draft2019-09/unevaluatedItems.json: unevaluatedItems with tuple: keyword unevaluatedItems
-draft2019-09/unevaluatedItems.json: unevaluatedItems with items and additionalItems: keyword unevaluatedItems
-draft2019-09/unevaluatedItems.json: unevaluatedItems with ignored additionalItems: keyword unevaluatedItems
-draft2019-09/unevaluatedItems.json: unevaluatedItems with ignored applicator additionalItems: keyword unevaluatedItems
-draft2019-09/unevaluatedItems.json: unevaluatedItems with nested tuple: keyword unevaluatedItems
-draft2019-09/unevaluatedItems.json: unevaluatedItems with nested items: keyword unevaluatedItems
-draft2019-09/unevaluatedItems.json: unevaluatedItems with nested items and additionalItems: keyword unevaluatedItems
-draft2019-09/unevaluatedItems.json: unevaluatedItems with nested unevaluatedItems: keyword unevaluatedItems
-draft2019-09/unevaluatedItems.json: unevaluatedItems with anyOf: keyword unevaluatedItems
-draft2019-09/unevaluatedItems.json: unevaluatedItems with oneOf: keyword unevaluatedItems
-draft2019-09/unevaluatedItems.json: unevaluatedItems with not: keyword unevaluatedItems
-draft2019-09/unevaluatedItems.json: unevaluatedItems with if/then/else: keyword unevaluatedItems
-draft2019-09/unevaluatedItems.json: unevaluatedItems with boolean schemas: keyword unevaluatedItems
-draft2019-09/unevaluatedItems.json: unevaluatedItems with $ref: keyword unevaluatedItems
-draft2019-09/unevaluatedItems.json: unevaluatedItems before $ref: keyword unevaluatedItems
 draft2019-09/unevaluatedItems.json: unevaluatedItems with $recursiveRef: keyword $recursiveAnchor
-draft2019-09/unevaluatedItems.json: unevaluatedItems can't see inside cousins: keyword unevaluatedItems
-draft2019-09/unevaluatedItems.json: item is evaluated in an uncle schema to unevaluatedItems: keyword unevaluatedItems
-draft2019-09/unevaluatedItems.json: non-array instances are valid: keyword unevaluatedItems
-draft2019-09/unevaluatedItems.json: unevaluatedItems with null instance elements: keyword unevaluatedItems
-draft2019-09/unevaluatedItems.json: unevaluatedItems can see annotations from if without then and else: keyword unevaluatedItems
-draft2019-09/unevaluatedItems.json: Evaluated items collection needs to consider instance location: keyword unevaluatedItems
-draft2019-09/unevaluatedProperties.json: unevaluatedProperties true: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: unevaluatedProperties schema: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: unevaluatedProperties false: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: unevaluatedProperties with adjacent properties: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: unevaluatedProperties with adjacent patternProperties: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: unevaluatedProperties with adjacent bool additionalProperties: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: unevaluatedProperties with adjacent non-bool additionalProperties: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: unevaluatedProperties with nested properties: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: unevaluatedProperties with nested patternProperties: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: unevaluatedProperties with nested additionalProperties: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: unevaluatedProperties with nested unevaluatedProperties: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: unevaluatedProperties with anyOf: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: unevaluatedProperties with oneOf: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: unevaluatedProperties with not: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: unevaluatedProperties with if/then/else: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: unevaluatedProperties with if/then/else, then not defined: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: unevaluatedProperties with if/then/else, else not defined: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: unevaluatedProperties with dependentSchemas: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: unevaluatedProperties with boolean schemas: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: unevaluatedProperties with $ref: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: unevaluatedProperties before $ref: keyword unevaluatedProperties
 draft2019-09/unevaluatedProperties.json: unevaluatedProperties with $recursiveRef: keyword $recursiveAnchor
-draft2019-09/unevaluatedProperties.json: unevaluatedProperties can't see inside cousins: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: unevaluatedProperties can't see inside cousins (reverse order): keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: nested unevaluatedProperties, outer false, inner true, properties outside: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: nested unevaluatedProperties, outer false, inner true, properties inside: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: nested unevaluatedProperties, outer true, inner false, properties outside: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: nested unevaluatedProperties, outer true, inner false, properties inside: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: cousin unevaluatedProperties, true and false, true with properties: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: cousin unevaluatedProperties, true and false, false with properties: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: property is evaluated in an uncle schema to unevaluatedProperties: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: in-place applicator siblings, allOf has unevaluated: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: in-place applicator siblings, anyOf has unevaluated: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: unevaluatedProperties + single cyclic ref: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: unevaluatedProperties + ref inside allOf / oneOf: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: dynamic evalation inside nested refs: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: non-object instances are valid: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: unevaluatedProperties with null valued instance properties: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: unevaluatedProperties not affected by propertyNames: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: unevaluatedProperties can see annotations from if without then and else: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: dependentSchemas with unevaluatedProperties: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: Evaluated properties collection needs to consider instance location: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: Evaluated properties collection needs to consider instance location with patternProperties: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: Evaluated properties collection needs to consider instance location with additionalProperties: keyword unevaluatedProperties
 
 ## draft2019-09: schemas that do not import
 draft2019-09/additionalProperties.json: non-ASCII pattern with additionalProperties: Root: pattern "^\195\161" is not ASCII
 draft2019-09/boolean_schema.json: boolean schema 'false': Root: the schema false admits nothing
 draft2019-09/defs.json: validate definition against metaschema: a remote $ref (https://json-schema.org/draft/2019-09/schema): no document https://json-schema.org/draft/2019-09/schema was given
-draft2019-09/not.json: collect annotations inside a 'not', even if collection is disabled: Root: keyword unevaluatedProperties
 draft2019-09/properties.json: properties with boolean schema: Root_bar: the schema false admits nothing
 draft2019-09/recursiveRef.json: $recursiveRef without $recursiveAnchor works like $ref: Root_foo: keyword $recursiveRef
 draft2019-09/recursiveRef.json: $recursiveRef without using nesting: myobject: keyword $recursiveAnchor
@@ -529,78 +312,9 @@ draft2019-09/recursiveRef.json: multiple dynamic paths to the $recursiveRef keyw
 draft2019-09/recursiveRef.json: dynamic $recursiveRef destination (not predictable at schema compile time): inner: keyword $recursiveAnchor
 draft2019-09/ref.json: remote ref, containing refs itself: a remote $ref (https://json-schema.org/draft/2019-09/schema): no document https://json-schema.org/draft/2019-09/schema was given
 draft2019-09/ref.json: $ref to boolean schema false: bool: the schema false admits nothing
-draft2019-09/ref.json: ref creates new scope when adjacent to keywords: A: keyword unevaluatedProperties
 draft2019-09/ref.json: $ref with $recursiveAnchor: /schemas/unevaluated-items-are-allowed: keyword $recursiveAnchor
-draft2019-09/unevaluatedItems.json: unevaluatedItems true: Root: keyword unevaluatedItems
-draft2019-09/unevaluatedItems.json: unevaluatedItems false: Root: keyword unevaluatedItems
-draft2019-09/unevaluatedItems.json: unevaluatedItems as schema: Root: keyword unevaluatedItems
-draft2019-09/unevaluatedItems.json: unevaluatedItems with uniform items: Root: keyword unevaluatedItems
-draft2019-09/unevaluatedItems.json: unevaluatedItems with tuple: Root: keyword unevaluatedItems
-draft2019-09/unevaluatedItems.json: unevaluatedItems with items and additionalItems: Root: keyword unevaluatedItems
-draft2019-09/unevaluatedItems.json: unevaluatedItems with ignored additionalItems: Root: keyword unevaluatedItems
-draft2019-09/unevaluatedItems.json: unevaluatedItems with ignored applicator additionalItems: Root: keyword unevaluatedItems
-draft2019-09/unevaluatedItems.json: unevaluatedItems with nested tuple: Root: keyword unevaluatedItems
-draft2019-09/unevaluatedItems.json: unevaluatedItems with nested items: Root: keyword unevaluatedItems
-draft2019-09/unevaluatedItems.json: unevaluatedItems with nested items and additionalItems: Root: keyword unevaluatedItems
-draft2019-09/unevaluatedItems.json: unevaluatedItems with nested unevaluatedItems: Root: keyword unevaluatedItems
-draft2019-09/unevaluatedItems.json: unevaluatedItems with anyOf: Root: keyword unevaluatedItems
-draft2019-09/unevaluatedItems.json: unevaluatedItems with oneOf: Root: keyword unevaluatedItems
-draft2019-09/unevaluatedItems.json: unevaluatedItems with not: Root: keyword unevaluatedItems
-draft2019-09/unevaluatedItems.json: unevaluatedItems with if/then/else: Root: keyword unevaluatedItems
-draft2019-09/unevaluatedItems.json: unevaluatedItems with boolean schemas: Root: keyword unevaluatedItems
-draft2019-09/unevaluatedItems.json: unevaluatedItems with $ref: Root: keyword unevaluatedItems
-draft2019-09/unevaluatedItems.json: unevaluatedItems before $ref: Root: keyword unevaluatedItems
 draft2019-09/unevaluatedItems.json: unevaluatedItems with $recursiveRef: tree: keyword $recursiveAnchor
-draft2019-09/unevaluatedItems.json: unevaluatedItems can't see inside cousins: Root: keyword unevaluatedItems
-draft2019-09/unevaluatedItems.json: item is evaluated in an uncle schema to unevaluatedItems: Root: keyword unevaluatedItems
-draft2019-09/unevaluatedItems.json: non-array instances are valid: Root: keyword unevaluatedItems
-draft2019-09/unevaluatedItems.json: unevaluatedItems with null instance elements: Root: keyword unevaluatedItems
-draft2019-09/unevaluatedItems.json: unevaluatedItems can see annotations from if without then and else: Root: keyword unevaluatedItems
-draft2019-09/unevaluatedItems.json: Evaluated items collection needs to consider instance location: Root: keyword unevaluatedItems
-draft2019-09/unevaluatedProperties.json: unevaluatedProperties true: Root: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: unevaluatedProperties schema: Root: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: unevaluatedProperties false: Root: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: unevaluatedProperties with adjacent properties: Root: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: unevaluatedProperties with adjacent patternProperties: Root: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: unevaluatedProperties with adjacent bool additionalProperties: Root: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: unevaluatedProperties with adjacent non-bool additionalProperties: Root: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: unevaluatedProperties with nested properties: Root: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: unevaluatedProperties with nested patternProperties: Root: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: unevaluatedProperties with nested additionalProperties: Root: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: unevaluatedProperties with nested unevaluatedProperties: Root: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: unevaluatedProperties with anyOf: Root: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: unevaluatedProperties with oneOf: Root: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: unevaluatedProperties with not: Root: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: unevaluatedProperties with if/then/else: Root: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: unevaluatedProperties with if/then/else, then not defined: Root: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: unevaluatedProperties with if/then/else, else not defined: Root: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: unevaluatedProperties with dependentSchemas: Root: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: unevaluatedProperties with boolean schemas: Root: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: unevaluatedProperties with $ref: Root: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: unevaluatedProperties before $ref: Root: keyword unevaluatedProperties
 draft2019-09/unevaluatedProperties.json: unevaluatedProperties with $recursiveRef: tree: keyword $recursiveAnchor
-draft2019-09/unevaluatedProperties.json: unevaluatedProperties can't see inside cousins: Root: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: unevaluatedProperties can't see inside cousins (reverse order): Root: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: nested unevaluatedProperties, outer false, inner true, properties outside: Root: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: nested unevaluatedProperties, outer false, inner true, properties inside: Root: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: nested unevaluatedProperties, outer true, inner false, properties outside: Root: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: nested unevaluatedProperties, outer true, inner false, properties inside: Root: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: cousin unevaluatedProperties, true and false, true with properties: Root: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: cousin unevaluatedProperties, true and false, false with properties: Root: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: property is evaluated in an uncle schema to unevaluatedProperties: Root: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: in-place applicator siblings, allOf has unevaluated: Root: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: in-place applicator siblings, anyOf has unevaluated: Root: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: unevaluatedProperties + single cyclic ref: Root: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: unevaluatedProperties + ref inside allOf / oneOf: Root: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: dynamic evalation inside nested refs: one: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: non-object instances are valid: Root: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: unevaluatedProperties with null valued instance properties: Root: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: unevaluatedProperties not affected by propertyNames: Root: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: unevaluatedProperties can see annotations from if without then and else: Root: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: dependentSchemas with unevaluatedProperties: Root: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: Evaluated properties collection needs to consider instance location: Root: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: Evaluated properties collection needs to consider instance location with patternProperties: Root: keyword unevaluatedProperties
-draft2019-09/unevaluatedProperties.json: Evaluated properties collection needs to consider instance location with additionalProperties: Root: keyword unevaluatedProperties
 draft2019-09/vocabulary.json: schema that uses custom metaschema with with no validation vocabulary: a metaschema this importer does not read: //localhost:1234/draft2019-09/metaschema-no-validation.json
 draft2019-09/vocabulary.json: ignore unrecognized optional vocabulary: a metaschema this importer does not read: //localhost:1234/draft2019-09/metaschema-optional-vocabulary.json
 

@@ -47,94 +47,166 @@ let matches re s =
 let nat = P.nat
 let num j = match number j with Some f -> f | None -> P.unsupported "not a number: %s" (J.to_string j)
 
-let rec valid ~(docs : P.docs) ~(stack : (string * J.t) list) (s : J.t) (x : J.t) : bool =
+(* What a successful evaluation annotates, for unevaluatedProperties and
+   unevaluatedItems: the properties and the item indices some keyword
+   evaluated, or every item. A failed subschema annotates nothing. *)
+type ann = { props : string list; items : int list; all : bool }
+
+let none = { props = []; items = []; all = false }
+let merge a b = { props = a.props @ b.props; items = a.items @ b.items; all = a.all || b.all }
+
+(* the keywords only this interpreter reads; Schema_pred refuses them *)
+let annotating = [ "unevaluatedProperties"; "unevaluatedItems" ]
+let refused = List.filter (fun k -> not (List.mem k annotating)) P.refused
+
+(* [eval ~collect s x] is the annotations of a valid [x], or None. With
+   [collect] false nothing reads the annotations, so anyOf may stop at
+   its first match; a schema with an unevaluated* keyword sets it for its
+   siblings and what they reach. *)
+let rec eval ~(docs : P.docs) ~(stack : (string * J.t) list) ~collect (s : J.t) (x : J.t) : ann option =
   match s with
-  | `Bool b -> b
+  | `Bool b -> if b then Some none else None
   | `Assoc kv ->
       let get k = List.assoc_opt k kv in
+      let collect = collect || List.exists (fun k -> List.mem_assoc k kv) annotating in
       let obj = match x with `Assoc o -> Some o | _ -> None and arr = match x with `List a -> Some a | _ -> None in
       let str = match x with `String s -> Some s | _ -> None and n = number x in
-      let v = valid ~docs ~stack in
-      List.for_all
-        (fun (k, a) ->
-          if k = "$schema" then
-            match a with
-            | `String ("https://json-schema.org/draft/2020-12/schema" | "http://json-schema.org/draft-07/schema#" | "http://json-schema.org/draft-07/schema") -> true
-            | _ -> P.unsupported "a custom metaschema (%s)" (J.to_string a)
-          else if List.mem k P.ignored || k = "$schema" then true
-          else if List.mem k P.refused then P.unsupported "keyword %s" k
-          else
-            match k, a with
-            | "type", `String t -> is_type x t
-            | "type", `List ts -> List.exists (function `String t -> is_type x t | _ -> P.unsupported "type") ts
-            | "const", c -> equal x c
-            | "enum", `List vs -> List.exists (equal x) vs
-            | "minLength", m -> (match str with Some s -> length s >= nat m | None -> true)
-            | "maxLength", m -> (match str with Some s -> length s <= nat m | None -> true)
-            | "pattern", `String re -> (match str with Some s -> matches re s | None -> true)
-            | "minimum", m -> (match n with Some f -> f >= num m | None -> true)
-            | "maximum", m -> (match n with Some f -> f <= num m | None -> true)
-            | "exclusiveMinimum", m -> (match n with Some f -> f > num m | None -> true)
-            | "exclusiveMaximum", m -> (match n with Some f -> f < num m | None -> true)
-            | "multipleOf", m -> (
-                match n with
-                | Some f ->
-                    let q = f /. num m in
-                    Float.is_finite q && Float.trunc q = q
-                | None -> true)
-            | "required", `List ps -> (match obj with Some o -> List.for_all (function `String p -> List.mem_assoc p o | _ -> P.unsupported "required") ps | None -> true)
-            | "properties", `Assoc ps -> (match obj with Some o -> List.for_all (fun (p, sub) -> match List.assoc_opt p o with Some y -> v sub y | None -> true) ps | None -> true)
-            | "patternProperties", `Assoc ps ->
-                (match obj with Some o -> List.for_all (fun (re, sub) -> List.for_all (fun (key, y) -> (not (matches re key)) || v sub y) o) ps | None -> true)
-            | "additionalProperties", sub -> (
-                match obj with
-                | Some o ->
-                    let named = match get "properties" with Some (`Assoc ps) -> List.map fst ps | _ -> [] in
-                    let patterns = match get "patternProperties" with Some (`Assoc ps) -> List.map fst ps | _ -> [] in
-                    List.for_all (fun (key, y) -> List.mem key named || List.exists (fun re -> matches re key) patterns || v sub y) o
-                | None -> true)
-            | "propertyNames", sub -> (match obj with Some o -> List.for_all (fun (key, _) -> v sub (`String key)) o | None -> true)
-            | "minProperties", m -> (match obj with Some o -> List.length o >= nat m | None -> true)
-            | "maxProperties", m -> (match obj with Some o -> List.length o <= nat m | None -> true)
-            | "dependentRequired", `Assoc ds ->
+      let ev sub y = eval ~docs ~stack ~collect sub y in
+      let v sub y = ev sub y <> None in
+      let ok b = if b then Some none else None in
+      let keyword (k, a) : ann option =
+        if k = "$schema" then
+          match a with
+          | `String ("https://json-schema.org/draft/2020-12/schema" | "http://json-schema.org/draft-07/schema#" | "http://json-schema.org/draft-07/schema") -> Some none
+          | _ -> P.unsupported "a custom metaschema (%s)" (J.to_string a)
+        else if List.mem k P.ignored then Some none
+        else if List.mem k refused then P.unsupported "keyword %s" k
+        else
+          match k, a with
+          | "type", `String t -> ok (is_type x t)
+          | "type", `List ts -> ok (List.exists (function `String t -> is_type x t | _ -> P.unsupported "type") ts)
+          | "const", c -> ok (equal x c)
+          | "enum", `List vs -> ok (List.exists (equal x) vs)
+          | "minLength", m -> ok (match str with Some s -> length s >= nat m | None -> true)
+          | "maxLength", m -> ok (match str with Some s -> length s <= nat m | None -> true)
+          | "pattern", `String re -> ok (match str with Some s -> matches re s | None -> true)
+          | "minimum", m -> ok (match n with Some f -> f >= num m | None -> true)
+          | "maximum", m -> ok (match n with Some f -> f <= num m | None -> true)
+          | "exclusiveMinimum", m -> ok (match n with Some f -> f > num m | None -> true)
+          | "exclusiveMaximum", m -> ok (match n with Some f -> f < num m | None -> true)
+          | "multipleOf", m ->
+              ok
+                (match n with
+                 | Some f ->
+                     let q = f /. num m in
+                     Float.is_finite q && Float.trunc q = q
+                 | None -> true)
+          | "required", `List ps -> ok (match obj with Some o -> List.for_all (function `String p -> List.mem_assoc p o | _ -> P.unsupported "required") ps | None -> true)
+          | "properties", `Assoc ps -> (
+              match obj with
+              | Some o ->
+                  let present = List.filter (fun (p, _) -> List.mem_assoc p o) ps in
+                  if List.for_all (fun (p, sub) -> v sub (List.assoc p o)) present then Some { none with props = List.map fst present } else None
+              | None -> Some none)
+          | "patternProperties", `Assoc ps -> (
+              match obj with
+              | Some o ->
+                  if List.for_all (fun (re, sub) -> List.for_all (fun (key, y) -> (not (matches re key)) || v sub y) o) ps then
+                    Some { none with props = List.filter_map (fun (key, _) -> if List.exists (fun (re, _) -> matches re key) ps then Some key else None) o }
+                  else None
+              | None -> Some none)
+          | "additionalProperties", sub -> (
+              match obj with
+              | Some o ->
+                  let named = match get "properties" with Some (`Assoc ps) -> List.map fst ps | _ -> [] in
+                  let patterns = match get "patternProperties" with Some (`Assoc ps) -> List.map fst ps | _ -> [] in
+                  let extra = List.filter (fun (key, _) -> not (List.mem key named || List.exists (fun re -> matches re key) patterns)) o in
+                  if List.for_all (fun (_, y) -> v sub y) extra then Some { none with props = List.map fst extra } else None
+              | None -> Some none)
+          | "propertyNames", sub -> ok (match obj with Some o -> List.for_all (fun (key, _) -> eval ~docs ~stack ~collect:false sub (`String key) <> None) o | None -> true)
+          | "minProperties", m -> ok (match obj with Some o -> List.length o >= nat m | None -> true)
+          | "maxProperties", m -> ok (match obj with Some o -> List.length o <= nat m | None -> true)
+          | "dependentRequired", `Assoc ds ->
+              ok
                 (match obj with
                  | Some o -> List.for_all (fun (p, req) -> (not (List.mem_assoc p o)) || match req with `List rs -> List.for_all (function `String r -> List.mem_assoc r o | _ -> P.unsupported "dependentRequired") rs | _ -> P.unsupported "dependentRequired") ds
                  | None -> true)
-            | "dependentSchemas", `Assoc ds -> (match obj with Some o -> List.for_all (fun (p, sub) -> (not (List.mem_assoc p o)) || v sub x) ds | None -> true)
-            | "prefixItems", `List subs -> (match arr with Some a -> List.for_all2 (fun sub y -> v sub y) (List.filteri (fun i _ -> i < List.length a) subs) (List.filteri (fun i _ -> i < List.length subs) a) | None -> true)
-            | "items", sub -> (
-                match arr with
-                | Some a ->
-                    let skip = match get "prefixItems" with Some (`List ps) -> List.length ps | _ -> 0 in
-                    List.for_all (fun y -> v sub y) (List.filteri (fun i _ -> i >= skip) a)
-                | None -> true)
-            | "contains", sub -> (
-                match arr with
-                | Some a ->
-                    let count = List.length (List.filter (v sub) a) in
-                    let lo = match get "minContains" with Some m -> nat m | None -> 1 in
-                    count >= lo && (match get "maxContains" with Some m -> count <= nat m | None -> true)
-                | None -> true)
-            | "minItems", m -> (match arr with Some a -> List.length a >= nat m | None -> true)
-            | "maxItems", m -> (match arr with Some a -> List.length a <= nat m | None -> true)
-            | "uniqueItems", `Bool true ->
+          | "dependentSchemas", `Assoc ds -> (
+              match obj with
+              | Some o -> all (List.filter_map (fun (p, sub) -> if List.mem_assoc p o then Some (fun () -> ev sub x) else None) ds)
+              | None -> Some none)
+          | "prefixItems", `List subs -> (
+              match arr with
+              | Some a ->
+                  let k = min (List.length a) (List.length subs) in
+                  if List.for_all2 (fun sub y -> v sub y) (List.filteri (fun i _ -> i < k) subs) (List.filteri (fun i _ -> i < k) a) then Some { none with items = List.init k Fun.id }
+                  else None
+              | None -> Some none)
+          | "items", sub -> (
+              match arr with
+              | Some a ->
+                  let skip = match get "prefixItems" with Some (`List ps) -> List.length ps | _ -> 0 in
+                  if List.for_all (fun y -> v sub y) (List.filteri (fun i _ -> i >= skip) a) then Some { none with all = true } else None
+              | None -> Some none)
+          | "contains", sub -> (
+              match arr with
+              | Some a ->
+                  let hits = List.filteri (fun _ y -> v sub y) a |> List.length in
+                  let idx = List.concat (List.mapi (fun i y -> if v sub y then [ i ] else []) a) in
+                  let lo = match get "minContains" with Some m -> nat m | None -> 1 in
+                  if hits >= lo && match get "maxContains" with Some m -> hits <= nat m | None -> true then Some { none with items = idx } else None
+              | None -> Some none)
+          | "minItems", m -> ok (match arr with Some a -> List.length a >= nat m | None -> true)
+          | "maxItems", m -> ok (match arr with Some a -> List.length a <= nat m | None -> true)
+          | "uniqueItems", `Bool true ->
+              ok
                 (match arr with
                  | Some a -> let rec distinct = function [] -> true | y :: rest -> (not (List.exists (equal y) rest)) && distinct rest in distinct a
                  | None -> true)
-            | "uniqueItems", `Bool false -> true
-            | "allOf", `List subs -> List.for_all (fun sub -> v sub x) subs
-            | "anyOf", `List subs -> List.exists (fun sub -> v sub x) subs
-            | "oneOf", `List subs -> List.length (List.filter (fun sub -> v sub x) subs) = 1
-            | "not", sub -> not (v sub x)
-            | "if", sub ->
-                if v sub x then (match get "then" with Some t -> v t x | None -> true)
-                else (match get "else" with Some e -> v e x | None -> true)
-            | "$ref", `String r ->
-                if List.exists (fun (r', y) -> r' = r && y == x) stack then raise (Loop r);
-                valid ~docs ~stack:((r, x) :: stack) (P.resolve docs r) x
-            | _ -> true)
-        kv
+          | "uniqueItems", `Bool false -> Some none
+          | "allOf", `List subs -> all (List.map (fun sub () -> ev sub x) subs)
+          | "anyOf", `List subs ->
+              if collect then
+                let anns = List.filter_map (fun sub -> ev sub x) subs in
+                if anns = [] then None else Some (List.fold_left merge none anns)
+              else ok (List.exists (fun sub -> v sub x) subs)
+          | "oneOf", `List subs -> (match List.filter_map (fun sub -> ev sub x) subs with [ a ] -> Some a | _ -> None)
+          | "not", sub -> ok (eval ~docs ~stack ~collect:false sub x = None)
+          | "if", sub -> (
+              match ev sub x with
+              | Some a -> (match get "then" with Some t -> Option.map (merge a) (ev t x) | None -> Some a)
+              | None -> (match get "else" with Some e -> ev e x | None -> Some none))
+          | "$ref", `String r ->
+              if List.exists (fun (r', y) -> r' = r && y == x) stack then raise (Loop r);
+              eval ~docs ~stack:((r, x) :: stack) ~collect (P.resolve docs r) x
+          | _ -> Some none
+      in
+      (* the siblings first, then what they left unevaluated *)
+      let rest = List.filter (fun (k, _) -> not (List.mem k annotating)) kv in
+      (match all (List.map (fun kw () -> keyword kw) rest) with
+       | None -> None
+       | Some acc ->
+           let acc = Some acc in
+           let acc =
+             match get "unevaluatedProperties", obj with
+             | Some sub, Some o ->
+                 Option.bind acc (fun acc ->
+                     if List.for_all (fun (key, y) -> List.mem key acc.props || v sub y) o then Some { acc with props = List.map fst o } else None)
+             | _ -> acc
+           in
+           match get "unevaluatedItems", arr with
+           | Some sub, Some a ->
+               Option.bind acc (fun acc ->
+                   if acc.all || List.for_all (fun (i, y) -> List.mem i acc.items || v sub y) (List.mapi (fun i y -> (i, y)) a) then Some { acc with all = true } else None)
+           | _ -> acc)
   | _ -> P.unsupported "not a schema: %s" (J.to_string s)
+
+(* every one of [fs] succeeds, their annotations merged; stops at the first failure *)
+and all fs =
+  let rec go acc = function [] -> Some acc | f :: rest -> (match f () with Some a -> go (merge acc a) rest | None -> None) in
+  go none fs
+
+let valid ~docs ~stack s x = eval ~docs ~stack ~collect:false s x <> None
 
 (* Whether the interpreter reads [schema] (a subschema of [root]): every
    keyword it can reach, each reference target once, checked statically
@@ -142,7 +214,7 @@ let rec valid ~(docs : P.docs) ~(stack : (string * J.t) list) (s : J.t) (x : J.t
 let supported ?docs (schema : J.t) =
   let docs, schema = match docs with Some d -> (d, schema) | None -> let d = P.documents schema in (d, P.main_doc d) in
   let seen = Hashtbl.create 16 in
-  let one = [ "not"; "if"; "then"; "else"; "contains"; "propertyNames"; "additionalProperties"; "items" ] in
+  let one = [ "not"; "if"; "then"; "else"; "contains"; "propertyNames"; "additionalProperties"; "items"; "unevaluatedProperties"; "unevaluatedItems" ] in
   let many = [ "allOf"; "anyOf"; "oneOf"; "prefixItems" ] in
   let named = [ "properties"; "patternProperties"; "dependentSchemas"; "$defs"; "definitions" ] in
   let rec walk (s : J.t) =
@@ -155,7 +227,7 @@ let supported ?docs (schema : J.t) =
               (match a with
                | `String ("https://json-schema.org/draft/2020-12/schema" | "http://json-schema.org/draft-07/schema#" | "http://json-schema.org/draft-07/schema") -> ()
                | _ -> P.unsupported "a custom metaschema (%s)" (J.to_string a))
-            else if List.mem k P.refused then P.unsupported "keyword %s" k
+            else if List.mem k refused then P.unsupported "keyword %s" k
             else
               match k, a with
               | "type", `String t -> ignore (is_type `Null t)

@@ -158,9 +158,23 @@ is refused, naming it.
 
 A schema whose validation the boundary could not check exactly is
 **refused, not approximated**: a reference to a document not given,
-`$dynamicRef`, `unevaluatedProperties`, `unevaluatedItems`, a custom
-metaschema, and a pattern with no RE2 counterpart (lookaround,
-backreferences, Unicode property classes).
+`$dynamicRef` (and 2019-09's `$recursiveRef`), a custom metaschema, and a
+pattern with no RE2 counterpart (lookaround, backreferences, Unicode
+property classes). `unevaluatedProperties` and `unevaluatedItems` are
+read by the interpreter only ("The interpreter").
+
+**Patterns stay RE2, and lookaround stays refused.** One regular
+expression dialect holds everywhere a pattern is evaluated: CEL's
+`matches` in cells, the compiled predicate, and the interpreter. Lookaround
+(29 SchemaStore schemas) and backreferences could be read by the
+interpreter alone with a backtracking engine, but that would give the
+boundary a second dialect, with matching that can take exponential time
+on a hostile string, and a pattern whose meaning differed between a
+`check_T` cell and the codec. A schema that needs one is refused, naming
+the pattern; its author can rewrite it in RE2 (most lookaround in the
+corpus guards a URL or an e-mail address, which `format` describes), or
+the harness can admit it as `dyn` with the pattern dropped and reported,
+which is an explicit, reviewed choice and not this importer's default.
 
 ### The validation predicate
 
@@ -193,7 +207,24 @@ boundary. A reference that returns to itself at the same place in the
 instance (a loop that consumes nothing) is an error, not a hang. Inside
 graphs, a `check_T` cell carries the compiled predicate with each
 recursive edge cut to `true`, which the report states, or none if it
-would not fit. The interpreter and the compiled predicate must agree
+would not fit.
+
+The interpreter also reads `unevaluatedProperties` and
+`unevaluatedItems`, which depend on what other keywords evaluated and so
+have no predicate. Each successful evaluation returns its annotations:
+the properties `properties`, `patternProperties` and
+`additionalProperties` evaluated, the item indices `prefixItems` and
+`contains` evaluated, or every item (`items`). In-place applicators merge
+their passing subschemas' annotations (`allOf`; every passing branch of
+`anyOf`, not only the first; `oneOf`'s one; a passing `if` with `then`, or
+`else`; `dependentSchemas`; `$ref`), a failed subschema and `not`
+contribute none, and the `unevaluated*` keywords are evaluated after
+their siblings. Annotations are collected only below a schema that has
+one of the two keywords, so elsewhere `anyOf` still stops at its first
+match. A schema with them imports with the location `dyn` and the
+interpreter as its check (`Checked`), and the codec reads it exactly.
+
+The interpreter and the compiled predicate must agree
 wherever the predicate compiles (Hegel, over generated schemas and
 instances), and the interpreter is held to the official suite and to
 Python's `jsonschema` like the predicate.
@@ -295,11 +326,11 @@ order and absent `option`s as omitted members.
   - the predicate's verdict is the suite's for every test whose schema
     compiles (2020-12: 1,030 tests; all drafts: 4,366; none disagree);
   - the interpreter's verdict is the suite's for every test whose schema
-    it reads (2020-12: 1,038; all drafts: 4,404; none disagree);
+    it reads (2020-12: 1,237; all drafts: 4,787; none disagree);
   - for every test whose schema imports, the types file checks and the
     codec reads the instance exactly when the suite calls it valid, but
-    for the documented refusals above (2020-12: 1,010 agree and 14 are
-    documented refusals; all drafts: 4,278 and 70; none disagree).
+    for the documented refusals above (2020-12: 1,209 agree and 14 are
+    documented refusals; all drafts: 4,661 and 70; none disagree).
   The suite's remote documents are loaded under
   `http://localhost:1234/`, as the suite serves them.
   The schemas that do not compile or import are listed, by reason, in a
