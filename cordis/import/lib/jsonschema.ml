@@ -141,7 +141,7 @@ let dyn_location c loc (s : J.t) : t * (string -> string list) =
   | _ -> (Dyn, fun p -> match P.compile ~root:c.doc s p with "true" -> [] | src -> [ src ])
   | exception P.Unsupported why -> (
       match Schema_eval.supported ~root:c.doc s with
-      | Error _ -> raise (Refused (Printf.sprintf "%s: %s" loc why))
+      | Error why2 -> raise (Refused (Printf.sprintf "%s: %s" loc (if why2 = why then why else why2)))
       | Ok () ->
           say c loc "%s: checked at the boundary by the interpreter; check_ cells check it only up to each recursive edge" why;
           ( Checked s,

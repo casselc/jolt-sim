@@ -2,10 +2,9 @@
 # Instances of imported schemas: 1213 positive, 652 negative; 1641 agree with jsonschema; 203 valid ones are refused as RFC 0003 documents; 21 jsonschema could not validate.
 # Refusals by kind:
 #    116  a remote $ref
-#     25  a pattern that uses lookaround
-#     23  a recursive $ref
+#     27  a pattern that uses lookaround
+#     26  keyword unevaluatedProperties
 #      7  an embedded resource
-#      5  keyword unevaluatedProperties
 #      5  a pattern that does not compile
 #      3  the schema false admits nothing
 #      2  not a schema
@@ -154,7 +153,7 @@ bettercodehub: imported, 4 types, 4 instances
 bigconfig: imported, 33 types, 0 instances
 bigquery-table: imported, 6 types, 1 instances
 bitrise-step: imported, 13 types, 2 instances
-bitrise: refused: BitriseDataModel: a remote $ref (bitrise-step.json)
+bitrise: refused: BitriseDataModel: pattern "^(?!bundle::)(?!with$).*" uses lookaround
 block: refused: a remote $ref (https://raw.githubusercontent.com/WordPress/gutenberg/trunk/schemas/json/block.json)
 bmml: imported, 29 types, 0 instances
 bootstraprc: imported, 3 types, 3 instances
@@ -341,33 +340,33 @@ enonic-xp-api-8.0.0: imported, 4 types, 0 instances
 enonic-xp-application-8.0.0-B4: imported, 3 types, 0 instances
 enonic-xp-application-8.0.0-B5: imported, 3 types, 0 instances
 enonic-xp-application-8.0.0: imported, 3 types, 0 instances
-enonic-xp-cms-8.0.0-B4: refused: formItemsDef: a recursive $ref (#/$defs/fieldSetDef)
-enonic-xp-cms-8.0.0-B5: refused: formItemsDef: a recursive $ref (#/$defs/fieldSetDef)
-enonic-xp-cms-8.0.0: refused: formItemsDef: a recursive $ref (#/$defs/fieldSetDef)
-enonic-xp-content-type-8.0.0-B4: refused: formItemsDef: a recursive $ref (#/$defs/fieldSetDef)
-enonic-xp-content-type-8.0.0-B5: refused: formItemsDef: a recursive $ref (#/$defs/fieldSetDef)
-enonic-xp-content-type-8.0.0: refused: formItemsDef: a recursive $ref (#/$defs/fieldSetDef)
-enonic-xp-form-fragment-8.0.0-B4: refused: formItemsDef: a recursive $ref (#/$defs/fieldSetDef)
-enonic-xp-form-fragment-8.0.0-B5: refused: formItemsDef: a recursive $ref (#/$defs/fieldSetDef)
-enonic-xp-form-fragment-8.0.0: refused: formItemsDef: a recursive $ref (#/$defs/fieldSetDef)
+enonic-xp-cms-8.0.0-B4: refused: formItemsDef: keyword unevaluatedProperties
+enonic-xp-cms-8.0.0-B5: refused: formItemsDef: keyword unevaluatedProperties
+enonic-xp-cms-8.0.0: refused: formItemsDef: keyword unevaluatedProperties
+enonic-xp-content-type-8.0.0-B4: refused: formItemsDef: keyword unevaluatedProperties
+enonic-xp-content-type-8.0.0-B5: refused: formItemsDef: keyword unevaluatedProperties
+enonic-xp-content-type-8.0.0: refused: formItemsDef: keyword unevaluatedProperties
+enonic-xp-form-fragment-8.0.0-B4: refused: formItemsDef: keyword unevaluatedProperties
+enonic-xp-form-fragment-8.0.0-B5: refused: formItemsDef: keyword unevaluatedProperties
+enonic-xp-form-fragment-8.0.0: refused: formItemsDef: keyword unevaluatedProperties
 enonic-xp-idprovider-8.0.0-B4: imported, 39 types, 0 instances
 enonic-xp-idprovider-8.0.0-B5: imported, 39 types, 0 instances
 enonic-xp-idprovider-8.0.0: imported, 39 types, 0 instances
-enonic-xp-layout-8.0.0-B4: refused: formItemsDef: a recursive $ref (#/$defs/fieldSetDef)
-enonic-xp-layout-8.0.0-B5: refused: formItemsDef: a recursive $ref (#/$defs/fieldSetDef)
-enonic-xp-layout-8.0.0: refused: formItemsDef: a recursive $ref (#/$defs/fieldSetDef)
+enonic-xp-layout-8.0.0-B4: refused: formItemsDef: keyword unevaluatedProperties
+enonic-xp-layout-8.0.0-B5: refused: formItemsDef: keyword unevaluatedProperties
+enonic-xp-layout-8.0.0: refused: formItemsDef: keyword unevaluatedProperties
 enonic-xp-macro-8.0.0-B4: imported, 34 types, 0 instances
 enonic-xp-macro-8.0.0-B5: imported, 34 types, 0 instances
 enonic-xp-macro-8.0.0: imported, 34 types, 0 instances
-enonic-xp-mixin-8.0.0-B4: refused: formItemsDef: a recursive $ref (#/$defs/fieldSetDef)
-enonic-xp-mixin-8.0.0-B5: refused: formItemsDef: a recursive $ref (#/$defs/fieldSetDef)
-enonic-xp-mixin-8.0.0: refused: formItemsDef: a recursive $ref (#/$defs/fieldSetDef)
-enonic-xp-page-8.0.0-B4: refused: formItemsDef: a recursive $ref (#/$defs/fieldSetDef)
-enonic-xp-page-8.0.0-B5: refused: formItemsDef: a recursive $ref (#/$defs/fieldSetDef)
-enonic-xp-page-8.0.0: refused: formItemsDef: a recursive $ref (#/$defs/fieldSetDef)
-enonic-xp-part-8.0.0-B4: refused: formItemsDef: a recursive $ref (#/$defs/fieldSetDef)
-enonic-xp-part-8.0.0-B5: refused: formItemsDef: a recursive $ref (#/$defs/fieldSetDef)
-enonic-xp-part-8.0.0: refused: formItemsDef: a recursive $ref (#/$defs/fieldSetDef)
+enonic-xp-mixin-8.0.0-B4: refused: formItemsDef: keyword unevaluatedProperties
+enonic-xp-mixin-8.0.0-B5: refused: formItemsDef: keyword unevaluatedProperties
+enonic-xp-mixin-8.0.0: refused: formItemsDef: keyword unevaluatedProperties
+enonic-xp-page-8.0.0-B4: refused: formItemsDef: keyword unevaluatedProperties
+enonic-xp-page-8.0.0-B5: refused: formItemsDef: keyword unevaluatedProperties
+enonic-xp-page-8.0.0: refused: formItemsDef: keyword unevaluatedProperties
+enonic-xp-part-8.0.0-B4: refused: formItemsDef: keyword unevaluatedProperties
+enonic-xp-part-8.0.0-B5: refused: formItemsDef: keyword unevaluatedProperties
+enonic-xp-part-8.0.0: refused: formItemsDef: keyword unevaluatedProperties
 enonic-xp-service-8.0.0-B4: imported, 2 types, 0 instances
 enonic-xp-service-8.0.0-B5: imported, 2 types, 0 instances
 enonic-xp-service-8.0.0: imported, 2 types, 0 instances
@@ -675,7 +674,7 @@ openutau-ustx: imported, 16 types, 0 instances
 openweather.current: imported, 7 types, 1 instances
 openweather.roadrisk: imported, 4 types, 2 instances
 opspec-io-0.1.7: imported, 4 types, 0 instances
-package: refused: JSON schema for NPM package.json files: a recursive $ref (#/definitions/packageExportsEntryOrFallback)
+package: refused: JSON schema for NPM package.json files: a remote $ref (eslintrc.json)
 package.manifest-7.0.0: imported, 10 types, 0 instances
 package.manifest-8.0.0: imported, 13 types, 0 instances
 package.manifest: imported, 14 types, 5 instances
@@ -975,7 +974,7 @@ web-manifest-app-info: refused: a remote $ref (web-manifest.json#/definitions/ma
 web-manifest-combined: refused: a remote $ref (web-manifest.json)
 web-manifest-share-target: imported, 6 types, 9 instances
 web-manifest: imported, 11 types, 7 instances
-web-types: refused: base-contribution: a recursive $ref (#/definitions/required-context)
+web-types: refused: base-contribution: pattern "^(?!pattern|properties|pseudo-elements|pseudo-classes|functions|classes|parts)$" uses lookaround
 webextension: imported, 13 types, 61 instances
 webjob-publish-settings: imported, 3 types, 3 instances
 webjobs-list: imported, 2 types, 2 instances
