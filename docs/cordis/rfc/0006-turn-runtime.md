@@ -1,6 +1,7 @@
 # RFC 0006: The turn runtime
 
-Status: proposed; options, not yet decided. Phase 3 (DESIGN.md build
+Status: proposed, revision 2; options, with a recommendation not yet
+accepted. Phase 3 (DESIGN.md build
 order items 8 and 10, with the trap side of 9). Design context:
 [DESIGN.md](../DESIGN.md) "The runtime", "The outbox", "Where the outbox
 runs", "Hosting"; [RFC 0002](0002-graph-language.md) "Routes and streams at
@@ -9,6 +10,24 @@ run time" and "Compilation to the kernel"; [RFC 0004](0004-descriptor-native-typ
 Prior art: [research/STREAMING-PRIOR-ART.md](../research/STREAMING-PRIOR-ART.md),
 and the sources at the end. Models it must honour: every module in
 `cordis/quint/`, listed in "What is already fixed".
+
+## Revision history
+
+**Revision 1** set out the options for eight decisions, recommended a
+combination, and listed the models to write first.
+
+**Revision 2** takes in a review from the agent building the local
+inference stack (casselc/halo-flash, casselc/yard). What changed, and
+why:
+
+| Revision 1 | Revision 2 | Why |
+| --- | --- | --- |
+| Run store: the framed log (2B) from stage 3, SQLite (2A) the fallback | **SQLite (2A) behind the `Store` signature at stage 3**; the framed log when the unikernel host (8C) is built | 2B's case rests on running on a Solo5 block device under the narrow tender, the furthest-out part of the plan. Snapshots, compaction and indexes before there is a unikernel to run them on is cost with no near-term return, and stage 1's conformance does not depend on the store |
+| Every lost receipt makes the fiber Uncertain; only a reconcile moves it on | **Observational emissions**: an intent kind whose only outside effect is spend retries under a held reservation instead (Decision 3, "Observational emissions"); modelled in `observe.qnt` | Inference calls and most read-only tool calls cannot answer "did key K happen?", and repeating them changes nothing but spend. Under revision 1 the first LLM-heavy graphs would wait in Uncertain on reconciles no provider can answer |
+| "The run store rolls back with the step snapshot" taken as exact in `handoff.qnt` | Kept in the model, and **checked natively** at the run-store stage | Yard's SR1 work saw a ZFS snapshot dirtied with no application write (a `zil_replay` to `zil_destroy` path wrote 8 KiB at mount). The models cannot see that class of behaviour |
+| Stages ordered by layer: core, values, store, outbox, cutover, frames, platform | **A vertical slice first**: the review loop end to end, with an LLM intent through a loopback outbox and a crash and recovery checked against the models, before cutover, frames, or more importers | The system's core promises (at-most-once emission, rollback, the trap, the outbox) live here, not in the importers. RFC 0005 stays unscheduled, and the OpenAPI and AsyncAPI importers wait for the slice |
+| Open questions 1, 2, 3 and 9 open | Answered ("Open questions") | Values in a separate pure module; the canonical text as the record's hash input until Preserves is needed; `ctx.now` recorded in the commit record; no external durable-execution engine in the outbox |
+| Hosting from the unikernel down (8C) | **8A on FreeBSD as a client of yard** first: its service-jail lifecycle (suspend, resume, refusal on drift, settled cleanup) is the outbox jail's shape | Use what runs now: jails and ZFS snapshots and clones; unikernels and the OxCaml port (7 to 14 person-weeks) follow. Yard's lifecycle is as the review describes it; its code is not yet public, so stage 4 starts by checking it against yard's own models |
 
 ## Purpose
 
@@ -435,7 +454,43 @@ kinds may resend under the same key; others are reconciled. A `Lost`
 receipt puts the fiber in Uncertain, which the runtime answers only with a
 reconcile read and a `Reconcile` orchestration (`lifecycle.qnt`'s
 `blindRetry`). A reconcile deadline is policy, after which a person
-decides (DESIGN.md "Risks").
+decides (DESIGN.md "Risks"). Revision 2 adds a class that does not reconcile.
+
+### Observational emissions (revision 2)
+
+"Reconcile, never blind retry" assumes the far side can answer "did key K
+happen?". A model completion or a read-only tool call cannot, and need
+not: sending it again has no outside effect but spend. Such an intent kind
+is **observational**:
+
+- **A lost receipt does not make the fiber Uncertain.** The intent is sent
+  again as a new attempt, under the same intent key and a new attempt
+  number, each attempt under its own reservation of its worst-case cost
+  (4E). Attempts per intent are bounded by policy; when they run out the
+  fiber fails, since nothing is uncertain.
+- **An abandoned attempt still costs.** Its reservation is held until its
+  late answer settles it at its actual cost, or it expires and is charged
+  at the worst case; it is never refunded (`refundLost`). Its answer is
+  never applied: one answer per intent, the one the commit record names
+  (`applyLate`). Replay uses the recorded answer, so the retry's different
+  completion does not make the run nondeterministic.
+- **The class is policy's, not the cell's.** It is a property of the
+  intent kind, granted in policy (the gates and Cedar), never chosen by the
+  cell that emits it (`misclassify`: an effectful kind treated as
+  observational takes effect twice). A call is observational only if the
+  provider keeps no state the next turn depends on: a stateless completion
+  is; a completion against a provider-side session (a stored response, a
+  conversation thread, a server that snapshots and resumes sessions, as
+  halo-flash does) is not, unless its session is itself keyed by the
+  intent. A tool call is observational only if its own egress is gated by
+  the calling key (`gateway.qnt`'s backstop), since its annotations are a
+  hint.
+
+`observe.qnt` checks it: `effectOnce`, `receiptOnce`, `withinBudget`,
+`accounted` (real spend never exceeds settled plus reserved) and
+`obsNeverUncertain`, with four mutants (`misclassify`, `refundLost`,
+`noReserve`, `applyLate`) and `oneClass`, revision 1's single rule, which
+fails `obsNeverUncertain`. It is in the model gate, with Apalache to depth 8.
 
 ## Decision 4: scheduling, fairness, and budgets
 
@@ -705,66 +760,81 @@ The combination below is a recommendation for review, not a decision.
 | Decision | Recommended | Why |
 | --- | --- | --- |
 | 1 Execution | **1A**, one deterministic loop per instance with a sans-IO core; pure evaluation may be offloaded to a domain pool when one exists, but every commit happens on the loop | Inertial by construction; the simulator runs the production core; runs in a single-domain unikernel; needs no model beyond those proposed here. Combiner frames (RFC 0005 rule 11) are the one case that earns parallel evaluation, and their merge is a commit like any other |
-| 2 Store | **2B**, the framed log with snapshots, for the run store; **SQLite (2A) for the outbox journal** in the outbox jail; Irmin as planned for definitions | Rule 2's atomic record is one frame; runs on a Solo5 block device under torn-write faults; the format is already proved; the log is the ITF source. The outbox jail is POSIX and benefits from queries over pending and Unknown entries |
+| 2 Store | **2A, SQLite, behind the `Store` signature** for the run store until the unikernel host exists, then **2B**, the framed log; **SQLite for the outbox journal** in the outbox jail; definitions in files, as now | Rule 2's atomic record is one transaction; nothing to build before the slice runs; the commit-record table is the ITF source until the log is. 2B earns its engine when there is a Solo5 block device and a narrow tender to fault it (revision 2) |
 | 3 Effects | **3B with 3D's split**: emissions through a per-agent outbox jail; internal effects and acquisitions in-process or in child jails; **3A only as the simulator's cassette** behind the same interface | Every placement model holds by construction; one interface, two implementations |
 | 4 Scheduling and budgets | **4B** (height order) within a graph; **DRR by cost units** across graphs; runtime CEL limit equal to the estimate; **4E reservations** composed with **4F's** shared limiter | Fewer recomputes; bounded wait; spend that is atomic with the intent that incurs it |
 | 5 Recovery | **5C**: snapshot plus log, with a replay audit off the recovery path | Bounded recovery time; nondeterminism is still caught |
 | 6 Cutover | **6C** for soak, **6B** to switch, **6A** as fallback, with durable `cutover-begin`/`cutover-end` records | Only changed cells move; failed candidates leave the live revision alone; recovery never resumes an unadmitted mixture |
 | 7 Conformance | **7A + 7B + 7C**, with 7D derived | The log is the trace; assertions stop release on a violation; MBT finds what the scheduler would not choose |
-| 8 Deployment | **8D now, 8A next, 8C on the platform** | One core, three hosts, in the order the build can test them |
+| 8 Deployment | **8D now, 8A next as a yard client on FreeBSD, 8C on the platform** | One core, three hosts, in the order the build can test them; 8A uses jails, ZFS snapshots and yard's service-jail lifecycle, which exist now (revision 2) |
 
 The reasoning that ties these together: the strongest evidence this
 project produces is "the code that runs is the code the simulator and the
 models checked". Every recommended option keeps that true. 1A makes the
-production scheduler one of the simulator's schedules; 2B makes the store
-something the narrow tender can fault; 3B makes the outbox the one the
+production scheduler one of the simulator's schedules; 2B, when the
+unikernel host arrives, makes the store something the narrow tender can
+fault; 3B makes the outbox the one the
 models placed; 5C and 7A make every production run a candidate
 `:monitored` trace. The options turned down each break that chain at one
 link: 1B and 1C by nondeterministic interleavings in production, 1D and
 2D by putting state outside the deterministic boundary.
 
-The main cost of the recommendation is owning the log engine (snapshots,
-compaction, in-memory indexes). If that proves too much, 2A behind the
-same `Store` signature is the fallback for the Unix hosts, giving up
-only the unikernel.
+Revision 1 made the framed log the default and named owning its engine
+(snapshots, compaction, in-memory indexes) as the recommendation's main
+cost. Revision 2 defers that cost until 8C makes it pay: SQLite runs the
+slice, behind a `Store` signature narrow enough that the log can replace
+it, and the conformance work does not change when it does.
 
 ## Staged build plan
 
-Each stage is usable and tested on its own; nothing waits on the
-platform until stage 7.
+Revision 2 builds a vertical slice before anything wide: one graph, end to
+end, through every promise the design makes, before cutover, frames, or
+further importers. RFC 0005 stays unscheduled, and the OpenAPI and AsyncAPI
+importers wait for the slice.
 
-0. **Models.** Write and gate the models in the next section; implement
-   nothing they do not cover.
-1. **The sans-IO core over the kernel** (8D). An `Engine` holding the
-   registry, the value plane and an in-memory log; `step : core -> event
-   -> core * command list`; commands are `Persist`, `Release`, `Read`
-   (reconcile), `Sweep`. Compile a checked graph (`compile.ml`) and run
-   it to quiet. The existing `cordis/sim` becomes a host of this core;
-   its ITF output and `quintgo` conformance carry over.
-2. **The value plane.** Real CEL turns from `Check.turn.program` with
-   `Eval.run ~limit`; boundary size checks; asset values, revisions and
-   memo by (cell hash, input hashes); guards that withdraw, appends keyed
-   by scrutinee revision, capacities, episodes. The review loop
-   (`graph/examples/review.cg`) runs end to end against a cassette.
+0. **Models.** `observe.qnt` is written and gated; `engine.qnt` and
+   `handoff.qnt` next (the slice needs both), then `budget.qnt`; `cutover`
+   and `schedule` before stage 5. Implement nothing they do not cover.
+1. **The slice** (8D, then 8A):
+   - the sans-IO core over the kernel, with the value plane as a separate
+     pure module (open question 1): `step : core -> event -> core *
+     command list`, commands `Persist`, `Release`, `Read` (reconcile),
+     `Sweep`; real CEL turns (`Eval.run ~limit`), asset values, memo,
+     routes and capacities;
+   - the run store on SQLite behind `Store`, one transaction per commit
+     record, `ctx.now` in the record;
+   - a loopback outbox (the cassette) with observational and effectful
+     intent kinds;
+   - the review loop (`graph/examples/review.cg`) running to rest, with
+     its `llm.complete` intent observational and its `repo.read`
+     reconciled;
+   - crash injection at every commit, recovery, and conformance of the
+     run's traces against `lifecycle.qnt`, `engine.qnt` and `observe.qnt`;
+     the existing `cordis/sim` becomes a host of this core.
    Hegel: compiled graphs reach the same rest as a from-scratch
-   evaluation, under random schedules (`routes.qnt`'s `consistent`, at
-   scale).
-3. **The run store.** The framed log on a file (the journal-wal adapter
-   jolt-sim has not landed yet), snapshots, recovery; crash injection at
-   every write in the simulator, torn frames included; the replay audit.
-4. **The outbox seam.** A loopback outbox (cassette) and then the outbox
-   process with its SQLite journal, the relay, receipts, reconcile,
-   retries by intent kind, reservations and the limiter. Conformance
-   against `outbox.qnt`, `handoff.qnt` and `budget.qnt` traces.
+   evaluation, under random schedules and crashes.
+2. **A real model behind the outbox.** The outbox process with its
+   SQLite journal, the relay (`handoff.qnt`), reservations and the
+   limiter (`budget.qnt`), and a completion endpoint (halo-flash's
+   OpenAI-compatible server) as the first observational effect.
+3. **The run store, hardened.** Recovery under fault injection; the
+   replay audit (5C); and a **native rollback-fidelity check**: on the
+   host's own filesystem (ZFS on FreeBSD), snapshot the run store's
+   dataset, write, roll back, and compare the store byte for byte and by
+   commit record, including across a remount, since a ZFS snapshot has
+   been seen dirtied at mount with no application write. `handoff.qnt`
+   assumes rollback is exact; this check is what makes the assumption
+   evidence, not hope.
+4. **Hosting on yard.** 8A on FreeBSD as a yard client: the agent's VM or
+   jail, and the outbox jail as a yard service jail with its suspend,
+   resume, drift refusal and settled cleanup; caps and Cedar at the trap.
 5. **Cutover.** Shadow instances with cassette receipts; rolling cutover
    with durable begin and end records; state plans (carry, migrate by
    reset); the soak gate wired into admission.
-6. **Frames.** RFC 0005 rules 1 to 12 on the core: durable batch
-   intervals, per-batch turns, carry/drain/restart, backpressure, the end
-   turn, combiners on the domain pool.
-7. **Platform.** 8A on FreeBSD; then 8C in a Solo5 unikernel with the
-   log on a block device, frames over virtio-console, under the narrow
-   tender; the gateway; caps and Cedar at the trap.
+6. **Wider.** Frames (RFC 0005 rules 1 to 12, once scheduled); the
+   OpenAPI and AsyncAPI importers; 8C in a Solo5 unikernel with the run
+   store moved to the framed log (2B) on a block device, under the
+   narrow tender.
 
 ## Models to write first
 
@@ -773,6 +843,10 @@ instance, mutants as instances with one flag flipped, witnesses checked as
 `not(w)` expecting `VIOLATED`), added to `check.sh` with an Apalache depth,
 and given an ITF projection from the commit log so stage 1 onward can be
 checked against it.
+
+### `observe.qnt`: observational emissions (written, revision 2)
+
+See Decision 3, "Observational emissions". In the gate.
 
 ### `engine.qnt`: the turn commit protocol
 
@@ -799,6 +873,11 @@ lost and duplicated frames on the channel, deterministic keys.
 | Properties | `atMostOnce`; `onlyCommittedReleased`: every intent the outbox sent was in a record that was durable when relayed; `noOrphan`: at rest, every durable unreleased intent is journaled by the outbox; `receiptToIssuer`: a receipt is applied to the record (fiber, episode, fork) that issued it; `rollbackAnswered`: an intent re-issued after a rollback is answered from the journal, not resent |
 | Mutants | `keyFromClock` (a key with a schedule- or time-dependent part; a rollback re-issues under a new key) → `atMostOnce`; `relayUncommitted` (the relay reads a record before it is durable; a crash forgets it) → `onlyCommittedReleased`; `ackBeforeJournal` (the outbox acknowledges before journaling, then crashes) → `noOrphan` |
 | Witnesses | `rolledBackReissued`, `relayRestarted`, `duplicateFrameIgnored` |
+
+The model takes "the run store rolls back exactly with the step snapshot"
+as given. Stage 3's native rollback-fidelity check is the evidence for
+that assumption on a real filesystem; the model cannot see a snapshot
+dirtied by the filesystem itself.
 
 ### `budget.qnt`: reservations and settlement
 
@@ -859,16 +938,24 @@ admission, not a precondition of the runtime; it follows stage 2.
 
 ## Open questions
 
-1. **The value plane's home.** Extend `Kernel` with a value type (a
+1. **Answered (revision 2): a separate pure module.** The kernel stays
+   the control plane, which keeps phase 1's evidence intact.
+   **The value plane's home.** Extend `Kernel` with a value type (a
    functor over values, keeping the int instance for the existing models
    and tests), or keep the kernel as the control plane and put values in
    a separate pure module the engine composes? The second keeps phase 1's
    evidence intact; the first keeps one transition function.
-2. **Record format before Preserves.** The codecs do not exist yet
+2. **Answered (revision 2): the canonical text.** RFC 0002's canonical
+   text and SHA-256 are the hash input, with a format version in the
+   record, until the capability slot (caps work) needs Preserves.
+   **Record format before Preserves.** The codecs do not exist yet
    (DESIGN.md "Open questions"). Use the canonical text and SHA-256 of RFC
    0002 inside the frame now and change only the payload codec later, with
    a format version in the segment header?
-3. **Time.** `ctx.now` comes from the oracle in simulation. In production
+3. **Answered (revision 2): recorded.** `ctx.now` is read once per turn
+   and written in the commit record, so replay reproduces it; freshness
+   timers remain open.
+   **Time.** `ctx.now` comes from the oracle in simulation. In production
    is it read once per turn and recorded in the record (so replay
    reproduces it), and who supplies freshness timers (`~fresh:every`)?
 4. **Snapshot cadence and retention.** Policy numbers, but the audit (5C)
@@ -888,7 +975,10 @@ admission, not a precondition of the runtime; it follows stage 2.
    future receipt" lets a chain share one commit point. The kernel
    awaits one intent per fiber; is pipelining a later extension of
    `engine.qnt`, or needed for the first LLM-heavy graphs?
-9. **Outbox journal store.** SQLite in the outbox jail is recommended;
+9. **Answered (revision 2): no.** An external durable-execution engine
+   would be a second source of truth for retry semantics; the outbox's
+   executor is ours, with SQLite as its journal.
+   **Outbox journal store.** SQLite in the outbox jail is recommended;
    should the outbox's own executor be an existing durable-execution
    engine (Restate or Temporal, 1D in a narrower role), since it sits
    outside the deterministic boundary anyway?

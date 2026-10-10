@@ -149,6 +149,16 @@ sim frames.qnt endEarly endAfterAll VIOLATED
 sim frames.qnt refuseAdvances noRowLost VIOLATED
 sim frames.qnt keepAcc accConsistent VIOLATED
 
+# ---- observe.qnt (RFC 0006 rev 2: observational emissions retry under reservations) --
+for inv in effectOnce receiptOnce withinBudget accounted obsNeverUncertain; do sim observe.qnt design "$inv" ok; done
+verify observe.qnt design safety ok
+for w in retriedThenDone lateSettled exhausted effectfulUncertain reconciled; do sim observe.qnt design "not($w)" VIOLATED; done
+sim observe.qnt misclassify effectOnce VIOLATED
+sim observe.qnt refundLost accounted VIOLATED
+sim observe.qnt noReserve withinBudget VIOLATED
+sim observe.qnt applyLate receiptOnce VIOLATED
+sim observe.qnt oneClass obsNeverUncertain VIOLATED
+
 # conformance: simulator runs replayed in the model
 conform() { # label scenario mutant expect(pass|fail) extra-args...
   local label=$1 scenario=$2 mutant=$3 expect=$4; shift 4
