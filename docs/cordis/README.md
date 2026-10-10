@@ -8,7 +8,8 @@
 - [research/PRESERVES.md](research/PRESERVES.md): Preserves in depth, with a
   hands-on canonical-encoding demo (`research/scripts/`).
 - [rfc/](rfc/): phase 2 RFCs: 0001 CEL for cells, 0002 the graph language,
-  0003 the type IR, importers and scaffolds.
+  0003 the type IR, importers and scaffolds, 0004 descriptor-native
+  protobuf types, 0005 XML and XSD, CSV and typed data frames (proposed).
 - [examples/](examples/): the review-loop graph, a cell, an intent frame,
   receipts and a Preserves Schema, in Preserves text.
 

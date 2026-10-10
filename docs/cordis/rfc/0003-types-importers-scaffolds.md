@@ -133,6 +133,7 @@ fields, a second member of one oneof, an unknown enum name or number.
 | JSON Schema (2020-12) | objects to records (closed at trust boundaries), `enum` to variants, `$ref` to a named type | `allOf` (merged, residue for conflicts), `not`, `if`/`then`/`else`, undiscriminated `oneOf`/`anyOf` (looser type plus residue), `patternProperties`; recursion as for protobuf |
 | OpenAPI 3.1 | schemas via the JSON Schema importer; each operation to an effect (an intent kind) | callbacks and links are reported, not imported |
 | AsyncAPI 3 | channels and send or receive operations to the graph's inputs and effects | bindings beyond the message payload are reported |
+| XSD, CSV (with Table Schema), Arrow (for Parquet and Vortex) | see [RFC 0005](0005-xml-csv-frames.md) (proposed) | |
 
 From OpenAPI, per operation: the method sets the retry rule (GET, PUT,
 DELETE idempotent; POST only with an idempotency-key header), the security

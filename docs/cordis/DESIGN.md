@@ -128,6 +128,7 @@ One internal type form (records with rows, variants, lists, maps, optionals, sca
 - **JSON Schema:** `allOf`, `not`, `if`/`then`/`else` and undiscriminated `oneOf` become a looser type plus residue; objects are closed at trust boundaries.
 - **OpenAPI:** each operation becomes an intent kind. The method sets the retry rule, `securitySchemes` names the credential, `servers` is the egress allowlist.
 - **AsyncAPI:** channels and send or receive operations become the graph's external ports.
+- **XSD, CSV and typed data frames** (Arrow, with Parquet and Vortex files) are proposed in RFC 0005: translating imports, strict codecs, and frames consumed as streams of bounded batches.
 - **CUE** runs offline as an import front end with `Strict` on, and for deployment config; it is not the IR.
 - **Identity** is document, name and content hash, which also fixes Cordis's key-collision gap (§6.6).
 
