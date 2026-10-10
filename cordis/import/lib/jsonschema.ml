@@ -157,13 +157,20 @@ let dyn_location c loc (s : J.t) : t * (string -> string list) =
 
 (* A scalar's residue: its keywords, but not the type the graph language
    already holds. *)
-let scalar_residue c loc s p =
-  match P.compile ~root:c.doc (without s [ "type" ]) p with
-  | "true" -> []
-  | src -> [ src ]
+exception Fall_back
+
+(* decided when the location is translated, not when its residue is
+   written: a typed location whose other keywords the predicate cannot
+   compile (a recursive reference under contains, say) falls back to a dyn
+   location the interpreter checks *)
+let scalar_residue c loc s =
+  let s = without s [ "type" ] in
+  match P.compile ~root:c.doc s "x" with
+  | _ -> fun p -> (match P.compile ~root:c.doc s p with "true" -> [] | src -> [ src ])
   | exception P.Unsupported why ->
-      (* the boundary could not check it: refused, not approximated *)
-      raise (Refused (Printf.sprintf "%s: %s" loc why))
+      if Schema_eval.supported ~root:c.doc s = Ok () then raise Fall_back
+      else (* the boundary could not check it: refused, not approximated *)
+        raise (Refused (Printf.sprintf "%s: %s" loc why))
 
 (* the name a definition takes from its reference: the last pointer segment *)
 let ref_base r =
@@ -174,6 +181,9 @@ let ref_base r =
 let is_null s = get s "type" = Some (`String "null") && only s [ "type" ]
 
 let rec translate c ~loc (s : J.t) : t * (string -> string list) =
+  match translate_typed c ~loc s with v -> v | exception Fall_back -> dyn_location c loc s
+
+and translate_typed c ~loc (s : J.t) : t * (string -> string list) =
   let none _ = [] in
   match s with
   | `Bool true -> (Dyn, none)
@@ -222,7 +232,7 @@ let rec translate c ~loc (s : J.t) : t * (string -> string list) =
       | Some (`String "boolean") when only s [ "type"; "enum"; "const" ] -> (Bool, scalar_residue c loc s)
       | Some (`String "array") when only s [ "type"; "items"; "minItems"; "maxItems"; "uniqueItems" ] ->
           let et, er = match get s "items" with Some i -> translate c ~loc:(loc ^ "[]") i | None -> (Dyn, none) in
-          let own p = scalar_residue c loc (without s [ "items" ]) p in
+          let own = scalar_residue c loc (without s [ "items" ]) in
           ( Lst (et, nat (get s "maxItems")),
             fun p ->
               let v = Printf.sprintf "v%d" (String.length p) in
@@ -234,7 +244,7 @@ let rec translate c ~loc (s : J.t) : t * (string -> string list) =
       | (Some (`String "object") | None) when only s [ "type"; "additionalProperties"; "maxProperties"; "minProperties"; "propertyNames" ]
                                              && (match get s "additionalProperties" with Some (`Assoc _) | Some (`Bool true) -> true | _ -> false) ->
           let vt, vr = translate c ~loc:(loc ^ "{}") (Option.get (get s "additionalProperties")) in
-          let own p = scalar_residue c loc (without s [ "additionalProperties" ]) p in
+          let own = scalar_residue c loc (without s [ "additionalProperties" ]) in
           ( Mp (vt, nat (get s "maxProperties")),
             fun p ->
               let k = Printf.sprintf "k%d" (String.length p) in
