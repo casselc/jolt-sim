@@ -126,6 +126,15 @@ sim routes.qnt keepGuarded consistent VIOLATED
 sim routes.qnt appendEveryRun appendOnce VIOLATED
 sim routes.qnt noCap bounded VIOLATED
 
+# ---- revisions.qnt (RFC 0004: descriptor-native types across graph revisions) ----------
+for inv in ownRegistry stateReadable breakingApproved singleWriter; do sim revisions.qnt design "$inv" ok; done
+VERIFY_STEPS=${REVISIONS_VERIFY_STEPS:-10} verify revisions.qnt design safety ok
+for w in carriedCompatible migratedBreaking evaluatedBesideCandidate; do sim revisions.qnt design "not($w)" VIOLATED; done
+sim revisions.qnt globalRegistry ownRegistry VIOLATED
+sim revisions.qnt carryAlways stateReadable VIOLATED
+sim revisions.qnt noApproval breakingApproved VIOLATED
+sim revisions.qnt insertFirst singleWriter VIOLATED
+
 # conformance: simulator runs replayed in the model
 conform() { # label scenario mutant expect(pass|fail) extra-args...
   local label=$1 scenario=$2 mutant=$3 expect=$4; shift 4

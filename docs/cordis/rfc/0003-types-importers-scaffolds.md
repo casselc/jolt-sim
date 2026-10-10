@@ -1,10 +1,12 @@
 # RFC 0003: The type IR, importers and scaffolds
 
-Status: revision 2. The protobuf importer is specified here and
-implemented in `cordis/import` (phase 2, build order item 6); the JSON
+Status: revision 2. **For protobuf, superseded by [RFC 0004](0004-descriptor-native-types.md)**:
+graphs use protobuf descriptors directly, and the translating importer
+described below (implemented in `cordis/import`) remains as a report tool
+showing what a schema would lose as graph-language records. The JSON
 Schema, OpenAPI and AsyncAPI importers and the scaffolders remain as
-designed in revision 1.
-Design context: [DESIGN.md](../DESIGN.md) "Schemas" and "Scaffolding".
+designed in revision 1. Design context: [DESIGN.md](../DESIGN.md)
+"Schemas" and "Scaffolding".
 
 ## Revision history
 
