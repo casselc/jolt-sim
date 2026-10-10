@@ -1014,6 +1014,26 @@ importers wait for the slice.
    a switch not recorded, a changed cell kept). The admitter, like any
    sender, keeps a candidate until its begin record is durable and admits
    it again after a crash that lost it.
+
+   Admission across processes is `cordis-run --admit FILE`. The run store
+   keeps every revision's text (a `revisions` table: the starting one, and
+   each candidate, stored before the record that names it), so recovery
+   takes its revisions from the store and a changed `--graph` changes
+   nothing: new code enters only by admission. `--admit` checks the
+   candidate, soaks it in a shadow answered from the run's own records
+   (the receipt recorded for the same request, else the last for the
+   kind), and on a soak that comes to rest admits it and cuts over; a
+   failed soak or a rewiring is refused with nothing changed, and
+   admitting a candidate already live or under way does nothing, so a
+   lost admission is simply asked for again. A shadow answered that way
+   exercises only the paths the records can answer: it shows a candidate
+   runs to rest on answers like the live run's, not that those are the
+   answers it would get. `outbox/test/cutover.sh` runs it through
+   processes: a crash part way, a candidate that fails its soak and one
+   that rewires (both refused, the store unchanged), a crash in the middle
+   of a cutover, the admission asked again, and a restart that audits the
+   records clean across both revisions; the journal shows the completions
+   asked with the old request until the switch and the new one after.
 6. **Wider.** Frames (RFC 0005 rules 1 to 12, once scheduled); the
    OpenAPI and AsyncAPI importers; 8C in a Solo5 unikernel with the run
    store moved to the framed log (2B) on a block device, under the

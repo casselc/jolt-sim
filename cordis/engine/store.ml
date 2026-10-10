@@ -46,6 +46,9 @@ module Sqlite = struct
     check db (Sqlite3.exec db "PRAGMA journal_mode=WAL") "journal_mode";
     check db (Sqlite3.exec db "PRAGMA synchronous=FULL") "synchronous";
     check db (Sqlite3.exec db "CREATE TABLE IF NOT EXISTS records (seq INTEGER PRIMARY KEY, body TEXT NOT NULL)") "create";
+    (* the revisions the records refer to, by id, with their source text: the store describes itself, so
+       recovery never depends on finding the right graph file again *)
+    check db (Sqlite3.exec db "CREATE TABLE IF NOT EXISTS revisions (id TEXT PRIMARY KEY, role TEXT NOT NULL, text TEXT NOT NULL)") "create";
     db
 
   let create path = { path; db = open_db path; pending = [] }
@@ -93,4 +96,25 @@ module Sqlite = struct
     t.db <- open_db t.path
 
   let close t = ignore (Sqlite3.db_close t.db)
+
+  (* durable at once: a revision is stored before any record names it *)
+  let put_revision t ~id ~role ~text =
+    let st = Sqlite3.prepare t.db "INSERT OR IGNORE INTO revisions (id, role, text) VALUES (?, ?, ?)" in
+    check t.db (Sqlite3.bind_text st 1 id) "bind";
+    check t.db (Sqlite3.bind_text st 2 role) "bind";
+    check t.db (Sqlite3.bind_text st 3 text) "bind";
+    check t.db (Sqlite3.step st) "insert";
+    ignore (Sqlite3.finalize st)
+
+  (* (id, role, text), in the order stored; the role is "start" or "candidate" *)
+  let revisions t =
+    let st = Sqlite3.prepare t.db "SELECT id, role, text FROM revisions ORDER BY rowid" in
+    let rec go acc =
+      match Sqlite3.step st with
+      | Sqlite3.Rc.ROW -> go ((Sqlite3.column_text st 0, Sqlite3.column_text st 1, Sqlite3.column_text st 2) :: acc)
+      | _ -> List.rev acc
+    in
+    let r = go [] in
+    ignore (Sqlite3.finalize st);
+    r
 end

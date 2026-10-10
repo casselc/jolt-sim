@@ -12,6 +12,14 @@
    its budget, a failed computation, or intents the limiter has deferred
    for longer than --max-wait) it prints why and exits 2. A deferred
    intent was definitely not sent, so its wait is not a loss.
+   --admit FILE soaks the candidate revision in a shadow answered from the
+   run's own records, and if it comes to rest, stores its text and cuts
+   the instance over to it (RFC 0006 decision 6); a failed soak, or a
+   candidate that rewires the graph, is refused with exit 2 and changes
+   nothing. Admitting a candidate already live or being cut over does
+   nothing, so an admission lost to a crash is simply asked for again.
+   The store keeps every revision's text, so recovery takes the starting
+   revision and the candidates from it, whatever --graph names.
    --audit re-evaluates every recorded turn before resuming (RFC 0006
    decision 5C) and refuses to resume records the graph did not write.
    --crash-after N exits abruptly after N engine actions, and
@@ -45,9 +53,65 @@ let rec to_json (v : V.t) : J.t =
   | V.Map m -> `Assoc (List.map (fun (k, x) -> ((match k with V.String s -> s | k -> V.to_string k), to_json x)) m)
   | v -> `String (V.to_string v)
 
+(* a revision from a graph's text: its id is the graph definition's hash (which covers its cells); a
+   cell's state carries unless Compat's state plan against [from] says to migrate it *)
+let revision_of ?from ~name text =
+  match Cordis_graph.Parse.file text with
+  | Error m -> Error m
+  | Ok file -> (
+      match Cordis_graph.Check.check file with
+      | Error es -> Error (String.concat "\n" es)
+      | Ok checked -> (
+          let hs = Cordis_graph.Print.hashes file in
+          match List.assoc_opt name hs with
+          | None -> Error ("no graph " ^ name)
+          | Some id ->
+              let cell_hashes =
+                List.filter_map (fun (c : Cordis_graph.Check.cell_info) -> Option.map (fun h -> (c.cname, h)) (List.assoc_opt c.cname hs)) checked.cells
+              in
+              let plan =
+                match from with
+                | None -> []
+                | Some (old_file, old_checked) -> Cordis_graph.Compat.state_plan ~old_file ~old_checked ~new_file:file ~new_checked:checked
+              in
+              let carry c = match List.assoc_opt c plan with Some (Cordis_graph.Compat.Migrate _) -> false | _ -> true in
+              Ok ({ Engine.id; checked; cell_hashes; carry }, file)))
+
+(* The shadow's answers, from the instance's own durable records: the receipt recorded for the same
+   kind and request, else the last recorded for the kind. A soak shows a candidate runs to rest without
+   failing on answers like the live run's; it cannot show they are the answers it would get. *)
+let cassette_of (records : Engine.record list) =
+  let exact = Hashtbl.create 16 and by_kind = Hashtbl.create 4 and awaiting = Hashtbl.create 4 in
+  List.iter
+    (fun (r : Engine.record) ->
+      List.iter
+        (function
+          | Engine.Slot (a, s) -> (
+              match s.fiber with
+              | Engine.Awaiting { intent; _ } -> Hashtbl.replace awaiting a intent
+              | Engine.Running { receipts = _ :: _ as rs; _ } -> (
+                  match Hashtbl.find_opt awaiting a with
+                  | Some (i : Engine.intent) ->
+                      let v = snd (List.nth rs (List.length rs - 1)) in
+                      Hashtbl.replace exact (i.kind, V.to_string i.request) v;
+                      Hashtbl.replace by_kind i.kind v;
+                      Hashtbl.remove awaiting a
+                  | None -> ())
+              | _ -> ())
+          | _ -> ())
+        r.facts)
+    records;
+  fun (i : Engine.intent) ->
+    match Hashtbl.find_opt exact (i.kind, V.to_string i.request) with
+    | Some v -> (v, 0)
+    | None -> (
+        match Hashtbl.find_opt by_kind i.kind with
+        | Some v -> (v, 0)
+        | None -> raise (Engine.Engine_error (Printf.sprintf "the shadow asked for %s, which the records cannot answer" i.kind)))
+
 let () =
   let graph = ref "" and name = ref "" and store = ref "" and socket = ref "" and inputs = ref [] in
-  let observational = ref [] and worst = ref [] and budget = ref None and timeout = ref 30. and crash_after = ref 0 and crash_receipts = ref 0 and max_wait = ref 0. and audit = ref false and dump = ref false in
+  let observational = ref [] and worst = ref [] and budget = ref None and timeout = ref 30. and crash_after = ref 0 and crash_receipts = ref 0 and max_wait = ref 0. and audit = ref false and dump = ref false and admit = ref "" in
   let pair s = match String.index_opt s '=' with Some i -> (String.sub s 0 i, String.sub s (i + 1) (String.length s - i - 1)) | None -> failwith ("expected K=V: " ^ s) in
   Arg.parse
     [ ("--graph", Arg.Set_string graph, "FILE"); ("--name", Arg.Set_string name, "GRAPH"); ("--store", Arg.Set_string store, "DB");
@@ -57,15 +121,12 @@ let () =
       ("--budget", Arg.Int (fun n -> budget := Some n), "N"); ("--timeout", Arg.Set_float timeout, "SECONDS");
       ("--crash-after", Arg.Set_int crash_after, "N");
       ("--crash-after-receipts", Arg.Set_int crash_receipts, "N");
+      ("--admit", Arg.Set_string admit, "FILE a candidate revision: soak it in a shadow, then cut over to it");
       ("--dump-records", Arg.Set dump, " print the store's durable records, one per line, and exit");
       ("--audit", Arg.Set audit, " audit the durable records against the graph before resuming, and refuse on a difference");
       ("--max-wait", Arg.Set_float max_wait, "SECONDS how long to wait on intents the limiter deferred (0: forever)") ]
     (fun _ -> ()) "cordis-run --graph FILE --name GRAPH --store DB --socket PATH --input NAME=JSON";
-  let checked =
-    match Cordis_graph.Patch.load (In_channel.with_open_text !graph In_channel.input_all) with
-    | Ok s -> s.checked
-    | Error es -> prerr_endline (String.concat "\n" es); exit 2
-  in
+  let fail fmt = Printf.ksprintf (fun m -> prerr_endline ("cordis-run: " ^ m); exit 2) fmt in
   let classes k = if List.mem k !observational then Engine.Observational else Engine.Effectful in
   let worst k = Option.value (List.assoc_opt k !worst) ~default:0 in
   let st = Store.Sqlite.create !store in
@@ -75,9 +136,32 @@ let () =
     List.iter (fun r -> print_endline (Codec.record r)) durable;
     exit 0
   end;
+  (* the revisions: the starting one, and the candidates admitted since, from the store *)
+  let stored = Store.Sqlite.revisions st in
+  let start_text =
+    match List.find_opt (fun (_, role, _) -> role = "start") stored with
+    | Some (_, _, text) -> text
+    | None -> In_channel.with_open_text !graph In_channel.input_all
+  in
+  let start, start_file = match revision_of ~name:!name start_text with Ok r -> r | Error m -> fail "%s" m in
+  (if stored <> [] && !graph <> "" then
+     match revision_of ~name:!name (In_channel.with_open_text !graph In_channel.input_all) with
+     | Ok (g, _) when g.id <> start.id ->
+         prerr_endline "cordis-run: the store's own starting revision is used, not --graph's (new code enters by --admit)"
+     | _ -> ());
+  if not (List.exists (fun (_, role, _) -> role = "start") stored) then Store.Sqlite.put_revision st ~id:start.id ~role:"start" ~text:start_text;
+  let candidates =
+    List.filter_map
+      (fun (_, role, text) ->
+        if role <> "candidate" then None
+        else match revision_of ~from:(start_file, start.checked) ~name:!name text with Ok (r, f) -> Some (r, f, text) | Error m -> fail "a stored revision: %s" m)
+      stored
+  in
+  let revisions = List.map (fun (r, _, _) -> r) candidates in
+  let checked = start.checked in
   if !audit && durable <> [] then begin
     (* resuming records on code that did not write them is a cutover, which is admission's, not recovery's *)
-    match Engine.audit ~classes ?budget:!budget ~worst checked !name durable with
+    match Engine.audit ~classes ?budget:!budget ~worst ~revisions checked !name durable with
     | [] -> ()
     | ds ->
         List.iter (fun d -> prerr_endline ("cordis-run: audit: " ^ d)) ds;
@@ -85,8 +169,8 @@ let () =
         exit 2
   end;
   let t, cmds =
-    if durable = [] then (Engine.create ~classes ?budget:!budget ~worst checked !name, [])
-    else Engine.recover ~classes ?budget:!budget ~worst checked !name durable
+    if durable = [] then (Engine.create ~classes ?budget:!budget ~worst ~revision:start.id ~cell_hashes:start.cell_hashes checked !name, [])
+    else Engine.recover ~classes ?budget:!budget ~worst ~revision:start.id ~cell_hashes:start.cell_hashes ~revisions checked !name durable
   in
   (* the outbox *)
   let fd = Unix.socket Unix.PF_UNIX Unix.SOCK_STREAM 0 in
@@ -123,6 +207,32 @@ let () =
   obey cmds;
   (* the sender keeps an input until it is durable: set again after a crash, it changes nothing *)
   List.iter (fun (n, j) -> feed (Engine.Set_input (n, of_json (J.from_string j)))) !inputs;
+  (* admission: soak the candidate in a shadow, then cut over *)
+  if !admit <> "" then begin
+    let text = In_channel.with_open_text !admit In_channel.input_all in
+    (* the state plan is against the revision live now *)
+    let live_file, live_checked =
+      match List.find_opt (fun (r, _, _) -> r.Engine.id = Engine.revision !t) candidates with
+      | Some (r, f, _) -> (f, r.Engine.checked)
+      | None -> (start_file, start.checked)
+    in
+    match revision_of ~from:(live_file, live_checked) ~name:!name text with
+    | Error m -> fail "the candidate does not check:\n%s" m
+    | Ok (c, _) when c.id = Engine.revision !t || Engine.cutting !t = Some c.id ->
+        prerr_endline ("cordis-run: " ^ c.id ^ " is already " ^ if c.id = Engine.revision !t then "live" else "being cut over to")
+    | Ok (c, _) -> (
+        match Engine.soak ~classes ?budget:!budget ~worst c !name ~inputs:(Engine.inputs !t) ~cassette:(cassette_of (Store.Sqlite.load st)) with
+        | Error m -> fail "the candidate failed its soak, and is not admitted: %s" m
+        | Ok () -> (
+            match Engine.admit !t c with
+            | Error m -> fail "the candidate is not admitted: %s" m
+            | Ok (t', cmds) ->
+                (* its text is durable before the record that names it *)
+                Store.Sqlite.put_revision st ~id:c.id ~role:"candidate" ~text;
+                t := t';
+                obey cmds;
+                prerr_endline ("cordis-run: admitted " ^ c.id)))
+  end;
   let actions = ref 0 and receipts = ref 0 in
   let deferred = Hashtbl.create 8 and waited = ref 0. in
   let sync () =
@@ -151,7 +261,9 @@ let () =
     | [] when Engine.quiet !t ->
         let values = List.map (fun (a : Cordis_graph.Check.asset_info) -> (a.aname, match Engine.value !t a.aname with Some v -> to_json v | None -> `Null)) (List.find (fun (g : Cordis_graph.Check.graph_info) -> g.gname = !name) checked.graphs).assets in
         let reserved, settled = Engine.spend !t in
-        print_endline (J.to_string (`Assoc [ ("assets", `Assoc values); ("settled", `Int settled); ("reserved", `Int reserved) ]));
+        print_endline
+          (J.to_string
+             (`Assoc [ ("assets", `Assoc values); ("settled", `Int settled); ("reserved", `Int reserved); ("revision", `String (Engine.revision !t)) ]));
         exit 0
     | [] when Engine.failures !t <> [] ->
         List.iter (fun (a, m) -> prerr_endline (Printf.sprintf "cordis-run: %s failed: %s" a m)) (Engine.failures !t);

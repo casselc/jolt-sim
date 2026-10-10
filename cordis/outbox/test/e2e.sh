@@ -47,18 +47,16 @@ for c in r1 r2 r1 r2 a3 r1 r2 r1 r2 a4 r1 r2 r1 r2 a2 r1 r2 r1 r2 a3 r1 r2 r1 r2
 done
 [ -n "${out:-}" ] || out=$(run)
 
-# the audit: the records read again against their own graph are clean; against a graph whose
-# critic asks for something else, the runner refuses to resume them
+# the audit: the records read again against their own code are clean; a changed --graph does not
+# change the code (the store keeps its own revisions; new code enters only by --admit)
 "$run_bin" --graph "$graph" --name review_loop --store "$T/run.db" --socket "$T/outbox.sock" --audit \
   --input 'request={"path":"src/main.ml","patch":"let x = 1"}' --observational llm.complete --worst llm.complete=4096 \
   --worst repo.read=1 --budget 100000 --timeout 10 > /dev/null
 sed 's/max_tokens: 4000/max_tokens: 4001/' "$graph" > "$T/changed.cg"
-set +e
 "$run_bin" --graph "$T/changed.cg" --name review_loop --store "$T/run.db" --socket "$T/outbox.sock" --audit \
   --input 'request={"path":"src/main.ml","patch":"let x = 1"}' --observational llm.complete --worst llm.complete=4096 \
-  --worst repo.read=1 --budget 100000 --timeout 10 > /dev/null 2> "$T/audit.err"; code=$?
-set -e
-[ "$code" = 2 ] && grep -q "not resuming" "$T/audit.err" || { echo "the audit should refuse a changed graph (exit $code)"; cat "$T/audit.err"; exit 1; }
+  --worst repo.read=1 --budget 100000 --timeout 10 > /dev/null 2> "$T/audit.err"
+grep -q "store's own starting revision is used" "$T/audit.err" || { echo "a changed --graph was not noticed"; cat "$T/audit.err"; exit 1; }
 
 # an engine that dies mid-exchange: send an intent and hang up before the answer; the outbox must live on
 python3 - "$T/outbox.sock" <<'PY'
