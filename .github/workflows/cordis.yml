@@ -55,6 +55,8 @@ jobs:
         run: |
           opam exec -- dune build
           opam exec -- dune test
+          # the engine and the outbox as processes, against a stand-in completions server
+          opam exec -- dune build @outbox/test/e2e
 
       - name: Set up Node
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6

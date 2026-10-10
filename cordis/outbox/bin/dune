@@ -1,0 +1,4 @@
+(executable
+ (name cordis_outbox)
+ (public_name cordis-outbox)
+ (libraries cordis_outbox))

@@ -1,0 +1,4 @@
+(executable
+ (name cordis_run)
+ (public_name cordis-run)
+ (libraries cordis_engine cordis_graph cordis_cel yojson unix))

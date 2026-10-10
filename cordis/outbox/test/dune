@@ -1,0 +1,8 @@
+; The review loop as processes: cordis-run and cordis-outbox over a socket,
+; against a stand-in completions server, with the runner killed twice
+;   dune build @outbox/test/e2e
+(rule
+ (alias e2e)
+ (deps e2e.sh stub_llm.py %{bin:cordis-run} %{bin:cordis-outbox} ../../graph/examples/review.cg)
+ (action
+  (run bash %{dep:e2e.sh} %{bin:cordis-run} %{bin:cordis-outbox} %{dep:../../graph/examples/review.cg} %{dep:stub_llm.py})))

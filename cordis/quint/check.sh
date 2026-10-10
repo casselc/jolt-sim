@@ -130,7 +130,8 @@ sim routes.qnt keyByValue noStall VIOLATED
 
 # ---- budget.qnt (RFC 0006: reservations with the commit, settlement once, held while Uncertain) --
 for inv in withinBudget accounted heldWhileUncertain settleOnce; do sim budget.qnt design "$inv" ok; done
-VERIFY_STEPS=${BUDGET_VERIFY_STEPS:-$VERIFY_STEPS} verify budget.qnt design safety ok
+# Apalache: depth 6 in about 70 s; depth 8 checked once (about 830 s)
+VERIFY_STEPS=${BUDGET_VERIFY_STEPS:-6} verify budget.qnt design safety ok
 for w in refusedForBudget settledBelowReservation uncertainHeld crashedReserved; do sim budget.qnt design "not($w)" VIOLATED; done
 sim budget.qnt reserveAfterCommit accounted VIOLATED
 sim budget.qnt refundOnLost heldWhileUncertain VIOLATED

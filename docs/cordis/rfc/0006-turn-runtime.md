@@ -889,7 +889,40 @@ importers wait for the slice.
    releases the awaited attempt again, so the outbox must journal each
    observational attempt by (key, attempt) and answer a repeat from the
    journal, or the world is charged twice for one reservation. The real
-   outbox (next) journals every key that way.
+   outbox journals every key that way.
+
+   The outbox is a process (`cordis/outbox`, `cordis-outbox`): one engine
+   at a time connects over a Unix socket and speaks JSON lines (intent,
+   reconcile; ack, receipt, lost, reconciled). It journals an intent in
+   SQLite before running it (by key, or by key and attempt for an
+   observational kind), acknowledges once journaled, runs it once, journals
+   the receipt, and answers a repeat from the journal; a row cut off by a
+   restart becomes unknown and is answered as lost. Executors:
+   `llm.complete` against an OpenAI-compatible chat-completions endpoint
+   (halo-flash's), costed by the tokens it reports, through a small
+   HTTP/1.1 client; `repo.read` under a root, reconciled by reading again.
+   `cordis-run` hosts the engine as a process: SQLite run store, the outbox
+   socket, a receipt not in time taken as lost, recovery from the store at
+   start, and two crash hooks for tests. `outbox/test/e2e.sh` runs the
+   review loop that way against a stand-in completions server, crashing
+   the runner over and over (after a few actions, and right after a
+   receipt is applied but before it is synced) with one outbox serving
+   every run and restarted once: the loop ships, the server answers exactly
+   three completions, the journal holds three of each kind, and an engine
+   that hangs up mid-answer does not take the outbox down. Planted faults
+   it catches: an outbox that does not journal observational attempts
+   (seven completions instead of three) and one that dies on a write to a
+   dead engine. Building it found three faults, each fixed:
+   - the runner read frames through a buffered channel and waited on the
+     socket with `select`, which cannot see a frame already in the buffer,
+     so after a restart it timed out holding a receipt, took it as lost, and
+     paid for a second completion;
+   - the outbox died of SIGPIPE when an engine crashed while it was
+     answering;
+   - and, the engine gone, it abandoned an intent it had journaled; it now
+     runs it and journals the receipt for the engine's return.
+   Still to come in stage 2: the central limiter, and a run against
+   halo-flash itself.
 3. **The run store, hardened.** Recovery under fault injection; the
    replay audit (5C); and a **native rollback-fidelity check**: on the
    host's own filesystem (ZFS on FreeBSD), snapshot the run store's
