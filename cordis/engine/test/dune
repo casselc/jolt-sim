@@ -1,8 +1,21 @@
-; The review loop on the sans-IO engine, in memory (RFC 0006 rev 2, stage 1)
+; The loopback host: shared by the properties and the conformance runner
+(library
+ (name engine_loopback)
+ (wrapped false)
+ (modules loopback)
+ (libraries cordis_engine cordis_graph cordis_cel yojson))
+
+; The review loop on the sans-IO engine (RFC 0006 rev 2, stage 1)
 (test
  (name review_loop)
  (modules review_loop)
- (libraries cordis_engine cordis_graph cordis_cel hegel alcotest)
+ (libraries engine_loopback cordis_engine cordis_graph cordis_cel hegel alcotest)
  (deps ../../graph/examples/review.cg)
  (action
   (run %{test} ../../graph/examples/review.cg)))
+
+; Conformance runs, written as ITF traces over quint/runtime.qnt (quint/check.sh replays them)
+(executable
+ (name conform)
+ (modules conform)
+ (libraries engine_loopback cordis_engine yojson))

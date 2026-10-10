@@ -845,8 +845,28 @@ importers wait for the slice.
    double); one is equivalent here: forgetting answered appends cannot
    duplicate a note in a loop, since an append makes its scrutinee stale,
    and needs a graph whose route appends to a stream its scrutinee does
-   not read. Still to do in stage 1: ITF traces of these runs checked
-   against `lifecycle.qnt`, `engine.qnt` and `observe.qnt`.
+   not read.
+
+   Conformance closes the stage. `engine.qnt` and `observe.qnt` check the
+   protocol over a small fixed world, which the review loop's
+   recomputations do not map onto step for step, so `quint/runtime.qnt`
+   states the same rules over the engine's own alphabet, with parameters:
+   `persist`, `emit`, `retry`, `giveUp`, `doubt`, `refetch`, `resume`,
+   `sync`, `release`, `ask`, `crash`, `outside`. Its guards are the output
+   gate, receipts by key and attempt, retry only for observational kinds
+   and doubt only for effectful ones, and recovery to the durable state;
+   it has its own witnesses and mutants in the gate. The loopback host
+   (`engine/test/loopback.ml`) projects every host step onto those actions
+   (a step can be several: a sync and the releases it lets out, a crash and
+   what recovery asks), with the receipt's own key and attempt, and
+   `engine/test/conform.exe` writes seeded runs under faults, crashes and an
+   input change as ITF. `quintgo validate` replays them: twelve runs of the
+   engine conform; an engine without the output gate fails on every run,
+   and one that matches receipts by key alone fails on the run that loses a
+   receipt and then hears from the old attempt. The model gate runs twelve
+   (`runs conformance-engine`).
+   `lifecycle.qnt`'s kernel steps are not replayed: within one revision the
+   engine does not step the kernel (its control plane, from stage 5).
 2. **A real model behind the outbox.** The outbox process with its
    SQLite journal, the relay (`handoff.qnt`), reservations and the
    limiter (`budget.qnt`), and a completion endpoint (halo-flash's

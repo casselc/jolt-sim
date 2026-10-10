@@ -128,6 +128,12 @@ sim routes.qnt appendEveryRun appendOnce VIOLATED
 sim routes.qnt noCap bounded VIOLATED
 sim routes.qnt keyByValue noStall VIOLATED
 
+# ---- runtime.qnt (RFC 0006: the engine's protocol, which engine runs are replayed in) ---
+sim runtime.qnt design safety ok
+for w in retried doubted refetched recoveredAwaiting gaveUp; do sim runtime.qnt design "not($w)" VIOLATED; done
+sim runtime.qnt releaseEarly gateHeld VIOLATED
+sim runtime.qnt anyAttempt attemptMatched VIOLATED
+
 # ---- revisions.qnt (RFC 0004: descriptor-native types across graph revisions) ----------
 for inv in ownRegistry stateReadable breakingApproved singleWriter; do sim revisions.qnt design "$inv" ok; done
 VERIFY_STEPS=${REVISIONS_VERIFY_STEPS:-10} verify revisions.qnt design safety ok
@@ -213,6 +219,17 @@ if command -v "$QUINTGO" >/dev/null 2>&1; then
   conform random random design pass --seed 500 --fibers 4
   # a blind-retry run that reports itself as the design must be rejected
   TRACES=40 conform mutant-as-design chain blind-retry fail --seed 7
+  # the engine (RFC 0006 stage 1): review-loop runs under faults and crashes, replayed in runtime.qnt
+  edir="$work/engine"
+  mkdir -p "$edir"
+  (cd "$root" && dune build ./engine/test/conform.exe 2>/dev/null \
+     && ./_build/default/engine/test/conform.exe graph/examples/review.cg "$edir" "${ENGINE_TRACES:-12}" 7 "$here/runtime.qnt")
+  epass=0 efail=0
+  for f in "$edir"/*.itf.json; do
+    [ -e "$f" ] || continue
+    if "$QUINTGO" validate -backend "$BACKEND" -dir "$work/q" "$f" 2>&1 | grep -q 'RESULT: trace conforms'; then epass=$((epass + 1)); else efail=$((efail + 1)); fi
+  done
+  echo "runs conformance-engine review-loop passed $epass failed $efail (expect all-pass)" | tee -a "$OUT"
 else
   echo "runs conformance quintgo not found (QUINTGO=$QUINTGO) ERROR" | tee -a "$OUT"
 fi
