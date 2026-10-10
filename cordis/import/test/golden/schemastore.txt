@@ -1,5 +1,5 @@
-# SchemaStore: 990 schemas; 679 import (their types check); 311 are refused.
-# Instances of imported schemas: 932 positive, 561 negative; 1298 agree with jsonschema; 174 valid ones are refused as RFC 0003 documents; 21 jsonschema could not validate.
+# SchemaStore: 990 schemas; 682 import (their types check); 308 are refused.
+# Instances of imported schemas: 986 positive, 561 negative; 1347 agree with jsonschema; 179 valid ones are refused as RFC 0003 documents; 21 jsonschema could not validate.
 # Refusals by kind:
 #    116  a remote $ref
 #    114  a recursive $ref
@@ -10,9 +10,7 @@
 #      5  a pattern that does not compile
 #      3  the schema false admits nothing
 #      2  not a schema
-#      2  $ref #/definitions///: no 
 #      1  a pattern that is not ASCII
-#      1  Rules_indent: $ref #/definitions/rules/properties/indent/definitions/options/items/0: no items
 BizTalkServerApplicationSchema: imported, 7 types, 0 instances
 abc-clinical-demand-forecast-1.0.0: refused: SubjectFlow_regions: a recursive $ref (#/definitions/RegionConfig)
 abc-clinical-demand-forecast-2.0.0: refused: SubjectFlow_regions: a recursive $ref (#/definitions/RegionConfig)
@@ -520,7 +518,7 @@ jreleaser-1.8.0: refused: DistributionMap: a predicate of 255905 bytes, over the
 jreleaser-1.9.0: refused: DistributionMap: a predicate of 255905 bytes, over the limit of 200000
 jsbeautifyrc-nested: refused: a remote $ref (jsbeautifyrc#/definitions/CHJProperties)
 jsbeautifyrc: imported, 10 types, 0 instances
-jsconfig: refused: $ref #/definitions///: no 
+jsconfig: imported, 20 types, 10 instances
 jscpd: imported, 11 types, 2 instances
 jscsrc: imported, 18 types, 1 instances
 jsdoc-1.0.0: imported, 10 types, 0 instances
@@ -927,10 +925,10 @@ treefmt: imported, 1 types, 2 instances
 truescript: imported, 8 types, 1 instances
 ts-force-config: imported, 4 types, 2 instances
 tsbuild: refused: a remote $ref (https://json.schemastore.org/jsconfig.json)
-tsconfig: refused: $ref #/definitions///: no 
+tsconfig: imported, 29 types, 18 instances
 tsd: imported, 1 types, 1 instances
 tsdrc: imported, 1 types, 1 instances
-tslint: refused: Rules_indent: $ref #/definitions/rules/properties/indent/definitions/options/items/0: no items
+tslint: imported, 7 types, 26 instances
 tsoa: refused: a remote $ref (tsconfig#/definitions/compilerOptionsDefinition)
 ttheme-market: imported, 4 types, 0 instances
 ttheme-palette: imported, 12 types, 0 instances

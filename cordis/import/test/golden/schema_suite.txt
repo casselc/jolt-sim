@@ -1,13 +1,13 @@
 # draft2020-12: the predicate: 971 tests agree; 330 tests in 134 groups do not compile.
-# draft2020-12: the importer and codec: 939 tests agree; 14 valid instances are refused as RFC 0003 documents; 348 tests in 138 groups do not import.
-# draft2019-09: the predicate: 957 tests agree; 304 tests in 119 groups do not compile.
-# draft2019-09: the importer and codec: 925 tests agree; 14 valid instances are refused as RFC 0003 documents; 322 tests in 123 groups do not import.
-# draft7: the predicate: 864 tests agree; 65 tests in 30 groups do not compile.
-# draft7: the importer and codec: 834 tests agree; 14 valid instances are refused as RFC 0003 documents; 81 tests in 33 groups do not import.
-# draft6: the predicate: 784 tests agree; 57 tests in 26 groups do not compile.
-# draft6: the importer and codec: 754 tests agree; 14 valid instances are refused as RFC 0003 documents; 73 tests in 29 groups do not import.
-# draft4: the predicate: 579 tests agree; 39 tests in 18 groups do not compile.
-# draft4: the importer and codec: 563 tests agree; 14 valid instances are refused as RFC 0003 documents; 41 tests in 18 groups do not import.
+# draft2020-12: the importer and codec: 945 tests agree; 14 valid instances are refused as RFC 0003 documents; 342 tests in 137 groups do not import.
+# draft2019-09: the predicate: 959 tests agree; 302 tests in 118 groups do not compile.
+# draft2019-09: the importer and codec: 933 tests agree; 14 valid instances are refused as RFC 0003 documents; 314 tests in 121 groups do not import.
+# draft7: the predicate: 866 tests agree; 63 tests in 29 groups do not compile.
+# draft7: the importer and codec: 842 tests agree; 14 valid instances are refused as RFC 0003 documents; 73 tests in 31 groups do not import.
+# draft6: the predicate: 786 tests agree; 55 tests in 25 groups do not compile.
+# draft6: the importer and codec: 762 tests agree; 14 valid instances are refused as RFC 0003 documents; 65 tests in 27 groups do not import.
+# draft4: the predicate: 581 tests agree; 37 tests in 17 groups do not compile.
+# draft4: the importer and codec: 571 tests agree; 14 valid instances are refused as RFC 0003 documents; 33 tests in 16 groups do not import.
 
 ## draft2020-12: schemas the predicate does not compile
 draft2020-12/additionalProperties.json: non-ASCII pattern with additionalProperties: pattern "^\195\161" is not ASCII
@@ -177,7 +177,6 @@ draft2020-12/not.json: collect annotations inside a 'not', even if collection is
 draft2020-12/pattern.json: pattern with Unicode property escape requires unicode mode: Root: pattern "^\\p{Letter}+$" uses a Unicode property class
 draft2020-12/patternProperties.json: patternProperties with Unicode property escape: Root: pattern "^\\p{Letter}+$" uses a Unicode property class
 draft2020-12/properties.json: properties with boolean schema: Root_bar: the schema false admits nothing
-draft2020-12/ref.json: escaped pointer ref: $ref #/$defs/slash/field: no slash
 draft2020-12/ref.json: remote ref, containing refs itself: a remote $ref (https://json-schema.org/draft/2020-12/schema)
 draft2020-12/ref.json: $ref to boolean schema false: bool: the schema false admits nothing
 draft2020-12/ref.json: Recursive references between schemas: a remote $ref (tree)
@@ -302,7 +301,6 @@ draft2019-09/recursiveRef.json: $recursiveRef with no $recursiveAnchor in the ou
 draft2019-09/recursiveRef.json: multiple dynamic paths to the $recursiveRef keyword: an embedded resource ($id "recursiveRef8_anyLeafNode.json"): references would resolve against it
 draft2019-09/recursiveRef.json: dynamic $recursiveRef destination (not predictable at schema compile time): an embedded resource ($id "anyLeafNode.json"): references would resolve against it
 draft2019-09/ref.json: root pointer ref: a recursive $ref (#)
-draft2019-09/ref.json: relative pointer ref to array: $ref #/items/0: no items
 draft2019-09/ref.json: remote ref, containing refs itself: a remote $ref (https://json-schema.org/draft/2019-09/schema)
 draft2019-09/ref.json: Recursive references between schemas: a remote $ref (node)
 draft2019-09/ref.json: ref creates new scope when adjacent to keywords: keyword unevaluatedProperties
@@ -424,8 +422,6 @@ draft2019-09/recursiveRef.json: $recursiveRef with no $recursiveAnchor in the in
 draft2019-09/recursiveRef.json: $recursiveRef with no $recursiveAnchor in the outer schema resource: Root: an embedded resource ($id "http://localhost:4242/draft2019-09/recursiveRef7/inner.json"): references would resolve against it
 draft2019-09/recursiveRef.json: multiple dynamic paths to the $recursiveRef keyword: inner: an embedded resource ($id "recursiveRef8_inner.json"): references would resolve against it
 draft2019-09/recursiveRef.json: dynamic $recursiveRef destination (not predictable at schema compile time): inner: an embedded resource ($id "inner.json"): references would resolve against it
-draft2019-09/ref.json: relative pointer ref to array: Root: $ref #/items/0: no items
-draft2019-09/ref.json: escaped pointer ref: $ref #/$defs/slash/field: no slash
 draft2019-09/ref.json: remote ref, containing refs itself: a remote $ref (https://json-schema.org/draft/2019-09/schema)
 draft2019-09/ref.json: $ref to boolean schema false: bool: the schema false admits nothing
 draft2019-09/ref.json: Recursive references between schemas: a remote $ref (tree)
@@ -442,7 +438,7 @@ draft2019-09/ref.json: ref to if: Root: a remote $ref (http://example.com/ref/if
 draft2019-09/ref.json: ref to then: Root: a remote $ref (http://example.com/ref/then)
 draft2019-09/ref.json: ref to else: Root: a remote $ref (http://example.com/ref/else)
 draft2019-09/ref.json: ref with absolute-path-reference: a remote $ref (/absref/foobar.json)
-draft2019-09/ref.json: $ref with $recursiveAnchor: $ref #/$defs//schemas/unevaluated-items-are-allowed: no 
+draft2019-09/ref.json: $ref with $recursiveAnchor: /schemas/unevaluated-items-are-allowed: an embedded resource ($id "/schemas/unevaluated-items-are-allowed"): references would resolve against it
 draft2019-09/refRemote.json: remote ref: a remote $ref (http://localhost:1234/draft2019-09/integer.json)
 draft2019-09/refRemote.json: fragment within remote ref: a remote $ref (http://localhost:1234/draft2019-09/subSchemas.json#/$defs/integer)
 draft2019-09/refRemote.json: anchor within remote ref: a remote $ref (http://localhost:1234/draft2019-09/locationIndependentIdentifier.json#foo)
@@ -535,7 +531,6 @@ draft2019-09/vocabulary.json: ignore unrecognized optional vocabulary: a metasch
 draft7/additionalProperties.json: non-ASCII pattern with additionalProperties: pattern "^\195\161" is not ASCII
 draft7/definitions.json: validate definition against metaschema: a remote $ref (http://json-schema.org/draft-07/schema#)
 draft7/ref.json: root pointer ref: a recursive $ref (#)
-draft7/ref.json: relative pointer ref to array: $ref #/items/0: no items
 draft7/ref.json: $ref prevents a sibling $id from changing the base uri: an embedded resource ($id "http://localhost:1234/sibling_id/"): references would resolve against it
 draft7/ref.json: remote ref, containing refs itself: a remote $ref (http://json-schema.org/draft-07/schema#)
 draft7/ref.json: Recursive references between schemas: a remote $ref (node)
@@ -568,8 +563,6 @@ draft7/additionalProperties.json: non-ASCII pattern with additionalProperties: R
 draft7/boolean_schema.json: boolean schema 'false': Root: the schema false admits nothing
 draft7/definitions.json: validate definition against metaschema: a remote $ref (http://json-schema.org/draft-07/schema#)
 draft7/properties.json: properties with boolean schema: Root_bar: the schema false admits nothing
-draft7/ref.json: relative pointer ref to array: Root: $ref #/items/0: no items
-draft7/ref.json: escaped pointer ref: $ref #/definitions/slash/field: no slash
 draft7/ref.json: $ref prevents a sibling $id from changing the base uri: a remote $ref (foo.json)
 draft7/ref.json: remote ref, containing refs itself: a remote $ref (http://json-schema.org/draft-07/schema#)
 draft7/ref.json: $ref to boolean schema false: bool: the schema false admits nothing
@@ -602,7 +595,6 @@ draft7/refRemote.json: $ref to $ref finds location-independent $id: a remote $re
 draft6/additionalProperties.json: non-ASCII pattern with additionalProperties: pattern "^\195\161" is not ASCII
 draft6/definitions.json: validate definition against metaschema: a remote $ref (http://json-schema.org/draft-06/schema#)
 draft6/ref.json: root pointer ref: a recursive $ref (#)
-draft6/ref.json: relative pointer ref to array: $ref #/items/0: no items
 draft6/ref.json: $ref prevents a sibling $id from changing the base uri: an embedded resource ($id "http://localhost:1234/sibling_id/"): references would resolve against it
 draft6/ref.json: remote ref, containing refs itself: a remote $ref (http://json-schema.org/draft-06/schema#)
 draft6/ref.json: Recursive references between schemas: a remote $ref (node)
@@ -631,8 +623,6 @@ draft6/additionalProperties.json: non-ASCII pattern with additionalProperties: R
 draft6/boolean_schema.json: boolean schema 'false': Root: the schema false admits nothing
 draft6/definitions.json: validate definition against metaschema: a remote $ref (http://json-schema.org/draft-06/schema#)
 draft6/properties.json: properties with boolean schema: Root_bar: the schema false admits nothing
-draft6/ref.json: relative pointer ref to array: Root: $ref #/items/0: no items
-draft6/ref.json: escaped pointer ref: $ref #/definitions/slash/field: no slash
 draft6/ref.json: $ref prevents a sibling $id from changing the base uri: a remote $ref (foo.json)
 draft6/ref.json: remote ref, containing refs itself: a remote $ref (http://json-schema.org/draft-06/schema#)
 draft6/ref.json: $ref to boolean schema false: bool: the schema false admits nothing
@@ -661,7 +651,6 @@ draft6/refRemote.json: $ref to $ref finds location-independent $id: a remote $re
 draft4/additionalProperties.json: non-ASCII pattern with additionalProperties: pattern "^\195\161" is not ASCII
 draft4/definitions.json: validate definition against metaschema: a remote $ref (http://json-schema.org/draft-04/schema#)
 draft4/ref.json: root pointer ref: a recursive $ref (#)
-draft4/ref.json: relative pointer ref to array: $ref #/items/0: no items
 draft4/ref.json: $ref prevents a sibling id from changing the base uri: an embedded resource ($id "http://localhost:1234/sibling_id/"): references would resolve against it
 draft4/ref.json: remote ref, containing refs itself: a remote $ref (http://json-schema.org/draft-04/schema#)
 draft4/ref.json: Recursive references between schemas: a remote $ref (node)
@@ -680,8 +669,6 @@ draft4/refRemote.json: Location-independent identifier in remote ref: a remote $
 ## draft4: schemas that do not import
 draft4/additionalProperties.json: non-ASCII pattern with additionalProperties: Root: pattern "^\195\161" is not ASCII
 draft4/definitions.json: validate definition against metaschema: a remote $ref (http://json-schema.org/draft-04/schema#)
-draft4/ref.json: relative pointer ref to array: Root: $ref #/items/0: no items
-draft4/ref.json: escaped pointer ref: $ref #/definitions/slash/field: no slash
 draft4/ref.json: $ref prevents a sibling id from changing the base uri: a remote $ref (foo.json)
 draft4/ref.json: remote ref, containing refs itself: a remote $ref (http://json-schema.org/draft-04/schema#)
 draft4/ref.json: Recursive references between schemas: a remote $ref (tree)

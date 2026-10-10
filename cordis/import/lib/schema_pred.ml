@@ -92,11 +92,11 @@ let unescape_pointer s = replace ~sub:"~0" ~by:"~" (replace ~sub:"~1" ~by:"/" s)
 let percent_decode s =
   let b = Buffer.create (String.length s) and i = ref 0 in
   while !i < String.length s do
-    if s.[!i] = '%' && !i + 2 < String.length s then begin
-      Buffer.add_char b (Char.chr (int_of_string ("0x" ^ String.sub s (!i + 1) 2)));
+    match if s.[!i] = '%' && !i + 2 < String.length s then int_of_string_opt ("0x" ^ String.sub s (!i + 1) 2) else None with
+    | Some c ->
+      Buffer.add_char b (Char.chr c);
       i := !i + 3
-    end
-    else (Buffer.add_char b s.[!i]; incr i)
+    | None -> Buffer.add_char b s.[!i]; incr i
   done;
   Buffer.contents b
 
@@ -116,10 +116,22 @@ let resolve (root : J.t) (r : string) =
   if r = "#" || r = "" then root
   else if String.length r >= 2 && String.sub r 0 2 = "#/" then
     let parts = String.split_on_char '/' (String.sub r 2 (String.length r - 2)) |> List.map (fun p -> unescape_pointer (percent_decode p)) in
+    (* a key earlier drafts used that Schema_draft renamed: a reference
+       written against the original document still lands *)
+    let renamed = [ ("items", "prefixItems"); ("additionalItems", "items"); ("dependencies", "dependentSchemas"); ("dependencies", "dependentRequired") ] in
     List.fold_left
       (fun (j : J.t) p ->
         match j with
-        | `Assoc kv -> (match List.assoc_opt p kv with Some v -> v | None -> unsupported "$ref %s: no %s" r p)
+        | `Assoc kv -> (
+            match List.assoc_opt p kv with
+            | Some (`List _ as v) when p = "items" -> v
+            | Some v when not (List.mem_assoc p renamed) -> v
+            | found -> (
+                let alternatives = List.filter_map (fun (o, n) -> if o = p then List.assoc_opt n kv else None) renamed in
+                match found, alternatives with
+                | _, v :: _ -> v
+                | Some v, [] -> v
+                | None, [] -> unsupported "$ref %s: no %s" r p))
         | `List xs -> (match int_of_string_opt p with Some i when i < List.length xs -> List.nth xs i | _ -> unsupported "$ref %s: no %s" r p)
         | _ -> unsupported "$ref %s does not resolve" r)
       root parts

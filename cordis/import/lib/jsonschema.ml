@@ -463,9 +463,12 @@ let import ?(name = "Root") (doc : J.t) =
   let c = { doc; defs = []; residues = []; report = []; visiting = []; by_def = []; names = []; } in
   let root_name = match get doc "title" with Some (`String t) -> t | _ -> name in
   (* every $defs entry, then the root, which is the reference "#" *)
+  (* a key as a JSON Pointer segment in a URI fragment: ~ is ~0, / is ~1,
+     % is %25 *)
+  let segment k = P.replace ~sub:"%" ~by:"%25" (P.replace ~sub:"/" ~by:"~1" (P.replace ~sub:"~" ~by:"~0" k)) in
   let defs =
-    (match get doc "$defs" with Some (`Assoc ds) -> List.map (fun (k, _) -> "#/$defs/" ^ k) ds | _ -> [])
-    @ match get doc "definitions" with Some (`Assoc ds) -> List.map (fun (k, _) -> "#/definitions/" ^ k) ds | _ -> []
+    (match get doc "$defs" with Some (`Assoc ds) -> List.map (fun (k, _) -> "#/$defs/" ^ segment k) ds | _ -> [])
+    @ match get doc "definitions" with Some (`Assoc ds) -> List.map (fun (k, _) -> "#/definitions/" ^ segment k) ds | _ -> []
   in
   List.iter (fun r -> ignore (define c r)) defs;
   let root = define ~name:root_name c "#" in
