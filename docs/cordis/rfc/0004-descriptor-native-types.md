@@ -1,7 +1,8 @@
 # RFC 0004: Descriptor-native types
 
-Status: accepted for implementation (phase 2, build order item 6). Stages
-1 to 4 are built; stage 5 remains.
+Status: built (phase 2, build order item 6), stages 1 to 5. Migration
+cells (state migration other than a reset) and routing on oneofs and
+enums are later work.
 Amends RFC 0002 (types, `uses`, identity, admission) and RFC 0003 (the
 protobuf importer). Model: `cordis/quint/revisions.qnt`.
 

@@ -4,7 +4,12 @@
 
    reads a FileDescriptorSet and writes DIR/types.cg (the types and their
    check_ cells), DIR/report.txt (what was approximated) and DIR/names.json
-   (the name map); without --out it prints the types file and the report. *)
+   (the name map); without --out it prints the types file and the report.
+
+   For protobuf this is a report tool: it shows what a schema would lose as
+   graph-language records. Graphs use protobuf types directly, attaching
+   the set with `uses descriptors sha256:<hex>;` (RFC 0004); --print
+   attach prints that line for SET. *)
 
 open Cordis_import
 
@@ -14,6 +19,8 @@ let die fmt = Printf.ksprintf (fun m -> prerr_endline m; exit 1) fmt
 
 let () =
   match Array.to_list Sys.argv with
+  | [ _; "protobuf"; set; "--print"; "attach" ] ->
+      Printf.printf "uses descriptors sha256:%s;\n" (Cordis_cel.Sha256.digest (read set))
   | _ :: "protobuf" :: set :: rest -> (
       match Descriptor.set_of_string (read set) with
       | Error m -> die "%s: %s" set m
@@ -54,5 +61,5 @@ let () =
               write "report.txt" report;
               write "names.json" (Yojson.Safe.pretty_to_string (Protobuf.name_map imp) ^ "\n")
           | [] -> print_string types; print_string "\n// ---- report\n"; print_string report
-          | _ -> die "usage: cimport protobuf SET.binpb [--out DIR | --print types|report|names]")
-  | _ -> die "usage: cimport protobuf SET.binpb [--out DIR | --print types|report|names]"
+          | _ -> die "usage: cimport protobuf SET.binpb [--out DIR | --print types|report|names|attach]")
+  | _ -> die "usage: cimport protobuf SET.binpb [--out DIR | --print types|report|names|attach]"

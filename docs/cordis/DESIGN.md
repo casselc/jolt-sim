@@ -124,7 +124,7 @@ Recursion is the line not crossed; that is where DataWeave lost its cost bound. 
 
 One internal type form (records with rows, variants, lists, maps, optionals, scalars with formats). Each import produces types, CEL residue for constraints types cannot express, and a lossiness report.
 
-- **Protobuf:** close to lossless; `buf breaking` is the compatibility check.
+- **Protobuf:** used natively, not translated (RFC 0004): graphs attach descriptor sets by hash and cells take protobuf messages under CEL's own semantics; admission classifies descriptor changes itself, in the spirit of `buf breaking`, and carries or migrates state accordingly.
 - **JSON Schema:** `allOf`, `not`, `if`/`then`/`else` and undiscriminated `oneOf` become a looser type plus residue; objects are closed at trust boundaries.
 - **OpenAPI:** each operation becomes an intent kind. The method sets the retry rule, `securitySchemes` names the credential, `servers` is the egress allowlist.
 - **AsyncAPI:** channels and send or receive operations become the graph's external ports.
