@@ -171,6 +171,80 @@ let compat_tests =
     ("a recursive variant, a payload changed", `Quick, expect_approval "changes the type" "type E = Num(string) | Neg(E);");
     ("an effect's types", `Quick, expect_approval "request or receipt" "effect unused(string) : int;") ]
 
+(* ---- bounds of recursive types (RFC 0002 revision 3) ----------------------------------------------- *)
+
+module V = Cordis_cel.Value
+
+let bounds_file =
+  {|type Tree = { label : string; note : option(int); kids : list(Tree)<max 50>; } <nodes 40>;
+type Narrow = { kids : list(Narrow)<max 2>; };
+type E = Num(string<max 3>) | Neg(E);
+type In = { xs : list(In); } <nodes 4>;
+type Out = { ins : list(In); next : option(Out); } <nodes 100>;
+cell tree(t : Tree) : int = { t.kids.size(); }
+cell narrow(t : Narrow) : int = { t.kids.size(); }
+cell e(x : E) : int = { 1; }
+cell out(o : Out) : int = { o.ins.size(); }
+|}
+
+let param_bound cell =
+  let s = load_ok bounds_file in
+  match List.find_opt (fun (c : Check.cell_info) -> c.cname = cell) s.checked.cells with
+  | Some c -> snd (List.hd c.param_bounds)
+  | None -> failwith cell
+
+let record fs = match V.make_map (List.map (fun (k, v) -> (V.String k, v)) fs) with V.Map _ as m -> m | e -> e
+let case tag p = record (("tag", V.String tag) :: (match p with Some v -> [ ("value", v) ] | None -> []))
+let tree ?(note = false) kids =
+  record [ ("label", V.String "x"); ("note", V.Optional (if note then Some (V.Int 1L) else None)); ("kids", V.List (Array.of_list kids)) ]
+
+(* the count the node bound is of: the value and every element, map value and optional content *)
+let rec count = function
+  | V.List xs -> Array.fold_left (fun a x -> a + count x) 1 xs
+  | V.Map m -> List.fold_left (fun a (_, x) -> a + count x) 1 m
+  | V.Optional (Some x) -> 1 + count x
+  | _ -> 1
+
+let refused_with frag b v () =
+  match Check.exceeds b v with
+  | Some m -> if not (contains m frag) then Alcotest.failf "refused as %s, expected %s" m frag
+  | None -> Alcotest.failf "admitted, expected %s" frag
+
+let admitted b v () = match Check.exceeds b v with Some m -> Alcotest.failf "refused: %s" m | None -> ()
+
+let bound_tests =
+  let leaf = tree [] in
+  let nest n = let rec go k = if k = 0 then V.List [||] else V.List [| record [ ("xs", go (k - 1)) ] |] in record [ ("xs", go n) ] in
+  let rec neg k x = if k = 0 then x else case "Neg" (Some (neg (k - 1) x)) in
+  [ ("a tree within its node bound", `Quick, admitted (param_bound "tree") (tree [ leaf; leaf; tree [ leaf ] ]));
+    ("a tree over its node bound", `Quick, refused_with "more than 40 nodes" (param_bound "tree") (tree (List.init 14 (fun _ -> leaf))));
+    (* 4 + 9 leaves of 4 = 40, and one note more is 41 *)
+    ("a tree of exactly its node bound", `Quick, admitted (param_bound "tree") (tree (List.init 9 (fun _ -> leaf))));
+    ("a tree one node over it", `Quick, refused_with "more than 40 nodes" (param_bound "tree") (tree ~note:true (List.init 9 (fun _ -> leaf))));
+    ("a level's <max N>, three levels down", `Quick,
+     refused_with "kids: kids: kids: a list of 3, over its bound of 2" (param_bound "narrow")
+       (record [ ("kids", V.List [| record [ ("kids", V.List [| record [ ("kids", V.List (Array.make 3 (record [ ("kids", V.List [||]) ]))) ] |]) ] |]) ]));
+    ("a variant's payload, beneath its recursion", `Quick, refused_with "Neg: Neg: Neg: Num: a string of 4" (param_bound "e") (neg 3 (case "Num" (Some (V.String "abcd")))));
+    ("a variant's payload within its bound", `Quick, admitted (param_bound "e") (neg 3 (case "Num" (Some (V.String "abc")))));
+    ("a recursive type inside another holds its own node bound", `Quick,
+     refused_with "more than 4 nodes" (param_bound "out") (record [ ("ins", V.List [| nest 2 |]); ("next", V.Optional None) ]));
+    ("the same, within it", `Quick, admitted (param_bound "out") (record [ ("ins", V.List [| nest 1; nest 1 |]); ("next", V.Optional None) ])) ]
+
+(* drawn trees: refused for their nodes exactly when they hold more than the bound *)
+let test_node_bound () =
+  let b = param_bound "tree" in
+  let seen = ref (0, 0) in
+  Fun.protect ~finally:(fun () -> Printf.printf "%d trees within the node bound, %d over\n" (fst !seen) (snd !seen)) @@ fun () ->
+  run "node-bound" (fun tc ->
+      let pick n = (Typed_gen.of_hegel tc).pick n in
+      let rec draw depth = tree ~note:(pick 2 = 0) (List.init (if depth = 0 then 0 else pick 4) (fun _ -> draw (depth - 1))) in
+      let v = draw (1 + pick 4) in
+      let n = count v in
+      Hegel.note tc (Printf.sprintf "%d nodes: %s" n (V.to_string v));
+      let over = Check.exceeds b v in
+      seen := if n > 40 then (fst !seen, snd !seen + 1) else (fst !seen + 1, snd !seen);
+      Hegel.require tc ~msg:"refused within its node bound, or admitted over it" ((n > 40) = (over <> None)))
+
 (* ---- admission, as admission.qnt states it -------------------------------------------------------- *)
 
 let bodies = [ "x"; "x + 1"; "x * 2"; "x - 3"; "x + x" ]
@@ -242,4 +316,5 @@ let () =
         [ Alcotest.test_case "corpus graphs run under the kernel" `Quick test_corpus_runs;
           Alcotest.test_case "random graphs: accepted invariants hold in every run" `Quick test_random_runs ] );
       ("compatibility", compat_tests);
+      ("bounds", List.map (fun (n, s, f) -> Alcotest.test_case n s f) bound_tests @ [ Alcotest.test_case "drawn trees: refused exactly over the node bound" `Quick test_node_bound ]);
       ("admission", [ Alcotest.test_case "no lost update, no unapproved narrowing" `Quick test_admission ]) ]

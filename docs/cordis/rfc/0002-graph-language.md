@@ -377,8 +377,28 @@ and prints on any definition (`type T = ... <nodes N>;`). Compatibility
 compares recursive types by the bisimulation, cases by name first.
 Tests: corpus programs (`ok_recursive.cg`, six `bad_recursive_*.cg`),
 soundness over the corpus's recursive cells, six compatibility cases
-in `stage3.ml`, and the syntax round trip with node bounds. Not yet:
-the node bound's use (cost and codecs, next). DESIGN.md's line ("recursion is the line not crossed")
+in `stage3.ml`, and the syntax round trip with node bounds. **The node
+bound** (`Check.bound`, `exceeds`): a type's bounds are lazy levels, so
+a recursive type's `<max N>`s are held all the way down (and a variant's
+payloads by tag, which bounds did not check before, recursive or not); where
+a value enters a recursive type from outside its cycle the bound carries
+`<nodes N>` (default `default_nodes`, 1,024), and a value counting more
+nodes is refused at a cell's arguments, its result and a stream append,
+as a `<max N>` is. A node is the value, and every element, map value and
+optional's content within it; the count stops at the bound. A recursive
+type inside another holds its own bound. The cost shape unfolds lazily
+instead of being cut at the cycle, so each level is charged by its own
+`<max N>`. Finding: no CEL operation here costs in proportion to the
+whole value (equality, `in` and `string()` are charged by the top
+level's size, as cel-go charges them), so the node bound enters no
+turn's estimate; what it caps is the engine's own work per value (the
+bound check, hashing, the durable form). Tests: `stage3.ml` "bounds"
+(a level three down, a variant's payload beneath its recursion, one
+recursive type inside another, a tree of exactly its bound and one node
+over it, which caught an off-by-one mutant that the property alone
+missed; and drawn trees refused exactly when over, 140 within and 60
+over), and in `review_loop.ml` a cell's result over its node bound
+failing its computation. DESIGN.md's line ("recursion is the line not crossed")
 is about **cell bodies**, and it stays: CEL has no recursion, so a cell
 still reaches a fixed depth into a value. What this revision admits is a
 recursive **type**, whose values are finite trees.

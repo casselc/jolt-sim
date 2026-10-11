@@ -24,7 +24,15 @@ let fail fmt = Printf.ksprintf (fun m -> raise (Fail m)) fmt
    assumed of a value, and what the runtime holds a value to at a cell's
    boundary and where it enters a stream (RFC 0002, "Types"; a value over its bound is refused,
    never truncated). *)
-type bound = { max : int option; elem : bound option; fields : (string * bound) list }
+type bound = {
+  max : int option;
+  elem : bound Lazy.t option;
+  fields : (string * bound Lazy.t) list;
+  cases : (string * bound Lazy.t) list;  (** a variant's payloads, by tag *)
+  nodes : int option;
+      (** where a value enters a recursive type from outside its cycle: the most nodes it may hold
+          (<nodes N>, RFC 0002 revision 3); lazy levels, so a recursive type's bound follows it down *)
+}
 
 type turn = {
   index : int;
@@ -87,9 +95,10 @@ type options = {
   store : string -> string option;  (** content by hash: library texts, descriptor sets *)
   default_size : int;  (** the size bound of an unbounded string, bytes, list or map *)
   budget : int;  (** a turn's cost ceiling *)
+  default_nodes : int;  (** the node bound of a recursive type without <nodes N> *)
 }
 
-let default_options = { store = (fun _ -> None); default_size = 1024; budget = 1_000_000 }
+let default_options = { store = (fun _ -> None); default_size = 1024; budget = 1_000_000; default_nodes = 1024 }
 
 (* ---- types ----------------------------------------------------------------------------------- *)
 
@@ -196,7 +205,7 @@ let inhabited defs =
    [C.Rec (name, scope)], with their bodies defined in a scope of the file's own; and the names that
    cannot be, with why: an unguarded cycle, no finite value, or a body that does not resolve. Kept
    for the definitions it was made from, by identity, as the CEL environment is. *)
-type recursion = { scope : int; recursive : string list; bad : (string, string) Hashtbl.t }
+type recursion = { scope : int; recursive : string list; cycle : (string * int) list; bad : (string, string) Hashtbl.t }
 
 let recursion_cache : (Obj.t * recursion) option ref = ref None
 
@@ -207,7 +216,10 @@ let rec recursion env =
       let types = List.filter_map (fun (n, i) -> match i with Type_def _ -> Some (n, def_refs i) | _ -> None) env.defs in
       let cyclic comp = match comp with [ v ] -> List.mem_assoc v (List.assoc v types) | _ -> true in
       let comps = List.filter cyclic (components types) in
-      let r = { scope = C.new_scope (); recursive = List.concat comps; bad = Hashtbl.create 4 } in
+      let r =
+        { scope = C.new_scope (); recursive = List.concat comps; bad = Hashtbl.create 4;
+          cycle = List.concat (List.mapi (fun i comp -> List.map (fun n -> (n, i)) comp) comps) }
+      in
       recursion_cache := Some (Obj.repr env.defs, r);
       let finite = inhabited env.defs in
       List.iter
@@ -306,7 +318,9 @@ let rec size_bound env ?(visiting = []) (t : ty) =
 let rec shape env ?(visiting = []) (t : ty) : Cordis_cel.Cost.shape =
   let module K = Cordis_cel.Cost in
   let d = env.options.default_size in
-  let sh = shape env ~visiting in
+  (* every level below this one is lazy, so a recursive type unfolds as far as it is looked at; only
+     a chain of aliases is followed eagerly, and [visiting] cuts that *)
+  let sh = shape env in
   let b = function Some n -> n | None -> d in
   let names ns = K.sized 0 (List.fold_left (fun a n -> max a (String.length n)) 1 ns) in
   let join_all = List.fold_left K.join K.bottom in
@@ -329,7 +343,7 @@ let rec shape env ?(visiting = []) (t : ty) : Cordis_cel.Cost.shape =
       | Some (Type_def (_, Variant cs, _)) ->
           let payloads = List.filter_map snd cs in
           { K.fields = []; lo = 1; hi = 2;
-            elem = lazy (join_all (names (List.map fst cs) :: List.map (shape env ~visiting:(n :: visiting)) payloads));
+            elem = lazy (join_all (names (List.map fst cs) :: List.map sh payloads));
             key = lazy (names [ "tag"; "value" ]) }
       | _ -> K.bounded d)
 
@@ -367,18 +381,33 @@ and proto_shape env name : Cordis_cel.Cost.shape =
 
 (* ---- bounds ---------------------------------------------------------------------------------- *)
 
-let no_bound = { max = None; elem = None; fields = [] }
+let no_bound = { max = None; elem = None; fields = []; cases = []; nodes = None }
 
-let rec bound_of env ?(visiting = []) (t : ty) : bound =
-  let b = bound_of env ~visiting in
+(* [within]: the cycle of the recursive type a value is already inside, whose entry counts its nodes *)
+let rec bound_of env ?(visiting = []) ?within (t : ty) : bound =
+  let b t = lazy (bound_of env ?within t) in
   match t with
   | Scalar (("string" | "bytes"), n) -> { no_bound with max = n }
-  | List (t, n) -> { max = n; elem = Some (b t); fields = [] }
-  | Map (_, v, n) -> { max = n; elem = Some (b v); fields = [] }
-  | Option t -> b t
+  | List (t, n) -> { no_bound with max = n; elem = Some (b t) }
+  | Map (_, v, n) -> { no_bound with max = n; elem = Some (b v) }
+  | Option t -> bound_of env ~visiting ?within t
   | Record (fs, _) -> { no_bound with fields = List.map (fun (f, t) -> (f, b t)) fs }
-  | Named n when not (List.mem n visiting) -> (
-      match List.assoc_opt n env.defs with Some (Type_def (_, Alias t, _)) -> bound_of env ~visiting:(n :: visiting) t | _ -> no_bound)
+  | Named n when String.contains n '.' || List.mem n visiting -> no_bound
+  | Named n -> (
+      let rc = recursion env in
+      let cycle = List.assoc_opt n rc.cycle in
+      let entering = cycle <> None && cycle <> within in
+      let within = if cycle <> None then cycle else within in
+      let body =
+        match List.assoc_opt n env.defs with
+        | Some (Type_def (_, Alias t, _)) -> bound_of env ~visiting:(n :: visiting) ?within t
+        | Some (Type_def (_, Variant cs, _)) ->
+            { no_bound with cases = List.filter_map (fun (c, p) -> Option.map (fun t -> (c, lazy (bound_of env ?within t))) p) cs }
+        | _ -> no_bound
+      in
+      match List.assoc_opt n env.defs with
+      | Some (Type_def (_, _, k)) when entering -> { body with nodes = Some (Option.value k ~default:env.options.default_nodes) }
+      | _ -> body)
   | _ -> no_bound
 
 (* code points, as CEL's size counts a string *)
@@ -388,8 +417,31 @@ let code_points s =
   !n
 
 (* where a value breaks its bounds, if it does *)
-let rec exceeds (b : bound) (v : Cordis_cel.Value.t) : string option =
+(* a value's nodes, as a recursive type's node bound counts them: the value, and every element, map
+   value and optional's content within it, counted only up to [limit] *)
+let nodes_within limit (v : Cordis_cel.Value.t) =
   let module V = Cordis_cel.Value in
+  let n = ref 0 in
+  let exception Over in
+  let rec go v =
+    incr n;
+    if !n > limit then raise Over;
+    match v with
+    | V.List xs -> Array.iter go xs
+    | V.Map m -> List.iter (fun (_, x) -> go x) m
+    | V.Optional (Some x) -> go x
+    | _ -> ()
+  in
+  match go v with () -> None | exception Over -> Some !n
+
+let rec exceeds (b : bound) (v : Cordis_cel.Value.t) : string option =
+  match Option.bind b.nodes (fun k -> Option.map (fun _ -> k) (nodes_within k v)) with
+  | Some k -> Some (Printf.sprintf "a value of more than %d nodes, over its type's node bound" k)
+  | None -> exceeds_levels b v
+
+and exceeds_levels (b : bound) (v : Cordis_cel.Value.t) : string option =
+  let module V = Cordis_cel.Value in
+  let exceeds b v = exceeds (Lazy.force b) v in
   let over n size what = match b.max with Some m when size > m -> Some (Printf.sprintf "%s of %d, over its bound of %d" what size m) | _ -> n in
   let first l = List.find_map Fun.id l in
   match v with
@@ -399,6 +451,10 @@ let rec exceeds (b : bound) (v : Cordis_cel.Value.t) : string option =
       match over None (Array.length xs) "a list" with
       | Some m -> Some m
       | None -> (match b.elem with Some e -> first (Array.to_list (Array.map (exceeds e) xs)) | None -> None))
+  | V.Map m when b.cases <> [] -> (
+      match V.map_find m (V.String "tag"), V.map_find m (V.String "value") with
+      | Some (V.String tag), Some x -> (match List.assoc_opt tag b.cases with Some cb -> Option.map (fun e -> tag ^ ": " ^ e) (exceeds cb x) | None -> None)
+      | _ -> None)
   | V.Map m -> (
       match b.fields with
       | _ :: _ -> first (List.map (fun (f, fb) -> match V.map_find m (V.String f) with Some x -> Option.map (fun e -> f ^ ": " ^ e) (exceeds fb x) | None -> None) b.fields)
@@ -406,7 +462,7 @@ let rec exceeds (b : bound) (v : Cordis_cel.Value.t) : string option =
           match over None (List.length m) "a map" with
           | Some e -> Some e
           | None -> (match b.elem with Some e -> first (List.map (fun (_, x) -> exceeds e x) m) | None -> None)))
-  | V.Optional (Some x) -> exceeds b x
+  | V.Optional (Some x) -> exceeds_levels b x
   | _ -> None
 
 (* where a value of this shape may break the bounds, statically *)
@@ -417,9 +473,9 @@ let rec may_exceed ?(depth = 4) (b : bound) (sh : Cordis_cel.Cost.shape) : strin
     | Some m when sh.hi > m ->
         Some (if sh.hi >= Cordis_cel.Cost.inf then Printf.sprintf "unbounded, where the bound is %d" m else Printf.sprintf "up to %d, where the bound is %d" sh.hi m)
     | _ -> (
-        match List.find_map (fun (f, fb) -> match List.assoc_opt f sh.fields with Some s -> Option.map (fun e -> f ^ ": " ^ e) (may_exceed ~depth:(depth - 1) fb (Lazy.force s)) | None -> None) b.fields with
+        match List.find_map (fun (f, fb) -> match List.assoc_opt f sh.fields with Some s -> Option.map (fun e -> f ^ ": " ^ e) (may_exceed ~depth:(depth - 1) (Lazy.force fb) (Lazy.force s)) | None -> None) b.fields with
         | Some e -> Some e
-        | None -> (match b.elem with Some e -> may_exceed ~depth:(depth - 1) e (Lazy.force sh.elem) | None -> None))
+        | None -> (match b.elem with Some e -> may_exceed ~depth:(depth - 1) (Lazy.force e) (Lazy.force sh.elem) | None -> None))
 
 (* ---- CEL expressions ------------------------------------------------------------------------- *)
 

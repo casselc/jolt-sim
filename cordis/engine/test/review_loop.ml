@@ -278,6 +278,27 @@ graph g { input x : string<max 100>; asset y = f(x); }|}
   | [ ("y", m) ] -> Alcotest.(check bool) ("refused: " ^ m) true (count_sub m "over its bound of 3" = 1)
   | fs -> Alcotest.failf "expected y to fail, got %s" (String.concat "; " (List.map snd fs))
 
+(* a recursive type's node bound, held where a value enters it: a result of more nodes fails its
+   computation, and one within it is a value (RFC 0002 revision 3) *)
+let result_over_node_bound () =
+  let text =
+    {|type Tree = { label : string; kids : list(Tree)<max 4>; } <nodes 9>;
+cell grow(n : int) : Tree = { Tree{label: "r", kids: n > 1 ? [Tree{label: "a", kids: []}, Tree{label: "b", kids: [Tree{label: "c", kids: []}]}] : [Tree{label: "a", kids: []}, Tree{label: "b", kids: []}]}; }
+graph g { input n : int; asset y = grow(n); }|}
+  in
+  let checked = match Cordis_graph.Patch.load text with Ok s -> s.checked | Error es -> failwith (String.concat "; " es) in
+  let within = new_host (E.create checked "g") in
+  feed within (E.Set_input ("n", V.Int 1L));
+  let _ = run ~pick:(fun _ -> 0) within in
+  Alcotest.(check bool) "nine nodes are a value" true (E.value within.t "y" <> None);
+  let h = new_host (E.create checked "g") in
+  feed h (E.Set_input ("n", V.Int 2L));
+  let _ = run ~pick:(fun _ -> 0) h in
+  Alcotest.(check (option string)) "no value" None (Option.map V.to_string (E.value h.t "y"));
+  match E.failures h.t with
+  | [ ("y", m) ] -> Alcotest.(check bool) ("refused: " ^ m) true (count_sub m "more than 9 nodes" = 1)
+  | fs -> Alcotest.failf "expected y to fail, got %s" (String.concat "; " (List.map snd fs))
+
 (* ---- the durable form ---------------------------------------------------------------------------- *)
 
 let codec_round_trip () =
@@ -319,6 +340,7 @@ let () =
           Alcotest.test_case "a route arm appending to two streams appends to both" `Quick two_appends;
           Alcotest.test_case "a keyed kind whose sends are all lost is reconciled by key" `Quick keyed_example;
           Alcotest.test_case "a result over its declared bound fails its computation" `Quick result_over_bound;
+          Alcotest.test_case "a result over its type's node bound fails its computation" `Quick result_over_node_bound;
           Alcotest.test_case "a keyed answer releases its lost send's reservation" `Quick keyed_release ]);
       ("properties", [ Alcotest.test_case "every value round-trips through the durable form" `Quick codec_round_trip; Alcotest.test_case "any schedule, with faults and a changed input, rests where a fault-free run does" `Quick (schedules ?keyed:None);
                         Alcotest.test_case "the same, with repo.read keyed" `Quick (schedules ~keyed:[ "repo.read" ]);
