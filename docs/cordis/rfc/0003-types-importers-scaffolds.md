@@ -443,8 +443,10 @@ HTTP adds a third case, which the method and the document decide:
 | `POST`, `PATCH` with an `Idempotency-Key` header parameter (or the policy's name for one) | **keyed** | sent again with the same key, which the executor sets to the intent's key |
 | any other `POST` or `PATCH` | effectful | Uncertain; reconciled by a read the policy names (an operation and the field to match), else it waits for a person |
 
-A keyed intent is sent again with the same identity (the intent's key; a
-new attempt number only for the journal), and the server applies it at
+A keyed intent is sent again with the same identity (an idempotency key
+digesting the outbox's agent, the intent's key and its request, so no two
+instances or requests share one; a new attempt number only for the
+journal), and the server applies it at
 most once, so at-most-once rests on the server keeping its promise. Each
 send reserves its worst case, as an observational attempt does; a resend
 the server deduplicates is charged nothing, and an abandoned send that

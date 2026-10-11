@@ -10,6 +10,14 @@ module J = Yojson.Safe
 
 type t = { run : key:string -> V.t -> V.t * int; reconcile : key:string -> V.t -> (V.t * int) option }
 
+(* The idempotency key a call carries (an Idempotency-Key header): the same for every send of one
+   intent, and different for any other. The intent's key alone is not enough: it names a computation
+   within one graph instance (review_loop/verdict#1.1 in every run of the graph), and a server keeping
+   keys would replay one run's answer into another. So it digests the agent (the instance, as the
+   outbox's --agent names it), the intent's key and its request. *)
+let idempotency_key ~agent ~key ~request =
+  "cordis-" ^ String.sub (Cordis_cel.Sha256.digest (String.concat "\n" [ agent; key; Yojson.Safe.to_string (Cordis_engine.Codec.value request) ])) 0 32
+
 (* How a call fails, besides with no answer at all (any other exception: the outcome is unknown, a
    lost receipt): *)
 (* a definite failure: the world refused it, and it did not run (an HTTP 4xx) *)
@@ -66,14 +74,18 @@ let read_completion body =
    silence, not on a long answer. A request's thinking field, if it has
    one, says whether the model may reason first (chat_template_kwargs'
    enable_thinking: halo-flash reasons by default, and its reasoning counts
-   against max_tokens). The receipt is the text, the reasoning tokens the
+   against max_tokens). Every send carries the intent's idempotency key: a
+   server that keeps keys (halo-flash's scheduler, docs/SCHEDULER.md
+   section 7) replays a finished answer and adopts one still running, so a
+   send again after a lost answer does not generate again, and the kind
+   may be run keyed (cordis-run --keyed llm.complete). The receipt is the text, the reasoning tokens the
    server reports, and why it
    stopped (a completion cut off by its length is not one that finished);
    the cost is the tokens the server reports, or unknown (charged the
    worst case) when it does not say. Observational: a completion has no
    outside effect but its cost. *)
 let llm_complete ?(idle = 120.) ~url () =
-  let run req =
+  let run ~key req =
     let prompt =
       match field req "prompt" with
       | Some (V.List xs) -> String.concat "\n\n" (Array.to_list (Array.map (function V.String s -> s | v -> V.to_string v) xs))
@@ -90,13 +102,15 @@ let llm_complete ?(idle = 120.) ~url () =
              ("messages", `List [ `Assoc [ ("role", `String "user"); ("content", `String prompt) ] ]) ]
           @ thinking))
     in
-    let r = Http.post ~timeout:idle (url ^ "/v1/chat/completions") body in
+    let r = Http.post ~timeout:idle ~headers:[ ("Idempotency-Key", key) ] (url ^ "/v1/chat/completions") body in
     classify_status "llm.complete" r.status;
     let content, finish, tokens, reasoning = read_completion r.body in
     ( V.make_map [ (V.String "text", V.String content); (V.String "finish", V.String finish); (V.String "reasoning", V.Int (Int64.of_int reasoning)) ],
       match tokens with Some n -> n | None -> -1 )
   in
-  { run = (fun ~key:_ req -> run req); reconcile = (fun ~key:_ _ -> None) }
+  (* a send again with the same key is answered by a server that keeps keys from what it kept (a finished
+     answer replayed, one still running adopted), so reconciling is sending again *)
+  { run = (fun ~key req -> run ~key req); reconcile = (fun ~key req -> Some (run ~key req)) }
 
 (* repo.read: a file under the repository root. Reading has no outside
    effect, so reconciling is reading again. *)

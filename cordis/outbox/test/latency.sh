@@ -9,7 +9,10 @@
 #   B. every answer cut off by its length: never a verdict, so the loop
 #      rests at its cap unshipped, says so, and exits 4;
 #   C. no usage reported: each completion is charged its worst case;
-#   D. HTTP 400: a definite failure, run once, not retried; exit 2.
+#   D. HTTP 400: a definite failure, run once, not retried; exit 2;
+#   E. a server that keeps idempotency keys, which drops the first answer
+#      after generating it: llm.complete run keyed is sent again with the
+#      same key and answered from what the server kept, generated once.
 #
 #   latency.sh CORDIS_RUN CORDIS_OUTBOX REVIEW.cg STUB_LLM.py
 set -euo pipefail
@@ -22,7 +25,7 @@ mkdir -p "$T/repo/src" && echo "let x = 1 (* the file *)" > "$T/repo/src/main.ml
 start() {
   kill "${llm_pid:-}" "${outbox_pid:-}" 2>/dev/null || true
   wait "${llm_pid:-}" "${outbox_pid:-}" 2>/dev/null || true
-  rm -f "$T/port" "$T/count" "$T/count.thinking" "$T/run.db" "$T/journal.db" "$T/outbox.out"
+  rm -f "$T/port" "$T/count" "$T/count.thinking" "$T/count.generated" "$T/run.db" "$T/journal.db" "$T/outbox.out"
   python3 "$stub" "$T/port" "$T/count" "$@" & llm_pid=$!
   for _ in $(seq 100); do [ -s "$T/port" ] && break; sleep 0.1; done
   "$outbox_bin" --socket "$T/outbox.sock" --journal "$T/journal.db" --llm "http://127.0.0.1:$(cat "$T/port")" --repo "$T/repo" \
@@ -34,7 +37,7 @@ run() {
   set +e
   "$run_bin" --graph "$graph" --name review_loop --store "$T/run.db" --socket "$T/outbox.sock" \
     --input 'request={"path":"src/main.ml","patch":"let x = 1"}' \
-    --observational llm.complete --worst llm.complete=4096 --worst repo.read=1 --budget 100000 --timeout 1 "$@" > "$T/run.out" 2> "$T/run.err"
+    ${CLASS:---observational} llm.complete --worst llm.complete=4096 --worst repo.read=1 --budget 100000 --timeout 1 "$@" > "$T/run.out" 2> "$T/run.err"
   code=$?
   set -e
 }
@@ -67,6 +70,16 @@ elif phase == "C":
     assert code == 0 and a["shipped"] is True, (code, out)
     assert out["settled"] == 4096 * count + count, f"no usage, yet settled {out['settled']} for {count} completions"
     print(f"C ok: no usage reported, {count} completions charged the worst case: settled {out['settled']}")
+elif phase == "E":
+    assert code == 0 and a["shipped"] is True, (code, out, err)
+    generated = int(open(sys.argv[4] + ".generated").read())
+    assert count == generated + 1, f"requests {count}, generated {generated}: the resend should be answered from the kept key"
+    # one intent sent twice (its first send's answer dropped), every other once
+    sends = {}
+    for k, _ in rows:
+        sends[k.rsplit("#", 1)[0]] = sends.get(k.rsplit("#", 1)[0], 0) + 1
+    assert sorted(sends.values()) == [1] * (len(sends) - 1) + [2], rows
+    print(f"E ok: a dropped answer resent with its key and replayed: {count} requests, {generated} generated")
 elif phase == "D":
     assert code == 2 and out["outcome"] == "failed", (code, out)
     assert count == 1 and rows and rows[0][1] == "refused", (count, rows)
@@ -80,3 +93,4 @@ start delay=3 long; run; check A $code
 start length; run; check B $code
 start no-usage; run; check C $code
 start refuse; run; check D $code
+start keys drop-first; CLASS=--keyed run; check E $code

@@ -14,6 +14,12 @@ Modes, for the real-latency test (what the halo-flash run found):
   length      every answer stops for its length: finish_reason "length"
   no-usage    no usage reported (the outbox must charge the worst case)
   refuse      answer HTTP 400 (a definite failure: nothing to retry)
+  keys        keep idempotency keys, as halo-flash's scheduler does: a request
+              whose Idempotency-Key has a finished answer is answered from
+              it, generating nothing (COUNT_FILE.generated counts what was
+              generated)
+  drop-first  generate the first answer, keep it under its key, and close the
+              connection without sending it: a lost answer
 """
 import json
 import sys
@@ -27,6 +33,9 @@ thinking_file = count_file + ".thinking"
 modes = sys.argv[3:]
 delay = next((float(m.split("=", 1)[1]) for m in modes if m.startswith("delay=")), 0.0)
 count = 0
+generated = 0
+kept = {}  # idempotency key -> the answer (text, finish, usage)
+dropped = False
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -67,8 +76,23 @@ class Handler(BaseHTTPRequestHandler):
         finish = "length" if "length" in modes else "stop"
         # a model that thinks (by default) reports what it spent reasoning
         usage = None if "no-usage" in modes else {"total_tokens": 10, "completion_tokens_details": {"reasoning_tokens": 7 if thinks else 0}}
-        if delay:
-            time.sleep(delay)
+        global generated, dropped
+        key = self.headers.get("Idempotency-Key")
+        if "keys" in modes and key in kept:
+            text, finish, usage = kept[key]
+        else:
+            generated += 1
+            with open(count_file + ".generated", "w") as f:
+                f.write(str(generated))
+            if key is not None:
+                kept[key] = (text, finish, usage)
+            if delay:
+                time.sleep(delay)
+        if "drop-first" in modes and not dropped:
+            dropped = True
+            self.close_connection = True
+            self.connection.shutdown(2)
+            return
         if body.get("stream"):
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")

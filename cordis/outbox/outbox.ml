@@ -84,7 +84,9 @@ let run_now ctx ~jkey ~key ~attempt ~kind ~request =
   Journal.set_state ctx.journal ~jkey Journal.Sent;
   match List.assoc_opt kind ctx.executors with
   | None -> start ctx ~jkey ~key ~attempt ~kind ~job:Run (fun () -> failwith ("no executor for " ^ kind))
-  | Some (x : Executors.t) -> start ctx ~jkey ~key ~attempt ~kind ~job:Run (fun () -> Some (x.run ~key request))
+  | Some (x : Executors.t) ->
+      let ikey = Executors.idempotency_key ~agent:ctx.agent ~key ~request in
+      start ctx ~jkey ~key ~attempt ~kind ~job:Run (fun () -> Some (x.run ~key:ikey request))
 
 (* the loop journals each call that ended and answers the engine *)
 let drain ctx send =
@@ -173,7 +175,8 @@ let handle_reconcile ctx key attempt send =
       in
       match req, Option.bind kind (fun k -> List.assoc_opt k executors) with
       | Some req, Some (x : Executors.t) ->
-          start ctx ~jkey:jk ~key ~attempt ~kind:(Option.get kind) ~job:Reconcile (fun () -> x.reconcile ~key req)
+          let ikey = Executors.idempotency_key ~agent:ctx.agent ~key ~request:req in
+          start ctx ~jkey:jk ~key ~attempt ~kind:(Option.get kind) ~job:Reconcile (fun () -> x.reconcile ~key:ikey req)
       | _ -> reply `Null)
   (* a call of it is running: its end answers *)
   | Some { state = Journal.Unknown | Journal.Sent; _ } -> ()

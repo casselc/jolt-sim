@@ -1020,6 +1020,26 @@ importers wait for the slice.
    `chat_template_kwargs.enable_thinking`; the critic turns it off), and
    a `Completion` carries the reasoning tokens the server reports.
 
+   halo-flash's scheduler keeps idempotency keys (its docs/SCHEDULER.md,
+   section 7): a request whose `Idempotency-Key` has a finished answer
+   replays it, one still running is adopted, and the caller's rule is to
+   retry only with the same key. Every outbox call now carries one, so
+   `llm.complete` can be run keyed (`cordis-run --keyed llm.complete`): an
+   answer lost after it was generated is sent again and replayed, not
+   generated again. The key is not the intent's key, which names a
+   computation within one instance (`review_loop/verdict#1.1` in every run
+   of the graph) and would let the server replay one run's answer into
+   another: it is a digest of the outbox's `--agent`, the intent's key and
+   its request, the same for every send of one intent. (The OpenAPI
+   executor's keys had the same flaw, and take the same digest.) Under
+   the observational class the key is harmless (a retry is replayed
+   rather than regenerated); the keyed class relies on it, so it is for a
+   server known to keep keys, and `--agent` should name the instance.
+   `latency.sh` phase E: a server that keeps keys drops the first answer
+   after generating it; the resend is replayed (four requests, three
+   generations), and a key that varies by attempt, planted, generates
+   four.
+
    `outbox/test/latency.sh` replays the run's conditions against a
    stand-in: calls slower than the runner's timeout with long multi-line
    answers (one completion per computation, none charged as lost, notes
