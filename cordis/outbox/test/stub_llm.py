@@ -24,6 +24,9 @@ Modes, for the real-latency test (what the halo-flash run found):
   forget-first  as drop-first, but keep nothing (a server past its grace
               window, which stopped the generation): the resend generates
               afresh
+  report-discarded  with forget-first, a fresh answer says how many tokens
+              were discarded under its key (Halo-Discarded-Tokens: 4, the
+              forgotten generation's stopped part)
   approve     approve every patch
   verdict-last  approve as a model that reasons first does: the reasons,
               then LGTM on the last line
@@ -47,6 +50,7 @@ generated = 0
 kept = {}  # idempotency key -> the answer (text, finish, usage)
 dropped = False
 forgot = False
+discarded = {}  # idempotency key -> tokens decoded by generations stopped under it
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -128,10 +132,14 @@ class Handler(BaseHTTPRequestHandler):
                 time.sleep(delay)
         if "forget-first" in modes and not forgot:
             forgot = True
+            if key is not None:
+                discarded[key] = discarded.get(key, 0) + 4
             self.close_connection = True
             self.connection.shutdown(2)
             return
         answer = [("Halo-Answer", answer)] if "keys" in modes else []
+        if "report-discarded" in modes and answer and answer[0][1] == "generated" and discarded.get(key):
+            answer.append(("Halo-Discarded-Tokens", str(discarded[key])))
         if "drop-first" in modes and not dropped:
             dropped = True
             self.close_connection = True

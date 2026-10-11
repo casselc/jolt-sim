@@ -271,11 +271,14 @@ let () =
   let accepted = Hashtbl.create 8 in
   (* a cost the world did not report is null: negative, which the engine charges at the worst case *)
   let cost_of j = match J.Util.member "cost" j with `Int c -> c | _ -> -1 in
-  (* the world's word on where an answer came from (halo-flash's Halo-Answer), if it said *)
-  let generated j = J.Util.member "answer" j = `String "generated" in
+  (* the world's word on where an answer came from (halo-flash's Halo-Answer): only a replayed or adopted
+     answer covers a keyed intent's other sends; one generated afresh, or one the world says nothing of
+     (a world that keeps no keys says nothing), does not, and carries what was discarded if the world said *)
+  let generated j = match J.Util.member "answer" j with `String ("replayed" | "adopted") -> false | _ -> true in
   let done_ j =
     let v = Codec.of_value (J.Util.member "value" j) and c = cost_of j in
-    if generated j then Engine.Generated (v, c) else Engine.Done (v, c)
+    let discarded = match J.Util.member "discarded" j with `Int d -> Some d | _ -> None in
+    if generated j then Engine.Generated (v, c, discarded) else Engine.Done (v, c)
   in
   let sync () =
     let d = Store.Sqlite.sync st in

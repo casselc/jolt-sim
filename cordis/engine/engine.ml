@@ -63,11 +63,15 @@ type cls = Observational | Keyed | Effectful
 type intent = { key : string; kind : string; request : V.t; cls : cls; attempt : int }
 
 type receipt =
-  | Done of V.t * int  (** the receipt, and what it actually cost (negative: unknown, charged its worst case) *)
-  | Generated of V.t * int
-      (** as [Done], and the world says it generated this answer afresh (halo-flash's [Halo-Answer:
-          generated]): for a keyed intent, no earlier send's work is in it, so the other sends are
-          charged their worst case rather than released (observe.qnt's REPORTED) *)
+  | Done of V.t * int
+      (** the receipt, and what it actually cost (negative: unknown, charged its worst case); for a keyed
+          intent, the world says this answer covers every send of it (halo-flash's [Halo-Answer: replayed]
+          or [adopted]), so the other sends are released *)
+  | Generated of V.t * int * int option
+      (** as [Done], but no earlier send's work is in the answer: the world generated it afresh, or did
+          not say (a world that keeps no keys says nothing). For a keyed intent the other sends are
+          charged: what the world says it discarded under the key, if it says (halo-flash's
+          [Halo-Discarded-Tokens]), else their worst case (observe.qnt's REPORTED and DISCARDED) *)
   | Lost  (** no answer: the outcome is unknown *)
   | Refused of string  (** a definite failure (the world refused it, and it did not run): the computation fails *)
 
@@ -498,14 +502,15 @@ let awaiting t key attempt =
     t.slots None
 
 (* what an intent holds reserved: its worst case, or for a keyed intent its worst case once per send
-   (observe.qnt): a lost send is not charged but held, and released when the intent is answered. A world
-   that keeps keys answers a resend from the generation it holds (running, adopted within its grace
-   window, or finished), whose usage the answer reports; a resend after it stopped an unfinished
-   original generates afresh, and the stopped part is in no answer (observe.qnt's graceExpiry): the
-   release can then fall short by up to one worst case per send so stopped *)
+   (observe.qnt): a lost send is not charged but held until the intent is answered. A world that keeps
+   keys answers a resend from the generation it holds (running, adopted within its grace window, or
+   finished), whose usage the answer reports, and says so: the other sends are released. A resend after
+   it stopped an unfinished original generates afresh, and the stopped part is in no answer
+   (observe.qnt's graceExpiry), as is every send's work to a world that keeps no keys: then the other
+   sends are charged *)
 let held t (intent : intent) = match intent.cls with Keyed -> intent.attempt * t.worst intent.kind | _ -> t.worst intent.kind
 
-let resume ?(fresh = false) t a (s : slot) v cost =
+let resume ?fresh t a (s : slot) v cost =
   match s.fiber with
   | Awaiting { turn; args; receipts; basis; intent } | Uncertain { turn; args; receipts; basis; intent } ->
       let c = Smap.find a t.cells in
@@ -514,10 +519,16 @@ let resume ?(fresh = false) t a (s : slot) v cost =
       (* the reservation settles at the actual cost, once: this fiber awaits the key no longer *)
       (* a cost the world did not report is charged at the worst case, never as nothing *)
       let cost = if cost < 0 then t.worst intent.kind else cost in
-      (* a keyed intent's answer covers all its sends: every one's reservation is released; unless the world
-         says it generated the answer afresh, when the other sends' work is in no answer and each is
-         charged its worst case (observe.qnt's graceExpiryReported) *)
-      let others = match intent.cls with Keyed when fresh -> (intent.attempt - 1) * t.worst intent.kind | _ -> 0 in
+      (* every send's reservation is released; a keyed intent's other sends are charged unless the answer
+         covers them: what the world says it discarded (no more than their worst cases), else their worst
+         cases (observe_report.qnt's graceExpiryDiscarded, observe_modes.qnt's graceExpiryReported) *)
+      let others =
+        match intent.cls, fresh with
+        | Keyed, Some discarded ->
+            let worst = (intent.attempt - 1) * t.worst intent.kind in
+            (match discarded with Some d -> min worst (max 0 d) | None -> worst)
+        | _ -> 0
+      in
       let t = { (with_slot t a s) with reserved = t.reserved - held t intent; settled = t.settled + cost + others } in
       let t, r = record t [ Slot (a, s); Budget (t.reserved, t.settled) ] in
       (t, [ Persist r ])
@@ -541,7 +552,8 @@ let handle t ev =
           (t, [ Persist r ]))
   | Durable seq -> release_durable { t with durable = max t.durable seq }
   | Receipt (key, n, Done (v, cost)) -> (match awaiting t key n with Some (a, s) -> resume t a s v cost | None -> (t, []))
-  | Receipt (key, n, Generated (v, cost)) -> (match awaiting t key n with Some (a, s) -> resume ~fresh:true t a s v cost | None -> (t, []))
+  | Receipt (key, n, Generated (v, cost, discarded)) -> (
+      match awaiting t key n with Some (a, s) -> resume ~fresh:discarded t a s v cost | None -> (t, []))
   | Receipt (key, n, Refused why) -> (
       (* it did not run: the reservation is released, and the computation fails *)
       match awaiting t key n with

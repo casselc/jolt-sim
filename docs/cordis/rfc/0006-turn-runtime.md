@@ -1119,7 +1119,39 @@ importers wait for the slice.
    `accounted` holds again under grace expiry, with the witness
    `freshCharged`. `latency.sh` phase H runs a stand-in that keeps nothing
    of a dropped answer: the resend says `generated`, and the lost send is
-   charged 4096. A server that says nothing gets the release, as before.
+   charged 4096.
+
+   A fifth run (halo-flash main with G3, which keeps keys; `--keyed`)
+   held: a right patch shipped at the first review, generated once;
+   `review_fix.cg` fixed `let x = ` to `let x = 1` in four completions
+   through nine crashes and an outbox restart, the server admitting
+   exactly four; twelve agents at once against a pool of eight waited out
+   sixteen 429s and settled every agent at its journal's costs; with the
+   default 30 s grace a killed generation finished inside it and the
+   resend was replayed. With a 1 s grace the resend was generated, and two
+   things were left: the lost send was charged its worst case, 4096, where
+   the server counted 25 tokens decoded before it stopped the send; and
+   its journal row stayed `unknown`. And against a server that keeps no
+   keys (`--scheduler off`) there is no `Halo-Answer` at all.
+
+   So the rule is now the other way round: a keyed answer releases the
+   other sends only when the world says it covers them (`replayed`,
+   `adopted`); one generated afresh, or one the world says nothing of, is
+   charged. A world that keeps no keys says nothing, so `accounted` now
+   holds there too (`keyIgnored`; the old rule is the mutant
+   `RELEASE_UNREPORTED`, which breaks it with that world and with grace
+   expiry). halo-flash will report the tokens it discarded under a key on
+   the fresh answer (`Halo-Discarded-Tokens`), and those, no more than the
+   sends' worst cases, are the charge (`observe_report.qnt`'s
+   `graceExpiryDiscarded`; reporting only the latest stopped send's breaks
+   `accounted`, `underReport`). The outbox journals the count with the
+   receipt and marks the lost sends `charged` rather than leaving them
+   `unknown` (a send a replay covers is `superseded`, as before). `latency.sh` gains phases I (the stand-in reports 4
+   discarded tokens: the lost send is charged 4) and J (a stand-in that
+   keeps no keys and says nothing: the resend generates again and the lost
+   send is charged 4096), and H's lost row is `charged`. The model's
+   instances moved to `observe_modes.qnt` and `observe_report.qnt`, apart
+   from the module, so that each file stays under Apalache's request size.
 
    `outbox/test/latency.sh` replays the run's conditions against a
    stand-in: calls slower than the runner's timeout with long multi-line

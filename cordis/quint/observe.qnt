@@ -64,19 +64,26 @@
  * A world, not a mutant: GRACE_EXPIRY (`graceExpiry`) stops an abandoned
  * send's generation part way when its client has been gone longer than
  * the server's grace window, keeping nothing, so a resend generates afresh
- * and the stopped part's tokens are in no answer -> accounted. The release
- * rests on the resend reaching the world while it still holds the
- * original (running, within the grace window, or finished); past that,
- * settled can fall short of the world's work by up to one worst case per
- * send so stopped. With REPORTED (`graceExpiryReported`) the world says
- * whether an answer came from a fresh generation (halo-flash's
- * Halo-Answer), and a fresh one charges the other sends their worst case
- * instead of releasing them: `accounted` holds again (witness
- * freshCharged).
+ * and the stopped part's tokens are in no answer. A keyed answer releases
+ * the other sends only when the world says it covers them (REPORTED, and
+ * not fresh: halo-flash's Halo-Answer replayed or adopted); one generated
+ * afresh, or one the world says nothing of (a world that keeps no keys
+ * says nothing), charges them their worst case, or, with DISCARDED, what
+ * the world says it discarded under the key (Halo-Discarded-Tokens).
+ * `accounted` holds under grace expiry and a world that ignores keys
+ * alike. Mutants (in observe_report.qnt): RELEASE_UNREPORTED, the rule
+ * before Halo-Answer, releases an answer that says nothing ->
+ * accounted (keyIgnoredRelease, graceExpiryRelease); UNDER_REPORT, the
+ * world reports only the latest stopped send's tokens -> accounted
+ * (underReport). The instances are in observe_modes.qnt and
+ * observe_report.qnt, apart from this module, so each file stays under
+ * Apalache's request limit.
  * Witnesses (checked as not(w), expected VIOLATED): retriedThenDone,
  * lateSettled, exhausted, effectfulUncertain, reconciled, keyedResent (a
  * keyed intent sent again completed), keyedDeduplicated (a resend found the
- * intent already applied), keyedUncertainW.
+ * intent already applied), keyedUncertainW, supersededReleased (a reported
+ * replay released the other sends), freshCharged, exactCharged (charged
+ * what the world said it discarded, under the worst case).
  */
 module observe {
   const MISCLASSIFY: bool
@@ -88,6 +95,9 @@ module observe {
   const RELEASE_OBS: bool
   const GRACE_EXPIRY: bool
   const REPORTED: bool
+  const RELEASE_UNREPORTED: bool
+  const DISCARDED: bool
+  const UNDER_REPORT: bool
 
   type Kind = Obs | Eff | Key
   type Phase = Ready | Sent | Lost | Uncertain | Failed | Done
@@ -120,7 +130,7 @@ module observe {
     effects: List[int],      // ghost: per intent, times it took effect
     applied: List[int],      // per intent, answers applied
     lates: int, retries: int, reconciles: int,
-    resent: int, deduped: int, keyedUncertain: bool, released: int, charged: int,
+    resent: int, deduped: int, keyedUncertain: bool, released: int, charged: int, exact: int,
   }
 
   var s: S
@@ -129,7 +139,7 @@ module observe {
     pc: 0, phase: Ready, tries: 0, cur: NONE, attempts: List(),
     reserved: 0, settled: 0, real: 0, effects: [0, 0, 0], applied: [0, 0, 0],
     lates: 0, retries: 0, reconciles: 0,
-    resent: 0, deduped: 0, keyedUncertain: false, released: 0, charged: 0,
+    resent: 0, deduped: 0, keyedUncertain: false, released: 0, charged: 0, exact: 0,
   }
 
   pure def inc(l: List[int], i: int): List[int] = l.replaceAt(i, l[i] + 1)
@@ -188,18 +198,28 @@ module observe {
     val st = settle(at)
     val closed = if (current and releasable(at.intent)) others(a) else Set()
     // REPORTED: the answer says whether it came from a fresh generation (halo-flash's Halo-Answer:
-    // generated); then the other sends may have spent tokens no answer reports, and are charged their
-    // worst case; an answer replayed or adopted releases them
-    val charge = REPORTED and at.fresh
+    // generated); then the other sends may have spent tokens no answer reports, and are charged; an
+    // answer replayed or adopted releases them. An answer that says nothing is charged too (a world
+    // that keeps no keys says nothing), unless RELEASE_UNREPORTED (the rule before Halo-Answer).
+    val charge = if (REPORTED) at.fresh else not(RELEASE_UNREPORTED)
     val release = if (charge) Set() else closed
+    // DISCARDED: a fresh answer also says how many tokens the world discarded under the key (halo-
+    // flash's Halo-Discarded-Tokens): every other send that ran as a generation of its own, stopped;
+    // they are charged that, not their worst case. UNDER_REPORT: it says only the latest one's.
+    val gens = closed.filter(b => s.attempts[b].ran and s.attempts[b].fresh)
+    val discarded =
+      if (UNDER_REPORT) gens.fold(0, (m, b) => if (s.attempts[b].cost > m) s.attempts[b].cost else m)
+      else gens.fold(0, (t, b) => t + s.attempts[b].cost)
+    val amount = if (REPORTED and DISCARDED) discarded else R * closed.size()
     all {
       at.live, at.ran,
       s' = { ...s,
         attempts: s.attempts.indices().fold(s.attempts, (l, b) =>
           if (b == a or closed.contains(b)) l.replaceAt(b, { ...l[b], live: false }) else l),
         reserved: if (NO_RESERVE) st._1 else st._1 - R * closed.size(),
-        settled: if (charge) st._2 + R * closed.size() else st._2,
+        settled: if (charge) st._2 + amount else st._2,
         charged: s.charged + (if (charge) closed.size() else 0),
+        exact: s.exact + (if (charge and amount < R * closed.size()) 1 else 0),
         released: s.released + release.size(),
         pc: if (current) s.pc + 1 else s.pc,
         phase: if (current) Ready else s.phase,
@@ -297,38 +317,5 @@ module observe {
   val keyedUncertainW: bool = s.keyedUncertain
   val supersededReleased: bool = s.released > 0
   val freshCharged: bool = s.charged > 0
-}
-
-module design {
-  import observe(MISCLASSIFY = false, REFUND_LOST = false, NO_RESERVE = false, APPLY_LATE = false, ONE_CLASS = false, KEY_IGNORED = false, RELEASE_OBS = false, GRACE_EXPIRY = false, REPORTED = false).* from "./observe"
-}
-module misclassify {
-  import observe(MISCLASSIFY = true, REFUND_LOST = false, NO_RESERVE = false, APPLY_LATE = false, ONE_CLASS = false, KEY_IGNORED = false, RELEASE_OBS = false, GRACE_EXPIRY = false, REPORTED = false).* from "./observe"
-}
-module refundLost {
-  import observe(MISCLASSIFY = false, REFUND_LOST = true, NO_RESERVE = false, APPLY_LATE = false, ONE_CLASS = false, KEY_IGNORED = false, RELEASE_OBS = false, GRACE_EXPIRY = false, REPORTED = false).* from "./observe"
-}
-module noReserve {
-  import observe(MISCLASSIFY = false, REFUND_LOST = false, NO_RESERVE = true, APPLY_LATE = false, ONE_CLASS = false, KEY_IGNORED = false, RELEASE_OBS = false, GRACE_EXPIRY = false, REPORTED = false).* from "./observe"
-}
-module applyLate {
-  import observe(MISCLASSIFY = false, REFUND_LOST = false, NO_RESERVE = false, APPLY_LATE = true, ONE_CLASS = false, KEY_IGNORED = false, RELEASE_OBS = false, GRACE_EXPIRY = false, REPORTED = false).* from "./observe"
-}
-module oneClass {
-  import observe(MISCLASSIFY = false, REFUND_LOST = false, NO_RESERVE = false, APPLY_LATE = false, ONE_CLASS = true, KEY_IGNORED = false, RELEASE_OBS = false, GRACE_EXPIRY = false, REPORTED = false).* from "./observe"
-}
-module keyIgnored {
-  import observe(MISCLASSIFY = false, REFUND_LOST = false, NO_RESERVE = false, APPLY_LATE = false, ONE_CLASS = false, KEY_IGNORED = true, RELEASE_OBS = false, GRACE_EXPIRY = false, REPORTED = false).* from "./observe"
-}
-module releaseObs {
-  import observe(MISCLASSIFY = false, REFUND_LOST = false, NO_RESERVE = false, APPLY_LATE = false, ONE_CLASS = false, KEY_IGNORED = false, RELEASE_OBS = true, GRACE_EXPIRY = false, REPORTED = false).* from "./observe"
-}
-module graceExpiry {
-  import observe(MISCLASSIFY = false, REFUND_LOST = false, NO_RESERVE = false, APPLY_LATE = false, ONE_CLASS = false, KEY_IGNORED = false, RELEASE_OBS = false, GRACE_EXPIRY = true, REPORTED = false).* from "./observe"
-}
-module graceExpiryReported {
-  import observe(MISCLASSIFY = false, REFUND_LOST = false, NO_RESERVE = false, APPLY_LATE = false, ONE_CLASS = false, KEY_IGNORED = false, RELEASE_OBS = false, GRACE_EXPIRY = true, REPORTED = true).* from "./observe"
-}
-module reported {
-  import observe(MISCLASSIFY = false, REFUND_LOST = false, NO_RESERVE = false, APPLY_LATE = false, ONE_CLASS = false, KEY_IGNORED = false, RELEASE_OBS = false, GRACE_EXPIRY = false, REPORTED = true).* from "./observe"
+  val exactCharged: bool = s.exact > 0
 }

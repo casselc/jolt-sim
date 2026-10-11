@@ -207,26 +207,36 @@ sim frames.qnt refuseAdvances noRowLost VIOLATED
 sim frames.qnt keepAcc accConsistent VIOLATED
 
 # ---- observe.qnt (RFC 0006 rev 2: observational emissions retry under reservations) --
-for inv in effectOnce receiptOnce withinBudget accounted obsNeverUncertain; do sim observe.qnt design "$inv" ok; done
-verify observe.qnt design safety ok
-for w in retriedThenDone lateSettled exhausted effectfulUncertain reconciled keyedResent keyedDeduplicated keyedUncertainW; do sim observe.qnt design "not($w)" VIOLATED; done
+for inv in effectOnce receiptOnce withinBudget accounted obsNeverUncertain; do sim observe_modes.qnt design "$inv" ok; done
+verify observe_modes.qnt design safety ok
+for w in retriedThenDone lateSettled exhausted effectfulUncertain reconciled keyedResent keyedDeduplicated keyedUncertainW; do sim observe_modes.qnt design "not($w)" VIOLATED; done
 # rare: a keyed send lost, resent, and answered while the lost one is still live
-STEPS=60 SAMPLES=5000 sim observe.qnt design "not(supersededReleased)" VIOLATED
-sim observe.qnt misclassify effectOnce VIOLATED
-sim observe.qnt refundLost accounted VIOLATED
-sim observe.qnt noReserve withinBudget VIOLATED
-sim observe.qnt applyLate receiptOnce VIOLATED
-sim observe.qnt oneClass obsNeverUncertain VIOLATED
-sim observe.qnt keyIgnored effectOnce VIOLATED
-sim observe.qnt keyIgnored accounted VIOLATED
-sim observe.qnt releaseObs accounted VIOLATED
-# a world, not a mutant: a stopped original past the grace window breaks the release's accounting (the stated limit)
-sim observe.qnt graceExpiry accounted VIOLATED
-# ... and closed when the answer says it was generated afresh (Halo-Answer): the other sends are charged
-STEPS=60 SAMPLES=5000 sim observe.qnt graceExpiryReported accounted ok
-verify observe.qnt graceExpiryReported accounted ok
-STEPS=60 SAMPLES=5000 sim observe.qnt graceExpiryReported "not(freshCharged)" VIOLATED
+STEPS=60 SAMPLES=5000 sim observe_modes.qnt reported "not(supersededReleased)" VIOLATED
+sim observe_modes.qnt misclassify effectOnce VIOLATED
+sim observe_modes.qnt refundLost accounted VIOLATED
+sim observe_modes.qnt noReserve withinBudget VIOLATED
+sim observe_modes.qnt applyLate receiptOnce VIOLATED
+sim observe_modes.qnt oneClass obsNeverUncertain VIOLATED
+sim observe_modes.qnt keyIgnored effectOnce VIOLATED
+sim observe_modes.qnt keyIgnored accounted ok
+sim observe_modes.qnt releaseObs accounted VIOLATED
+# a world, not a mutant: a stopped original past the grace window; an answer that says nothing is charged, so it holds
+STEPS=60 SAMPLES=5000 sim observe_modes.qnt graceExpiry accounted ok
+# ... and when the answer says it was generated afresh (Halo-Answer): the other sends are charged
+STEPS=60 SAMPLES=5000 sim observe_modes.qnt graceExpiryReported accounted ok
+verify observe_modes.qnt graceExpiryReported accounted ok
+STEPS=60 SAMPLES=5000 sim observe_modes.qnt graceExpiryReported "not(freshCharged)" VIOLATED
 
+# what a keyed answer reports (observe_report.qnt): releasing an answer that says nothing breaks accounted
+# with a world that keeps no keys, or one that stops a generation; charging what the world says it
+# discarded holds it, and charging only the latest stopped send's does not
+STEPS=60 SAMPLES=5000 sim observe_report.qnt releaseUnreported "not(supersededReleased)" VIOLATED
+sim observe_report.qnt keyIgnoredRelease accounted VIOLATED
+STEPS=60 SAMPLES=5000 sim observe_report.qnt graceExpiryRelease accounted VIOLATED
+STEPS=60 SAMPLES=5000 sim observe_report.qnt graceExpiryDiscarded accounted ok
+verify observe_report.qnt graceExpiryDiscarded accounted ok
+STEPS=60 SAMPLES=5000 sim observe_report.qnt graceExpiryDiscarded "not(exactCharged)" VIOLATED
+STEPS=60 SAMPLES=5000 sim observe_report.qnt underReport accounted VIOLATED
 # ---- engine.qnt (RFC 0006: the turn commit protocol) -------------------------------------
 for inv in releasedOnlyDurable effectMatchesCommit commitAtomic receiptOnce uncertainSurvives; do sim engine.qnt design "$inv" ok; done
 # Apalache: depth 6 in about 75 s, 7 in about 400 s (checked once), 8 over 30 minutes

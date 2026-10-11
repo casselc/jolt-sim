@@ -20,7 +20,14 @@
 #   H. a server that keeps nothing of the first answer (past its grace
 #      window: it stopped the generation): the resend is generated afresh,
 #      says so (Halo-Answer: generated), and the lost send is charged its
-#      worst case (quint/observe.qnt's graceExpiryReported).
+#      worst case (quint/observe_modes.qnt's graceExpiryReported), its row
+#      marked charged, not left unknown;
+#   I. as H, and the server says what it discarded under the key
+#      (Halo-Discarded-Tokens: 4): the lost send is charged that
+#      (observe_report.qnt's graceExpiryDiscarded);
+#   J. a server that keeps no keys and says nothing (no Halo-Answer), which
+#      drops the first answer: the resend generates again, and the lost send
+#      is charged its worst case (observe_modes.qnt's keyIgnored).
 #
 #   latency.sh CORDIS_RUN CORDIS_OUTBOX REVIEW.cg STUB_LLM.py
 set -euo pipefail
@@ -97,18 +104,21 @@ elif phase == "E":
     assert out["settled"] == 10 * generated + generated and out["reserved"] == 0, out
     assert sources.count("replayed") == 1 and sources.count("generated") == len(sources) - 1, sources
     print(f"E ok: a dropped answer resent with its key and replayed: {count} requests, {generated} generated; settled {out['settled']}, the lost send not charged")
-elif phase == "H":
+elif phase in ("H", "I", "J"):
     assert code == 0 and a["shipped"] is True, (code, out, err)
     generated = int(open(sys.argv[4] + ".generated").read())
     assert count == generated, f"requests {count}, generated {generated}: every request generates"
-    # the first send's outcome stays unknown: no answer covers it
-    assert [s for _, s in rows].count("unknown") == 1 and [s for _, s in rows].count("superseded") == 0, rows
-    assert all(s == "generated" for s in sources), sources
-    # the forgotten send is charged its worst case; every answered one its 10 tokens, and one read per
-    # computation (one completion each, the forgotten one aside)
+    # no answer covers the first send: its row says it was charged, not unknown
+    states = [s for _, s in rows]
+    assert states.count("charged") == 1 and states.count("unknown") == 0 and states.count("superseded") == 0, rows
+    # the server said each was generated (H, I), or said nothing (J)
+    assert all(s == (None if phase == "J" else "generated") for s in sources), sources
+    # the forgotten send is charged its worst case (H, J) or what the server said it discarded (I); every
+    # answered one its 10 tokens, and one read per computation (one completion each, the forgotten one aside)
     computations = generated - 1
-    assert out["settled"] == 4096 + 10 * computations + computations and out["reserved"] == 0, out
-    print(f"H ok: a forgotten answer generated afresh and said so: the lost send charged its worst case; settled {out['settled']}")
+    lost = 4 if phase == "I" else 4096
+    assert out["settled"] == lost + 10 * computations + computations and out["reserved"] == 0, out
+    print(f"{phase} ok: a lost send behind an answer generated afresh charged {lost}, its row charged; settled {out['settled']}")
 elif phase == "F":
     assert code == 0 and a["shipped"] is True and count == 1, (code, count, out)
     assert "//" not in a["draft"]["patch"], a["draft"]
@@ -134,5 +144,7 @@ start no-usage; run; check C $code
 start refuse; run; check D $code
 start keys drop-first; CLASS=--keyed run; check E $code
 start keys forget-first; CLASS=--keyed run; check H $code
+start keys forget-first report-discarded; CLASS=--keyed run; check I $code
+start drop-first; CLASS=--keyed run; check J $code
 start approve verdict-last; run; check F $code
 start busy-first=2; run; check G $code
