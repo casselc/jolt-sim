@@ -6,8 +6,10 @@ agreement test (docs/cordis/rfc/0005-xml-csv-frames.md, revision 4,
     xmlvalid.py
 
 Each input line is {"xsd": path, "xml": text}; each output line is
-{"valid": bool, "lxml": bool, "errors": [...]}: xmlschema's verdict, lxml's
-(libxml2's) verdict, and xmlschema's reasons."""
+{"valid": bool, "lxml": bool, "errors": [...], "decoded": D}: xmlschema's
+verdict, lxml's (libxml2's) verdict, xmlschema's reasons, and for a valid
+document what xmlschema decodes it to (namespaces stripped, decimals as
+doubles: "@" attributes, "$" simple content)."""
 import json
 import sys
 
@@ -31,4 +33,7 @@ for line in sys.stdin:
         lvalid = lx.validate(etree.fromstring(text.encode()))
     except Exception:
         lvalid = False
-    print(json.dumps({"valid": not errors, "lxml": bool(lvalid), "errors": errors}), flush=True)
+    out = {"valid": not errors, "lxml": bool(lvalid), "errors": errors}
+    if not errors:
+        out["decoded"] = xs.decode(text, strip_namespaces=True, decimal_type=float)
+    print(json.dumps(out), flush=True)

@@ -191,10 +191,12 @@ themselves when they satisfy their schema (a value outside it may read
 back normalised, as XSD reads it). `xml_agreement.ml` against xmlschema
 and lxml (`xmlvalid.py`, `dune build @import/test/xml-agreement`): the
 document the codec writes is valid for xmlschema exactly when the codec
-reads it, and libxml2 agrees; 2,758 documents in a 3,000-case run, 593
-valid. A reader that does not replace a `normalizedString`'s whitespace
-is caught. The decoded values are compared through the codec's own
-round trip, not yet against xmlschema's decoding.
+reads it, libxml2 agrees, and xmlschema decodes a valid one to the value
+the codec read (compared in xmlschema's form: `@` attributes, `$` simple
+content, a list for what may repeat, a repeating choice grouped by
+element, an empty string or list as its null); 2,758 documents in a
+3,000-case run, 593 valid. A reader that does not replace a
+`normalizedString`'s whitespace is caught.
 
 ## CSV
 
