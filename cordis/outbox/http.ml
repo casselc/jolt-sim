@@ -4,7 +4,7 @@
    behind the egress proxy) and read the answer, with a timeout. TLS is the platform's
    egress proxy's job, not this client's. *)
 
-type response = { status : int; body : string }
+type response = { status : int; headers : (string * string) list  (** names lower-cased *); body : string }
 
 exception Failed of string
 
@@ -86,6 +86,11 @@ let request ?(timeout = 120.) ?(headers = []) ~meth url (body : (string * string
     let rec has i = i + n <= String.length lower && (String.sub lower i n = k || has (i + 1)) in
     has 0
   in
-  { status; body = (if chunked then dechunk body else body) }
+  let headers =
+    List.filter_map
+      (fun l -> match String.index_opt l ':' with Some i -> Some (String.lowercase_ascii (String.trim (String.sub l 0 i)), String.trim (String.sub l (i + 1) (String.length l - i - 1))) | None -> None)
+      (List.tl (String.split_on_char '\n' head))
+  in
+  { status; headers; body = (if chunked then dechunk body else body) }
 
 let post ?timeout ?headers url body = request ?timeout ?headers ~meth:"POST" url (Some ("application/json", body))

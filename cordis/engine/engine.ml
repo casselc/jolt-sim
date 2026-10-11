@@ -494,8 +494,11 @@ let awaiting t key attempt =
     t.slots None
 
 (* what an intent holds reserved: its worst case, or for a keyed intent its worst case once per send
-   (observe.qnt): a lost send is not charged but held, since a world that keeps keys answers every send
-   of the intent from one generation, whose usage the answer reports *)
+   (observe.qnt): a lost send is not charged but held, and released when the intent is answered. A world
+   that keeps keys answers a resend from the generation it holds (running, adopted within its grace
+   window, or finished), whose usage the answer reports; a resend after it stopped an unfinished
+   original generates afresh, and the stopped part is in no answer (observe.qnt's graceExpiry): the
+   release can then fall short by up to one worst case per send so stopped *)
 let held t (intent : intent) = match intent.cls with Keyed -> intent.attempt * t.worst intent.kind | _ -> t.worst intent.kind
 
 let resume t a (s : slot) v cost =

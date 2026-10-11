@@ -60,7 +60,7 @@ type ctx = {
 and job = Run | Reconcile
 
 (* how a call ended *)
-and outcome = Ran of V.t * int | Not_applied | No_answer of string | Refused_by of string | Busy_by of string
+and outcome = Ran of V.t * int | Not_applied | No_answer of string | Refused_by of string | Busy_by of string * float option
 
 (* Start a call off the loop (intake.qnt's design: the loop keeps reading its intake while calls run).
    The thread runs the executor and queues how it ended; only the loop touches the journal. *)
@@ -72,7 +72,7 @@ let start ctx ~jkey ~key ~attempt ~kind ~job (run : unit -> (V.t * int) option) 
       | Some (v, c) -> Ran (v, c)
       | None -> Not_applied
       | exception Executors.Refused m -> Refused_by m
-      | exception Executors.Busy m -> Busy_by m
+      | exception Executors.Busy (m, after) -> Busy_by (m, after)
       | exception e -> No_answer (Printexc.to_string e)
     in
     Mutex.protect ctx.lock (fun () -> Queue.push (jkey, key, attempt, kind, job, outcome) ctx.finished);
@@ -109,9 +109,13 @@ let drain ctx send =
       | Run, Refused_by why ->
           Journal.refuse ctx.journal ~jkey ~why;
           send (frame "refused" (ka key attempt @ [ ("why", `String why) ]))
-      | Run, Busy_by why ->
-          (* not run: wait, and ask again later, each time later (up to a minute) *)
-          let delay = match Hashtbl.find_opt ctx.backoff jkey with Some (_, d) -> Float.min 60. (d *. 2.) | None -> 1. in
+      | Run, Busy_by (why, after) ->
+          (* not run: wait as long as the world said (Retry-After), else each time longer (up to a minute) *)
+          let delay =
+            match after with
+            | Some s -> Float.max 0. s
+            | None -> (match Hashtbl.find_opt ctx.backoff jkey with Some (_, d) -> Float.min 60. (d *. 2.) | None -> 1.)
+          in
           Hashtbl.replace ctx.backoff jkey (Unix.gettimeofday () +. delay, delay);
           prerr_endline (Printf.sprintf "outbox: %s: %s; again in %.0fs" kind why delay);
           Journal.set_state ctx.journal ~jkey Journal.Waiting;
@@ -122,7 +126,7 @@ let drain ctx send =
       | Reconcile, Not_applied ->
           Journal.set_state ctx.journal ~jkey Journal.Fenced;
           send (frame "reconciled" (ka key attempt @ [ ("receipt", `Null) ]))
-      | Reconcile, (No_answer m | Refused_by m | Busy_by m) ->
+      | Reconcile, (No_answer m | Refused_by m | Busy_by (m, _)) ->
           (* the world cannot be asked now: no answer, so the engine keeps the intent Uncertain and asks again *)
           prerr_endline ("outbox: reconcile " ^ key ^ ": " ^ m))
     ended

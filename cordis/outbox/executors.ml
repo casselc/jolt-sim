@@ -23,12 +23,14 @@ let idempotency_key ~agent ~key ~request =
 (* a definite failure: the world refused it, and it did not run (an HTTP 4xx) *)
 exception Refused of string
 
-(* not run now, try later (HTTP 429 or 503): deferred, definitely not executed *)
-exception Busy of string
+(* not run now, try later (HTTP 429 or 503): deferred, definitely not executed; how long to wait, if the
+   world said (Retry-After, in seconds) *)
+exception Busy of string * float option
 
 (* An HTTP status as one of those; 2xx is the caller's to read *)
-let classify_status what status =
-  if status = 429 || status = 503 then raise (Busy (Printf.sprintf "%s: HTTP %d" what status))
+let classify_status ?(headers = []) what status =
+  if status = 429 || status = 503 then
+    raise (Busy (Printf.sprintf "%s: HTTP %d" what status, Option.bind (List.assoc_opt "retry-after" headers) float_of_string_opt))
   else if status >= 400 && status < 500 && status <> 408 then raise (Refused (Printf.sprintf "%s: HTTP %d" what status))
   else if status < 200 || status >= 300 then failwith (Printf.sprintf "%s: HTTP %d" what status)
 
@@ -105,7 +107,7 @@ let llm_complete ?(idle = 120.) ~url () =
           @ thinking))
     in
     let r = Http.post ~timeout:idle ~headers:[ ("Idempotency-Key", key) ] (url ^ "/v1/chat/completions") body in
-    classify_status "llm.complete" r.status;
+    classify_status ~headers:r.headers "llm.complete" r.status;
     let content, finish, tokens, reasoning = read_completion r.body in
     ( V.make_map [ (V.String "text", V.String content); (V.String "finish", V.String finish); (V.String "reasoning", V.Int (Int64.of_int reasoning)) ],
       match tokens with Some n -> n | None -> -1 )

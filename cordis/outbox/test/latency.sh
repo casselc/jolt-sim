@@ -10,6 +10,9 @@
 #      rests at its cap unshipped, says so, and exits 4;
 #   C. no usage reported: each completion is charged its worst case;
 #   D. HTTP 400: a definite failure, run once, not retried; exit 2;
+#   F. a reply that reasons first and gives its verdict on the last line:
+#      approved at the first review;
+#   G. HTTP 429 with Retry-After: the request waits that long, then runs;
 #   E. a server that keeps idempotency keys, which drops the first answer
 #      after generating it: llm.complete run keyed is sent again with the
 #      same key and answered from what the server kept, generated once.
@@ -25,7 +28,7 @@ mkdir -p "$T/repo/src" && echo "let x = 1 (* the file *)" > "$T/repo/src/main.ml
 start() {
   kill "${llm_pid:-}" "${outbox_pid:-}" 2>/dev/null || true
   wait "${llm_pid:-}" "${outbox_pid:-}" 2>/dev/null || true
-  rm -f "$T/port" "$T/count" "$T/count.thinking" "$T/count.temperature" "$T/count.generated" "$T/run.db" "$T/journal.db" "$T/outbox.out"
+  rm -f "$T/port" "$T/count" "$T/count.thinking" "$T/count.temperature" "$T/count.generated" "$T/count.times" "$T/run.db" "$T/journal.db" "$T/outbox.out"
   python3 "$stub" "$T/port" "$T/count" "$@" & llm_pid=$!
   for _ in $(seq 100); do [ -s "$T/port" ] && break; sleep 0.1; done
   "$outbox_bin" --socket "$T/outbox.sock" --journal "$T/journal.db" --llm "http://127.0.0.1:$(cat "$T/port")" --repo "$T/repo" \
@@ -86,6 +89,16 @@ elif phase == "E":
     # the dropped send is released, not charged its worst case: 10 tokens a generation, 1 a read
     assert out["settled"] == 10 * generated + generated and out["reserved"] == 0, out
     print(f"E ok: a dropped answer resent with its key and replayed: {count} requests, {generated} generated; settled {out['settled']}, the lost send not charged")
+elif phase == "F":
+    assert code == 0 and a["shipped"] is True and count == 1, (code, count, out)
+    assert "//" not in a["draft"]["patch"], a["draft"]
+    print("F ok: a verdict on the last line approved at the first review")
+elif phase == "G":
+    assert code == 0 and a["shipped"] is True, (code, out, err)
+    times = [float(l) for l in open(sys.argv[4] + ".times")]
+    assert times[1] - times[0] >= 1.9, f"asked again {times[1] - times[0]:.2f}s after a Retry-After of 2"
+    assert all(s == "done" for _, s in rows) and out["reserved"] == 0, (rows, out)
+    print(f"G ok: a 429 waited out its Retry-After ({times[1] - times[0]:.1f}s), then answered")
 elif phase == "D":
     assert code == 2 and out["outcome"] == "failed", (code, out)
     assert count == 1 and rows and rows[0][1] == "refused", (count, rows)
@@ -100,3 +113,5 @@ start length; run; check B $code
 start no-usage; run; check C $code
 start refuse; run; check D $code
 start keys drop-first; CLASS=--keyed run; check E $code
+start approve verdict-last; run; check F $code
+start busy-first=2; run; check G $code

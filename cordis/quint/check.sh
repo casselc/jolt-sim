@@ -220,6 +220,8 @@ sim observe.qnt oneClass obsNeverUncertain VIOLATED
 sim observe.qnt keyIgnored effectOnce VIOLATED
 sim observe.qnt keyIgnored accounted VIOLATED
 sim observe.qnt releaseObs accounted VIOLATED
+# a world, not a mutant: a stopped original past the grace window breaks the release's accounting (the stated limit)
+sim observe.qnt graceExpiry accounted VIOLATED
 
 # ---- engine.qnt (RFC 0006: the turn commit protocol) -------------------------------------
 for inv in releasedOnlyDurable effectMatchesCommit commitAtomic receiptOnce uncertainSurvives; do sim engine.qnt design "$inv" ok; done

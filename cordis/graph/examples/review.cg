@@ -31,10 +31,13 @@ cell critic(diff : Diff) : Verdict
   state { attempts : int = 0; }
 = {
   use ctx  = repo.read(diff.path);
-  use resp = llm.complete(Prompt{prompt: ['Review the patch below against the file before it. Reply with LGTM and nothing else only if the code is correct and complete as it stands; lines beginning // are earlier review notes, not fixes. Otherwise say briefly what to change.', ctx.text, diff.patch], max_tokens: 4000, thinking: false, temperature: 0.0});
+  use resp = llm.complete(Prompt{prompt: ['Review the patch below against the file before it. Put your verdict on the first line: LGTM, alone on that line, only if the code is correct and complete as it stands; lines beginning // are earlier review notes, not fixes. Otherwise say briefly what to change.', ctx.text, diff.patch], max_tokens: 4000, thinking: false, temperature: 0.0});
   // only an answer that finished can approve; the notes are bounded where they are made, as the
   // stream they go to requires
-  let r    = Review{passed: resp.finish == 'stop' && resp.text.startsWith('LGTM'),
+  // the verdict is LGTM alone on the first or the last non-empty line (a model that reasons first puts
+  // it last, whatever it is asked)
+  let t    = resp.text.trim();
+  let r    = Review{passed: resp.finish == 'stop' && (t == 'LGTM' || t.startsWith('LGTM\n') || t.endsWith('\nLGTM')),
                     notes: size(resp.text) > 500 ? resp.text.substring(0, 500) : resp.text};
   r.passed ? Verdict.Pass(r) : Verdict.Fail(r)
     with state.attempts := state.attempts + 1;

@@ -1067,6 +1067,34 @@ importers wait for the slice.
      unshipped at the cap. A converging loop needs a writer that applies
      the notes, a completion of its own.
 
+   A fourth run held both: a kill mid-decode now settled exactly what an
+   unkilled run did (2493, the lost send `superseded` at cost 0), and a
+   wrong patch rested unshipped at its cap through 17 crashes and an
+   outbox restart. It found three more:
+
+   - *A verdict on the last line was refused.* At temperature 0 the model
+     reasoned first and ended with LGTM, which `startsWith` rejected, and
+     the loop got through only because the notes changed its input. The
+     critic now asks for the verdict on the first line and accepts LGTM
+     alone on the first or the last non-empty line.
+   - *"One key, one generation" holds only while the server holds the
+     original*: running, adopted within its grace window (30 s on the G3
+     build), or finished. A resend after the server stopped an unfinished
+     original generates afresh, and the stopped part's tokens are in no
+     reported usage, so settled can fall short of the server's work by up
+     to one worst case per send so stopped. `observe.qnt` states the limit
+     as a world, `graceExpiry`, in which the release breaks `accounted`.
+     Closing it needs the server to say whether an answer was replayed,
+     adopted or generated afresh, so the outbox can charge the lost sends
+     of a fresh one; until then the release is a choice the RFC records.
+   - *Retry-After was not used.* A 429 or 503 with Retry-After now waits
+     that long before the intent is asked again (else the outbox backs off
+     from 1 s, doubling to a minute).
+
+   `latency.sh` gains phases F (a verdict on the last line approves at the
+   first review) and G (a 429 with Retry-After: 2 is asked again 2 s
+   later); a planted outbox that ignores Retry-After fails G.
+
    `outbox/test/latency.sh` replays the run's conditions against a
    stand-in: calls slower than the runner's timeout with long multi-line
    answers (one completion per computation, none charged as lost, notes

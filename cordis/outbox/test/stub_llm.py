@@ -20,6 +20,11 @@ Modes, for the real-latency test (what the halo-flash run found):
               generated)
   drop-first  generate the first answer, keep it under its key, and close the
               connection without sending it: a lost answer
+  approve     approve every patch
+  verdict-last  approve as a model that reasons first does: the reasons,
+              then LGTM on the last line
+  busy-first=S  answer the first request HTTP 429 with Retry-After: S
+              (COUNT_FILE.times holds each request's arrival time)
 """
 import json
 import sys
@@ -50,6 +55,19 @@ class Handler(BaseHTTPRequestHandler):
         count += 1
         with open(count_file, "w") as f:
             f.write(str(count))
+        with open(count_file + ".times", "a") as f:
+            f.write("%f\n" % time.time())
+        busy = next((m.split("=", 1)[1] for m in modes if m.startswith("busy-first=")), None)
+        if busy is not None and count == 1:
+            out = b'{"error": "busy"}'
+            self.send_response(429)
+            self.send_header("Retry-After", busy)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(out)))
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(out)
+            return
         thinks = body.get("chat_template_kwargs", {}).get("enable_thinking", True)
         with open(count_file + ".temperature", "a") as f:
             f.write(json.dumps(body.get("temperature")) + "\n")
@@ -68,8 +86,10 @@ class Handler(BaseHTTPRequestHandler):
         parts = prompt.split("\n\n")
         # the file's context is the part before the patch
         context = parts[-2] if len(parts) >= 2 else parts[0]
-        approve = prompt.count("\n// ") >= 2 and "length" not in modes
-        if approve:
+        approve = (prompt.count("\n// ") >= 2 or "approve" in modes) and "length" not in modes
+        if approve and "verdict-last" in modes:
+            text = "The patch is correct and complete as it stands.\n\nLGTM"
+        elif approve:
             text = "LGTM"
         elif "long" in modes:
             text = "needs work (" + context + ")\n" + "\n".join("line %d of a long review: " % i + "x" * 60 for i in range(12))

@@ -35,7 +35,7 @@ let candidate f =
   revision_of ~from:(Lazy.force live_file, r0.checked) (f (Lazy.force live_text))
 
 let r1 = lazy (candidate (edit "max_tokens: 4000" "max_tokens: 4001"))
-let r2 = lazy (candidate (edit "resp.text.startsWith('LGTM')," "resp.text.startsWith('LGTM') && 1 / (size(resp.text) - size(resp.text)) == 0,"))
+let r2 = lazy (candidate (edit "t.endsWith('\\nLGTM'))," "t.endsWith('\\nLGTM')) && 1 / (size(resp.text) - size(resp.text)) == 0,"))
 let r3 = lazy (candidate (edit "up to 8" "up to 7"))
 
 let shadow_cassette (i : E.intent) = (cassette i, actual i.kind)

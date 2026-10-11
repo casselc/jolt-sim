@@ -61,6 +61,14 @@
  *  - RELEASE_OBS (`releaseObs`): an observational intent's earlier attempts
  *    are released, not charged, when it is answered, as a keyed intent's
  *    are; but each of its attempts may have run -> accounted.
+ * A world, not a mutant: GRACE_EXPIRY (`graceExpiry`) stops an abandoned
+ * send's generation part way when its client has been gone longer than
+ * the server's grace window, keeping nothing, so a resend generates afresh
+ * and the stopped part's tokens are in no answer -> accounted. The release
+ * rests on the resend reaching the world while it still holds the
+ * original (running, within the grace window, or finished); past that,
+ * settled can fall short of the world's work by up to one worst case per
+ * send so stopped.
  * Witnesses (checked as not(w), expected VIOLATED): retriedThenDone,
  * lateSettled, exhausted, effectfulUncertain, reconciled, keyedResent (a
  * keyed intent sent again completed), keyedDeduplicated (a resend found the
@@ -74,6 +82,7 @@ module observe {
   const ONE_CLASS: bool
   const KEY_IGNORED: bool
   const RELEASE_OBS: bool
+  const GRACE_EXPIRY: bool
 
   type Kind = Obs | Eff | Key
   type Phase = Ready | Sent | Lost | Uncertain | Failed | Done
@@ -90,7 +99,8 @@ module observe {
   // sent again with the same identity after a lost receipt, while sends remain
   pure def resendable(k: Kind): bool = k == Key and not(ONE_CLASS)
 
-  type Attempt = { intent: int, n: int, ran: bool, cost: int, live: bool }
+  // kept: the world holds the attempt's generation, to answer a resend under the same key from it
+  type Attempt = { intent: int, n: int, ran: bool, cost: int, live: bool, kept: bool }
 
   type S = {
     pc: int,                 // the intent being emitted
@@ -125,7 +135,7 @@ module observe {
     NO_RESERVE or s.settled + s.reserved + R <= B,
     s' = { ...s,
       phase: Sent, tries: s.tries + 1, cur: s.attempts.length(),
-      attempts: s.attempts.append({ intent: s.pc, n: s.tries, ran: false, cost: 0, live: true }),
+      attempts: s.attempts.append({ intent: s.pc, n: s.tries, ran: false, cost: 0, live: true, kept: false }),
       reserved: if (NO_RESERVE) s.reserved else s.reserved + R,
       retries: if (s.phase == Lost) s.retries + 1 else s.retries,
       resent: if (s.phase == Lost and KIND[s.pc] == Key) s.resent + 1 else s.resent,
@@ -139,13 +149,13 @@ module observe {
     val at = s.attempts[a]
     // a keyed intent already applied: the world answers from what it kept, running and charging
     // nothing, and reports the usage of the one generation it kept (as halo-flash's replay does)
-    val firsts = s.attempts.indices().filter(b => b != a and s.attempts[b].intent == at.intent and s.attempts[b].ran)
+    val firsts = s.attempts.indices().filter(b => b != a and s.attempts[b].intent == at.intent and s.attempts[b].kept)
     val dedup = KIND[at.intent] == Key and not(KEY_IGNORED) and firsts.size() > 0
     val cost = if (dedup) firsts.fold(0, (m, b) => if (s.attempts[b].cost > m) s.attempts[b].cost else m) else c
     all {
       at.live, not(at.ran),
       s' = { ...s,
-        attempts: s.attempts.replaceAt(a, { ...at, ran: true, cost: cost }),
+        attempts: s.attempts.replaceAt(a, { ...at, ran: true, cost: cost, kept: true }),
         real: if (dedup) s.real else s.real + cost,
         effects: if (KIND[at.intent] != Obs and not(dedup)) inc(s.effects, at.intent) else s.effects,
         deduped: if (dedup) s.deduped + 1 else s.deduped,
@@ -241,7 +251,19 @@ module observe {
 
   action idle: bool = s' = s
 
-  action step = any { send, worldRuns, answer, lose, expire, reconcile, idle }
+  // GRACE_EXPIRY: the world stops an abandoned send's generation part way (its client left more than
+  // a grace window ago, and it had not finished), keeping nothing: its tokens were spent, and no answer
+  // reports them, so a resend generates afresh
+  action worldStops: bool = {
+    nondet a = s.attempts.indices().oneOf()
+    val at = s.attempts[a]
+    all {
+      GRACE_EXPIRY, at.ran, at.kept, at.live, a != s.cur,
+      s' = { ...s, attempts: s.attempts.replaceAt(a, { ...at, kept: false }) },
+    }
+  }
+
+  action step = any { send, worldRuns, answer, lose, expire, reconcile, worldStops, idle }
 
   // ---- properties -------------------------------------------------------------------------
   val effectOnce: bool = 0.to(N - 1).forall(i => KIND[i] != Obs implies s.effects[i] <= 1)
@@ -264,26 +286,29 @@ module observe {
 }
 
 module design {
-  import observe(MISCLASSIFY = false, REFUND_LOST = false, NO_RESERVE = false, APPLY_LATE = false, ONE_CLASS = false, KEY_IGNORED = false, RELEASE_OBS = false).* from "./observe"
+  import observe(MISCLASSIFY = false, REFUND_LOST = false, NO_RESERVE = false, APPLY_LATE = false, ONE_CLASS = false, KEY_IGNORED = false, RELEASE_OBS = false, GRACE_EXPIRY = false).* from "./observe"
 }
 module misclassify {
-  import observe(MISCLASSIFY = true, REFUND_LOST = false, NO_RESERVE = false, APPLY_LATE = false, ONE_CLASS = false, KEY_IGNORED = false, RELEASE_OBS = false).* from "./observe"
+  import observe(MISCLASSIFY = true, REFUND_LOST = false, NO_RESERVE = false, APPLY_LATE = false, ONE_CLASS = false, KEY_IGNORED = false, RELEASE_OBS = false, GRACE_EXPIRY = false).* from "./observe"
 }
 module refundLost {
-  import observe(MISCLASSIFY = false, REFUND_LOST = true, NO_RESERVE = false, APPLY_LATE = false, ONE_CLASS = false, KEY_IGNORED = false, RELEASE_OBS = false).* from "./observe"
+  import observe(MISCLASSIFY = false, REFUND_LOST = true, NO_RESERVE = false, APPLY_LATE = false, ONE_CLASS = false, KEY_IGNORED = false, RELEASE_OBS = false, GRACE_EXPIRY = false).* from "./observe"
 }
 module noReserve {
-  import observe(MISCLASSIFY = false, REFUND_LOST = false, NO_RESERVE = true, APPLY_LATE = false, ONE_CLASS = false, KEY_IGNORED = false, RELEASE_OBS = false).* from "./observe"
+  import observe(MISCLASSIFY = false, REFUND_LOST = false, NO_RESERVE = true, APPLY_LATE = false, ONE_CLASS = false, KEY_IGNORED = false, RELEASE_OBS = false, GRACE_EXPIRY = false).* from "./observe"
 }
 module applyLate {
-  import observe(MISCLASSIFY = false, REFUND_LOST = false, NO_RESERVE = false, APPLY_LATE = true, ONE_CLASS = false, KEY_IGNORED = false, RELEASE_OBS = false).* from "./observe"
+  import observe(MISCLASSIFY = false, REFUND_LOST = false, NO_RESERVE = false, APPLY_LATE = true, ONE_CLASS = false, KEY_IGNORED = false, RELEASE_OBS = false, GRACE_EXPIRY = false).* from "./observe"
 }
 module oneClass {
-  import observe(MISCLASSIFY = false, REFUND_LOST = false, NO_RESERVE = false, APPLY_LATE = false, ONE_CLASS = true, KEY_IGNORED = false, RELEASE_OBS = false).* from "./observe"
+  import observe(MISCLASSIFY = false, REFUND_LOST = false, NO_RESERVE = false, APPLY_LATE = false, ONE_CLASS = true, KEY_IGNORED = false, RELEASE_OBS = false, GRACE_EXPIRY = false).* from "./observe"
 }
 module keyIgnored {
-  import observe(MISCLASSIFY = false, REFUND_LOST = false, NO_RESERVE = false, APPLY_LATE = false, ONE_CLASS = false, KEY_IGNORED = true, RELEASE_OBS = false).* from "./observe"
+  import observe(MISCLASSIFY = false, REFUND_LOST = false, NO_RESERVE = false, APPLY_LATE = false, ONE_CLASS = false, KEY_IGNORED = true, RELEASE_OBS = false, GRACE_EXPIRY = false).* from "./observe"
 }
 module releaseObs {
-  import observe(MISCLASSIFY = false, REFUND_LOST = false, NO_RESERVE = false, APPLY_LATE = false, ONE_CLASS = false, KEY_IGNORED = false, RELEASE_OBS = true).* from "./observe"
+  import observe(MISCLASSIFY = false, REFUND_LOST = false, NO_RESERVE = false, APPLY_LATE = false, ONE_CLASS = false, KEY_IGNORED = false, RELEASE_OBS = true, GRACE_EXPIRY = false).* from "./observe"
+}
+module graceExpiry {
+  import observe(MISCLASSIFY = false, REFUND_LOST = false, NO_RESERVE = false, APPLY_LATE = false, ONE_CLASS = false, KEY_IGNORED = false, RELEASE_OBS = false, GRACE_EXPIRY = true).* from "./observe"
 }
