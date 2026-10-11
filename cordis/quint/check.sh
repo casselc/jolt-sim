@@ -160,6 +160,13 @@ for w in sweptOrphan reacquiredAfterSweep crashedHolding recoveredOwner; do sim 
 sim recovery.qnt noSweep noLeakedDurable VIOLATED
 sim recovery.qnt sweepTwice releasedOnce VIOLATED
 
+# ---- intake.qnt (RFC 0006 stage 2 review: intake not blocked by calls; only an accepted attempt is lost) --
+for inv in chargedOnlyIfAccepted callOnce notBlockedByCall; do sim intake.qnt design "$inv" ok; done
+verify intake.qnt design safety ok
+for w in resentUnaccepted lostThenRetried concurrentCalls allAnswered; do sim intake.qnt design "not($w)" VIOLATED; done
+sim intake.qnt timeoutAsLost chargedOnlyIfAccepted VIOLATED
+sim intake.qnt serial notBlockedByCall VIOLATED
+
 # ---- schedule.qnt (RFC 0006 decision 4: schedule independence, deficit round robin across graphs) --
 for inv in sameRest boundedWait; do sim schedule.qnt design "$inv" ok; done
 # Apalache: depth 6 (about 30 s) is the least at which both copies rest, so sameRest is checked

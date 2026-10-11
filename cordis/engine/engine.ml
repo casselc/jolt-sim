@@ -62,7 +62,10 @@ type cls = Observational | Keyed | Effectful
 
 type intent = { key : string; kind : string; request : V.t; cls : cls; attempt : int }
 
-type receipt = Done of V.t * int  (** the receipt, and what it actually cost *) | Lost
+type receipt =
+  | Done of V.t * int  (** the receipt, and what it actually cost (negative: unknown, charged its worst case) *)
+  | Lost  (** no answer: the outcome is unknown *)
+  | Refused of string  (** a definite failure (the world refused it, and it did not run): the computation fails *)
 
 type fiber =
   | Ready
@@ -98,6 +101,7 @@ type fact =
   | Cutover_begin of string  (** the candidate revision's id *)
   | Asset_revision of string * string  (** an asset now runs this revision *)
   | Cutover_end of string
+  | Refused of string * string  (** a stream refused an append: the stream, why (full, or the value over its bounds) *)
 
 type record = { seq : int; facts : fact list }
 
@@ -344,7 +348,15 @@ let perform t action =
       let c = Smap.find a t.cells in
       let args = List.map2 (fun (p, _) d -> (p, Option.get (value t d))) c.params ai.args in
       let basis = List.map (fun d -> (d, rev t d)) (deps t a) in
-      let s = { s with computes = s.computes + 1; fiber = Running { turn = 0; args; receipts = []; basis } } in
+      (* an argument over its parameter's declared bounds is refused, not truncated: the cell's cost was
+         estimated from them *)
+      let over =
+        List.find_map
+          (fun (p, v) -> match List.assoc_opt p c.param_bounds with Some b -> Option.map (fun m -> p ^ ": " ^ m) (Check.exceeds b v) | None -> None)
+          args
+      in
+      let fiber = match over with Some m -> Failed (Printf.sprintf "%s's argument %s" a m) | None -> Running { turn = 0; args; receipts = []; basis } in
+      let s = { s with computes = s.computes + 1; fiber } in
       let t, r = record (with_slot t a s) [ Slot (a, s) ] in
       (t, [ Persist r ])
   | Withdraw a ->
@@ -387,6 +399,13 @@ let perform t action =
                 | V.Map m -> V.make_map (List.map (fun (k, v) -> match k with V.String f when List.mem_assoc f updates -> (k, List.assoc f updates) | _ -> (k, v)) m)
                 | st -> st
               in
+              match Check.exceeds c.result_bound result with
+              | Some m ->
+                  (* a result over its declared bounds is refused: whatever reads it assumed them *)
+                  let s = { s with fiber = Failed (Printf.sprintf "%s's result: %s" a m) } in
+                  let t, r = record (with_slot t a s) [ Slot (a, s) ] in
+                  (t, [ Persist r ])
+              | None ->
               let changed = match s.value with Some v -> not (V.equal v result) | None -> true in
               let s = { s with value = Some result; rev = (if changed then s.rev + 1 else s.rev); seen = basis; state; fiber = Ready } in
               let t, r = record (with_slot t a s) [ Slot (a, s) ] in
@@ -445,9 +464,13 @@ let perform t action =
       let vs, r = Smap.find stream t.streams in
       let cap = Option.value (List.assoc_opt stream t.g.capacities) ~default:max_int in
       let answered = (sc, stream, t.episode, sl.computes) :: t.answered in
-      if List.length vs >= cap then
+      (* a value over the stream's element bounds is refused, as a full stream refuses: the cells reading
+         the stream were costed with those bounds *)
+      let over = match List.assoc_opt stream t.g.stream_bounds with Some b -> Check.exceeds b x | None -> None in
+      if over <> None || List.length vs >= cap then
+        let why = match over with Some m -> m | None -> Printf.sprintf "full, at %d" cap in
         let t = { t with answered; refused = t.refused + 1 } in
-        let t, rcd = record t [ Answered (sc, stream, t.episode, sl.computes) ] in
+        let t, rcd = record t [ Answered (sc, stream, t.episode, sl.computes); Refused (stream, why) ] in
         (t, [ Persist rcd ])
       else
         let vs = vs @ [ x ] in
@@ -477,6 +500,8 @@ let resume t a (s : slot) v cost =
       let x = fst (List.nth c.uses turn) in
       let s = { s with fiber = Running { turn = turn + 1; args; receipts = receipts @ [ (x, v) ]; basis } } in
       (* the reservation settles at the actual cost, once: this fiber awaits the key no longer *)
+      (* a cost the world did not report is charged at the worst case, never as nothing *)
+      let cost = if cost < 0 then t.worst intent.kind else cost in
       let t = { (with_slot t a s) with reserved = t.reserved - t.worst intent.kind; settled = t.settled + cost } in
       let t, r = record t [ Slot (a, s); Budget (t.reserved, t.settled) ] in
       (t, [ Persist r ])
@@ -500,6 +525,15 @@ let handle t ev =
           (t, [ Persist r ]))
   | Durable seq -> release_durable { t with durable = max t.durable seq }
   | Receipt (key, n, Done (v, cost)) -> (match awaiting t key n with Some (a, s) -> resume t a s v cost | None -> (t, []))
+  | Receipt (key, n, Refused why) -> (
+      (* it did not run: the reservation is released, and the computation fails *)
+      match awaiting t key n with
+      | Some (a, ({ fiber = Awaiting { intent; _ }; _ } as s)) ->
+          let s = { s with fiber = Failed (Printf.sprintf "%s: %d refused: %s" intent.key intent.attempt why) } in
+          let t = { (with_slot t a s) with reserved = t.reserved - t.worst intent.kind } in
+          let t, r = record t [ Slot (a, s); Budget (t.reserved, t.settled) ] in
+          (t, [ Persist r ])
+      | _ -> (t, []))
   | Receipt (key, n, Lost) -> (
       match awaiting t key n with
       | Some (a, ({ fiber = Awaiting ({ intent; _ } as w); _ } as s)) -> (
@@ -570,6 +604,7 @@ let recover ?classes ?max_attempts ?budget ?worst ?revision ?cell_hashes ?(revis
         let c = known id in
         let g = List.find (fun (g : Check.graph_info) -> g.gname = t.g.gname) c.checked.graphs in
         { t with g; registry = c.checked.registry; rev = c.id; cell_hashes = c.cell_hashes; cutting = None }
+    | Refused _ -> { t with refused = t.refused + 1 }
   in
   let t = List.fold_left (fun t (r : record) -> List.fold_left apply { t with seq = r.seq; durable = r.seq } r.facts) t records in
   let refused = t.refused in

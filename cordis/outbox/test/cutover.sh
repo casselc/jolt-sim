@@ -32,7 +32,7 @@ for _ in $(seq 100); do grep -q ready "$T/outbox.out" 2>/dev/null && break; slee
 sed 's/max_tokens: 4000/max_tokens: 4001/' "$graph" > "$T/good.cg"
 # the fault is where every run of the critic reaches it (behind && it would hide on the paths the
 # records can answer: a shadow exercises only those)
-sed "s/notes: resp.text}/notes: resp.text + string(1 \/ (size(resp.text) - size(resp.text)))}/" "$graph" > "$T/broken.cg"
+sed "s/: resp.text};/: resp.text + string(1 \/ (size(resp.text) - size(resp.text)))};/" "$graph" > "$T/broken.cg"
 sed 's/up to 8/up to 7/' "$graph" > "$T/rewired.cg"
 cmp -s "$graph" "$T/broken.cg" && { echo "the broken candidate is not broken"; exit 1; }
 

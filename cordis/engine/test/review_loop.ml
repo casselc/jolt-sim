@@ -218,6 +218,48 @@ let keyed_example () =
   Hashtbl.iter (fun k n -> Alcotest.(check int) (k ^ " applied once") 1 n) h.effects;
   Alcotest.(check (list string)) "spend" [] h.spend_errors
 
+(* long, multi-line notes (a real model's): the critic bounds them where it makes them, so every note
+   in the stream is within its 500, every line of every note is a comment in the draft, and the run
+   rests where its fault-free twin does *)
+let long_notes () =
+  Hegel.run_hegel_test ~settings ~database_key:"cordis:engine:long-notes" (fun tc ->
+      let draw n = if n <= 1 then 0 else Hegel.draw tc (Hegel.Generators.integers ~min_value:0 ~max_value:(n - 1) ()) in
+      note_lines := draw 26;
+      Fun.protect ~finally:(fun () -> note_lines := 0) @@ fun () ->
+      let reference = start () in
+      let _ = run ~pick:(fun _ -> 0) reference in
+      let losses = ref (draw 3) in
+      let faults = { lose = (fun () -> !losses > 0 && draw 3 = 0 && (decr losses; true)); dup = (fun () -> false) } in
+      let h = start ~crashes:(draw 3) () in
+      let _ = run ~faults ~crash_at:[ draw 100; draw 100 ] ~pick:draw h in
+      Hegel.require tc ~msg:(String.concat "; " (List.map (fun (a, m) -> a ^ ": " ^ m) (E.failures h.t))) (E.failures h.t = []);
+      List.iter
+        (fun n -> match n with V.String s -> Hegel.require tc ~msg:(Printf.sprintf "a note of %d in the stream" (Cordis_graph.Check.code_points s)) (Cordis_graph.Check.code_points s <= 500) | _ -> ())
+        (E.stream h.t "notes");
+      (match E.value h.t "draft" with
+       | Some d -> (
+           match field d "patch" with
+           | Some (V.String p) ->
+               List.iteri (fun k l -> if k > 0 then Hegel.require tc ~msg:("a line of a note that is not a comment: " ^ l) (String.length l >= 3 && String.sub l 0 3 = "// ")) (String.split_on_char '\n' p)
+           | _ -> ())
+       | None -> ());
+      Hegel.require tc ~msg:"rest differs from the fault-free run" (snapshot h = snapshot reference))
+
+(* a cell whose result is over its declared bound fails its computation: what reads it assumed the bound *)
+let result_over_bound () =
+  let text =
+    {|cell f(x : string<max 100>) : string<max 3> = { x + x; }
+graph g { input x : string<max 100>; asset y = f(x); }|}
+  in
+  let checked = match Cordis_graph.Patch.load text with Ok s -> s.checked | Error es -> failwith (String.concat "; " es) in
+  let h = new_host (E.create checked "g") in
+  feed h (E.Set_input ("x", V.String "ab"));
+  let _ = run ~pick:(fun _ -> 0) h in
+  Alcotest.(check (option string)) "no value" None (Option.map V.to_string (E.value h.t "y"));
+  match E.failures h.t with
+  | [ ("y", m) ] -> Alcotest.(check bool) ("refused: " ^ m) true (count_sub m "over its bound of 3" = 1)
+  | fs -> Alcotest.failf "expected y to fail, got %s" (String.concat "; " (List.map snd fs))
+
 (* ---- the durable form ---------------------------------------------------------------------------- *)
 
 let codec_round_trip () =
@@ -257,6 +299,8 @@ let () =
           Alcotest.test_case "a budget too small stops the loop within it" `Quick tight_budget;
           Alcotest.test_case "the replay audit reads records against the code" `Quick audit_example;
           Alcotest.test_case "a route arm appending to two streams appends to both" `Quick two_appends;
-          Alcotest.test_case "a keyed kind whose sends are all lost is reconciled by key" `Quick keyed_example ]);
+          Alcotest.test_case "a keyed kind whose sends are all lost is reconciled by key" `Quick keyed_example;
+          Alcotest.test_case "a result over its declared bound fails its computation" `Quick result_over_bound ]);
       ("properties", [ Alcotest.test_case "every value round-trips through the durable form" `Quick codec_round_trip; Alcotest.test_case "any schedule, with faults and a changed input, rests where a fault-free run does" `Quick (schedules ?keyed:None);
-                        Alcotest.test_case "the same, with repo.read keyed" `Quick (schedules ~keyed:[ "repo.read" ]) ]) ]
+                        Alcotest.test_case "the same, with repo.read keyed" `Quick (schedules ~keyed:[ "repo.read" ]);
+                        Alcotest.test_case "long multi-line notes are bounded, every line a comment" `Quick long_notes ]) ]

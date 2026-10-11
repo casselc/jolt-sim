@@ -10,13 +10,57 @@ module J = Yojson.Safe
 
 type t = { run : key:string -> V.t -> V.t * int; reconcile : key:string -> V.t -> (V.t * int) option }
 
+(* How a call fails, besides with no answer at all (any other exception: the outcome is unknown, a
+   lost receipt): *)
+(* a definite failure: the world refused it, and it did not run (an HTTP 4xx) *)
+exception Refused of string
+
+(* not run now, try later (HTTP 429 or 503): deferred, definitely not executed *)
+exception Busy of string
+
+(* An HTTP status as one of those; 2xx is the caller's to read *)
+let classify_status what status =
+  if status = 429 || status = 503 then raise (Busy (Printf.sprintf "%s: HTTP %d" what status))
+  else if status >= 400 && status < 500 && status <> 408 then raise (Refused (Printf.sprintf "%s: HTTP %d" what status))
+  else if status < 200 || status >= 300 then failwith (Printf.sprintf "%s: HTTP %d" what status)
+
 let field v f = match v with V.Map m -> V.map_find m (V.String f) | _ -> None
 let text s = V.make_map [ (V.String "text", V.String s) ]
 
+(* A completion read from a chat-completions answer, streamed (server-sent events) or not: its text, why
+   it stopped, and the tokens the server reports (None: it did not say) *)
+let read_completion body =
+  let open J.Util in
+  let content = Buffer.create 1024 and finish = ref "" and tokens = ref None in
+  let usage j = match j |> member "usage" with `Assoc _ as u -> (match u |> member "total_tokens" with `Int n -> tokens := Some n | _ -> ()) | _ -> () in
+  let choice j =
+    match j |> member "choices" with
+    | `List (c :: _) ->
+        (match c |> member "delta" with `Assoc _ as d -> (match d |> member "content" with `String s -> Buffer.add_string content s | _ -> ()) | _ -> ());
+        (match c |> member "message" with `Assoc _ as m -> (match m |> member "content" with `String s -> Buffer.add_string content s | _ -> ()) | _ -> ());
+        (match c |> member "finish_reason" with `String f -> finish := f | _ -> ())
+    | _ -> ()
+  in
+  let lines = String.split_on_char '\n' body in
+  if List.exists (fun l -> String.length l >= 5 && String.sub l 0 5 = "data:") lines then
+    List.iter
+      (fun l ->
+        let l = String.trim l in
+        if String.length l >= 5 && String.sub l 0 5 = "data:" then
+          let d = String.trim (String.sub l 5 (String.length l - 5)) in
+          if d <> "[DONE]" then match J.from_string d with j -> choice j; usage j | exception Yojson.Json_error _ -> ())
+      lines
+  else (let j = J.from_string body in choice j; usage j);
+  (Buffer.contents content, !finish, !tokens)
+
 (* llm.complete against an OpenAI-compatible chat-completions endpoint
-   (halo-flash serves one); the cost is the tokens the server reports.
-   Observational: a completion has no outside effect but its cost. *)
-let llm_complete ~url =
+   (halo-flash serves one), streamed, so the client's timeout is a limit on
+   silence, not on a long answer; the receipt is the text and why it
+   stopped (a completion cut off by its length is not one that finished);
+   the cost is the tokens the server reports, or unknown (charged the
+   worst case) when it does not say. Observational: a completion has no
+   outside effect but its cost. *)
+let llm_complete ?(idle = 120.) ~url () =
   let run req =
     let prompt =
       match field req "prompt" with
@@ -26,16 +70,14 @@ let llm_complete ~url =
     let max_tokens = match field req "max_tokens" with Some (V.Int n) -> Int64.to_int n | _ -> 1024 in
     let body =
       J.to_string
-        (`Assoc [ ("model", `String "default"); ("max_tokens", `Int max_tokens);
+        (`Assoc [ ("model", `String "default"); ("max_tokens", `Int max_tokens); ("stream", `Bool true);
+                  ("stream_options", `Assoc [ ("include_usage", `Bool true) ]);
                   ("messages", `List [ `Assoc [ ("role", `String "user"); ("content", `String prompt) ] ]) ])
     in
-    let r = Http.post (url ^ "/v1/chat/completions") body in
-    if r.status <> 200 then failwith (Printf.sprintf "llm.complete: HTTP %d" r.status);
-    let j = J.from_string r.body in
-    let open J.Util in
-    let content = j |> member "choices" |> index 0 |> member "message" |> member "content" |> to_string in
-    let tokens = match j |> member "usage" |> member "total_tokens" with `Int n -> n | _ -> 0 in
-    (text content, tokens)
+    let r = Http.post ~timeout:idle (url ^ "/v1/chat/completions") body in
+    classify_status "llm.complete" r.status;
+    let content, finish, tokens = read_completion r.body in
+    (V.make_map [ (V.String "text", V.String content); (V.String "finish", V.String finish) ], match tokens with Some n -> n | None -> -1)
   in
   { run = (fun ~key:_ req -> run req); reconcile = (fun ~key:_ _ -> None) }
 

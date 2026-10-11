@@ -7,12 +7,19 @@
    (RFC 0006, "Observational emissions"). A row still [Sent] when the
    outbox restarts became [Unknown]: it may or may not have taken effect.
    A row [Waiting] has no token from the limiter yet: nothing was sent, so
-   it waits on across a restart (outbox.qnt's WaitGrant). *)
+   it waits on across a restart (outbox.qnt's WaitGrant), as does one the
+   world asked to come back later (an HTTP 429 or 503). A row [Refused]
+   was refused by the world (an HTTP 4xx): it did not run, and is answered
+   as refused again. *)
 
-type state = Waiting | Sent | Done | Unknown | Fenced
+type state = Waiting | Sent | Done | Unknown | Fenced | Refused
 
-let state_name = function Waiting -> "waiting" | Sent -> "sent" | Done -> "done" | Unknown -> "unknown" | Fenced -> "fenced"
-let state_of = function "waiting" -> Waiting | "sent" -> Sent | "done" -> Done | "unknown" -> Unknown | "fenced" -> Fenced | s -> failwith ("journal state " ^ s)
+let state_name = function
+  | Waiting -> "waiting" | Sent -> "sent" | Done -> "done" | Unknown -> "unknown" | Fenced -> "fenced" | Refused -> "refused"
+
+let state_of = function
+  | "waiting" -> Waiting | "sent" -> Sent | "done" -> Done | "unknown" -> Unknown | "fenced" -> Fenced | "refused" -> Refused
+  | s -> failwith ("journal state " ^ s)
 
 type row = { jkey : string; state : state; value : string option; cost : int }
 
@@ -74,6 +81,10 @@ let waiting db =
 
 let finish db ~jkey ~value ~cost =
   with_stmt db "UPDATE journal SET state = 'done', value = ?, cost = ? WHERE jkey = ?" [ `T value; `I cost; `T jkey ] (fun st -> step_done db st "finish")
+
+(* a definite failure: it did not run, and answers the same again *)
+let refuse db ~jkey ~why =
+  with_stmt db "UPDATE journal SET state = 'refused', value = ? WHERE jkey = ?" [ `T why; `T jkey ] (fun st -> step_done db st "refuse")
 
 let set_state db ~jkey s =
   with_stmt db "UPDATE journal SET state = ? WHERE jkey = ?" [ `T (state_name s); `T jkey ] (fun st -> step_done db st "state")

@@ -11,11 +11,12 @@
 
 let () =
   let socket = ref "" and journal = ref "" and llm = ref "" and repo = ref "." and limiter = ref "" and agent = ref "agent" in
-  let api = ref "" and api_base = ref "" in
+  let api = ref "" and api_base = ref "" and llm_idle = ref 120. in
   Arg.parse
     [ ("--socket", Arg.Set_string socket, "PATH the Unix socket the engine connects to");
       ("--journal", Arg.Set_string journal, "FILE the SQLite journal, outside the agent's snapshots");
       ("--llm", Arg.Set_string llm, "URL an OpenAI-compatible server (http://host:port)");
+      ("--llm-idle", Arg.Set_float llm_idle, "SECONDS how long a streamed completion may be silent before it is taken as lost (default 120)");
       ("--repo", Arg.Set_string repo, "DIR the repository repo.read reads");
       ("--limiter", Arg.Set_string limiter, "PATH the central limiter's socket (none: no shared limit)");
       ("--agent", Arg.Set_string agent, "NAME this agent, in the limiter's emission keys");
@@ -24,7 +25,7 @@ let () =
     (fun _ -> ()) "cordis-outbox --socket PATH --journal FILE [--llm URL] [--repo DIR]";
   if !socket = "" || !journal = "" then (prerr_endline "cordis-outbox: --socket and --journal are required"; exit 2);
   let executors =
-    (if !llm <> "" then [ ("llm.complete", Cordis_outbox.Executors.llm_complete ~url:!llm) ] else [])
+    (if !llm <> "" then [ ("llm.complete", Cordis_outbox.Executors.llm_complete ~idle:!llm_idle ~url:!llm ()) ] else [])
     @ [ ("repo.read", Cordis_outbox.Executors.repo_read ~root:!repo) ]
     @
     if !api = "" then []

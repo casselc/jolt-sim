@@ -28,3 +28,11 @@
  (deps openapi.sh stub_notes.py notes.yaml notes_graph.cg %{bin:cordis-run} %{bin:cordis-outbox} ../../import/bin/cimport.exe)
  (action
   (run bash %{dep:openapi.sh} %{bin:cordis-run} %{bin:cordis-outbox} %{dep:../../import/bin/cimport.exe} %{dep:notes.yaml} %{dep:notes_graph.cg} %{dep:stub_notes.py})))
+
+; The review loop against a stand-in with a real model's habits: slow calls,
+; long multi-line answers, cut-off answers, no usage, a refusal
+(rule
+ (alias e2e)
+ (deps latency.sh stub_llm.py %{bin:cordis-run} %{bin:cordis-outbox} ../../graph/examples/review.cg)
+ (action
+  (run bash %{dep:latency.sh} %{bin:cordis-run} %{bin:cordis-outbox} %{dep:../../graph/examples/review.cg} %{dep:stub_llm.py})))

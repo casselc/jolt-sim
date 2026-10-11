@@ -224,6 +224,10 @@ let call_shape ctx fn (arg_ids : int list) (args : shape list) =
       | Some Checker.String -> sized (lo x) (x.hi *! 4)
       | _ -> unknown)
   | ("lowerAscii" | "upperAscii" | "trim" | "substring"), x :: _ -> sized 0 x.hi
+  (* at most x.hi / max(1, |old|) + 1 replacements (an empty pattern matches between every character),
+     each adding at most |new| *)
+  | "replace", x :: o :: n :: _ ->
+      if x.hi >= inf then unknown else sized 0 (x.hi +! (((x.hi / max 1 o.lo) +! 1) *! n.hi))
   | "charAt", _ -> sized 0 1
   | _ -> unknown
 
@@ -399,10 +403,10 @@ and accumulator step init n =
 
 type estimate = { min : int; max : int }
 
-(* Estimate an expression's cost in a checker environment: its declared
-   variables are the inputs, each given a [shapes] entry, or else bounded
-   at every depth by its [sizes] entry or [default_size]. *)
-let estimate ?(default_size = 1000) ?(sizes = []) ?(shapes = []) (env : Checker.env) (e : expr) =
+(* Walk an expression in a checker environment: its declared variables
+   are the inputs, each given a [shapes] entry, or else bounded at every
+   depth by its [sizes] entry or [default_size]. *)
+let walk_result ?(default_size = 1000) ?(sizes = []) ?(shapes = []) (env : Checker.env) (e : expr) =
   match Checker.check_types env e with
   | Error m -> Error m
   | Ok (_, types) ->
@@ -421,4 +425,10 @@ let estimate ?(default_size = 1000) ?(sizes = []) ?(shapes = []) (env : Checker.
           | None -> None
       in
       let r = walk { types; inputs } [] e in
-      Ok { min = r.cmin; max = r.cmax }
+      Ok r
+
+(* An expression's cost. *)
+let estimate ?default_size ?sizes ?shapes env e = Result.map (fun r -> { min = r.cmin; max = r.cmax }) (walk_result ?default_size ?sizes ?shapes env e)
+
+(* The shape of the expression's value: how large it can be, level by level. *)
+let result_shape ?default_size ?sizes ?shapes env e = Result.map (fun r -> r.shape) (walk_result ?default_size ?sizes ?shapes env e)

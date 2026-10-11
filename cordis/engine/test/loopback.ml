@@ -71,15 +71,20 @@ let count_sub s sub =
   go 0 0
 
 (* the world *)
+(* how long the critic's failing answers run, in lines of 80: a real model's, over the notes' bound *)
+let note_lines = ref 0
+
 let cassette (i : E.intent) =
   let text s = V.make_map [ (str "text", str s) ] in
   match i.kind with
   | "repo.read" -> (match i.request with V.String p -> text ("context of " ^ p) | _ -> text "?")
   | "llm.complete" -> (
-      (* the note names what it reviewed, so a note left from another request shows *)
-      let part n = match field i.request "prompt" with Some (V.List xs) when Array.length xs = 2 -> (match xs.(n) with V.String p -> p | _ -> "") | _ -> "" in
+      (* the prompt is [instruction, context, patch]; the note names what it reviewed, so a note left
+         from another request shows *)
+      let part n = match field i.request "prompt" with Some (V.List xs) when Array.length xs = 3 -> (match xs.(n + 1) with V.String p -> p | _ -> "") | _ -> "" in
+      let done_ t = V.make_map [ (str "text", str t); (str "finish", str "stop") ] in
       (* a patch that says never is never approved: its loop rests at the stream's cap *)
-      if count_sub (part 1) "\n// " >= 2 && count_sub (part 1) "never" = 0 then text "LGTM" else text ("needs work (" ^ part 0 ^ ")"))
+      if count_sub (part 1) "\n// " >= 2 && count_sub (part 1) "never" = 0 then done_ "LGTM" else done_ ("needs work (" ^ part 0 ^ ")" ^ String.concat "" (List.init !note_lines (fun k -> Printf.sprintf "\nline %d: %s" k (String.make 70 'x')))))
   | k -> failwith ("no cassette for " ^ k)
 
 (* ---- the host ------------------------------------------------------------------------------------- *)

@@ -1,20 +1,22 @@
 // The review loop of docs/cordis/rfc/0002-graph-language.md.
 
 type Diff    = { path : string; patch : string<max 65536> };
-type Review  = { passed : bool; notes : string };
+type Review  = { passed : bool; notes : string<max 500> };
 type Verdict = Pass(Review) | Fail(Review);
 type Prompt  = { prompt : list(string); max_tokens : int };
 type Text    = { text : string<max 65536> };
+// a completion: its text, and why it stopped (stop, length, ...): a cut-off answer is not a verdict
+type Completion = { text : string<max 65536>; finish : string<max 20> };
 
 effect repo.read(string) : Text;
-effect llm.complete(Prompt) : Text;
+effect llm.complete(Prompt) : Completion;
 
 // The bounds are what keep the fold's cost finite: without them the notes
 // stream would be estimated at the default ceiling, and the turn would be
 // over its budget.
 cell write(request : Diff, notes : list(string<max 500>)<max 8>) : Diff = {
-  // a revision folds the notes into the patch
-  Diff{path: request.path, patch: notes.fold(p, request.patch, n, p + '\n// ' + n)};
+  // a revision folds the notes into the patch, every line of a note a comment
+  Diff{path: request.path, patch: notes.fold(p, request.patch, n, p + '\n// ' + n.replace('\n', '\n// '))};
 }
 
 cell critic(diff : Diff) : Verdict
@@ -22,8 +24,11 @@ cell critic(diff : Diff) : Verdict
   state { attempts : int = 0; }
 = {
   use ctx  = repo.read(diff.path);
-  use resp = llm.complete(Prompt{prompt: [ctx.text, diff.patch], max_tokens: 4000});
-  let r    = Review{passed: resp.text.startsWith('LGTM'), notes: resp.text};
+  use resp = llm.complete(Prompt{prompt: ['Review the patch below against the file before it. If it is correct, reply with LGTM and nothing else; otherwise say briefly what to change.', ctx.text, diff.patch], max_tokens: 4000});
+  // only an answer that finished can approve; the notes are bounded where they are made, as the
+  // stream they go to requires
+  let r    = Review{passed: resp.finish == 'stop' && resp.text.startsWith('LGTM'),
+                    notes: size(resp.text) > 500 ? resp.text.substring(0, 500) : resp.text};
   r.passed ? Verdict.Pass(r) : Verdict.Fail(r)
     with state.attempts := state.attempts + 1;
 }

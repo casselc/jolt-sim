@@ -20,6 +20,12 @@ exception Fail of string
 
 let fail fmt = Printf.ksprintf (fun m -> raise (Fail m)) fmt
 
+(* A type's declared size bounds, level by level: what the cost estimate
+   assumed of a value, and what the runtime holds a value to at a cell's
+   boundary and where it enters a stream (RFC 0002, "Types"; a value over its bound is refused,
+   never truncated). *)
+type bound = { max : int option; elem : bound option; fields : (string * bound) list }
+
 type turn = {
   index : int;
   emits : string option;  (** the effect kind this turn waits on; None for the last *)
@@ -40,6 +46,8 @@ type cell_info = {
   uses : (string * string) list;  (** (variable, effect kind) per use, in order: turn i+1 reads the first i+1 *)
   updated : string list;
       (** the state fields the last turn updates, in order: its program gives [result; u1; ...] when non-empty *)
+  param_bounds : (string * bound) list;  (** each parameter's declared bounds: an argument is held to them *)
+  result_bound : bound;  (** the result's: a result is held to them *)
 }
 
 type asset_info = {
@@ -64,6 +72,7 @@ type graph_info = {
   append_exprs : (string * string * string * string option * Ast.expr option) list;
       (** (scrutinee, case, stream, binder, the appended value lowered): the runtime form of [appends] *)
   route_cases : (string * string list) list;  (** each routed asset's explicitly named cases; "_" takes the rest *)
+  stream_bounds : (string * bound) list;  (** each stream's element bounds *)
 }
 
 type checked = {
@@ -207,6 +216,62 @@ and proto_shape env name : Cordis_cel.Cost.shape =
           elem = lazy (List.fold_left (fun a (_, s) -> K.join a (Lazy.force s)) K.bottom fs) }
   in
   message name
+
+(* ---- bounds ---------------------------------------------------------------------------------- *)
+
+let no_bound = { max = None; elem = None; fields = [] }
+
+let rec bound_of env ?(visiting = []) (t : ty) : bound =
+  let b = bound_of env ~visiting in
+  match t with
+  | Scalar (("string" | "bytes"), n) -> { no_bound with max = n }
+  | List (t, n) -> { max = n; elem = Some (b t); fields = [] }
+  | Map (_, v, n) -> { max = n; elem = Some (b v); fields = [] }
+  | Option t -> b t
+  | Record (fs, _) -> { no_bound with fields = List.map (fun (f, t) -> (f, b t)) fs }
+  | Named n when not (List.mem n visiting) -> (
+      match List.assoc_opt n env.defs with Some (Type_def (_, Alias t)) -> bound_of env ~visiting:(n :: visiting) t | _ -> no_bound)
+  | _ -> no_bound
+
+(* code points, as CEL's size counts a string *)
+let code_points s =
+  let n = ref 0 in
+  String.iter (fun c -> if Char.code c land 0xC0 <> 0x80 then incr n) s;
+  !n
+
+(* where a value breaks its bounds, if it does *)
+let rec exceeds (b : bound) (v : Cordis_cel.Value.t) : string option =
+  let module V = Cordis_cel.Value in
+  let over n size what = match b.max with Some m when size > m -> Some (Printf.sprintf "%s of %d, over its bound of %d" what size m) | _ -> n in
+  let first l = List.find_map Fun.id l in
+  match v with
+  | V.String s -> over None (code_points s) "a string"
+  | V.Bytes s -> over None (String.length s) "bytes"
+  | V.List xs -> (
+      match over None (Array.length xs) "a list" with
+      | Some m -> Some m
+      | None -> (match b.elem with Some e -> first (Array.to_list (Array.map (exceeds e) xs)) | None -> None))
+  | V.Map m -> (
+      match b.fields with
+      | _ :: _ -> first (List.map (fun (f, fb) -> match V.map_find m (V.String f) with Some x -> Option.map (fun e -> f ^ ": " ^ e) (exceeds fb x) | None -> None) b.fields)
+      | [] -> (
+          match over None (List.length m) "a map" with
+          | Some e -> Some e
+          | None -> (match b.elem with Some e -> first (List.map (fun (_, x) -> exceeds e x) m) | None -> None)))
+  | V.Optional (Some x) -> exceeds b x
+  | _ -> None
+
+(* where a value of this shape may break the bounds, statically *)
+let rec may_exceed ?(depth = 4) (b : bound) (sh : Cordis_cel.Cost.shape) : string option =
+  if depth = 0 then None
+  else
+    match b.max with
+    | Some m when sh.hi > m ->
+        Some (if sh.hi >= Cordis_cel.Cost.inf then Printf.sprintf "unbounded, where the bound is %d" m else Printf.sprintf "up to %d, where the bound is %d" sh.hi m)
+    | _ -> (
+        match List.find_map (fun (f, fb) -> match List.assoc_opt f sh.fields with Some s -> Option.map (fun e -> f ^ ": " ^ e) (may_exceed ~depth:(depth - 1) fb (Lazy.force s)) | None -> None) b.fields with
+        | Some e -> Some e
+        | None -> (match b.elem with Some e -> may_exceed ~depth:(depth - 1) e (Lazy.force sh.elem) | None -> None))
 
 (* ---- CEL expressions ------------------------------------------------------------------------- *)
 
@@ -391,7 +456,9 @@ let check_cell env (c : Syntax.cell) =
   { cname = c.name; params; result; effects = c.effects; state; turns = List.init n_turns turn; holes = List.rev !holes;
     inits = List.map (fun (f, _, e) -> (f, Option.map renumber (lowered e))) c.state;
     uses = List.map (fun (x, k, _) -> (x, k)) uses;
-    updated = List.map fst c.updates }
+    updated = List.map fst c.updates;
+    param_bounds = List.map (fun (p, t) -> (p, bound_of env t)) c.params;
+    result_bound = bound_of env c.result }
 
 (* ---- graphs ---------------------------------------------------------------------------------- *)
 
@@ -499,6 +566,26 @@ let check_graph env ?(broken = []) cells name items =
     | Cel { ast; _ } -> Some (renumber (Lower.lower ~records:(records env) ~variants:(variants env) ast))
   in
   let routed = Hashtbl.create 4 in
+  let stream_tys = List.filter_map (function Stream (n, t, _) -> Some (n, t) | _ -> None) items in
+  (* the graph-language type of the payload a case of a routed asset carries *)
+  let payload_ty s tag =
+    match List.find_opt (fun a -> a.aname = s) assets with
+    | None -> None
+    | Some a -> (
+        match List.assoc_opt a.acell env.defs with
+        | Some (Cell c) -> (
+            let rec variant visiting (t : ty) =
+              match t with
+              | Named n when not (List.mem n visiting) -> (
+                  match List.assoc_opt n env.defs with
+                  | Some (Type_def (_, Variant cs)) -> Option.join (List.assoc_opt tag cs)
+                  | Some (Type_def (_, Alias t)) -> variant (n :: visiting) t
+                  | _ -> None)
+              | _ -> None
+            in
+            variant [] c.result)
+        | _ -> None)
+  in
   List.iter
     (function
       | Route (s, cases) ->
@@ -542,6 +629,21 @@ let check_graph env ?(broken = []) cells name items =
                           let vars = (match binder with Some (x, t) -> [ (x, t) ] | None -> []) in
                           let t = check_cel (cel_env env vars) (Printf.sprintf "route %s, case %s" s tag) e in
                           (match e with Hole _ -> () | Cel _ -> expect_assignable (Printf.sprintf "route %s, case %s: the value for %s" s tag st_name) elem t);
+                          (* the stream's bounds are what the cost of every cell reading it assumed: a value
+                             that may break them is refused here, so it is bounded where it is made *)
+                          (match lowered e, List.assoc_opt st_name stream_tys with
+                           | Some le, Some sty -> (
+                               let payload_shape =
+                                 match binder, payload_ty s tag with Some (x, _), Some pt -> [ (x, shape env pt) ] | _ -> []
+                               in
+                               match Cordis_cel.Cost.result_shape ~default_size:env.options.default_size ~shapes:payload_shape (cel_env env vars) le with
+                               | Ok sh -> (
+                                   match may_exceed (bound_of env sty) sh with
+                                   | Some why ->
+                                       fail "route %s, case %s: the value appended to %s may break the stream's bound (%s): bound it where it is made" s tag st_name why
+                                   | None -> ())
+                               | Error _ -> ())
+                           | _ -> ());
                           appends := (s, tag, st_name) :: !appends;
                           append_exprs := (s, tag, st_name, Option.map fst binder, lowered e) :: !append_exprs))
                 acts)
@@ -580,6 +682,7 @@ let check_graph env ?(broken = []) cells name items =
   in
   let befores = List.filter_map (function Before (a, b) -> Some (a, b) | _ -> None) items in
   { gname = name; inputs; streams; assets; appends = List.rev !appends; capacities; befores; effect_row;
+    stream_bounds = List.map (fun (n, t) -> (n, bound_of env t)) stream_tys;
     append_exprs = List.rev !append_exprs; route_cases = List.rev !route_cases }
 
 (* ---- files ----------------------------------------------------------------------------------- *)

@@ -9,13 +9,22 @@
                 [--worst KIND=N]... [--budget N]
                 [--timeout SECONDS] [--crash-after N]
 
+   --timeout is how long to wait for the outbox before sending again an
+   intent it has not acknowledged (the same attempt: nothing ran). An
+   acknowledged intent is the outbox's to answer, however long its call
+   takes; only the outbox reports it lost (quint/intake.qnt).
+
    An intent kind is effectful unless --observational or --keyed says
    otherwise, or --operations (an OpenAPI import's operations.json) gives
    its class.
 
-   On rest it prints each asset's value as JSON and exits 0; blocked (by
-   its budget, a failed computation, or intents the limiter has deferred
-   for longer than --max-wait) it prints why and exits 2. A deferred
+   It prints its outcome as JSON: "outcome" (rest, rest_unbound, failed,
+   blocked), each asset's value, "refused" (appends a full stream refused),
+   and the spend. At rest with every asset bound it exits 0; at rest with
+   an asset a guard left unbound (a loop that rested without shipping) 4;
+   failed (a computation failed) or blocked (by its budget, or intents the
+   limiter has deferred for longer than --max-wait) 2, saying why on
+   stderr too. A deferred
    intent was definitely not sent, so its wait is not a loss.
    --admit FILE soaks the candidate revision in a shadow answered from the
    run's own records, and if it comes to rest, stores its text and cuts
@@ -258,6 +267,10 @@ let () =
   end;
   let actions = ref 0 and receipts = ref 0 in
   let deferred = Hashtbl.create 8 and waited = ref 0. in
+  (* attempts the outbox has acknowledged: journaled, so its to answer (quint/intake.qnt) *)
+  let accepted = Hashtbl.create 8 in
+  (* a cost the world did not report is null: negative, which the engine charges at the worst case *)
+  let cost_of j = match J.Util.member "cost" j with `Int c -> c | _ -> -1 in
   let sync () =
     let d = Store.Sqlite.sync st in
     feed (Engine.Durable d)
@@ -266,6 +279,20 @@ let () =
     Engine.Smap.fold
       (fun _ (s : Engine.slot) acc -> match s.fiber with Engine.Awaiting { intent; _ } -> intent :: acc | _ -> acc)
       !t.slots []
+  in
+  let asset_names () =
+    List.map (fun (a : Cordis_graph.Check.asset_info) -> a.aname) (List.find (fun (g : Cordis_graph.Check.graph_info) -> g.gname = !name) checked.graphs).assets
+  in
+  (* the run's outcome, on stdout as JSON, whatever it is *)
+  let report outcome extra =
+    let values = List.map (fun a -> (a, match Engine.value !t a with Some v -> to_json v | None -> `Null)) (asset_names ()) in
+    let reserved, settled = Engine.spend !t in
+    print_endline
+      (J.to_string
+         (`Assoc
+           ([ ("outcome", `String outcome); ("assets", `Assoc values); ("refused", `Int (Engine.refused !t)); ("settled", `Int settled);
+              ("reserved", `Int reserved); ("revision", `String (Engine.revision !t)) ]
+           @ extra)))
   in
   let rec loop () =
     sync ();
@@ -281,21 +308,27 @@ let () =
           exit 3
         end;
         loop ()
-    | [] when Engine.quiet !t ->
-        let values = List.map (fun (a : Cordis_graph.Check.asset_info) -> (a.aname, match Engine.value !t a.aname with Some v -> to_json v | None -> `Null)) (List.find (fun (g : Cordis_graph.Check.graph_info) -> g.gname = !name) checked.graphs).assets in
-        let reserved, settled = Engine.spend !t in
-        print_endline
-          (J.to_string
-             (`Assoc [ ("assets", `Assoc values); ("settled", `Int settled); ("reserved", `Int reserved); ("revision", `String (Engine.revision !t)) ]));
-        exit 0
+    (* a failed computation first: a graph with one is quiet too, and must not read as at rest *)
     | [] when Engine.failures !t <> [] ->
         List.iter (fun (a, m) -> prerr_endline (Printf.sprintf "cordis-run: %s failed: %s" a m)) (Engine.failures !t);
+        report "failed" [ ("failures", `Assoc (List.map (fun (a, m) -> (a, `String m)) (Engine.failures !t))) ];
         exit 2
+    | [] when Engine.quiet !t ->
+        let unbound = List.filter (fun a -> Engine.value !t a = None) (asset_names ()) in
+        if unbound = [] then (report "rest" []; exit 0)
+        else begin
+          (* at rest, but a guard left an asset unbound (a loop that rested without shipping) *)
+          report "rest_unbound" [ ("unbound", `List (List.map (fun a -> `String a) unbound)) ];
+          exit 4
+        end
     | [] when awaited () = [] && not (Engine.Smap.exists (fun _ (s : Engine.slot) -> match s.fiber with Engine.Uncertain _ -> true | _ -> false) !t.slots) ->
         prerr_endline "cordis-run: blocked (a turn's reservation does not fit the budget)";
+        report "blocked" [ ("why", `String "a turn's reservation does not fit the budget") ];
         exit 2
     | [] -> (
-        (* wait for the outbox; what does not come in time is lost *)
+        (* wait for the outbox. An attempt it has acknowledged is waited on, however long its call takes:
+           only the outbox says it was lost. One it has not acknowledged is sent again, the same attempt
+           (the outbox's journal makes that harmless): nothing ran, so nothing is lost or charged *)
         let ready_line = match next_line () with Some l -> Some l | None -> (match Unix.select [ fd ] [] [] !timeout with [], _, _ -> None | _ -> fill (); next_line ()) in
         match ready_line with
         | None when Buffer.length pending > 0 -> loop ()
@@ -306,10 +339,11 @@ let () =
               waited := !waited +. !timeout;
               if !max_wait > 0. && !waited >= !max_wait then begin
                 prerr_endline "cordis-run: blocked (the limiter has deferred every intent it awaits)";
+                report "blocked" [ ("why", `String "the limiter has deferred every intent it awaits") ];
                 exit 2
               end
             end;
-            List.iter (fun (i : Engine.intent) -> feed (Engine.Receipt (i.key, i.attempt, Engine.Lost))) live;
+            List.iter (fun (i : Engine.intent) -> if not (Hashtbl.mem accepted (i.key, i.attempt)) then obey [ Engine.Release i ]) live;
             Engine.Smap.iter
               (fun _ (s : Engine.slot) -> match s.fiber with Engine.Uncertain { intent; _ } -> obey [ Engine.Reconcile (intent.key, intent.attempt) ] | _ -> ())
               !t.slots;
@@ -321,15 +355,17 @@ let () =
             let key = j |> member "key" |> to_string and attempt = j |> member "attempt" |> to_int in
             let receipts_before = !receipts in
             let op = j |> member "op" |> to_string in
+            if op = "ack" then Hashtbl.replace accepted (key, attempt) ();
             if op = "deferred" then Hashtbl.replace deferred (key, attempt) () else if op <> "ack" then Hashtbl.remove deferred (key, attempt);
             if op <> "deferred" && op <> "ack" then waited := 0.;
             (match op with
-             | "receipt" -> incr receipts; feed (Engine.Receipt (key, attempt, Engine.Done (Codec.of_value (j |> member "value"), j |> member "cost" |> to_int)))
+             | "receipt" -> incr receipts; feed (Engine.Receipt (key, attempt, Engine.Done (Codec.of_value (j |> member "value"), cost_of j)))
              | "lost" -> feed (Engine.Receipt (key, attempt, Engine.Lost))
+             | "refused" -> incr receipts; feed (Engine.Receipt (key, attempt, Engine.Refused (j |> member "why" |> to_string)))
              | "reconciled" -> (
                  match j |> member "receipt" with
                  | `Null -> feed (Engine.Reconciled (key, attempt, None))
-                 | r -> feed (Engine.Reconciled (key, attempt, Some (Codec.of_value (r |> member "value"), r |> member "cost" |> to_int))))
+                 | r -> feed (Engine.Reconciled (key, attempt, Some (Codec.of_value (r |> member "value"), cost_of r))))
              | _ -> ());
             if !crash_receipts > 0 && !receipts > receipts_before && !receipts >= !crash_receipts then begin
               prerr_endline (Printf.sprintf "cordis-run: crashing after %d receipts, before syncing" !receipts);

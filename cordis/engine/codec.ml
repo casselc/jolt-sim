@@ -126,6 +126,7 @@ let fact (x : E.fact) =
   | E.Cutover_begin id -> `List [ `String "cutover-begin"; `String id ]
   | E.Asset_revision (a, id) -> `List [ `String "asset-revision"; `String a; `String id ]
   | E.Cutover_end id -> `List [ `String "cutover-end"; `String id ]
+  | E.Refused (st, why) -> `List [ `String "refused"; `String st; `String why ]
 
 let of_fact (j : J.t) : E.fact =
   match j with
@@ -138,6 +139,7 @@ let of_fact (j : J.t) : E.fact =
   | `List [ `String "cutover-begin"; `String id ] -> E.Cutover_begin id
   | `List [ `String "asset-revision"; `String a; `String id ] -> E.Asset_revision (a, id)
   | `List [ `String "cutover-end"; `String id ] -> E.Cutover_end id
+  | `List [ `String "refused"; `String st; `String why ] -> E.Refused (st, why)
   | j -> bad "not a fact: %s" (J.to_string j)
 
 let record (r : E.record) = J.to_string (`Assoc [ ("v", `Int version); ("seq", `Int r.seq); ("facts", `List (List.map fact r.facts)) ])

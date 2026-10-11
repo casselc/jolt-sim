@@ -1,0 +1,4 @@
+// expect: ok
+type V = Pass | Fail(string<max 10>);
+cell f(x : string<max 10>) : V = { V.Fail(x); }
+graph g { input x : string<max 10>; stream notes : string<max 10> up to 4; asset v = f(x); route v { Pass -> none; Fail(s) -> notes <~ s }; }

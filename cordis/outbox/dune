@@ -1,3 +1,3 @@
 (library
  (name cordis_outbox)
- (libraries cordis_engine cordis_cel cordis_import yojson sqlite3 unix))
+ (libraries cordis_engine cordis_cel cordis_import yojson sqlite3 unix threads.posix))

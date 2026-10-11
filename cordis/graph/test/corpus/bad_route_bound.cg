@@ -1,0 +1,4 @@
+// expect: may break the stream's bound
+type V = Pass | Fail(string);
+cell f(x : string) : V = { V.Fail(x); }
+graph g { input x : string; stream notes : string<max 10> up to 4; asset v = f(x); route v { Pass -> none; Fail(s) -> notes <~ s }; }

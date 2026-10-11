@@ -957,8 +957,67 @@ importers wait for the slice.
    again, an outbox that runs without a grant, and limits counted per
    agent (`outbox.qnt`'s `localLimits`). The outbox's serve loop became
    select-based with its own line buffer, as the runner's had to.
-   Still to come in stage 2: a run against halo-flash itself, which needs
-   its hardware.
+   **The halo-flash run.** The review loop ran against halo-flash serving
+   Qwen3.8-Flash-Next, in three phases with predictions written first.
+   What held: across 17 runner kills and an outbox restart, 9 critic
+   computations made exactly 9 completions (journal and server agree),
+   the stream's cap brought a failing loop to rest, and the observational
+   class and the stores' durability were as specified. What it found,
+   and what was done:
+
+   1. *Declared string bounds were not enforced at a route.* Notes of up
+      to 748 characters entered `notes : string<max 500>`, whose bound
+      the cost of `write` assumed. The checker now refuses an append whose
+      value may break the stream's bounds (the estimator's shape of the
+      value against the stream type's declared bounds, the case payload's
+      own type included), and the engine holds values to their declared
+      bounds where they cross: a cell's arguments as it starts, its result
+      as it ends (either over: the computation fails, a typed refusal), and
+      an appended value (refused as a full stream refuses, the reason in
+      the record's `refused` fact). Nothing is truncated; a cell bounds its
+      own output (`review.cg`'s critic now does).
+   2. *A single-threaded outbox and the runner's timeout charged three
+      worst cases for one request.* The runner took its own timeout for a
+      lost receipt while the outbox, busy with the first call, had not
+      read the later attempts. `quint/intake.qnt` states the fix: the
+      outbox reads its intake whatever calls run (calls now run on
+      threads, their ends journaled by the loop), and the runner sends an
+      unacknowledged attempt again as the same attempt (nothing ran, so
+      nothing is lost or charged) and waits on an acknowledged one, which
+      only the outbox reports lost; mutants `timeoutAsLost` and `serial`.
+   3. *The runner exited 0 with a failed computation.* Failures are
+      checked before rest.
+   4. *The outcome was not in the output.* The runner prints `outcome`
+      (`rest`, `rest_unbound`, `failed`, `blocked`), `refused`, and the
+      unbound assets; at rest with an asset a guard left unbound (not
+      shipped) it exits 4.
+   5. *`review.cg` could not converge with a real model.* Its prompt now
+      instructs the critic, its notes are bounded where made, and its
+      fold comments every line of a note.
+   6. *A 120 s timeout cut long completions off.* The completion is
+      streamed, so the client's timeout limits silence, not length
+      (`--llm-idle`).
+   7. *Every executor failure was a loss.* An HTTP 4xx other than 408 and
+      429 is a definite refusal (a `Refused` receipt: the computation
+      fails, its reservation released, nothing retried, the journal
+      answering `refused` again); 429 and 503 are deferred with backoff
+      (definitely not run); no response stays a loss.
+   8. *`finish_reason` was dropped.* The receipt carries `finish`, and the
+      critic approves only an answer that finished.
+   9. *A response without usage cost nothing.* An unreported cost is
+      charged the worst case.
+   10. Noted, not changed: the limiter's fixed window allows bursts at its
+       edges; Apalache checks `engine`, `budget` and `schedule` to depth 6
+       only; rollback fidelity is still to be run on ZFS.
+
+   `outbox/test/latency.sh` replays the run's conditions against a
+   stand-in: calls slower than the runner's timeout with long multi-line
+   answers (one completion per computation, none charged as lost, notes
+   within their bound, every line commented), answers cut off by length
+   (never approved; rests unshipped, exit 4), no usage (charged the worst
+   case) and a 400 (refused once, exit 2). The runner's old timeout rule,
+   planted back, fails it with the run's own numbers (settled 12289, the
+   critic failed).
 3. **The run store, hardened.** Recovery under fault injection; the
    replay audit (5C); and a **native rollback-fidelity check**: on the
    host's own filesystem (ZFS on FreeBSD), snapshot the run store's
