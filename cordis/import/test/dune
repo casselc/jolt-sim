@@ -152,3 +152,9 @@
 (rule (alias runtest) (action (diff golden/openapi-bodies.names.txt openapi-bodies.names.out)))
 (rule (with-stdout-to openapi-bodies.operations.out (run %{exe:../bin/cimport.exe} openapi %{dep:openapi/bodies.yaml} --print operations)))
 (rule (alias runtest) (action (diff golden/openapi-bodies.operations.txt openapi-bodies.operations.out)))
+
+; ECMA-262 patterns translated into CEL's RE2
+(test
+ (name pattern_test)
+ (modules pattern_test)
+ (libraries cordis_import cordis_cel re alcotest))

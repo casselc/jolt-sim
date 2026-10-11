@@ -175,7 +175,7 @@ let compile (p : string) : Re.t =
         | 'p' | 'P' -> error "Unicode classes are not supported"
         | 'C' -> error "\\C is not supported"
         | ('b' | 'B' | 'A' | 'z' | 'Q' | 'E') when in_class -> error "\\%c in a class" c
-        | c when Char.code c < 0x80 && not (Char.equal c '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) -> `Cp (Char.code c)
+        | c when Char.code c < 0x80 && not ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) -> `Cp (Char.code c)
         | c -> error "invalid escape \\%c" c)
   in
   let set fl rs = of_set (if fl.i then fold rs else rs) in

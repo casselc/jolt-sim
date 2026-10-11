@@ -69,10 +69,13 @@ let nat (j : J.t) = match j with `Int i when i >= 0 -> i | `Float f when Float.i
    all four of ECMA's line terminators, and \s and \S are ECMA's white
    space (Unicode's, not RE2's ASCII), written out as ranges; a letter
    escaped for no reason is the letter (ECMA's identity escape, which RE2
-   rejects); (?<name> is RE2's (?P<name>; [^] is any character. Features
+   rejects), as is a hyphen beside a class escape in a class ([\w-.]); a
+   repetition over RE2's limit of 1000 is written as several ({0,1600} as
+   {0,1000}{0,600}); (?<name> is RE2's (?P<name>; [^] is any character. Features
    with no counterpart are refused rather than approximated: lookaround,
    backreferences, Unicode property classes, legacy octal escapes, a lone
-   surrogate, and the empty class []. *)
+   surrogate outside a class (in one it names no character of valid text),
+   and the empty class []. *)
 
 let ecma_space =
   [ (0x09, 0x0D); (0x20, 0x20); (0xA0, 0xA0); (0x1680, 0x1680); (0x2000, 0x200A); (0x2028, 0x2029); (0x202F, 0x202F); (0x205F, 0x205F);
@@ -106,34 +109,85 @@ let translate p =
             match hex 4 with
             | Some lo when lo >= 0xDC00 && lo <= 0xDFFF -> add (cp (0x10000 + ((hi - 0xD800) lsl 10) + (lo - 0xDC00)))
             | _ -> i := save; unsupported "pattern %S has a lone surrogate" p)
-        | Some v when surrogate v -> unsupported "pattern %S has a lone surrogate" p
+        (* in a class, a surrogate names no character of valid text (re2.ml drops it); alone, it would
+           match nothing, which is a pattern's author's error *)
+        | Some v when surrogate v -> if in_class then add (cp v) else unsupported "pattern %S has a lone surrogate" p
         | Some v -> add (cp v)
-        | None -> add "u")
-    | 'x' -> (match hex 2 with Some v -> add (cp v) | None -> add "x")
+        | None -> add "u");
+        false
+    | 'x' -> (match hex 2 with Some v -> add (cp v) | None -> add "x"); false
     | 'c' when !i < n && ((p.[!i] >= 'a' && p.[!i] <= 'z') || (p.[!i] >= 'A' && p.[!i] <= 'Z')) ->
         add (cp (Char.code p.[!i] land 31));
-        incr i
-    | '0' when not (!i < n && p.[!i] >= '0' && p.[!i] <= '9') -> add (cp 0)
+        incr i;
+        false
+    | '0' when not (!i < n && p.[!i] >= '0' && p.[!i] <= '9') -> add (cp 0); false
     | '0' .. '9' -> unsupported "pattern %S uses a backreference or an octal escape" p
-    | 'd' | 'D' | 'w' | 'W' | 'f' | 'n' | 'r' | 't' | 'v' -> add ("\\" ^ String.make 1 c)
-    | 's' -> add (if in_class then ranges ecma_space else "[" ^ ranges ecma_space ^ "]")
-    | 'S' -> add (if in_class then ranges (Cordis_cel.Re2.complement ecma_space) else "[^" ^ ranges ecma_space ^ "]")
-    | 'b' -> add (if in_class then cp 8 else "\\b")
-    | 'B' when not in_class -> add "\\B"
+    | 'd' | 'D' | 'w' | 'W' -> add ("\\" ^ String.make 1 c); true
+    | 'f' | 'n' | 'r' | 't' | 'v' -> add ("\\" ^ String.make 1 c); false
+    | 's' -> add (if in_class then ranges ecma_space else "[" ^ ranges ecma_space ^ "]"); true
+    | 'S' -> add (if in_class then ranges (Cordis_cel.Re2.complement ecma_space) else "[^" ^ ranges ecma_space ^ "]"); true
+    | 'b' -> add (if in_class then cp 8 else "\\b"); false
+    | 'B' when not in_class -> add "\\B"; false
     | 'p' | 'P' -> unsupported "pattern %S uses a Unicode property class" p
     | 'k' -> unsupported "pattern %S uses a backreference" p
-    | c when (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') -> add (String.make 1 c)
-    | c when Char.code c < 0x80 -> add ("\\" ^ String.make 1 c)
-    | c -> Buffer.add_char b c
+    | c when (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') -> add (String.make 1 c); false
+    | c when Char.code c < 0x80 -> add ("\\" ^ String.make 1 c); false
+    | c -> Buffer.add_char b c; false
+  in
+  (* where the last atom starts in the output, and each open group's, so a repetition RE2 caps at 1000
+     can be written as several (x{0,1600} as x{0,1000}x{0,600}: the same strings) *)
+  let last = ref 0 and groups = ref [] in
+  let repeat lo hi lazy_ =
+    let atom = Buffer.sub b !last (Buffer.length b - !last) in
+    Buffer.truncate b !last;
+    let lz = if lazy_ then "?" else "" in
+    let chunk q = add ("(?:" ^ atom ^ ")" ^ q ^ lz) in
+    let rec go lo hi =
+      if lo >= 1000 then (chunk "{1000}"; go (lo - 1000) (Option.map (fun h -> h - 1000) hi))
+      else
+        match hi with
+        | None -> chunk (Printf.sprintf "{%d,}" lo)
+        | Some h when h <= 1000 -> if h > 0 then chunk (Printf.sprintf "{%d,%d}" lo h)
+        | Some h -> chunk (Printf.sprintf "{%d,1000}" lo); go 0 (Some (h - 1000))
+    in
+    go lo hi
+  in
+  (* {n}, {n,} or {n,m} at the cursor (just past the brace), if it is one; else a literal brace *)
+  let quantifier () =
+    match String.index_from_opt p !i '}' with
+    | None -> None
+    | Some j -> (
+        let body = String.sub p !i (j - !i) in
+        let num s = if s <> "" && String.for_all (fun c -> c >= '0' && c <= '9') s then int_of_string_opt s else None in
+        let q =
+          match String.index_opt body ',' with
+          | None -> Option.map (fun k -> (k, Some k)) (num body)
+          | Some c -> (
+              let a = String.sub body 0 c and h = String.sub body (c + 1) (String.length body - c - 1) in
+              match num a, h with Some a, "" -> Some (a, None) | Some a, h -> Option.map (fun h -> (a, Some h)) (num h) | _ -> None)
+        in
+        match q with Some q -> i := j + 1; Some q | None -> None)
   in
   while !i < n do
     let c = p.[!i] in
     incr i;
+    (* every atom but a UTF-8 continuation byte, which belongs to the character before it *)
+    if not (c = '{' || c = '*' || c = '+' || c = '?' || c = ')' || c = '|' || (Char.code c land 0xC0 = 0x80)) then last := Buffer.length b;
     match c with
-    | '\\' -> escape ~in_class:false
+    | '\\' -> ignore (escape ~in_class:false : bool)
     | '.' -> add "[^\\n\\r\\x{2028}\\x{2029}]"
     | '(' when at "?=" || at "?!" || at "?<=" || at "?<!" -> unsupported "pattern %S uses lookaround" p
-    | '(' when at "?<" -> add "(?P<"; i := !i + 2
+    | '(' when at "?<" -> groups := Buffer.length b :: !groups; add "(?P<"; i := !i + 2
+    | '(' -> groups := Buffer.length b :: !groups; add "("
+    | ')' -> (match !groups with g :: rest -> last := g; groups := rest | [] -> ()); add ")"
+    | '{' -> (
+        match quantifier () with
+        | Some (lo, hi) when lo > 1000 || Option.value hi ~default:0 > 1000 ->
+            let lazy_ = at "?" in
+            if lazy_ then incr i;
+            repeat lo hi lazy_
+        | Some (lo, hi) -> add (match hi with Some h when h = lo -> Printf.sprintf "{%d}" lo | Some h -> Printf.sprintf "{%d,%d}" lo h | None -> Printf.sprintf "{%d,}" lo)
+        | None -> add "\\{")
     | '[' ->
         let neg = at "^" in
         if neg then incr i;
@@ -142,15 +196,20 @@ let translate p =
           if neg then add ("[" ^ ranges [ (0, 0x10FFFF) ] ^ "]") else unsupported "pattern %S has the empty class []" p)
         else begin
           add (if neg then "[^" else "[");
-          let closed = ref false in
+          let closed = ref false and after_set = ref false in
           while (not !closed) && !i < n do
             let c = p.[!i] in
             incr i;
-            match c with
-            | ']' -> closed := true
-            | '\\' -> escape ~in_class:true
-            | '[' -> add "\\["
-            | c -> Buffer.add_char b c
+            let set =
+              match c with
+              | ']' -> closed := true; false
+              | '\\' -> escape ~in_class:true
+              | '[' -> add "\\["; false
+              (* a hyphen beside a class escape is itself (ECMA), where RE2 would read a range *)
+              | '-' when !after_set || (at "\\" && !i + 1 < n && String.contains "dDwWsS" p.[!i + 1]) -> add "\\-"; false
+              | c -> Buffer.add_char b c; false
+            in
+            after_set := set
           done;
           if not !closed then unsupported "pattern %S has an unterminated class" p;
           add "]"

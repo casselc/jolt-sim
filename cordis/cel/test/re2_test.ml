@@ -46,6 +46,8 @@ let cases =
     ("^a{,2}$", "a{,2}", Some true);
     ("^a{2,}?$", "aaa", Some true);
     ("\\.", "a", Some false);
+    (* any ASCII punctuation may be escaped, _ too *)
+    ("^\\_\\-$", "_-", Some true);
     (* what RE2 refuses *)
     ("(?=a)", "a", None);
     ("(a)\\1", "aa", None);
