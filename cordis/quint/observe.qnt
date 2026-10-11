@@ -68,7 +68,11 @@
  * rests on the resend reaching the world while it still holds the
  * original (running, within the grace window, or finished); past that,
  * settled can fall short of the world's work by up to one worst case per
- * send so stopped.
+ * send so stopped. With REPORTED (`graceExpiryReported`) the world says
+ * whether an answer came from a fresh generation (halo-flash's
+ * Halo-Answer), and a fresh one charges the other sends their worst case
+ * instead of releasing them: `accounted` holds again (witness
+ * freshCharged).
  * Witnesses (checked as not(w), expected VIOLATED): retriedThenDone,
  * lateSettled, exhausted, effectfulUncertain, reconciled, keyedResent (a
  * keyed intent sent again completed), keyedDeduplicated (a resend found the
@@ -83,6 +87,7 @@ module observe {
   const KEY_IGNORED: bool
   const RELEASE_OBS: bool
   const GRACE_EXPIRY: bool
+  const REPORTED: bool
 
   type Kind = Obs | Eff | Key
   type Phase = Ready | Sent | Lost | Uncertain | Failed | Done
@@ -100,7 +105,8 @@ module observe {
   pure def resendable(k: Kind): bool = k == Key and not(ONE_CLASS)
 
   // kept: the world holds the attempt's generation, to answer a resend under the same key from it
-  type Attempt = { intent: int, n: int, ran: bool, cost: int, live: bool, kept: bool }
+  // fresh: it ran as a generation of its own, not answered from a kept one
+  type Attempt = { intent: int, n: int, ran: bool, cost: int, live: bool, kept: bool, fresh: bool }
 
   type S = {
     pc: int,                 // the intent being emitted
@@ -114,7 +120,7 @@ module observe {
     effects: List[int],      // ghost: per intent, times it took effect
     applied: List[int],      // per intent, answers applied
     lates: int, retries: int, reconciles: int,
-    resent: int, deduped: int, keyedUncertain: bool, released: int,
+    resent: int, deduped: int, keyedUncertain: bool, released: int, charged: int,
   }
 
   var s: S
@@ -123,7 +129,7 @@ module observe {
     pc: 0, phase: Ready, tries: 0, cur: NONE, attempts: List(),
     reserved: 0, settled: 0, real: 0, effects: [0, 0, 0], applied: [0, 0, 0],
     lates: 0, retries: 0, reconciles: 0,
-    resent: 0, deduped: 0, keyedUncertain: false, released: 0,
+    resent: 0, deduped: 0, keyedUncertain: false, released: 0, charged: 0,
   }
 
   pure def inc(l: List[int], i: int): List[int] = l.replaceAt(i, l[i] + 1)
@@ -135,7 +141,7 @@ module observe {
     NO_RESERVE or s.settled + s.reserved + R <= B,
     s' = { ...s,
       phase: Sent, tries: s.tries + 1, cur: s.attempts.length(),
-      attempts: s.attempts.append({ intent: s.pc, n: s.tries, ran: false, cost: 0, live: true, kept: false }),
+      attempts: s.attempts.append({ intent: s.pc, n: s.tries, ran: false, cost: 0, live: true, kept: false, fresh: false }),
       reserved: if (NO_RESERVE) s.reserved else s.reserved + R,
       retries: if (s.phase == Lost) s.retries + 1 else s.retries,
       resent: if (s.phase == Lost and KIND[s.pc] == Key) s.resent + 1 else s.resent,
@@ -155,7 +161,7 @@ module observe {
     all {
       at.live, not(at.ran),
       s' = { ...s,
-        attempts: s.attempts.replaceAt(a, { ...at, ran: true, cost: cost, kept: true }),
+        attempts: s.attempts.replaceAt(a, { ...at, ran: true, cost: cost, kept: true, fresh: not(dedup) }),
         real: if (dedup) s.real else s.real + cost,
         effects: if (KIND[at.intent] != Obs and not(dedup)) inc(s.effects, at.intent) else s.effects,
         deduped: if (dedup) s.deduped + 1 else s.deduped,
@@ -180,13 +186,20 @@ module observe {
     val at = s.attempts[a]
     val current = a == s.cur and s.phase == Sent
     val st = settle(at)
-    val release = if (current and releasable(at.intent)) others(a) else Set()
+    val closed = if (current and releasable(at.intent)) others(a) else Set()
+    // REPORTED: the answer says whether it came from a fresh generation (halo-flash's Halo-Answer:
+    // generated); then the other sends may have spent tokens no answer reports, and are charged their
+    // worst case; an answer replayed or adopted releases them
+    val charge = REPORTED and at.fresh
+    val release = if (charge) Set() else closed
     all {
       at.live, at.ran,
       s' = { ...s,
         attempts: s.attempts.indices().fold(s.attempts, (l, b) =>
-          if (b == a or release.contains(b)) l.replaceAt(b, { ...l[b], live: false }) else l),
-        reserved: if (NO_RESERVE) st._1 else st._1 - R * release.size(), settled: st._2,
+          if (b == a or closed.contains(b)) l.replaceAt(b, { ...l[b], live: false }) else l),
+        reserved: if (NO_RESERVE) st._1 else st._1 - R * closed.size(),
+        settled: if (charge) st._2 + R * closed.size() else st._2,
+        charged: s.charged + (if (charge) closed.size() else 0),
         released: s.released + release.size(),
         pc: if (current) s.pc + 1 else s.pc,
         phase: if (current) Ready else s.phase,
@@ -283,32 +296,39 @@ module observe {
   val keyedDeduplicated: bool = s.deduped > 0
   val keyedUncertainW: bool = s.keyedUncertain
   val supersededReleased: bool = s.released > 0
+  val freshCharged: bool = s.charged > 0
 }
 
 module design {
-  import observe(MISCLASSIFY = false, REFUND_LOST = false, NO_RESERVE = false, APPLY_LATE = false, ONE_CLASS = false, KEY_IGNORED = false, RELEASE_OBS = false, GRACE_EXPIRY = false).* from "./observe"
+  import observe(MISCLASSIFY = false, REFUND_LOST = false, NO_RESERVE = false, APPLY_LATE = false, ONE_CLASS = false, KEY_IGNORED = false, RELEASE_OBS = false, GRACE_EXPIRY = false, REPORTED = false).* from "./observe"
 }
 module misclassify {
-  import observe(MISCLASSIFY = true, REFUND_LOST = false, NO_RESERVE = false, APPLY_LATE = false, ONE_CLASS = false, KEY_IGNORED = false, RELEASE_OBS = false, GRACE_EXPIRY = false).* from "./observe"
+  import observe(MISCLASSIFY = true, REFUND_LOST = false, NO_RESERVE = false, APPLY_LATE = false, ONE_CLASS = false, KEY_IGNORED = false, RELEASE_OBS = false, GRACE_EXPIRY = false, REPORTED = false).* from "./observe"
 }
 module refundLost {
-  import observe(MISCLASSIFY = false, REFUND_LOST = true, NO_RESERVE = false, APPLY_LATE = false, ONE_CLASS = false, KEY_IGNORED = false, RELEASE_OBS = false, GRACE_EXPIRY = false).* from "./observe"
+  import observe(MISCLASSIFY = false, REFUND_LOST = true, NO_RESERVE = false, APPLY_LATE = false, ONE_CLASS = false, KEY_IGNORED = false, RELEASE_OBS = false, GRACE_EXPIRY = false, REPORTED = false).* from "./observe"
 }
 module noReserve {
-  import observe(MISCLASSIFY = false, REFUND_LOST = false, NO_RESERVE = true, APPLY_LATE = false, ONE_CLASS = false, KEY_IGNORED = false, RELEASE_OBS = false, GRACE_EXPIRY = false).* from "./observe"
+  import observe(MISCLASSIFY = false, REFUND_LOST = false, NO_RESERVE = true, APPLY_LATE = false, ONE_CLASS = false, KEY_IGNORED = false, RELEASE_OBS = false, GRACE_EXPIRY = false, REPORTED = false).* from "./observe"
 }
 module applyLate {
-  import observe(MISCLASSIFY = false, REFUND_LOST = false, NO_RESERVE = false, APPLY_LATE = true, ONE_CLASS = false, KEY_IGNORED = false, RELEASE_OBS = false, GRACE_EXPIRY = false).* from "./observe"
+  import observe(MISCLASSIFY = false, REFUND_LOST = false, NO_RESERVE = false, APPLY_LATE = true, ONE_CLASS = false, KEY_IGNORED = false, RELEASE_OBS = false, GRACE_EXPIRY = false, REPORTED = false).* from "./observe"
 }
 module oneClass {
-  import observe(MISCLASSIFY = false, REFUND_LOST = false, NO_RESERVE = false, APPLY_LATE = false, ONE_CLASS = true, KEY_IGNORED = false, RELEASE_OBS = false, GRACE_EXPIRY = false).* from "./observe"
+  import observe(MISCLASSIFY = false, REFUND_LOST = false, NO_RESERVE = false, APPLY_LATE = false, ONE_CLASS = true, KEY_IGNORED = false, RELEASE_OBS = false, GRACE_EXPIRY = false, REPORTED = false).* from "./observe"
 }
 module keyIgnored {
-  import observe(MISCLASSIFY = false, REFUND_LOST = false, NO_RESERVE = false, APPLY_LATE = false, ONE_CLASS = false, KEY_IGNORED = true, RELEASE_OBS = false, GRACE_EXPIRY = false).* from "./observe"
+  import observe(MISCLASSIFY = false, REFUND_LOST = false, NO_RESERVE = false, APPLY_LATE = false, ONE_CLASS = false, KEY_IGNORED = true, RELEASE_OBS = false, GRACE_EXPIRY = false, REPORTED = false).* from "./observe"
 }
 module releaseObs {
-  import observe(MISCLASSIFY = false, REFUND_LOST = false, NO_RESERVE = false, APPLY_LATE = false, ONE_CLASS = false, KEY_IGNORED = false, RELEASE_OBS = true, GRACE_EXPIRY = false).* from "./observe"
+  import observe(MISCLASSIFY = false, REFUND_LOST = false, NO_RESERVE = false, APPLY_LATE = false, ONE_CLASS = false, KEY_IGNORED = false, RELEASE_OBS = true, GRACE_EXPIRY = false, REPORTED = false).* from "./observe"
 }
 module graceExpiry {
-  import observe(MISCLASSIFY = false, REFUND_LOST = false, NO_RESERVE = false, APPLY_LATE = false, ONE_CLASS = false, KEY_IGNORED = false, RELEASE_OBS = false, GRACE_EXPIRY = true).* from "./observe"
+  import observe(MISCLASSIFY = false, REFUND_LOST = false, NO_RESERVE = false, APPLY_LATE = false, ONE_CLASS = false, KEY_IGNORED = false, RELEASE_OBS = false, GRACE_EXPIRY = true, REPORTED = false).* from "./observe"
+}
+module graceExpiryReported {
+  import observe(MISCLASSIFY = false, REFUND_LOST = false, NO_RESERVE = false, APPLY_LATE = false, ONE_CLASS = false, KEY_IGNORED = false, RELEASE_OBS = false, GRACE_EXPIRY = true, REPORTED = true).* from "./observe"
+}
+module reported {
+  import observe(MISCLASSIFY = false, REFUND_LOST = false, NO_RESERVE = false, APPLY_LATE = false, ONE_CLASS = false, KEY_IGNORED = false, RELEASE_OBS = false, GRACE_EXPIRY = false, REPORTED = true).* from "./observe"
 }

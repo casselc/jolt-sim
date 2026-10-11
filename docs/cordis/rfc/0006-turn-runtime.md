@@ -1107,6 +1107,20 @@ importers wait for the slice.
    against the stand-in, and it takes a real server's URL for a halo-flash
    run.
 
+   The limit above is closed where the server says where an answer came
+   from: halo-flash adds `Halo-Answer: replayed | adopted | generated`.
+   The llm executor reads it, the outbox journals it with the receipt (a
+   `source` column) and puts it on the receipt frame (`"answer"`), and the
+   runner turns a generated answer into the engine's `Generated` receipt.
+   For a keyed intent that receipt still releases every send's
+   reservation, but settles the other sends at their worst case instead of
+   nothing, and the outbox leaves them `unknown` rather than `superseded`.
+   `observe.qnt` models it as `REPORTED` (`graceExpiryReported`):
+   `accounted` holds again under grace expiry, with the witness
+   `freshCharged`. `latency.sh` phase H runs a stand-in that keeps nothing
+   of a dropped answer: the resend says `generated`, and the lost send is
+   charged 4096. A server that says nothing gets the release, as before.
+
    `outbox/test/latency.sh` replays the run's conditions against a
    stand-in: calls slower than the runner's timeout with long multi-line
    answers (one completion per computation, none charged as lost, notes

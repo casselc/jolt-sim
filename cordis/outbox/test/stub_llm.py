@@ -17,9 +17,13 @@ Modes, for the real-latency test (what the halo-flash run found):
   keys        keep idempotency keys, as halo-flash's scheduler does: a request
               whose Idempotency-Key has a finished answer is answered from
               it, generating nothing (COUNT_FILE.generated counts what was
-              generated)
+              generated); every answer says where it came from, as
+              halo-flash's does: Halo-Answer: generated or replayed
   drop-first  generate the first answer, keep it under its key, and close the
               connection without sending it: a lost answer
+  forget-first  as drop-first, but keep nothing (a server past its grace
+              window, which stopped the generation): the resend generates
+              afresh
   approve     approve every patch
   verdict-last  approve as a model that reasons first does: the reasons,
               then LGTM on the last line
@@ -42,6 +46,7 @@ count = 0
 generated = 0
 kept = {}  # idempotency key -> the answer (text, finish, usage)
 dropped = False
+forgot = False
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -106,18 +111,27 @@ class Handler(BaseHTTPRequestHandler):
         finish = "length" if "length" in modes else "stop"
         # a model that thinks (by default) reports what it spent reasoning
         usage = None if "no-usage" in modes else {"total_tokens": 10, "completion_tokens_details": {"reasoning_tokens": 7 if thinks else 0}}
-        global generated, dropped
+        global generated, dropped, forgot
         key = self.headers.get("Idempotency-Key")
+        answer = None
         if "keys" in modes and key in kept:
             text, finish, usage = kept[key]
+            answer = "replayed"
         else:
             generated += 1
             with open(count_file + ".generated", "w") as f:
                 f.write(str(generated))
-            if key is not None:
+            if key is not None and not ("forget-first" in modes and not forgot):
                 kept[key] = (text, finish, usage)
+            answer = "generated"
             if delay:
                 time.sleep(delay)
+        if "forget-first" in modes and not forgot:
+            forgot = True
+            self.close_connection = True
+            self.connection.shutdown(2)
+            return
+        answer = [("Halo-Answer", answer)] if "keys" in modes else []
         if "drop-first" in modes and not dropped:
             dropped = True
             self.close_connection = True
@@ -126,6 +140,8 @@ class Handler(BaseHTTPRequestHandler):
         if body.get("stream"):
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
+            for h in answer:
+                self.send_header(*h)
             self.send_header("Connection", "close")
             self.end_headers()
             for line in text.splitlines(keepends=True):
@@ -145,6 +161,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(out)))
+        for h in answer:
+            self.send_header(*h)
         self.send_header("Connection", "close")
         self.end_headers()
         self.wfile.write(out)

@@ -222,6 +222,10 @@ sim observe.qnt keyIgnored accounted VIOLATED
 sim observe.qnt releaseObs accounted VIOLATED
 # a world, not a mutant: a stopped original past the grace window breaks the release's accounting (the stated limit)
 sim observe.qnt graceExpiry accounted VIOLATED
+# ... and closed when the answer says it was generated afresh (Halo-Answer): the other sends are charged
+STEPS=60 SAMPLES=5000 sim observe.qnt graceExpiryReported accounted ok
+verify observe.qnt graceExpiryReported accounted ok
+STEPS=60 SAMPLES=5000 sim observe.qnt graceExpiryReported "not(freshCharged)" VIOLATED
 
 # ---- engine.qnt (RFC 0006: the turn commit protocol) -------------------------------------
 for inv in releasedOnlyDurable effectMatchesCommit commitAtomic receiptOnce uncertainSurvives; do sim engine.qnt design "$inv" ok; done

@@ -5,7 +5,9 @@
      engine -> outbox   {"op":"intent","intent":I}          journal, ack, run once, answer
                         {"op":"reconcile","key":K,"attempt":N}
      outbox -> engine   {"op":"ack","key":K,"attempt":N}     the intent is journaled
-                        {"op":"receipt","key":K,"attempt":N,"value":V,"cost":C}
+                        {"op":"receipt","key":K,"attempt":N,"value":V,"cost":C,"answer":A}
+                                                               A, if the world said: generated, replayed
+                                                               or adopted (Executors.answer)
                         {"op":"lost","key":K,"attempt":N}    the outcome is unknown
                         {"op":"reconciled","key":K,"attempt":N,"receipt":null|{"value":V,"cost":C}}
                         {"op":"deferred","key":K,"attempt":N}  no token from the limiter yet, or the
@@ -41,8 +43,11 @@ let frame op kvs : J.t = `Assoc (("op", `String op) :: kvs)
 let ka key attempt = [ ("key", `String key); ("attempt", `Int attempt) ]
 
 (* a cost the world did not report (negative) is sent as null: the engine charges the worst case *)
-let receipt_frame key attempt (value, cost) =
-  frame "receipt" (ka key attempt @ [ ("value", Codec.value value); ("cost", if cost < 0 then `Null else `Int cost) ])
+let answer_fields (a : Executors.answer) =
+  [ ("value", Codec.value a.value); ("cost", if a.cost < 0 then `Null else `Int a.cost) ]
+  @ match a.source with Some s -> [ ("answer", `String s) ] | None -> []
+
+let receipt_frame key attempt a = frame "receipt" (ka key attempt @ answer_fields a)
 
 type ctx = {
   journal : Journal.t;
@@ -60,16 +65,16 @@ type ctx = {
 and job = Run | Reconcile
 
 (* how a call ended *)
-and outcome = Ran of V.t * int | Not_applied | No_answer of string | Refused_by of string | Busy_by of string * float option
+and outcome = Ran of Executors.answer | Not_applied | No_answer of string | Refused_by of string | Busy_by of string * float option
 
 (* Start a call off the loop (intake.qnt's design: the loop keeps reading its intake while calls run).
    The thread runs the executor and queues how it ended; only the loop touches the journal. *)
-let start ctx ~jkey ~key ~attempt ~kind ~job (run : unit -> (V.t * int) option) =
+let start ctx ~jkey ~key ~attempt ~kind ~job (run : unit -> Executors.answer option) =
   Hashtbl.replace ctx.inflight jkey ();
   let body () =
     let outcome =
       match run () with
-      | Some (v, c) -> Ran (v, c)
+      | Some a -> Ran a
       | None -> Not_applied
       | exception Executors.Refused m -> Refused_by m
       | exception Executors.Busy (m, after) -> Busy_by (m, after)
@@ -95,13 +100,14 @@ let drain ctx send =
   List.iter
     (fun (jkey, key, attempt, kind, job, outcome) ->
       Hashtbl.remove ctx.inflight jkey;
-      let some (v, c) = `Assoc [ ("value", Codec.value v); ("cost", if c < 0 then `Null else `Int c) ] in
       match job, outcome with
-      | Run, Ran (v, cost) ->
-          Journal.finish ctx.journal ~jkey ~value:(J.to_string (Codec.value v)) ~cost;
-          (* a keyed intent's earlier sends, lost, are answered by this one: one key, one generation *)
-          if Hashtbl.mem ctx.keyed key then Journal.supersede ctx.journal ~key ~answered:jkey;
-          send (receipt_frame key attempt (v, cost))
+      | Run, Ran a ->
+          Journal.finish ctx.journal ~jkey ~value:(J.to_string (Codec.value a.value)) ~cost:a.cost ?source:a.source;
+          (* a keyed intent's earlier sends, lost, are answered by this one: one key, one generation; unless
+             the world says it generated this answer afresh, when their outcome stays unknown (the engine
+             charges them) *)
+          if Hashtbl.mem ctx.keyed key && a.source <> Some "generated" then Journal.supersede ctx.journal ~key ~answered:jkey;
+          send (receipt_frame key attempt a)
       | Run, (No_answer _ | Not_applied) ->
           prerr_endline ("outbox: " ^ kind ^ ": " ^ (match outcome with No_answer m -> m | _ -> "no answer"));
           Journal.set_state ctx.journal ~jkey Journal.Unknown;
@@ -120,9 +126,9 @@ let drain ctx send =
           prerr_endline (Printf.sprintf "outbox: %s: %s; again in %.0fs" kind why delay);
           Journal.set_state ctx.journal ~jkey Journal.Waiting;
           send (frame "deferred" (ka key attempt))
-      | Reconcile, Ran (v, c) ->
-          Journal.finish ctx.journal ~jkey ~value:(J.to_string (Codec.value v)) ~cost:c;
-          send (frame "reconciled" (ka key attempt @ [ ("receipt", some (v, c)) ]))
+      | Reconcile, Ran a ->
+          Journal.finish ctx.journal ~jkey ~value:(J.to_string (Codec.value a.value)) ~cost:a.cost ?source:a.source;
+          send (frame "reconciled" (ka key attempt @ [ ("receipt", `Assoc (answer_fields a)) ]))
       | Reconcile, Not_applied ->
           Journal.set_state ctx.journal ~jkey Journal.Fenced;
           send (frame "reconciled" (ka key attempt @ [ ("receipt", `Null) ]))
@@ -139,9 +145,9 @@ let handle_intent ctx (i : E.intent) send =
   if i.cls = E.Keyed then Hashtbl.replace ctx.keyed i.key ();
   let ack () = send (frame "ack" (ka i.key i.attempt)) in
   match Journal.find ctx.journal k with
-  | Some { state = Journal.Done; value = Some v; cost; _ } ->
+  | Some { state = Journal.Done; value = Some v; cost; source; _ } ->
       ack ();
-      send (receipt_frame i.key i.attempt (Codec.of_value (J.from_string v), cost))
+      send (receipt_frame i.key i.attempt { value = Codec.of_value (J.from_string v); cost; source })
   | Some { state = Journal.Waiting; _ } -> ack (); send (frame "deferred" (ka i.key i.attempt))
   | Some { state = Journal.Refused; value; _ } ->
       ack ();
@@ -169,12 +175,12 @@ let retry_waiting ctx =
 let handle_reconcile ctx key attempt send =
   let journal = ctx.journal and executors = ctx.executors in
   let reply r = send (frame "reconciled" (ka key attempt @ [ ("receipt", r) ])) in
-  let some (v, c) = `Assoc [ ("value", Codec.value v); ("cost", if c < 0 then `Null else `Int c) ] in
   (* the journal row that answers: the key's own (effectful), or for a keyed intent, journaled per send,
      whichever send is done, else the latest; the reconcile itself is asked by the intent's key *)
   let jk = Option.value (Journal.answering journal key) ~default:key in
   match Journal.find journal jk with
-  | Some { state = Journal.Done; value = Some v; cost; _ } -> reply (some (Codec.of_value (J.from_string v), cost))
+  | Some { state = Journal.Done; value = Some v; cost; source; _ } ->
+      reply (`Assoc (answer_fields { value = Codec.of_value (J.from_string v); cost; source }))
   | Some { state = Journal.Unknown | Journal.Sent; _ } when not (Hashtbl.mem ctx.inflight jk) -> (
       let req = Option.map (fun s -> Codec.of_value (J.from_string s)) (Journal.request journal jk) in
       let kind =

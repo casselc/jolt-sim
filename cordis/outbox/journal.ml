@@ -24,7 +24,7 @@ let state_of = function
   | "superseded" -> Superseded
   | s -> failwith ("journal state " ^ s)
 
-type row = { jkey : string; state : state; value : string option; cost : int }
+type row = { jkey : string; state : state; value : string option; cost : int; source : string option  (** where the world said its answer came from *) }
 
 type t = Sqlite3.db
 
@@ -38,6 +38,8 @@ let open_ path =
     (Sqlite3.exec db
        "CREATE TABLE IF NOT EXISTS journal (jkey TEXT PRIMARY KEY, key TEXT NOT NULL, attempt INTEGER NOT NULL, kind TEXT NOT NULL, request TEXT NOT NULL, state TEXT NOT NULL, value TEXT, cost INTEGER NOT NULL DEFAULT 0)")
     "create";
+  (* a journal from before the world said where an answer came from *)
+  (match Sqlite3.exec db "ALTER TABLE journal ADD COLUMN source TEXT" with _ -> ());
   (* what was running when the last outbox stopped may or may not have happened *)
   check db (Sqlite3.exec db "UPDATE journal SET state = 'unknown' WHERE state = 'sent'") "restart";
   db
@@ -48,11 +50,12 @@ let with_stmt db sql binds f =
   Fun.protect ~finally:(fun () -> ignore (Sqlite3.finalize st)) (fun () -> f st)
 
 let find db jkey =
-  with_stmt db "SELECT state, value, cost FROM journal WHERE jkey = ?" [ `T jkey ] (fun st ->
+  with_stmt db "SELECT state, value, cost, source FROM journal WHERE jkey = ?" [ `T jkey ] (fun st ->
       match Sqlite3.step st with
       | Sqlite3.Rc.ROW ->
           let value = match Sqlite3.column st 1 with Sqlite3.Data.TEXT s -> Some s | _ -> None in
-          Some { jkey; state = state_of (Sqlite3.column_text st 0); value; cost = Int64.to_int (Sqlite3.column_int64 st 2) }
+          let source = match Sqlite3.column st 3 with Sqlite3.Data.TEXT s -> Some s | _ -> None in
+          Some { jkey; state = state_of (Sqlite3.column_text st 0); value; cost = Int64.to_int (Sqlite3.column_int64 st 2); source }
       | _ -> None)
 
 (* the journal key that answers for an intent key: the key itself (an effectful intent), else, for an
@@ -82,8 +85,9 @@ let waiting db =
       in
       go [])
 
-let finish db ~jkey ~value ~cost =
-  with_stmt db "UPDATE journal SET state = 'done', value = ?, cost = ? WHERE jkey = ?" [ `T value; `I cost; `T jkey ] (fun st -> step_done db st "finish")
+let finish ?source db ~jkey ~value ~cost =
+  with_stmt db "UPDATE journal SET state = 'done', value = ?, cost = ?, source = ? WHERE jkey = ?"
+    [ `T value; `I cost; (match source with Some s -> `T s | None -> `N); `T jkey ] (fun st -> step_done db st "finish")
 
 (* the other sends of an intent one of whose sends was answered: under one idempotency key, the answer
    covers them (a world that keeps keys generated once), so their outcome is no longer unknown *)

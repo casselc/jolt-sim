@@ -64,6 +64,10 @@ type intent = { key : string; kind : string; request : V.t; cls : cls; attempt :
 
 type receipt =
   | Done of V.t * int  (** the receipt, and what it actually cost (negative: unknown, charged its worst case) *)
+  | Generated of V.t * int
+      (** as [Done], and the world says it generated this answer afresh (halo-flash's [Halo-Answer:
+          generated]): for a keyed intent, no earlier send's work is in it, so the other sends are
+          charged their worst case rather than released (observe.qnt's REPORTED) *)
   | Lost  (** no answer: the outcome is unknown *)
   | Refused of string  (** a definite failure (the world refused it, and it did not run): the computation fails *)
 
@@ -501,7 +505,7 @@ let awaiting t key attempt =
    release can then fall short by up to one worst case per send so stopped *)
 let held t (intent : intent) = match intent.cls with Keyed -> intent.attempt * t.worst intent.kind | _ -> t.worst intent.kind
 
-let resume t a (s : slot) v cost =
+let resume ?(fresh = false) t a (s : slot) v cost =
   match s.fiber with
   | Awaiting { turn; args; receipts; basis; intent } | Uncertain { turn; args; receipts; basis; intent } ->
       let c = Smap.find a t.cells in
@@ -510,8 +514,11 @@ let resume t a (s : slot) v cost =
       (* the reservation settles at the actual cost, once: this fiber awaits the key no longer *)
       (* a cost the world did not report is charged at the worst case, never as nothing *)
       let cost = if cost < 0 then t.worst intent.kind else cost in
-      (* a keyed intent's answer covers all its sends: every one's reservation is released *)
-      let t = { (with_slot t a s) with reserved = t.reserved - held t intent; settled = t.settled + cost } in
+      (* a keyed intent's answer covers all its sends: every one's reservation is released; unless the world
+         says it generated the answer afresh, when the other sends' work is in no answer and each is
+         charged its worst case (observe.qnt's graceExpiryReported) *)
+      let others = match intent.cls with Keyed when fresh -> (intent.attempt - 1) * t.worst intent.kind | _ -> 0 in
+      let t = { (with_slot t a s) with reserved = t.reserved - held t intent; settled = t.settled + cost + others } in
       let t, r = record t [ Slot (a, s); Budget (t.reserved, t.settled) ] in
       (t, [ Persist r ])
   | _ -> (t, [])
@@ -534,6 +541,7 @@ let handle t ev =
           (t, [ Persist r ]))
   | Durable seq -> release_durable { t with durable = max t.durable seq }
   | Receipt (key, n, Done (v, cost)) -> (match awaiting t key n with Some (a, s) -> resume t a s v cost | None -> (t, []))
+  | Receipt (key, n, Generated (v, cost)) -> (match awaiting t key n with Some (a, s) -> resume ~fresh:true t a s v cost | None -> (t, []))
   | Receipt (key, n, Refused why) -> (
       (* it did not run: the reservation is released, and the computation fails *)
       match awaiting t key n with

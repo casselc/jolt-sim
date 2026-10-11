@@ -271,6 +271,12 @@ let () =
   let accepted = Hashtbl.create 8 in
   (* a cost the world did not report is null: negative, which the engine charges at the worst case *)
   let cost_of j = match J.Util.member "cost" j with `Int c -> c | _ -> -1 in
+  (* the world's word on where an answer came from (halo-flash's Halo-Answer), if it said *)
+  let generated j = J.Util.member "answer" j = `String "generated" in
+  let done_ j =
+    let v = Codec.of_value (J.Util.member "value" j) and c = cost_of j in
+    if generated j then Engine.Generated (v, c) else Engine.Done (v, c)
+  in
   let sync () =
     let d = Store.Sqlite.sync st in
     feed (Engine.Durable d)
@@ -359,12 +365,14 @@ let () =
             if op = "deferred" then Hashtbl.replace deferred (key, attempt) () else if op <> "ack" then Hashtbl.remove deferred (key, attempt);
             if op <> "deferred" && op <> "ack" then waited := 0.;
             (match op with
-             | "receipt" -> incr receipts; feed (Engine.Receipt (key, attempt, Engine.Done (Codec.of_value (j |> member "value"), cost_of j)))
+             | "receipt" -> incr receipts; feed (Engine.Receipt (key, attempt, done_ j))
              | "lost" -> feed (Engine.Receipt (key, attempt, Engine.Lost))
              | "refused" -> incr receipts; feed (Engine.Receipt (key, attempt, Engine.Refused (j |> member "why" |> to_string)))
              | "reconciled" -> (
                  match j |> member "receipt" with
                  | `Null -> feed (Engine.Reconciled (key, attempt, None))
+                 (* a reconcile of a keyed intent is a send again, and may be generated afresh too *)
+                 | r when generated r -> feed (Engine.Receipt (key, attempt, done_ r))
                  | r -> feed (Engine.Reconciled (key, attempt, Some (Codec.of_value (r |> member "value"), cost_of r))))
              | _ -> ());
             if !crash_receipts > 0 && !receipts > receipts_before && !receipts >= !crash_receipts then begin

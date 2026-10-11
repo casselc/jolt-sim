@@ -15,7 +15,12 @@
 #   G. HTTP 429 with Retry-After: the request waits that long, then runs;
 #   E. a server that keeps idempotency keys, which drops the first answer
 #      after generating it: llm.complete run keyed is sent again with the
-#      same key and answered from what the server kept, generated once.
+#      same key and answered from what the server kept, generated once
+#      (it says so: Halo-Answer: replayed), and the lost send not charged;
+#   H. a server that keeps nothing of the first answer (past its grace
+#      window: it stopped the generation): the resend is generated afresh,
+#      says so (Halo-Answer: generated), and the lost send is charged its
+#      worst case (quint/observe.qnt's graceExpiryReported).
 #
 #   latency.sh CORDIS_RUN CORDIS_OUTBOX REVIEW.cg STUB_LLM.py
 set -euo pipefail
@@ -49,7 +54,9 @@ check() { # phase code
   python3 - "$1" "$2" "$T/run.out" "$T/count" "$T/journal.db" "$T/run.err" <<'PY'
 import json, sqlite3, sys
 phase, code, out, count, journal, err = sys.argv[1], int(sys.argv[2]), json.load(open(sys.argv[3])), int(open(sys.argv[4]).read()), sys.argv[5], open(sys.argv[6]).read()
-rows = sqlite3.connect(journal).execute("SELECT jkey, state FROM journal WHERE kind = 'llm.complete'").fetchall()
+db = sqlite3.connect(journal)
+rows = db.execute("SELECT jkey, state FROM journal WHERE kind = 'llm.complete'").fetchall()
+sources = [s for (s,) in db.execute("SELECT source FROM journal WHERE kind = 'llm.complete' AND state = 'done'")]
 a = out["assets"]
 if phase == "A":
     assert code == 0 and out["outcome"] == "rest", (code, out, err)
@@ -88,7 +95,20 @@ elif phase == "E":
     assert sorted(sends.values()) == [1] * (len(sends) - 1) + [2], rows
     # the dropped send is released, not charged its worst case: 10 tokens a generation, 1 a read
     assert out["settled"] == 10 * generated + generated and out["reserved"] == 0, out
+    assert sources.count("replayed") == 1 and sources.count("generated") == len(sources) - 1, sources
     print(f"E ok: a dropped answer resent with its key and replayed: {count} requests, {generated} generated; settled {out['settled']}, the lost send not charged")
+elif phase == "H":
+    assert code == 0 and a["shipped"] is True, (code, out, err)
+    generated = int(open(sys.argv[4] + ".generated").read())
+    assert count == generated, f"requests {count}, generated {generated}: every request generates"
+    # the first send's outcome stays unknown: no answer covers it
+    assert [s for _, s in rows].count("unknown") == 1 and [s for _, s in rows].count("superseded") == 0, rows
+    assert all(s == "generated" for s in sources), sources
+    # the forgotten send is charged its worst case; every answered one its 10 tokens, and one read per
+    # computation (one completion each, the forgotten one aside)
+    computations = generated - 1
+    assert out["settled"] == 4096 + 10 * computations + computations and out["reserved"] == 0, out
+    print(f"H ok: a forgotten answer generated afresh and said so: the lost send charged its worst case; settled {out['settled']}")
 elif phase == "F":
     assert code == 0 and a["shipped"] is True and count == 1, (code, count, out)
     assert "//" not in a["draft"]["patch"], a["draft"]
@@ -113,5 +133,6 @@ start length; run; check B $code
 start no-usage; run; check C $code
 start refuse; run; check D $code
 start keys drop-first; CLASS=--keyed run; check E $code
+start keys forget-first; CLASS=--keyed run; check H $code
 start approve verdict-last; run; check F $code
 start busy-first=2; run; check G $code
