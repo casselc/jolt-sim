@@ -27,6 +27,13 @@ What changed, and why:
 | Identity by canonical Preserves; Irmin store | Identity by SHA-256 of canonical text (and of the definitions named); definitions in files | The Preserves codec and Irmin are later work; only the hashing input will change |
 | Admission gates listed | Admission built for parse, check, cost budget and compatibility; hash-guarded patches | Cedar Analysis, the Quint gate per graph and soak follow with phase 3 |
 
+**Revision 3 (proposed, not built): recursive types.** See "Recursive
+types (revision 3, proposed)" below. Three importers stop at recursion
+today (JSON Schema's recursive `$ref` becomes `dyn`, XSD is refused, the
+protobuf importer's records become `dyn`), and RFC 0004's descriptor
+types already recurse; this revision would let a graph declare a
+recursive type and the importers produce one.
+
 ## Purpose
 
 Agents rewrite the harness's behaviour by editing graphs: which cells run,
@@ -339,6 +346,64 @@ them as "Routes and streams at run time" states.
   needs approval goes live unapproved (Hegel); compatibility examples.
 - **Models:** `admission.qnt`, `assets.qnt` and `routes.qnt` in the model
   gate (`quint/check.sh`), each with its mutants and witnesses.
+
+## Recursive types (revision 3, proposed)
+
+Not built; recorded so that the importers' recursion work starts from an
+agreed design. DESIGN.md's line ("recursion is the line not crossed")
+is about **cell bodies**, and it stays: CEL has no recursion, so a cell
+still reaches a fixed depth into a value. What this revision admits is a
+recursive **type**, whose values are finite trees.
+
+1. **Guarded recursion only.** A named type may refer to itself, or to
+   types that refer back to it, only beneath a constructor that can be
+   empty: `option`, `list`, `map`, or a variant case's payload. Every
+   cycle must pass through one, so every recursive type has finite values
+   (`type T = { next : T; }` has none and is rejected).
+   ```
+   type Tree = { label : string; kids : list(Tree)<max 8>; } <nodes 512>;
+   type Expr = Num(int) | Add(Pair) | Neg(Expr);
+   type Pair = { l : Expr; r : Expr; };
+   ```
+2. **Typing.** A recursive type is **nominal** in the CEL checker, as a
+   protobuf message is (RFC 0004): its fields resolve on demand, by name,
+   instead of being expanded. A non-recursive type stays structural, so
+   nothing changes for existing graphs. Compatibility between revisions
+   compares a recursive type by its definition with the cycle cut at the
+   name.
+3. **Cost.** The size shape is already lazy (it is for descriptor
+   types): each level is bounded by its own `<max N>`. A recursive value
+   also gets a **node bound**, `<nodes N>` on the definition (or the
+   configured default), the most nodes a value may hold; the runtime
+   enforces it where a value enters (the codec counts nodes), and the
+   estimator charges the operations whose cost is proportional to the
+   whole value (equality, `string()`, hashing, a stream append) by it.
+   Field access and the macros cost as now: a cell names a fixed path.
+4. **Residue and boundaries.** A `check_T` cell checks what a CEL
+   expression can reach without recursion: the levels it names, and the
+   recursive edge left unchecked (as JSON Schema's recursive `$ref` is
+   now). The codec, which can recurse, checks every level when a value
+   crosses the boundary, as it already does for that `$ref`.
+5. **Importers.** JSON Schema's recursive `$ref` becomes the named type
+   (with its node bound from `maxProperties`/`maxItems` where given, else
+   the default); XSD's stage 3 (RFC 0005) its recursive element types;
+   the protobuf importer's records the message's recursion.
+6. **Testing.** No Quint model: types are static. The checker's guardedness
+   and nominal typing get unit cases and the existing checker properties;
+   Hegel generates recursive values within a node budget for the codecs'
+   round trips and the agreement tests (jsonschema, xmlschema) over
+   recursive schemas.
+
+**Decisions this needs** before it is built:
+
+- the node bound's syntax and default (`<nodes N>` on the definition,
+  and a default of, say, 1,024);
+- whether mutual recursion is admitted (the examples above use it; a
+  self-reference-only rule would be simpler to check and refuse `Expr`
+  and `Pair`);
+- whether a recursive type's equality across revisions is by name (cheap,
+  but a rename breaks compatibility) or by structure with the cycle cut
+  (what point 2 proposes).
 
 ## Deferred
 
