@@ -215,7 +215,7 @@ let cel_lit s =
   Buffer.contents b
 
 (* text to match: ASCII, two-byte, three-byte and four-byte characters, a newline *)
-let subject_chars = [ "a"; "b"; "c"; "A"; "1"; "_"; " "; "-"; "\n"; "\r"; "\xc3\xa9"; "\xc3\xbc"; "\xe2\x80\xa8"; "\xf0\x9f\x98\x80" ]
+let subject_chars = [ "a"; "b"; "c"; "A"; "1"; "_"; " "; "-"; "\n"; "\r"; "\xc3\xa9"; "\xc3\x89"; "\xc3\xbc"; "\xd9\xa3"; "\xe2\x85\xab"; "\xe2\x80\xa8"; "\xf0\x9f\x98\x80" ]
 
 let subject tc =
   let n = pick tc 5 in
@@ -226,7 +226,7 @@ let rec pattern ?(ascii = false) tc depth =
   let lits = if ascii then [ "a"; "b"; "A"; "\\."; "-"; "1" ] else [ "a"; "b"; "A"; "\xc3\xa9"; "\xf0\x9f\x98\x80"; "\\."; "-"; "1"; "\\n" ] in
   let classes =
     [ "[a-c]"; "[^a-c]"; "[[:alpha:]]"; "[\\d_]"; "[^\\s]"; "[-a]"; "[]a]"; "\\d"; "\\w"; "\\s"; "\\D"; "\\W"; "\\S" ]
-    @ if ascii then [] else [ "[\xc3\xa0-\xc3\xbf]"; "[^\xc3\xa9]"; "[\\x{1F600}-\\x{1F64F}]"; "[\\x{80}-\\x{10FFFF}]"; "\\x{e9}"; "\\x61"; "[\\x{2028}\\n]" ]
+    @ if ascii then [] else [ "\\p{L}"; "\\PN"; "[\\p{Lu}a]"; "\\p{^Ll}"; "[^\\p{Nd}\\s]"; "\\pS"; "[\xc3\xa0-\xc3\xbf]"; "[^\xc3\xa9]"; "[\\x{1F600}-\\x{1F64F}]"; "[\\x{80}-\\x{10FFFF}]"; "\\x{e9}"; "\\x61"; "[\\x{2028}\\n]" ]
   in
   let atom () =
     match pick tc (if depth <= 0 then 5 else 10) with

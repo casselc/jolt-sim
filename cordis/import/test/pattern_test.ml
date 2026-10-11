@@ -3,8 +3,9 @@
    what RE2 caps. Each expectation is ECMA-262's, and Python's re (which,
    like the translation, matches by code point) agrees with each but two
    where Python is not ECMA: its $ matches before a final newline, and its
-   . matches \r. The Test Suite's optional ecmascript-regex tests run in
-   schema_suite.ml. *)
+   . matches \r; and Python's re has no \p at all (those cases are
+   ECMA's, from Unicode's tables). The Test Suite's optional
+   ecmascript-regex tests run in schema_suite.ml. *)
 
 open Cordis_import
 
@@ -39,10 +40,23 @@ let cases =
     (* an identity escape is the letter; a brace that is no quantifier is a brace *)
     ("^\\_\\e$", "_e", Some true);
     ("^a{,2}$", "a{,2}", Some true);
-    (* refused: lookaround, a backreference, a Unicode class *)
+    (* Unicode's general categories, by short or long name; ASCII; ECMA's C takes in the unassigned *)
+    ("^\\p{L}+$", "h\xc3\xa9", Some true);
+    ("^\\p{Letter}\\p{digit}$", "a\xd9\xa3", Some true);
+    ("^\\p{gc=Lu}$", "a", Some false);
+    ("^\\P{L}$", "1", Some true);
+    ("^[\\p{L}\\p{N}_.-]+$", "\xc3\xa9-1", Some true);
+    ("^[^\\p{L}]$", "\xc3\xa9", Some false);
+    ("^[\\P{N}]$", "1", Some false);
+    ("^\\p{ASCII}+$", "a~", Some true);
+    ("^\\P{ASCII}$", "\xc3\xa9", Some true);
+    ("^\\p{C}$", "\xf4\x8f\xbf\xbf", Some true);
+    ("^\\p{Cased_Letter}$", "\xc3\xa9", Some true);
+    (* refused: lookaround, a backreference, a script, Java's names *)
     ("(?!a)b", "b", None);
     ("(a)\\1", "aa", None);
-    ("\\p{L}", "a", None) ]
+    ("\\p{Script=Greek}", "a", None);
+    ("\\p{Alnum}", "a", None) ]
 
 let () =
   Alcotest.run "patterns"

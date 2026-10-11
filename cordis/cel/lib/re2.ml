@@ -8,14 +8,17 @@
    Supported: literals; escapes \a \f \t \n \r \v, \xHH, \x{H...}, octal
    \0NN and \1NN..\7NN, escaped punctuation, \Q...\E; `.`; classes with
    ranges, negation, \d \w \s (ASCII, as RE2's) and their negations, and
-   [:name:] POSIX classes; groups (...), (?:...), (?P<name>...),
+   [:name:] POSIX classes, and Unicode's general categories \pL, \p{Lu},
+   \PL, \p{^Lu} and \p{Any} (unicode_tables.ml, generated: its Unicode
+   version may differ from RE2's by the characters one assigns and the
+   other does not); groups (...), (?:...), (?P<name>...),
    (?<name>...); flags i, m, s (as (?flags) or (?flags:...), and cleared
    with -); repetition * + ? {n} {n,} {n,m}, greedy or lazy; anchors ^ $
    \A \z; \b \B.
 
    Refused, as RE2 refuses them: backreferences, lookaround, and \C;
-   refused here though RE2 has them: Unicode classes (\pN, \p{Greek}),
-   the U flag, and case folding of characters beyond ASCII (no tables).
+   refused here though RE2 has them: scripts (\p{Greek}), the U flag, and
+   case folding of characters beyond ASCII (no tables for them).
    \b and \B are ocaml-re's word boundaries, whose word characters
    include Latin-1 letters: the same as RE2's on ASCII text. *)
 
@@ -100,6 +103,21 @@ let of_set rs =
   | [] -> Re.empty
   | rs -> Re.alt (List.concat_map (fun (a, b) -> List.map (fun s -> Re.seq (List.map byte_range s)) (sequences a b)) rs)
 
+(* ---- Unicode classes -------------------------------------------------------------------------------- *)
+
+(* a general category (Lu) or its group (L), or Any *)
+let property name =
+  let pairs a = List.init (Array.length a / 2) (fun i -> (a.(2 * i), a.((2 * i) + 1))) in
+  if name = "Any" then Some [ (0, max_cp) ]
+  else
+    match
+      List.filter
+        (fun (c, _) -> c = name || (String.length name = 1 && c.[0] = name.[0]))
+        Unicode_tables.categories
+    with
+    | [] -> None
+    | cs -> Some (normalize (List.concat_map (fun (_, a) -> pairs a) cs))
+
 (* ---- the parser ------------------------------------------------------------------------------------- *)
 
 type flags = { i : bool; m : bool; s : bool }
@@ -172,7 +190,20 @@ let compile (p : string) : Re.t =
         | 'd' -> `Set digit | 'D' -> `Set (complement digit)
         | 'w' -> `Set word | 'W' -> `Set (complement word)
         | 's' -> `Set space | 'S' -> `Set (complement space)
-        | 'p' | 'P' -> error "Unicode classes are not supported"
+        | ('p' | 'P') as c -> (
+            (* \pL, or \p{Lu}, \p{^Lu}; \P negates *)
+            let name =
+              if peek () = Some '{' then (
+                match String.index_from_opt p !pos '}' with
+                | Some j -> let n = String.sub p (!pos + 1) (j - !pos - 1) in pos := j + 1; n
+                | None -> error "missing } in \\p{")
+              else if !pos < n then (adv 1; String.make 1 p.[!pos - 1])
+              else error "missing class name after \\p"
+            in
+            let neg, name = if String.length name > 0 && name.[0] = '^' then (true, String.sub name 1 (String.length name - 1)) else (false, name) in
+            match property name with
+            | Some s -> `Set (if neg <> (c = 'P') then complement s else s)
+            | None -> error "unknown or unsupported Unicode class %s" name)
         | 'C' -> error "\\C is not supported"
         | ('b' | 'B' | 'A' | 'z' | 'Q' | 'E') when in_class -> error "\\%c in a class" c
         | c when Char.code c < 0x80 && not ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) -> `Cp (Char.code c)

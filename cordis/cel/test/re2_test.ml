@@ -48,6 +48,17 @@ let cases =
     ("\\.", "a", Some false);
     (* any ASCII punctuation may be escaped, _ too *)
     ("^\\_\\-$", "_-", Some true);
+    (* Unicode's general categories *)
+    ("^\\p{L}+$", "h\xc3\xa9llo", Some true);
+    ("^\\pN$", "\xd9\xa3", Some true);
+    ("^\\p{Nd}$", "\xe2\x85\xab", Some false);
+    ("^\\P{L}$", "1", Some true);
+    ("^[\\p{Lu}\\d]+$", "AB1", Some true);
+    ("^\\p{^Ll}$", "A", Some true);
+    ("^[^\\p{L}]$", "\xc3\xa9", Some false);
+    ("^\\p{So}$", "\xf0\x9f\x98\x80", Some true);
+    ("^\\p{Any}$", "\n", Some true);
+    ("\\p{Zz}", "a", None);
     (* what RE2 refuses *)
     ("(?=a)", "a", None);
     ("(a)\\1", "aa", None);

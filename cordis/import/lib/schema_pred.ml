@@ -69,17 +69,49 @@ let nat (j : J.t) = match j with `Int i when i >= 0 -> i | `Float f when Float.i
    all four of ECMA's line terminators, and \s and \S are ECMA's white
    space (Unicode's, not RE2's ASCII), written out as ranges; a letter
    escaped for no reason is the letter (ECMA's identity escape, which RE2
-   rejects), as is a hyphen beside a class escape in a class ([\w-.]); a
+   rejects), as is a hyphen beside a class escape in a class ([\w-.]);
+   \p{..} and \P{..} name Unicode's general categories (by short or long
+   name, or gc=) as RE2's \p{..}, and ASCII and Any as ranges; a
    repetition over RE2's limit of 1000 is written as several ({0,1600} as
    {0,1000}{0,600}); (?<name> is RE2's (?P<name>; [^] is any character. Features
    with no counterpart are refused rather than approximated: lookaround,
-   backreferences, Unicode property classes, legacy octal escapes, a lone
+   backreferences, scripts and the other Unicode properties, unassigned
+   code points (Cn), legacy octal escapes, a lone
    surrogate outside a class (in one it names no character of valid text),
    and the empty class []. *)
 
 let ecma_space =
   [ (0x09, 0x0D); (0x20, 0x20); (0xA0, 0xA0); (0x1680, 0x1680); (0x2000, 0x200A); (0x2028, 0x2029); (0x202F, 0x202F); (0x205F, 0x205F);
     (0x3000, 0x3000); (0xFEFF, 0xFEFF) ]
+
+(* an ECMA-262 Unicode property (\p{..} in its Unicode mode) as RE2's general categories, or ranges; None
+   for what has no counterpart here (scripts, the other binary properties, unassigned code points) *)
+let ecma_property name =
+  let name = match String.index_opt name '=' with
+    | Some k when List.mem (String.sub name 0 k) [ "gc"; "General_Category" ] -> String.sub name (k + 1) (String.length name - k - 1)
+    | Some _ -> "" (* a script, or another property's value *)
+    | None -> name
+  in
+  let short =
+    [ ("Letter", "L"); ("Uppercase_Letter", "Lu"); ("Lowercase_Letter", "Ll"); ("Titlecase_Letter", "Lt"); ("Modifier_Letter", "Lm");
+      ("Other_Letter", "Lo"); ("Mark", "M"); ("Combining_Mark", "M"); ("Nonspacing_Mark", "Mn"); ("Spacing_Mark", "Mc");
+      ("Enclosing_Mark", "Me"); ("Number", "N"); ("Decimal_Number", "Nd"); ("digit", "Nd"); ("Letter_Number", "Nl");
+      ("Other_Number", "No"); ("Punctuation", "P"); ("punct", "P"); ("Connector_Punctuation", "Pc"); ("Dash_Punctuation", "Pd");
+      ("Open_Punctuation", "Ps"); ("Close_Punctuation", "Pe"); ("Initial_Punctuation", "Pi"); ("Final_Punctuation", "Pf");
+      ("Other_Punctuation", "Po"); ("Symbol", "S"); ("Math_Symbol", "Sm"); ("Currency_Symbol", "Sc"); ("Modifier_Symbol", "Sk");
+      ("Other_Symbol", "So"); ("Separator", "Z"); ("Space_Separator", "Zs"); ("Line_Separator", "Zl");
+      ("Paragraph_Separator", "Zp"); ("Control", "Cc"); ("cntrl", "Cc"); ("Format", "Cf"); ("Surrogate", "Cs");
+      ("Private_Use", "Co"); ("Other", "C"); ("Cased_Letter", "LC") ]
+  in
+  let cats = [ "L"; "Lu"; "Ll"; "Lt"; "Lm"; "Lo"; "M"; "Mn"; "Mc"; "Me"; "N"; "Nd"; "Nl"; "No"; "P"; "Pc"; "Pd"; "Ps"; "Pe"; "Pi"; "Pf"; "Po";
+               "S"; "Sm"; "Sc"; "Sk"; "So"; "Z"; "Zs"; "Zl"; "Zp"; "Cc"; "Cf"; "Cs"; "Co" ] in
+  match Option.value (List.assoc_opt name short) ~default:name with
+  | "ASCII" -> Some (`Ranges [ (0, 0x7F) ])
+  | "Any" -> Some (`Ranges [ (0, 0x10FFFF) ])
+  | "LC" -> Some (`Cats [ "Lu"; "Ll"; "Lt" ])
+  | "C" -> Some (`Not [ "L"; "M"; "N"; "P"; "S"; "Z" ])
+  | c when List.mem c cats -> Some (`Cats [ c ])
+  | _ -> None
 
 let ranges rs = String.concat "" (List.map (fun (a, b) -> if a = b then Printf.sprintf "\\x{%x}" a else Printf.sprintf "\\x{%x}-\\x{%x}" a b) rs)
 
@@ -128,7 +160,38 @@ let translate p =
     | 'S' -> add (if in_class then ranges (Cordis_cel.Re2.complement ecma_space) else "[^" ^ ranges ecma_space ^ "]"); true
     | 'b' -> add (if in_class then cp 8 else "\\b"); false
     | 'B' when not in_class -> add "\\B"; false
-    | 'p' | 'P' -> unsupported "pattern %S uses a Unicode property class" p
+    | ('p' | 'P') as c -> (
+        (* \p{name} (ECMA's Unicode mode): a general category, or ASCII or Any *)
+        if not (at "{") then unsupported "pattern %S uses \\%c without a name in braces" p c;
+        let j = match String.index_from_opt p !i '}' with Some j -> j | None -> unsupported "pattern %S has an unterminated \\%c{" p c in
+        let name = String.sub p (!i + 1) (j - !i - 1) in
+        i := j + 1;
+        let neg = c = 'P' in
+        match ecma_property name with
+        | None -> unsupported "pattern %S uses a Unicode property class with no RE2 counterpart here (%s)" p name
+        | Some (`Ranges rs) ->
+            let rs = if neg then Cordis_cel.Re2.complement rs else rs in
+            add (if in_class then ranges rs else "[" ^ ranges rs ^ "]");
+            true
+        | Some (`Cats cs) ->
+            let pos = String.concat "" (List.map (fun c -> "\\p{" ^ c ^ "}") cs) in
+            (match neg, cs, in_class with
+             | false, [ c ], false -> add ("\\p{" ^ c ^ "}")
+             | false, _, false -> add ("[" ^ pos ^ "]")
+             | false, _, true -> add pos
+             | true, [ c ], _ -> add ("\\P{" ^ c ^ "}")
+             | true, _, false -> add ("[^" ^ pos ^ "]")
+             | true, _, true -> unsupported "pattern %S negates a union of categories in a class" p);
+            true
+        | Some (`Not cs) ->
+            (* ECMA's C: everything in no other group (RE2's C leaves out the unassigned) *)
+            let pos = String.concat "" (List.map (fun c -> "\\p{" ^ c ^ "}") cs) in
+            (match neg, in_class with
+             | false, false -> add ("[^" ^ pos ^ "]")
+             | true, false -> add ("[" ^ pos ^ "]")
+             | true, true -> add pos
+             | false, true -> unsupported "pattern %S uses \\p{C} in a class" p);
+            true)
     | 'k' -> unsupported "pattern %S uses a backreference" p
     | c when (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') -> add (String.make 1 c); false
     | c when Char.code c < 0x80 -> add ("\\" ^ String.make 1 c); false

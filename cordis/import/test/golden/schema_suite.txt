@@ -1,6 +1,6 @@
-# draft2020-12: the predicate: 1104 tests agree; 283 tests in 109 groups do not compile.
-# draft2020-12: the interpreter: 1311 tests agree; 71 tests in 31 groups are not read.
-# draft2020-12: the importer and codec: 1283 tests agree; 14 valid instances are refused as RFC 0003 documents; 90 tests in 36 groups do not import.
+# draft2020-12: the predicate: 1123 tests agree; 264 tests in 103 groups do not compile.
+# draft2020-12: the interpreter: 1330 tests agree; 52 tests in 25 groups are not read.
+# draft2020-12: the importer and codec: 1302 tests agree; 14 valid instances are refused as RFC 0003 documents; 71 tests in 30 groups do not import.
 # draft2019-09: the predicate: 1020 tests agree; 241 tests in 89 groups do not compile.
 # draft2019-09: the interpreter: 1212 tests agree; 44 tests in 14 groups are not read.
 # draft2019-09: the importer and codec: 1184 tests agree; 14 valid instances are refused as RFC 0003 documents; 63 tests in 19 groups do not import.
@@ -38,8 +38,6 @@ draft2020-12/dynamicRef.json: $dynamicRef points to a boolean schema: keyword $d
 draft2020-12/dynamicRef.json: $dynamicRef skips over intermediate resources - direct reference: keyword $dynamicRef
 draft2020-12/dynamicRef.json: $dynamicRef avoids the root of each schema, but scopes are still registered: keyword $dynamicRef
 draft2020-12/not.json: collect annotations inside a 'not', even if collection is disabled: keyword unevaluatedProperties
-draft2020-12/pattern.json: pattern with Unicode property escape requires unicode mode: pattern "^\\p{Letter}+$" uses a Unicode property class
-draft2020-12/patternProperties.json: patternProperties with Unicode property escape: pattern "^\\p{Letter}+$" uses a Unicode property class
 draft2020-12/ref.json: root pointer ref: a recursive $ref (#)
 draft2020-12/ref.json: remote ref, containing refs itself: a remote $ref (https://json-schema.org/draft/2020-12/schema): no document https://json-schema.org/draft/2020-12/schema was given
 draft2020-12/ref.json: Recursive references between schemas: a recursive $ref (http://localhost:1234/draft2020-12/node)
@@ -120,10 +118,6 @@ draft2020-12/unevaluatedProperties.json: Evaluated properties collection needs t
 draft2020-12/unevaluatedProperties.json: Evaluated properties collection needs to consider instance location with additionalProperties: keyword unevaluatedProperties
 draft2020-12/vocabulary.json: schema that uses custom metaschema with with no validation vocabulary: a metaschema this importer does not read: //localhost:1234/draft2020-12/metaschema-no-validation.json
 draft2020-12/vocabulary.json: ignore unrecognized optional vocabulary: a metaschema this importer does not read: //localhost:1234/draft2020-12/metaschema-optional-vocabulary.json
-draft2020-12/optional/ecmascript-regex.json: patterns always use unicode semantics with pattern: pattern "\\p{Letter}cole" uses a Unicode property class
-draft2020-12/optional/ecmascript-regex.json: pattern with non-ASCII digits: pattern "^\\p{digit}+$" uses a Unicode property class
-draft2020-12/optional/ecmascript-regex.json: patterns always use unicode semantics with patternProperties: pattern "\\p{Letter}cole" uses a Unicode property class
-draft2020-12/optional/ecmascript-regex.json: patternProperties with non-ASCII digits: pattern "^\\p{digit}+$" uses a Unicode property class
 
 ## draft2020-12: schemas the interpreter does not read
 draft2020-12/defs.json: validate definition against metaschema: a remote $ref (https://json-schema.org/draft/2020-12/schema): no document https://json-schema.org/draft/2020-12/schema was given
@@ -148,15 +142,9 @@ draft2020-12/dynamicRef.json: $ref to $dynamicRef finds detached $dynamicAnchor:
 draft2020-12/dynamicRef.json: $dynamicRef points to a boolean schema: keyword $dynamicRef
 draft2020-12/dynamicRef.json: $dynamicRef skips over intermediate resources - direct reference: keyword $dynamicRef
 draft2020-12/dynamicRef.json: $dynamicRef avoids the root of each schema, but scopes are still registered: keyword $dynamicRef
-draft2020-12/pattern.json: pattern with Unicode property escape requires unicode mode: pattern "^\\p{Letter}+$" uses a Unicode property class
-draft2020-12/patternProperties.json: patternProperties with Unicode property escape: pattern "^\\p{Letter}+$" uses a Unicode property class
 draft2020-12/ref.json: remote ref, containing refs itself: a remote $ref (https://json-schema.org/draft/2020-12/schema): no document https://json-schema.org/draft/2020-12/schema was given
 draft2020-12/unevaluatedItems.json: unevaluatedItems with $dynamicRef: keyword $dynamicRef
 draft2020-12/unevaluatedProperties.json: unevaluatedProperties with $dynamicRef: keyword $dynamicRef
-draft2020-12/optional/ecmascript-regex.json: patterns always use unicode semantics with pattern: pattern "\\p{Letter}cole" uses a Unicode property class
-draft2020-12/optional/ecmascript-regex.json: pattern with non-ASCII digits: pattern "^\\p{digit}+$" uses a Unicode property class
-draft2020-12/optional/ecmascript-regex.json: patterns always use unicode semantics with patternProperties: pattern "\\p{Letter}cole" uses a Unicode property class
-draft2020-12/optional/ecmascript-regex.json: patternProperties with non-ASCII digits: pattern "^\\p{digit}+$" uses a Unicode property class
 
 ## draft2020-12: schemas that do not import
 draft2020-12/boolean_schema.json: boolean schema 'false': Root: the schema false admits nothing
@@ -182,8 +170,6 @@ draft2020-12/dynamicRef.json: $ref to $dynamicRef finds detached $dynamicAnchor:
 draft2020-12/dynamicRef.json: $dynamicRef points to a boolean schema: false: the schema false admits nothing
 draft2020-12/dynamicRef.json: $dynamicRef skips over intermediate resources - direct reference: Item_content: keyword $dynamicRef
 draft2020-12/dynamicRef.json: $dynamicRef avoids the root of each schema, but scopes are still registered: stuff: keyword $dynamicRef
-draft2020-12/pattern.json: pattern with Unicode property escape requires unicode mode: Root: pattern "^\\p{Letter}+$" uses a Unicode property class
-draft2020-12/patternProperties.json: patternProperties with Unicode property escape: Root: pattern "^\\p{Letter}+$" uses a Unicode property class
 draft2020-12/properties.json: properties with boolean schema: Root_bar: the schema false admits nothing
 draft2020-12/ref.json: remote ref, containing refs itself: a remote $ref (https://json-schema.org/draft/2020-12/schema): no document https://json-schema.org/draft/2020-12/schema was given
 draft2020-12/ref.json: $ref to boolean schema false: bool: the schema false admits nothing
@@ -191,10 +177,6 @@ draft2020-12/unevaluatedItems.json: unevaluatedItems with $dynamicRef: derived: 
 draft2020-12/unevaluatedProperties.json: unevaluatedProperties with $dynamicRef: derived: keyword $dynamicAnchor
 draft2020-12/vocabulary.json: schema that uses custom metaschema with with no validation vocabulary: a metaschema this importer does not read: //localhost:1234/draft2020-12/metaschema-no-validation.json
 draft2020-12/vocabulary.json: ignore unrecognized optional vocabulary: a metaschema this importer does not read: //localhost:1234/draft2020-12/metaschema-optional-vocabulary.json
-draft2020-12/optional/ecmascript-regex.json: patterns always use unicode semantics with pattern: Root: pattern "\\p{Letter}cole" uses a Unicode property class
-draft2020-12/optional/ecmascript-regex.json: pattern with non-ASCII digits: Root: pattern "^\\p{digit}+$" uses a Unicode property class
-draft2020-12/optional/ecmascript-regex.json: patterns always use unicode semantics with patternProperties: Root: pattern "\\p{Letter}cole" uses a Unicode property class
-draft2020-12/optional/ecmascript-regex.json: patternProperties with non-ASCII digits: Root: pattern "^\\p{digit}+$" uses a Unicode property class
 
 ## draft2019-09: schemas the predicate does not compile
 draft2019-09/defs.json: validate definition against metaschema: a remote $ref (https://json-schema.org/draft/2019-09/schema): no document https://json-schema.org/draft/2019-09/schema was given
