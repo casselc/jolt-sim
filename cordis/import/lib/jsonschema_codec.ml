@@ -104,6 +104,8 @@ let int_of (j : J.t) =
   | `Float f when Float.is_integer f -> bad "%g is beyond int64" f
   | j -> bad "not an integer: %s" (J.to_string j)
 
+let lenient = ref false
+
 let rec of_json (imp : import) (t : t) (j : J.t) : V.t =
   match t, j with
   | Str _, `String s -> if String.is_valid_utf_8 s then V.String s else bad "not UTF-8"
@@ -155,6 +157,9 @@ and named_value imp n j =
 
 and read_record imp n fs kv =
   no_duplicates n kv;
+  (* a lenient read (an HTTP response, where a server may add properties) drops a property the
+     record does not name; a strict one refuses it *)
+  let kv = if !lenient then List.filter (fun (k, _) -> List.exists (fun f -> f.json = k) fs) kv else kv in
   List.iter (fun (k, _) -> if not (List.exists (fun f -> f.json = k) fs) then bad "%s has no property %s" n k) kv;
   V.make_map
     (List.map
@@ -171,9 +176,10 @@ and read_record imp n fs kv =
          (V.String f.name, x))
        fs)
 
-let read (imp : import) n (j : J.t) =
+let read ?(drop_unknown = false) (imp : import) n (j : J.t) =
+  lenient := drop_unknown;
   match of_json imp (Named n) j with
-  | v -> Ok v
-  | exception Bad m -> Error m
+  | v -> lenient := false; Ok v
+  | exception Bad m -> lenient := false; Error m
 
 let write (imp : import) n v = match to_json imp (Named n) v with j -> Ok j | exception Bad m -> Error m

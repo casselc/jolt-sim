@@ -1,0 +1,7 @@
+GET /items/{ids}: the header X-Api-Key is a credential: the executor adds it, not a field
+POST /items: the header Idempotency-Key carries the intent's key: the executor sets it
+GetItemsRequest_fields[]: the value "id" is the case Id
+GetItemsRequest_fields[]: the value "name" is the case Name
+GetItemsRequest_fields[]: the value "tags" is the case Tags
+GetItemsRequest.X-Trace: the property is the field X_Trace
+(all): where the schema gives no maxLength, maxItems or maxProperties, the configured default ceiling applies

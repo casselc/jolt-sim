@@ -1,0 +1,69 @@
+# A document for the OpenAPI importer's agreement test (docs/cordis/rfc/
+# 0003-types-importers-scaffolds.md, revision 4): every parameter style the
+# importer reads, a credential, an idempotency key, a status range, a typed
+# default response, a text body and a body-less response.
+openapi: 3.1.0
+info: {title: Styles, version: "1"}
+servers:
+  - url: https://api.example.com/v1
+components:
+  securitySchemes:
+    key: {type: apiKey, in: header, name: X-Api-Key}
+  schemas:
+    Item:
+      type: object
+      required: [id, name]
+      additionalProperties: false
+      properties:
+        id: {type: integer, minimum: 1}
+        name: {type: string, maxLength: 8, pattern: "^[a-z]+$"}
+        tags: {type: array, items: {type: string, pattern: "^[a-z]*$"}, maxItems: 3}
+    Problem:
+      type: object
+      required: [code]
+      additionalProperties: false
+      properties:
+        code: {type: integer}
+        detail: {type: string, maxLength: 20}
+security: [{key: []}]
+paths:
+  /items/{ids}:
+    get:
+      operationId: getItems
+      parameters:
+        - {name: ids, in: path, required: true, schema: {type: array, items: {type: integer}, minItems: 1, maxItems: 4}}
+        - {name: fields, in: query, explode: false, schema: {type: array, items: {type: string, enum: [id, name, tags]}, maxItems: 3}}
+        - name: filter
+          in: query
+          style: deepObject
+          explode: true
+          schema: {type: object, additionalProperties: false, properties: {name: {type: string, pattern: "^[a-z]*$"}, min: {type: integer}}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 50}}
+        - {name: X-Trace, in: header, schema: {type: array, items: {type: string, pattern: "^[a-z0-9]+$"}, maxItems: 3}}
+        - {name: session, in: cookie, schema: {type: string, pattern: "^[a-z]+$"}}
+        - {name: X-Api-Key, in: header, schema: {type: string}}
+      responses:
+        "200": {description: ok, content: {application/json: {schema: {type: array, items: {$ref: "#/components/schemas/Item"}, maxItems: 3}}}}
+        "4XX": {description: client, content: {application/json: {schema: {$ref: "#/components/schemas/Problem"}}}}
+        default: {description: other, content: {application/json: {schema: {$ref: "#/components/schemas/Problem"}}}}
+  /items:
+    post:
+      operationId: createItem
+      parameters:
+        - {name: Idempotency-Key, in: header, required: true, schema: {type: string}}
+        - {name: dryRun, in: query, schema: {type: boolean}}
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: "#/components/schemas/Item"}}}
+      responses:
+        "201": {description: created, content: {application/json: {schema: {$ref: "#/components/schemas/Item"}}}}
+        "409": {description: conflict}
+  /items/{id}/note:
+    put:
+      operationId: putNote
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: integer}}
+      requestBody:
+        content: {text/plain: {schema: {type: string, maxLength: 30}}}
+      responses:
+        "204": {description: done}

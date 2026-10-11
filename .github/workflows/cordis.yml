@@ -49,7 +49,7 @@ jobs:
       - name: Install OCaml dependencies
         run: |
           sudo apt-get install -y libsqlite3-dev
-          opam install -y dune yojson re alcotest hegel sqlite3
+          opam install -y dune yojson re alcotest hegel sqlite3 yaml
 
       - name: Build and test
         run: |

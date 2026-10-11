@@ -474,6 +474,64 @@ is checked with Apalache to depth 8 (about 40 s).
   against a server that deduplicates (one effect however often resent) and
   one that does not (the planted fault the model predicts).
 
+### Progress
+
+`cordis/import/lib/openapi.ml` is the importer and `openapi_http.ml` the
+executor's pure half (rendering a request, reading a response);
+`cimport openapi DOC` writes the types, the report, the name map and
+`operations.json`. Choices the implementation settled:
+
+- **Only what the operations reach.** The types file holds the component
+  schemas the operations reach through references, not every one.
+- **A refusal skips an operation, not the document.** When the JSON
+  Schema importer refuses a schema (a pattern it cannot translate, say),
+  the operations are halved until each refusal is pinned on the
+  operations whose schemas reach it; those are skipped, reported, and the
+  rest imported.
+- **Check cells for requests only.** A `check_T` cell writes out every
+  type it reaches, which for a large document is most of the document
+  again per type; requests are what a cell builds and may check before
+  sending, while a response is checked by the codec as the executor reads
+  it. (For AWS Glue the graph checker went from 196 s to under a second,
+  with this and with the checker no longer rebuilding its environment of
+  named types for every expression.)
+- **A response's unknown properties are dropped** (`Jsonschema_codec.read
+  ~drop_unknown`), since servers add fields; a request is as strict as
+  ever.
+- **An empty list or object parameter is left out** (HTTP has no form for
+  it that reads back as empty), and a required one is refused as not
+  sendable, as is an empty path parameter.
+- **A typed default response**: `Other` carries `{status; body : T}` when
+  `default` has a JSON body, else `HttpOther`.
+- **A line of nothing but a tab** is blanked and the YAML read again
+  (libyaml refuses it; other readers take it as blank).
+
+**The corpus** (`import/test/fetch_openapi_corpus.sh`, every sixth
+OpenAPI 3 document of the APIs.guru directory at a pinned commit, the
+listing checked in): all 329 documents (310 3.0, 19 3.1) import, their
+types checking; of 13,747 operations, 13,061 are imported and 686
+skipped: 243 for a request body in a media type not yet read (forms,
+multipart), 439 for patterns the JSON Schema importer refuses (198
+Unicode property classes, 155 that do not compile, 79 lookaround, 7 not
+ASCII), and 4 for parameter shapes. Most of the 155 are `\uXXXX`
+escapes, which RE2 writes `\x{XXXX}`; translating them is a change to
+the JSON Schema importer, and its SchemaStore and Test Suite listings
+with it.
+
+**Agreement with openapi-core** (`import/test/openapi_agreement.ml`,
+Hegel, over the OAI petstore example and a document of every style the
+importer reads): requests drawn from each operation's type are valid for
+openapi-core exactly when the codec accepts them, and responses drawn
+from each case are valid exactly when the codec accepts the payload, and
+decode back to the same value. A status the document does not describe
+at all is Other: openapi-core calls it invalid, the RFC a definite
+answer. Planted encoder faults it catches: `deepObject` keys written
+`name.k`, the idempotency header not set, list headers joined by `;`.
+
+Still to come: the outbox's `http` executor (sending, the credential,
+the allowlist), the keyed class in the engine and the outbox, and the end
+to end test.
+
 ## Importers to come
 
 | Source | Maps to | Lossy where |

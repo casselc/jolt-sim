@@ -1,0 +1,44 @@
+{
+  "$root": "OpenapiRoot",
+  "Pet": {
+    "properties": {
+      "id": { "json": "id", "required": true, "nullable": false },
+      "name": { "json": "name", "required": true, "nullable": false },
+      "tag": { "json": "tag", "required": false, "nullable": false }
+    }
+  },
+  "NewPet": {
+    "properties": {
+      "name": { "json": "name", "required": true, "nullable": false },
+      "tag": { "json": "tag", "required": false, "nullable": false }
+    }
+  },
+  "Error": {
+    "properties": {
+      "code": { "json": "code", "required": true, "nullable": false },
+      "message": { "json": "message", "required": true, "nullable": false }
+    }
+  },
+  "FindPetsRequest": {
+    "properties": {
+      "tags": { "json": "tags", "required": false, "nullable": false },
+      "limit": { "json": "limit", "required": false, "nullable": false }
+    }
+  },
+  "FindPets200": { "alias": true },
+  "AddPetRequest": {
+    "properties": {
+      "body": { "json": "body", "required": true, "nullable": false }
+    }
+  },
+  "FindPetByIdRequest": {
+    "properties": {
+      "id": { "json": "id", "required": true, "nullable": false }
+    }
+  },
+  "DeletePetRequest": {
+    "properties": {
+      "id": { "json": "id", "required": true, "nullable": false }
+    }
+  }
+}

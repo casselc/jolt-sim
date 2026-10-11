@@ -1,0 +1,39 @@
+type Item = { id : int; name : string<max 8>; tags : option(list(string)<max 3>); };
+
+type Problem = { code : int; detail : option(string<max 20>); };
+
+type GetItemsRequestFields = Id | Name | Tags;
+
+type GetItemsRequestFilter = { name : option(string); min : option(int); };
+
+type GetItemsRequest = { ids : list(int)<max 4>; fields : option(list(GetItemsRequestFields)<max 3>); filter : option(GetItemsRequestFilter); limit : option(int); X_Trace : option(list(string)<max 3>); session : option(string); };
+
+type GetItems200 = list(Item)<max 3>;
+
+type CreateItemRequest = { dryRun : option(bool); body : Item; };
+
+type PutNoteRequest = { id : int; body : option(string); };
+
+type HttpOther = { status : int; body : dyn; };
+
+type GetItemsDefault = { status : int; body : Problem; };
+
+type GetItemsResponse = S200(GetItems200) | S4XX(Problem) | Other(GetItemsDefault);
+
+type CreateItemResponse = S201(Item) | S409 | Other(HttpOther);
+
+type PutNoteResponse = S204 | Other(HttpOther);
+
+effect styles.getItems(GetItemsRequest) : GetItemsResponse;
+
+effect styles.createItem(CreateItemRequest) : CreateItemResponse;
+
+effect styles.putNote(PutNoteRequest) : PutNoteResponse;
+
+cell check_GetItemsRequest(x : GetItemsRequest) : bool = {
+  (((!(type(x.ids) == list) || size(x.ids) >= 1) && (!(type(x.ids) == list) || size(x.ids) <= 4)) && (!x.fields.hasValue() || (!(type(x.fields.value()) == list) || size(x.fields.value()) <= 3)) && (!x.filter.hasValue() || (!x.filter.value().name.hasValue() || (!(type(x.filter.value().name.value()) == string) || x.filter.value().name.value().matches("^[a-z]*$")))) && (!x.limit.hasValue() || ((!((type(x.limit.value()) == double || type(x.limit.value()) == int || type(x.limit.value()) == uint)) || x.limit.value() >= 1.0) && (!((type(x.limit.value()) == double || type(x.limit.value()) == int || type(x.limit.value()) == uint)) || x.limit.value() <= 50.0))) && (!x.X_Trace.hasValue() || ((!(type(x.X_Trace.value()) == list) || size(x.X_Trace.value()) <= 3) && x.X_Trace.value().all(v17, (!(type(v17) == string) || v17.matches("^[a-z0-9]+$"))))) && (!x.session.hasValue() || (!(type(x.session.value()) == string) || x.session.value().matches("^[a-z]+$"))));
+}
+
+cell check_CreateItemRequest(x : CreateItemRequest) : bool = {
+  ((!((type(x.body.id) == double || type(x.body.id) == int || type(x.body.id) == uint)) || x.body.id >= 1.0) && ((!(type(x.body.name) == string) || size(x.body.name) <= 8) && (!(type(x.body.name) == string) || x.body.name.matches("^[a-z]+$"))) && (!x.body.tags.hasValue() || ((!(type(x.body.tags.value()) == list) || size(x.body.tags.value()) <= 3) && x.body.tags.value().all(v19, (!(type(v19) == string) || v19.matches("^[a-z]*$"))))));
+}

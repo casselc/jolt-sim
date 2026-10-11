@@ -1,0 +1,131 @@
+{
+  "service": "styles",
+  "servers": [ "https://api.example.com/v1" ],
+  "other": "HttpOther",
+  "operations": {
+    "styles.getItems": {
+      "method": "GET",
+      "path": "/items/{ids}",
+      "request": "GetItemsRequest",
+      "response": "GetItemsResponse",
+      "params": [
+        {
+          "field": "ids",
+          "name": "ids",
+          "in": "path",
+          "style": "simple",
+          "explode": false,
+          "required": true
+        },
+        {
+          "field": "fields",
+          "name": "fields",
+          "in": "query",
+          "style": "form",
+          "explode": false,
+          "required": false
+        },
+        {
+          "field": "filter",
+          "name": "filter",
+          "in": "query",
+          "style": "deepObject",
+          "explode": true,
+          "required": false
+        },
+        {
+          "field": "limit",
+          "name": "limit",
+          "in": "query",
+          "style": "form",
+          "explode": true,
+          "required": false
+        },
+        {
+          "field": "X-Trace",
+          "name": "X-Trace",
+          "in": "header",
+          "style": "simple",
+          "explode": false,
+          "required": false
+        },
+        {
+          "field": "session",
+          "name": "session",
+          "in": "cookie",
+          "style": "form",
+          "explode": true,
+          "required": false
+        }
+      ],
+      "cases": [
+        {
+          "case": "S200",
+          "status": "200",
+          "media": "application/json",
+          "payload": "GetItems200"
+        },
+        {
+          "case": "S4XX",
+          "status": "4XX",
+          "media": "application/json",
+          "payload": "Problem"
+        }
+      ],
+      "default": "GetItemsDefault",
+      "security": [ "key" ],
+      "class": "observational"
+    },
+    "styles.createItem": {
+      "method": "POST",
+      "path": "/items",
+      "request": "CreateItemRequest",
+      "response": "CreateItemResponse",
+      "params": [
+        {
+          "field": "dryRun",
+          "name": "dryRun",
+          "in": "query",
+          "style": "form",
+          "explode": true,
+          "required": false
+        }
+      ],
+      "cases": [
+        {
+          "case": "S201",
+          "status": "201",
+          "media": "application/json",
+          "payload": "Item"
+        },
+        { "case": "S409", "status": "409" }
+      ],
+      "default": "HttpOther",
+      "security": [ "key" ],
+      "class": "keyed",
+      "body": { "field": "body", "media": "application/json" },
+      "idempotency": "Idempotency-Key"
+    },
+    "styles.putNote": {
+      "method": "PUT",
+      "path": "/items/{id}/note",
+      "request": "PutNoteRequest",
+      "response": "PutNoteResponse",
+      "params": [
+        {
+          "field": "id",
+          "name": "id",
+          "in": "path",
+          "style": "simple",
+          "explode": false,
+          "required": true
+        }
+      ],
+      "cases": [ { "case": "S204", "status": "204" } ],
+      "default": "HttpOther",
+      "security": [ "key" ],
+      "class": "keyed",
+      "body": { "field": "body", "media": "text/plain" }
+    }
+  }
+}

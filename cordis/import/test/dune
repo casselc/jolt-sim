@@ -46,13 +46,20 @@
 
 (rule (alias runtest) (action (diff golden/schema_suite.txt schema_suite.out)))
 
+; Values of imported types, shared by the agreement tests
+(library
+ (name typed_values)
+ (wrapped false)
+ (modules typed_values)
+ (libraries cordis_import cordis_cel cel_testgen yojson))
+
 ; The JSON Schema importer against Python's jsonschema. Needs python3 with
 ; jsonschema:
 ;   dune build @import/test/schema-agreement
 (executable
  (name schema_agreement)
  (modules schema_agreement)
- (libraries cordis_import cordis_graph cordis_cel cel_testgen hegel alcotest unix yojson))
+ (libraries typed_values cordis_import cordis_graph cordis_cel cel_testgen hegel alcotest unix yojson))
 
 (rule
  (alias schema-agreement)
@@ -91,3 +98,49 @@
  (deps jsvalid.py golden/schemastore.txt (source_tree metaschemas))
  (action
   (run %{exe:schemastore.exe} %{env:SCHEMASTORE=schemastore} jsvalid.py --expect golden/schemastore.txt)))
+
+; The OpenAPI importer over a sample of the APIs.guru directory, at a
+; pinned commit (fetch_openapi_corpus.sh DIR fetches it, about 90 MB):
+;   OPENAPI_CORPUS=DIR dune build @import/test/openapi_corpus
+(executable
+ (name openapi_corpus)
+ (modules openapi_corpus)
+ (libraries cordis_import cordis_graph yojson))
+
+(rule
+ (alias openapi_corpus)
+ (deps golden/openapi_corpus.list golden/openapi_corpus.txt)
+ (action
+  (run %{exe:openapi_corpus.exe} %{env:OPENAPI_CORPUS=openapi-directory} golden/openapi_corpus.list --expect golden/openapi_corpus.txt)))
+
+; The OpenAPI importer and its wire encoding against openapi-core. Needs
+; python3 with openapi-core and PyYAML:
+;   dune build @import/test/openapi-agreement
+(executable
+ (name openapi_agreement)
+ (modules openapi_agreement)
+ (libraries typed_values cordis_import cordis_cel cel_testgen hegel alcotest unix yojson))
+
+(rule
+ (alias openapi-agreement)
+ (deps oasvalid.py (glob_files openapi/*.yaml))
+ (action
+  (run %{exe:openapi_agreement.exe} oasvalid.py openapi/petstore-expanded.yaml openapi/styles.yaml)))
+
+; Golden files: the OpenAPI importer's output for the agreement documents
+(rule (with-stdout-to openapi-petstore-expanded.types.out (run %{exe:../bin/cimport.exe} openapi %{dep:openapi/petstore-expanded.yaml} --print types)))
+(rule (alias runtest) (action (diff golden/openapi-petstore-expanded.types.txt openapi-petstore-expanded.types.out)))
+(rule (with-stdout-to openapi-petstore-expanded.report.out (run %{exe:../bin/cimport.exe} openapi %{dep:openapi/petstore-expanded.yaml} --print report)))
+(rule (alias runtest) (action (diff golden/openapi-petstore-expanded.report.txt openapi-petstore-expanded.report.out)))
+(rule (with-stdout-to openapi-petstore-expanded.names.out (run %{exe:../bin/cimport.exe} openapi %{dep:openapi/petstore-expanded.yaml} --print names)))
+(rule (alias runtest) (action (diff golden/openapi-petstore-expanded.names.txt openapi-petstore-expanded.names.out)))
+(rule (with-stdout-to openapi-petstore-expanded.operations.out (run %{exe:../bin/cimport.exe} openapi %{dep:openapi/petstore-expanded.yaml} --print operations)))
+(rule (alias runtest) (action (diff golden/openapi-petstore-expanded.operations.txt openapi-petstore-expanded.operations.out)))
+(rule (with-stdout-to openapi-styles.types.out (run %{exe:../bin/cimport.exe} openapi %{dep:openapi/styles.yaml} --print types)))
+(rule (alias runtest) (action (diff golden/openapi-styles.types.txt openapi-styles.types.out)))
+(rule (with-stdout-to openapi-styles.report.out (run %{exe:../bin/cimport.exe} openapi %{dep:openapi/styles.yaml} --print report)))
+(rule (alias runtest) (action (diff golden/openapi-styles.report.txt openapi-styles.report.out)))
+(rule (with-stdout-to openapi-styles.names.out (run %{exe:../bin/cimport.exe} openapi %{dep:openapi/styles.yaml} --print names)))
+(rule (alias runtest) (action (diff golden/openapi-styles.names.txt openapi-styles.names.out)))
+(rule (with-stdout-to openapi-styles.operations.out (run %{exe:../bin/cimport.exe} openapi %{dep:openapi/styles.yaml} --print operations)))
+(rule (alias runtest) (action (diff golden/openapi-styles.operations.txt openapi-styles.operations.out)))

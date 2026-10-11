@@ -2,10 +2,13 @@
 
      cimport protobuf SET.binpb [--out DIR | --print types|report|names]
      cimport jsonschema SCHEMA.json [--with FILE|DIR]... [--out DIR | --print types|report|names]
+     cimport openapi DOC.(json|yaml) [--service NAME] [--out DIR | --print types|report|names|operations]
 
    reads a FileDescriptorSet and writes DIR/types.cg (the types and their
    check_ cells), DIR/report.txt (what was approximated) and DIR/names.json
    (the name map); without --out it prints the types file and the report.
+   For OpenAPI it also writes DIR/operations.json, the operation map the
+   outbox's http executor reads.
 
    For protobuf this is a report tool: it shows what a schema would lose as
    graph-language records. Graphs use protobuf types directly, attaching
@@ -40,8 +43,26 @@ let emit rest types report names =
   | [] -> print_string types; print_string "\n// ---- report\n"; print_string report
   | _ -> die "usage: cimport (protobuf SET.binpb | jsonschema SCHEMA.json [--with FILE|DIR]...) [--out DIR | --print types|report|names]"
 
+let read_doc path = match Openapi.document (read path) with Ok j -> j | Error m -> die "%s: %s" path m
+
 let () =
   match Array.to_list Sys.argv with
+  | _ :: "openapi" :: path :: rest -> (
+      let service, rest = match rest with "--service" :: s :: r -> (Some s, r) | r -> (None, r) in
+      match Openapi.import ?service (read_doc path) with
+      | exception Openapi.Refused m -> die "%s: %s" path m
+      | t ->
+          let types = Cordis_graph.Print.file (Openapi.types_file t) in
+          check_output types;
+          let report = String.concat "" (List.map (fun (l, m) -> Printf.sprintf "%s: %s\n" l m) t.report) in
+          let names = Yojson.Safe.pretty_to_string (Jsonschema.name_map t.imp) ^ "\n" in
+          let operations = Yojson.Safe.pretty_to_string (Openapi.operations t) ^ "\n" in
+          match rest with
+          | [ "--print"; "operations" ] -> print_string operations
+          | [ "--out"; dir ] ->
+              emit rest types report names;
+              Out_channel.with_open_text (Filename.concat dir "operations.json") (fun oc -> output_string oc operations)
+          | _ -> emit rest types report names)
   | _ :: "jsonschema" :: path :: rest -> (
       (* --with FILE|DIR: further documents references may name, each
          under its $id (or its file: URI) *)

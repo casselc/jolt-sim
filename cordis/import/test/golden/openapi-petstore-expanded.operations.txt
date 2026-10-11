@@ -1,0 +1,108 @@
+{
+  "service": "swaggerPetstore",
+  "servers": [ "https://petstore.swagger.io/v2" ],
+  "other": "HttpOther",
+  "operations": {
+    "swaggerPetstore.findPets": {
+      "method": "GET",
+      "path": "/pets",
+      "request": "FindPetsRequest",
+      "response": "FindPetsResponse",
+      "params": [
+        {
+          "field": "tags",
+          "name": "tags",
+          "in": "query",
+          "style": "form",
+          "explode": true,
+          "required": false
+        },
+        {
+          "field": "limit",
+          "name": "limit",
+          "in": "query",
+          "style": "form",
+          "explode": true,
+          "required": false
+        }
+      ],
+      "cases": [
+        {
+          "case": "S200",
+          "status": "200",
+          "media": "application/json",
+          "payload": "FindPets200"
+        }
+      ],
+      "default": "FindPetsDefault",
+      "security": [],
+      "class": "observational"
+    },
+    "swaggerPetstore.addPet": {
+      "method": "POST",
+      "path": "/pets",
+      "request": "AddPetRequest",
+      "response": "AddPetResponse",
+      "params": [],
+      "cases": [
+        {
+          "case": "S200",
+          "status": "200",
+          "media": "application/json",
+          "payload": "Pet"
+        }
+      ],
+      "default": "AddPetDefault",
+      "security": [],
+      "class": "effectful",
+      "body": { "field": "body", "media": "application/json" }
+    },
+    "swaggerPetstore.findPetById": {
+      "method": "GET",
+      "path": "/pets/{id}",
+      "request": "FindPetByIdRequest",
+      "response": "FindPetByIdResponse",
+      "params": [
+        {
+          "field": "id",
+          "name": "id",
+          "in": "path",
+          "style": "simple",
+          "explode": false,
+          "required": true
+        }
+      ],
+      "cases": [
+        {
+          "case": "S200",
+          "status": "200",
+          "media": "application/json",
+          "payload": "Pet"
+        }
+      ],
+      "default": "FindPetByIdDefault",
+      "security": [],
+      "class": "observational"
+    },
+    "swaggerPetstore.deletePet": {
+      "method": "DELETE",
+      "path": "/pets/{id}",
+      "request": "DeletePetRequest",
+      "response": "DeletePetResponse",
+      "params": [
+        {
+          "field": "id",
+          "name": "id",
+          "in": "path",
+          "style": "simple",
+          "explode": false,
+          "required": true
+        }
+      ],
+      "cases": [ { "case": "S204", "status": "204" } ],
+      "default": "DeletePetDefault",
+      "security": [],
+      "class": "keyed"
+    }
+  }
+}

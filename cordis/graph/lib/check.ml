@@ -210,7 +210,17 @@ and proto_shape env name : Cordis_cel.Cost.shape =
 
 (* ---- CEL expressions ------------------------------------------------------------------------- *)
 
-let named_types env =
+let named_cache : (Obj.t * (string * C.t) list) option ref = ref None
+
+let rec named_types env =
+  match !named_cache with
+  | Some (d, l) when d == Obj.repr env.defs -> l
+  | _ ->
+      let l = named_types_of env in
+      named_cache := Some (Obj.repr env.defs, l);
+      l
+
+and named_types_of env =
   List.filter_map
     (fun (n, i) ->
       match i with
@@ -224,9 +234,25 @@ let variants env = List.filter_map (fun (n, t) -> match t with C.Variant _ -> So
 
 (* The environment of a definition's CEL: named types, library signatures,
    and the given variables. *)
+(* The named types and libraries part is the same for every expression of
+   one check, and resolving every type is the costly part of a file with
+   thousands of them (an imported API), so its declarations are kept for
+   the definitions and libraries they were made from, by identity. Each
+   environment gets fresh inference state (the substitution and the type
+   table are mutable). *)
+let base_env : (Obj.t * Obj.t * C.env) option ref = ref None
+
 let cel_env env vars =
-  let e = List.fold_left (fun e (n, t) -> C.declare_type e n t) (C.empty ()) (named_types env) in
-  let e = List.fold_left (fun e (alias, lib) -> Cordis_cel.Library.declare ~prefix:(alias ^ ".") e lib) e env.libs in
+  let b =
+    match !base_env with
+    | Some (d, l, b) when d == Obj.repr env.defs && l == Obj.repr env.libs -> b
+    | _ ->
+        let b = List.fold_left (fun e (n, t) -> C.declare_type e n t) (C.empty ()) (named_types env) in
+        let b = List.fold_left (fun e (alias, lib) -> Cordis_cel.Library.declare ~prefix:(alias ^ ".") e lib) b env.libs in
+        base_env := Some (Obj.repr env.defs, Obj.repr env.libs, b);
+        b
+  in
+  let e = { (C.empty ~container:b.container ()) with idents = b.idents; functions = b.functions; named = b.named } in
   List.fold_left (fun e (n, t) -> C.declare_ident e n t) e vars
 
 let check_cel cenv what = function

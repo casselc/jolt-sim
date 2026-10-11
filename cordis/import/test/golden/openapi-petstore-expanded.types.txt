@@ -1,0 +1,41 @@
+type Pet = { id : int; name : string; tag : option(string); };
+
+type NewPet = { name : string; tag : option(string); };
+
+type Error = { code : int; message : string; };
+
+type FindPetsRequest = { tags : option(list(string)); limit : option(int); };
+
+type FindPets200 = list(Pet);
+
+type AddPetRequest = { body : NewPet; };
+
+type FindPetByIdRequest = { id : int; };
+
+type DeletePetRequest = { id : int; };
+
+type HttpOther = { status : int; body : dyn; };
+
+type FindPetsDefault = { status : int; body : Error; };
+
+type AddPetDefault = { status : int; body : Error; };
+
+type FindPetByIdDefault = { status : int; body : Error; };
+
+type DeletePetDefault = { status : int; body : Error; };
+
+type FindPetsResponse = S200(FindPets200) | Other(FindPetsDefault);
+
+type AddPetResponse = S200(Pet) | Other(AddPetDefault);
+
+type FindPetByIdResponse = S200(Pet) | Other(FindPetByIdDefault);
+
+type DeletePetResponse = S204 | Other(DeletePetDefault);
+
+effect swaggerPetstore.findPets(FindPetsRequest) : FindPetsResponse;
+
+effect swaggerPetstore.addPet(AddPetRequest) : AddPetResponse;
+
+effect swaggerPetstore.findPetById(FindPetByIdRequest) : FindPetByIdResponse;
+
+effect swaggerPetstore.deletePet(DeletePetRequest) : DeletePetResponse;

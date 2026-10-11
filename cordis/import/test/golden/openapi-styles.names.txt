@@ -1,0 +1,48 @@
+{
+  "$root": "OpenapiRoot",
+  "Item": {
+    "properties": {
+      "id": { "json": "id", "required": true, "nullable": false },
+      "name": { "json": "name", "required": true, "nullable": false },
+      "tags": { "json": "tags", "required": false, "nullable": false }
+    }
+  },
+  "Problem": {
+    "properties": {
+      "code": { "json": "code", "required": true, "nullable": false },
+      "detail": { "json": "detail", "required": false, "nullable": false }
+    }
+  },
+  "GetItemsRequestFields": {
+    "enum": { "Id": "id", "Name": "name", "Tags": "tags" }
+  },
+  "GetItemsRequestFilter": {
+    "properties": {
+      "name": { "json": "name", "required": false, "nullable": false },
+      "min": { "json": "min", "required": false, "nullable": false }
+    }
+  },
+  "GetItemsRequest": {
+    "properties": {
+      "ids": { "json": "ids", "required": true, "nullable": false },
+      "fields": { "json": "fields", "required": false, "nullable": false },
+      "filter": { "json": "filter", "required": false, "nullable": false },
+      "limit": { "json": "limit", "required": false, "nullable": false },
+      "X_Trace": { "json": "X-Trace", "required": false, "nullable": false },
+      "session": { "json": "session", "required": false, "nullable": false }
+    }
+  },
+  "GetItems200": { "alias": true },
+  "CreateItemRequest": {
+    "properties": {
+      "dryRun": { "json": "dryRun", "required": false, "nullable": false },
+      "body": { "json": "body", "required": true, "nullable": false }
+    }
+  },
+  "PutNoteRequest": {
+    "properties": {
+      "id": { "json": "id", "required": true, "nullable": false },
+      "body": { "json": "body", "required": false, "nullable": false }
+    }
+  }
+}

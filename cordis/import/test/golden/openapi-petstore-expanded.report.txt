@@ -1,0 +1,4 @@
+Pet: the object is open in the schema; the record is closed: a property it does not name is refused
+NewPet: the object is open in the schema; the record is closed: a property it does not name is refused
+Error: the object is open in the schema; the record is closed: a property it does not name is refused
+(all): where the schema gives no maxLength, maxItems or maxProperties, the configured default ceiling applies
