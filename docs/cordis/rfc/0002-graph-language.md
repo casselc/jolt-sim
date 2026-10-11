@@ -415,7 +415,14 @@ range at every level, the codec refusing exactly what protobuf's parser
 refuses (250 and 50); generated JSON Schemas include a required
 self-reference (left `dyn`) and a mutual recursion guarded through a
 list; mutants that close every reference, or only locally guarded
-ones, are caught. DESIGN.md's line ("recursion is the line not crossed")
+ones, are caught. Over the corpora: SchemaStore imports what it did, its
+recursive schemas now as recursive types that the graph checker admits,
+and agrees with jsonschema on every instance as before (its golden
+unchanged); it found that the CEL checker matched a recursive alias's
+structure without unfolding it (a recursive `list` or `map` as a
+comprehension's range, in three schemas), fixed with corpus cells over
+list, map and option recursions. The APIs.guru corpus passes unchanged.
+DESIGN.md's line ("recursion is the line not crossed")
 is about **cell bodies**, and it stays: CEL has no recursion, so a cell
 still reaches a fixed depth into a value. What this revision admits is a
 recursive **type**, whose values are finite trees.
