@@ -70,7 +70,8 @@ verify outbox.qnt design safety ok
 for w in someUnknown limitFull reconciledApplied reconciledNotApplied rolledBackAfterSend; do
   sim outbox.qnt design "not($w)" VIOLATED
 done
-sim outbox.qnt journalInSnapshot atMostOnce VIOLATED
+# a rollback must land between a send and its journal entry: about one trace in 1,000 to 2,000
+SAMPLES=5000 sim outbox.qnt journalInSnapshot atMostOnce VIOLATED
 sim outbox.qnt localLimits withinLimit VIOLATED
 sim outbox.qnt pfOpen onlyOutboxEgress VIOLATED
 sim outbox.qnt resendOnRestart atMostOnce VIOLATED

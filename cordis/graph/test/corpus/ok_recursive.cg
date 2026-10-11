@@ -4,11 +4,17 @@ type Expr = Num(int) | Add(Pair) | Neg(Expr);
 type Pair = { l : Expr; r : Expr; };
 type Forest = list(Tree)<max 4>;
 type Wrap = { root : Tree; };
+type Nest = list(Nest)<max 4>;
+type Dict = map(string, Dict)<max 4>;
+type Chain = option(Chain);
 cell leaf(s : string) : Tree = { Tree{label: s, kids: []}; }
 cell node(s : string, t : Tree) : Tree = { Tree{label: s, kids: [t, Tree{label: s, kids: [t]}]}; }
 cell grandkid(t : Tree) : string = { t.kids.size() > 0 && t.kids[0].kids.size() > 0 ? t.kids[0].kids[0].label : t.label; }
 cell wrap(t : Tree) : Wrap = { Wrap{root: t}; }
 cell forest(f : Forest) : int = { f.size(); }
+cell nest_depth(n : Nest) : bool = { n.all(m, m.all(k, k.size() == 0)); }
+cell dict_keys(d : Dict) : list(string) = { d.map(k, k) + (d.exists(k, d[k].size() > 0) ? ["deep"] : []); }
+cell chain_len(c : Chain) : int = { c.hasValue() && c.value().hasValue() ? 2 : c.hasValue() ? 1 : 0; }
 cell neg(n : int) : Expr = { Expr.Neg(Expr.Add(Pair{l: Expr.Num(n), r: Expr.Num(1)})); }
 cell top(e : Expr) : int = { match e { Num(n) -> n; Add(p) -> match p.l { Num(a) -> a; _ -> 0 }; Neg(x) -> 0 }; }
 graph g {

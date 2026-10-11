@@ -200,6 +200,10 @@ let rec resolve env t =
   | Var i -> ( match Hashtbl.find_opt env.subst i with Some u -> resolve env u | None -> t)
   | _ -> t
 
+(* resolved, a recursive type's outermost level unfolded: for where a type's structure is matched
+   directly (a comprehension's range, an optional unwrapped) rather than through [assignable] *)
+let unfolded env t = match resolve env t with Rec (n, sc) -> resolve env (unfold (n, sc)) | t -> t
+
 (* The type with every bound variable substituted. *)
 let rec substitute env t =
   match resolve env t with
@@ -689,7 +693,7 @@ and infer_kind env locals (e : Ast.expr) : t =
             let optional, ke = match ke.kind with Ast.Call { fn; args = [ x ]; _ } when fn = Ast.op_opt_elem -> (true, x) | _ -> (false, ke) in
             let vt = infer env locals ve in
             (* {?k: o} contributes the optional's content *)
-            let vt = if optional then (match resolve env vt with Opt t -> t | t -> t) else vt in
+            let vt = if optional then (match unfolded env vt with Opt t -> t | _ -> vt) else vt in
             (aggregate_join env k (infer env locals ke), aggregate_join env v vt))
           (fresh env, fresh env) kvs
       in
@@ -725,7 +729,7 @@ and infer_kind env locals (e : Ast.expr) : t =
               | None -> fail "undefined field '%s'" f
               | Some fd ->
                   let ft = field_type fd and at = infer env locals fe in
-                  let at = if optional then (match resolve env at with Opt x -> x | x -> x) else at in
+                  let at = if optional then (match unfolded env at with Opt x -> x | _ -> at) else at in
                   if not (assignable env ft at) then
                     fail "expected type of field '%s' is '%s' but provided type is '%s'" f (to_string ft) (to_string (finalize env at)))
             fields;
@@ -768,7 +772,7 @@ and infer_kind env locals (e : Ast.expr) : t =
   | Ast.Call { fn; target = None; args = [ x; field ] } when fn = Ast.op_opt_select ->
       let xt = infer env locals x in
       let name = match field.kind with Ast.Const (Value.String s) -> s | _ -> "" in
-      let base = match resolve env xt with Opt t -> t | t -> t in
+      let base = match unfolded env xt with Opt t -> t | _ -> xt in
       Opt (select_type env base name)
   | Ast.Call { fn; target; args = [ arg ] } when enum_called env target fn <> None -> (
       (* an enum constructor: Enum(int) or Enum(string) *)
@@ -793,7 +797,7 @@ and infer_kind env locals (e : Ast.expr) : t =
   | Ast.Comprehension { iter_var; iter_var2; range; accu_var; accu_init; loop_cond; loop_step; result } ->
       let rt = infer env locals range in
       let v1, v2 =
-        match resolve env rt, iter_var2 with
+        match unfolded env rt, iter_var2 with
         | List e, None -> (e, None)
         | List e, Some _ -> (Int, Some e)
         | Map (k, _), None -> (k, None)
@@ -825,7 +829,8 @@ and match_cases env t =
 and element env locals (e : Ast.expr) =
   match e.kind with
   | Ast.Call { fn; args = [ x ]; _ } when fn = Ast.op_opt_elem -> (
-      match resolve env (infer env locals x) with Opt t -> t | t -> t)
+      let xt = infer env locals x in
+      match unfolded env xt with Opt t -> t | _ -> xt)
   | _ -> infer env locals e
 
 and select_type env ot field =
