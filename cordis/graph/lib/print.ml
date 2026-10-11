@@ -85,7 +85,8 @@ let gitem = function
 let item = function
   | Uses (a, h) -> Printf.sprintf "uses %s = %s;" a h
   | Uses_descriptors h -> Printf.sprintf "uses descriptors %s;" h
-  | Type_def (n, d) -> Printf.sprintf "type %s = %s;" n (tdef d)
+  | Type_def (n, d, nodes) ->
+      Printf.sprintf "type %s = %s%s;" n (tdef d) (match nodes with Some k -> Printf.sprintf " <nodes %d>" k | None -> "")
   | Effect (k, req, r) -> Printf.sprintf "effect %s(%s) : %s;" k (ty req) (ty r)
   | Cell c -> cell c
   | Graph (n, items) -> "graph " ^ n ^ " {\n" ^ String.concat "" (List.map (fun i -> "  " ^ gitem i ^ "\n") items) ^ "}"
@@ -144,8 +145,8 @@ let expr_refs ?bound = function Cel { ast; _ } -> cel_refs ?bound ast | Hole _ -
 
 let refs = function
   | Uses _ | Uses_descriptors _ -> []
-  | Type_def (_, Alias t) -> ty_refs t
-  | Type_def (_, Variant cs) -> List.concat_map (fun (_, p) -> match p with Some t -> ty_refs t | None -> []) cs
+  | Type_def (_, Alias t, _) -> ty_refs t
+  | Type_def (_, Variant cs, _) -> List.concat_map (fun (_, p) -> match p with Some t -> ty_refs t | None -> []) cs
   | Effect (_, a, b) -> ty_refs a @ ty_refs b
   | Cell c ->
       (* the cell's variables: its parameters, state, lets and uses *)

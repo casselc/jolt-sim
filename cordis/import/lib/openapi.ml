@@ -600,12 +600,12 @@ let import ?service ?(idempotency_header = "idempotency-key") (doc : J.t) : t =
 
 let types_file (t : t) : S.file =
   let base = JS.types_file t.imp in
-  let other = S.Type_def (t.other, S.Alias (S.Record ([ ("status", S.Scalar ("int", None)); ("body", S.Scalar ("dyn", None)) ], false))) in
+  let other = S.Type_def (t.other, S.Alias (S.Record ([ ("status", S.Scalar ("int", None)); ("body", S.Scalar ("dyn", None)) ], false)), None) in
   let defaults =
-    List.map (fun (n, b) -> S.Type_def (n, S.Alias (S.Record ([ ("status", S.Scalar ("int", None)); ("body", S.Named b) ], false)))) t.defaults
+    List.map (fun (n, b) -> S.Type_def (n, S.Alias (S.Record ([ ("status", S.Scalar ("int", None)); ("body", S.Named b) ], false)), None)) t.defaults
   in
   let variants =
-    List.map (fun (n, cases) -> S.Type_def (n, S.Variant (List.map (fun (c, p) -> (c, Option.map (fun p -> S.Named p) p)) cases))) t.variants
+    List.map (fun (n, cases) -> S.Type_def (n, S.Variant (List.map (fun (c, p) -> (c, Option.map (fun p -> S.Named p) p)) cases), None)) t.variants
   in
   let effects = List.map (fun op -> S.Effect (op.kind, S.Named op.request, S.Named op.response)) t.ops in
   let types, checks = List.partition (function S.Type_def _ -> true | _ -> false) base in

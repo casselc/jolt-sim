@@ -1,0 +1,4 @@
+// expect: type E has no finite value
+type E = Neg(E) | Pos(P);
+type P = { e : E; };
+cell f(x : E) : int = { 1; }

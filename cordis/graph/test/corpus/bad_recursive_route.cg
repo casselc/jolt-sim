@@ -1,0 +1,11 @@
+// expect: Neg
+type Expr = Num(int) | Add(Pair) | Neg(Expr);
+type Pair = { l : Expr; r : Expr; };
+cell neg(n : int) : Expr = { Expr.Neg(Expr.Num(n)); }
+cell use(n : int) : int = { n; }
+graph g {
+  input n : int;
+  asset e = neg(n);
+  asset y = use(n);
+  route e { Num(x) -> y; Add(p) -> none };
+}

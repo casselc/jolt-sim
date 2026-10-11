@@ -156,9 +156,10 @@ let cel st ~chars ?(stop_with = false) () =
 
 let scalars = [ "int"; "uint"; "double"; "string"; "bytes"; "bool"; "timestamp"; "duration"; "dyn" ]
 
+(* <max N> after a string, bytes, list or map; a type definition's <nodes N> is not one *)
 let bound st =
-  if looking st "<" then begin
-    expect st "<";
+  let save = st.pos in
+  if accept st "<" && (looking_word st "max" || (st.pos <- save; false)) then begin
     expect_word st "max";
     let n = int_lit st in
     expect st ">";
@@ -465,8 +466,19 @@ let item st =
          let names = List.map fst cs in
          List.iter (fun c -> if List.length (List.filter (( = ) c) names) > 1 then fail st "duplicate case '%s'" c) names
      | Alias _ -> ());
+    (* the most nodes a value of a recursive type may hold (RFC 0002 revision 3) *)
+    let nodes =
+      if accept st "<" then begin
+        expect_word st "nodes";
+        let k = int_lit st in
+        if k < 1 then fail st "a node bound is at least 1";
+        expect st ">";
+        Some k
+      end
+      else None
+    in
     expect st ";";
-    Type_def (n, def)
+    Type_def (n, def, nodes)
   end
   else if accept_word st "effect" then begin
     let k = dotted st in

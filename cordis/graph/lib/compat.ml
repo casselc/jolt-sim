@@ -56,6 +56,9 @@ let cell_reasons (o : Check.cell_info) (n : Check.cell_info) =
 let type_reasons (o : C.t option) (n : C.t option) =
   match o, n with
   | Some (C.Variant ocs), Some (C.Variant ncs) when ocs <> ncs -> [ "changes a variant's cases" ]
+  (* recursive types: their cases by name, then their unfoldings by bisimulation (RFC 0002 revision 3) *)
+  | Some (C.Rec _ as o), Some (C.Rec _ as n) when (match Check.whnf o, Check.whnf n with C.Variant a, C.Variant b -> List.map fst a <> List.map fst b | _ -> false) ->
+      [ "changes a variant's cases" ]
   | Some o, Some n when not (fits o n && fits n o) -> [ Printf.sprintf "changes the type from %s to %s" (C.to_string o) (C.to_string n) ]
   | _ -> []
 

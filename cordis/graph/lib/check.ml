@@ -99,7 +99,152 @@ type env = {
   libs : (string * Cordis_cel.Library.t) list;
 }
 
-let rec resolve env ?(visiting = []) ?(open_ok = false) (t : ty) : C.t =
+(* a type with a recursive type's outermost level unfolded *)
+let whnf = function C.Rec (n, sc) -> C.unfold (n, sc) | t -> t
+
+(* ---- recursive types (RFC 0002 revision 3) ---------------------------------------------------- *)
+
+(* The named types a type refers to, each with whether the reference is guarded: beneath an option,
+   list, map or a variant case's payload, a constructor that can be empty *)
+let rec ty_refs ~guarded (t : ty) =
+  match t with
+  | Scalar _ | Var _ -> []
+  | List (t, _) | Option t -> ty_refs ~guarded:true t
+  | Map (k, v, _) -> ty_refs ~guarded:true k @ ty_refs ~guarded:true v
+  | Record (fs, _) -> List.concat_map (fun (_, t) -> ty_refs ~guarded t) fs
+  | Named n when String.contains n '.' -> []
+  | Named n -> [ (n, guarded) ]
+
+let def_refs = function
+  | Type_def (_, Alias t, _) -> ty_refs ~guarded:false t
+  | Type_def (_, Variant cs, _) -> List.concat_map (fun (_, p) -> match p with Some t -> ty_refs ~guarded:true t | None -> []) cs
+  | _ -> []
+
+(* The strongly connected components of the reference graph among the file's named types (Tarjan) *)
+let components (types : (string * (string * bool) list) list) =
+  let index = Hashtbl.create 16 and low = Hashtbl.create 16 and on = Hashtbl.create 16 in
+  let stack = ref [] and next = ref 0 and out = ref [] in
+  let rec visit v =
+    Hashtbl.replace index v !next;
+    Hashtbl.replace low v !next;
+    incr next;
+    stack := v :: !stack;
+    Hashtbl.replace on v ();
+    List.iter
+      (fun (w, _) ->
+        if List.mem_assoc w types then
+          if not (Hashtbl.mem index w) then (visit w; Hashtbl.replace low v (min (Hashtbl.find low v) (Hashtbl.find low w)))
+          else if Hashtbl.mem on w then Hashtbl.replace low v (min (Hashtbl.find low v) (Hashtbl.find index w)))
+      (List.assoc v types);
+    if Hashtbl.find low v = Hashtbl.find index v then begin
+      let rec pop acc =
+        match !stack with
+        | w :: rest ->
+            stack := rest;
+            Hashtbl.remove on w;
+            if w = v then w :: acc else pop (w :: acc)
+        | [] -> acc
+      in
+      out := pop [] :: !out
+    end
+  in
+  List.iter (fun (v, _) -> if not (Hashtbl.mem index v) then visit v) types;
+  !out
+
+(* A cycle of unguarded references within a component, as its path, if there is one *)
+let unguarded_cycle types comp =
+  let edges v = List.filter_map (fun (w, g) -> if (not g) && List.mem w comp then Some w else None) (List.assoc v types) in
+  let finished = Hashtbl.create 8 in
+  let rec dfs path v =
+    if List.mem v path then
+      let rec upto acc = function x :: rest -> if x = v then x :: acc else upto (x :: acc) rest | [] -> acc in
+      Some (upto [] path @ [ v ])
+    else if Hashtbl.mem finished v then None
+    else
+      let r = List.find_map (dfs (v :: path)) (edges v) in
+      Hashtbl.replace finished v ();
+      r
+  in
+  List.find_map (dfs []) comp
+
+(* The named types with a finite value: the least fixed point, a variant having one when any of its
+   cases does *)
+let inhabited defs =
+  let known = Hashtbl.create 16 in
+  let rec ty (t : ty) =
+    match t with
+    | Scalar _ | Var _ | List _ | Option _ | Map _ -> true
+    | Record (fs, _) -> List.for_all (fun (_, t) -> ty t) fs
+    | Named n when String.contains n '.' -> true
+    | Named n -> Hashtbl.mem known n || not (List.exists (function (m, Type_def _) -> m = n | _ -> false) defs)
+  in
+  let def = function
+    | Type_def (_, Alias t, _) -> ty t
+    | Type_def (_, Variant cs, _) -> List.exists (fun (_, p) -> match p with None -> true | Some t -> ty t) cs
+    | _ -> true
+  in
+  let rec go () =
+    let grew =
+      List.fold_left (fun g (n, d) -> if (not (Hashtbl.mem known n)) && def d then (Hashtbl.replace known n (); true) else g) false defs
+    in
+    if grew then go ()
+  in
+  go ();
+  fun n -> Hashtbl.mem known n
+
+(* A file's recursive types: the names in a cycle of references, nominal in the CEL checker as
+   [C.Rec (name, scope)], with their bodies defined in a scope of the file's own; and the names that
+   cannot be, with why: an unguarded cycle, no finite value, or a body that does not resolve. Kept
+   for the definitions it was made from, by identity, as the CEL environment is. *)
+type recursion = { scope : int; recursive : string list; bad : (string, string) Hashtbl.t }
+
+let recursion_cache : (Obj.t * recursion) option ref = ref None
+
+let rec recursion env =
+  match !recursion_cache with
+  | Some (d, r) when d == Obj.repr env.defs -> r
+  | _ ->
+      let types = List.filter_map (fun (n, i) -> match i with Type_def _ -> Some (n, def_refs i) | _ -> None) env.defs in
+      let cyclic comp = match comp with [ v ] -> List.mem_assoc v (List.assoc v types) | _ -> true in
+      let comps = List.filter cyclic (components types) in
+      let r = { scope = C.new_scope (); recursive = List.concat comps; bad = Hashtbl.create 4 } in
+      recursion_cache := Some (Obj.repr env.defs, r);
+      let finite = inhabited env.defs in
+      List.iter
+        (fun comp ->
+          match unguarded_cycle types comp with
+          | Some path ->
+              let m =
+                Printf.sprintf "%s is an unguarded cycle: %s (a recursive type refers back to itself only beneath an option, list, map or a variant case, RFC 0002 revision 3)"
+                  (List.hd path) (String.concat " -> " path)
+              in
+              List.iter (fun n -> Hashtbl.replace r.bad n m) comp
+          | None ->
+              List.iter
+                (fun n ->
+                  if not (finite n) then
+                    Hashtbl.replace r.bad n
+                      (Printf.sprintf "type %s has no finite value: every case of its recursion refers back to it (RFC 0002 revision 3)" n))
+                comp)
+        comps;
+      List.iter
+        (fun n ->
+          if not (Hashtbl.mem r.bad n) then
+            match body env n with
+            | t -> C.define r.scope n t
+            | exception Fail m -> Hashtbl.replace r.bad n m)
+        r.recursive;
+      r
+
+(* a named type's definition, resolved: a recursive one's body, in which its cycle appears as Rec *)
+and body env n =
+  match List.assoc_opt n env.defs with
+  | Some (Type_def (_, Alias t, _)) -> resolve env ~visiting:[ n ] t
+  | Some (Type_def (_, Variant cs, _)) -> C.Variant (List.map (fun (c, p) -> (c, Option.map (resolve env ~visiting:[ n ]) p)) cs)
+  | Some _ -> fail "%s is not a type" n
+  | None -> fail "unknown type %s" n
+
+and resolve env ?(visiting = []) ?(open_ok = false) (t : ty) : C.t =
   let r = resolve env ~visiting ~open_ok:false in
   match t with
   | Scalar (n, _) -> (
@@ -124,10 +269,13 @@ let rec resolve env ?(visiting = []) ?(open_ok = false) (t : ty) : C.t =
           if Cordis_cel.Proto.enum_exists n then C.enum_type n
           else fail "unknown protobuf type %s (not in the attached descriptor sets)" n)
   | Named n -> (
-      if List.mem n visiting then fail "type %s refers to itself (recursion goes through a reference, RFC 0003)" n;
+      let rc = recursion env in
+      (match Hashtbl.find_opt rc.bad n with Some m -> fail "%s" m | None -> ());
+      if List.mem n rc.recursive then C.Rec (n, rc.scope)
+      else
       match List.assoc_opt n env.defs with
-      | Some (Type_def (_, Alias t)) -> resolve env ~visiting:(n :: visiting) ~open_ok t
-      | Some (Type_def (_, Variant cs)) ->
+      | Some (Type_def (_, Alias t, _)) -> resolve env ~visiting:(n :: visiting) ~open_ok t
+      | Some (Type_def (_, Variant cs, _)) ->
           C.Variant (List.map (fun (c, p) -> (c, Option.map (resolve env ~visiting:(n :: visiting)) p)) cs)
       | Some _ -> fail "%s is not a type" n
       | None -> fail "unknown type %s" n)
@@ -147,8 +295,8 @@ let rec size_bound env ?(visiting = []) (t : ty) =
   | Named n when List.mem n visiting -> d
   | Named n -> (
       match List.assoc_opt n env.defs with
-      | Some (Type_def (_, Alias t)) -> size_bound env ~visiting:(n :: visiting) t
-      | Some (Type_def (_, Variant cs)) ->
+      | Some (Type_def (_, Alias t, _)) -> size_bound env ~visiting:(n :: visiting) t
+      | Some (Type_def (_, Variant cs, _)) ->
           List.fold_left (fun a (_, p) -> match p with Some t -> max a (size_bound env ~visiting:(n :: visiting) t) | None -> a) 7 cs
       | _ -> d)
 
@@ -177,8 +325,8 @@ let rec shape env ?(visiting = []) (t : ty) : Cordis_cel.Cost.shape =
   | Named n when String.contains n '.' -> proto_shape env n
   | Named n -> (
       match List.assoc_opt n env.defs with
-      | Some (Type_def (_, Alias t)) -> shape env ~visiting:(n :: visiting) t
-      | Some (Type_def (_, Variant cs)) ->
+      | Some (Type_def (_, Alias t, _)) -> shape env ~visiting:(n :: visiting) t
+      | Some (Type_def (_, Variant cs, _)) ->
           let payloads = List.filter_map snd cs in
           { K.fields = []; lo = 1; hi = 2;
             elem = lazy (join_all (names (List.map fst cs) :: List.map (shape env ~visiting:(n :: visiting)) payloads));
@@ -230,7 +378,7 @@ let rec bound_of env ?(visiting = []) (t : ty) : bound =
   | Option t -> b t
   | Record (fs, _) -> { no_bound with fields = List.map (fun (f, t) -> (f, b t)) fs }
   | Named n when not (List.mem n visiting) -> (
-      match List.assoc_opt n env.defs with Some (Type_def (_, Alias t)) -> bound_of env ~visiting:(n :: visiting) t | _ -> no_bound)
+      match List.assoc_opt n env.defs with Some (Type_def (_, Alias t, _)) -> bound_of env ~visiting:(n :: visiting) t | _ -> no_bound)
   | _ -> no_bound
 
 (* code points, as CEL's size counts a string *)
@@ -289,13 +437,17 @@ and named_types_of env =
   List.filter_map
     (fun (n, i) ->
       match i with
-      | Type_def (_, Variant _) -> Some (n, resolve env (Named n))
-      | Type_def (_, Alias t) -> (match resolve env t with C.Record _ as r -> Some (n, r) | _ -> None)
+      | Type_def (_, Variant _, _) -> Some (n, resolve env (Named n))
+      | Type_def (_, Alias t, _) -> (
+          (* a recursive record is declared nominally, as its Rec: a value built by its name has it *)
+          match resolve env (Named n) with
+          | C.Rec _ as r -> (match whnf r with C.Record _ -> Some (n, r) | _ -> None)
+          | _ -> (match resolve env t with C.Record _ as r -> Some (n, r) | _ -> None))
       | _ -> None)
     env.defs
 
-let records env = List.filter_map (fun (n, t) -> match t with C.Record _ -> Some n | _ -> None) (named_types env)
-let variants env = List.filter_map (fun (n, t) -> match t with C.Variant _ -> Some n | _ -> None) (named_types env)
+let records env = List.filter_map (fun (n, t) -> match whnf t with C.Record _ -> Some n | _ -> None) (named_types env)
+let variants env = List.filter_map (fun (n, t) -> match whnf t with C.Variant _ -> Some n | _ -> None) (named_types env)
 
 (* The environment of a definition's CEL: named types, library signatures,
    and the given variables. *)
@@ -578,8 +730,8 @@ let check_graph env ?(broken = []) cells name items =
               match t with
               | Named n when not (List.mem n visiting) -> (
                   match List.assoc_opt n env.defs with
-                  | Some (Type_def (_, Variant cs)) -> Option.join (List.assoc_opt tag cs)
-                  | Some (Type_def (_, Alias t)) -> variant (n :: visiting) t
+                  | Some (Type_def (_, Variant cs, _)) -> Option.join (List.assoc_opt tag cs)
+                  | Some (Type_def (_, Alias t, _)) -> variant (n :: visiting) t
                   | _ -> None)
               | _ -> None
             in
@@ -592,7 +744,7 @@ let check_graph env ?(broken = []) cells name items =
           if Hashtbl.mem routed s then fail "route %s: %s is routed twice" s s;
           Hashtbl.add routed s ();
           let st = match Hashtbl.find_opt types s with Some t -> t | None -> fail "route %s: unknown asset %s" s s in
-          let cs = match st with C.Variant cs -> cs | t -> fail "route %s: %s has type %s, not a variant" s s (C.to_string t) in
+          let cs = match whnf st with C.Variant cs -> cs | t -> fail "route %s: %s has type %s, not a variant" s s (C.to_string t) in
           let tags = List.filter_map (function Case (t, _), _ -> Some t | Wild, _ -> None) cases in
           route_cases := (s, tags) :: !route_cases;
           List.iter (fun t -> if List.length (List.filter (( = ) t) tags) > 1 then fail "route %s: case %s twice" s t) tags;
@@ -731,7 +883,7 @@ let check ?(options = default_options) (file : file) =
   let guard where f = match f () with v -> Some v | exception Fail m -> err where m; None in
   let types =
     List.filter_map
-      (function Type_def (n, _) -> Option.map (fun t -> (n, t)) (guard ("type " ^ n) (fun () -> resolve env (Named n))) | _ -> None)
+      (function Type_def (n, _, _) -> Option.map (fun t -> (n, t)) (guard ("type " ^ n) (fun () -> resolve env (Named n))) | _ -> None)
       file
   in
   List.iter

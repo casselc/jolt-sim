@@ -363,7 +363,22 @@ mutual recursion's match, one name in two scopes) and a Hegel property
 over drawn mutually recursive definitions: renamed into another scope
 they are equal both ways (1,000 drawn), and a changed leaf in a root's
 body tells them apart (919); a bisimulation that assumes every pair is
-caught. DESIGN.md's line ("recursion is the line not crossed")
+caught. **Guardedness and nominal typing** (`graph/lib/check.ml`,
+"recursive types"): the named types in a cycle of references (a
+strongly connected component) resolve to `Rec`, their bodies defined in a
+scope of the file's own; a cycle of unguarded references is refused as
+its path (`A is an unguarded cycle: A -> B -> A`), and so is a
+recursion with no finite value, which guardedness alone misses: a
+variant payload guards only when some case of the cycle ends it
+(`type E = Neg(E) | Pos(P); type P = { e : E; }` is refused). A recursive
+record is declared nominally, so a value built by its name has the
+`Rec`; routes, field selection and `match` unfold it. `<nodes N>` parses
+and prints on any definition (`type T = ... <nodes N>;`). Compatibility
+compares recursive types by the bisimulation, cases by name first.
+Tests: corpus programs (`ok_recursive.cg`, six `bad_recursive_*.cg`),
+soundness over the corpus's recursive cells, six compatibility cases
+in `stage3.ml`, and the syntax round trip with node bounds. Not yet:
+the node bound's use (cost and codecs, next). DESIGN.md's line ("recursion is the line not crossed")
 is about **cell bodies**, and it stays: CEL has no recursion, so a cell
 still reaches a fixed depth into a value. What this revision admits is a
 recursive **type**, whose values are finite trees.

@@ -286,9 +286,9 @@ let types_file (imp : import) : S.file =
     List.map
       (fun (g, d) ->
         match d with
-        | Message { fields; _ } -> S.Type_def (g, S.Alias (S.Record (List.map (fun f -> (f.name, graph_ty f.ty)) fields, false)))
-        | Enum { values; _ } -> S.Type_def (g, S.Variant (List.map (fun (n, _) -> (n, None)) values))
-        | Oneof { cases; _ } -> S.Type_def (g, S.Variant (List.map (fun (c, f) -> (c, Some (graph_ty f.ty))) cases)))
+        | Message { fields; _ } -> S.Type_def (g, S.Alias (S.Record (List.map (fun f -> (f.name, graph_ty f.ty)) fields, false)), None)
+        | Enum { values; _ } -> S.Type_def (g, S.Variant (List.map (fun (n, _) -> (n, None)) values), None)
+        | Oneof { cases; _ } -> S.Type_def (g, S.Variant (List.map (fun (c, f) -> (c, Some (graph_ty f.ty))) cases), None))
       imp.defs
   in
   let checks =

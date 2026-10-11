@@ -106,7 +106,7 @@ let gen_item tc =
           let n = 1 + pick tc 3 in
           Variant (List.init n (fun i -> (List.nth [ "Pass"; "Fail"; "Skipped" ] i, if pick tc 2 = 0 then Some (gen_ty tc 1) else None)))
       in
-      { tree = Type_def (choose tc type_names, def); sources = [] }
+      { tree = Type_def (choose tc type_names, def, if pick tc 4 = 0 then Some (1 + pick tc 2000) else None); sources = [] }
   | 2 -> { tree = Effect (choose tc effects, gen_ty tc 1, gen_ty tc 1); sources = [] }
   | 3 | 4 -> gen_cell tc
   | _ -> gen_graph tc
@@ -190,7 +190,7 @@ let test_hash_sensitivity () =
       let cell = (gen_cell tc).tree in
       let name = item_name cell in
       let graph = Graph ("g", [ Asset { name = "a"; cell = name; args = []; fresh = None } ]) in
-      let ty = Type_def ("Diff", Alias (Scalar ("int", None))) in
+      let ty = Type_def ("Diff", Alias (Scalar ("int", None)), None) in
       let before = Print.hashes [ ty; cell; graph ] in
       let _, e = gen_cel tc in
       let changed = match cell with Cell c -> Cell { c with final = e } | i -> i in

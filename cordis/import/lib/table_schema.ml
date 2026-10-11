@@ -202,7 +202,7 @@ let name_map (t : t) : J.t =
 let of_record ?dialect ?(missing = [ "" ]) (file : Cordis_graph.Syntax.file) name : t =
   let module S = Cordis_graph.Syntax in
   let fields =
-    match List.find_map (function S.Type_def (n, S.Alias (S.Record (fs, false))) when n = name -> Some fs | _ -> None) file with
+    match List.find_map (function S.Type_def (n, S.Alias (S.Record (fs, false)), _) when n = name -> Some fs | _ -> None) file with
     | Some fs -> fs
     | None -> refuse "%s is not a closed record type in the file" name
   in

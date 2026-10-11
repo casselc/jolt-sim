@@ -1,0 +1,3 @@
+// expect: unknown type Missing
+type T = { next : option(T); other : Missing; };
+cell f(x : T) : int = { 1; }

@@ -1,0 +1,3 @@
+// expect: nope
+type Tree = { label : string; kids : list(Tree)<max 8>; } <nodes 512>;
+cell f(t : Tree) : int = { t.kids[0].kids[0].nope; }

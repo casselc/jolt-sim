@@ -1,0 +1,4 @@
+// expect: is an unguarded cycle: A -> B -> A
+type A = { b : B; n : int; };
+type B = { a : A; };
+cell f(x : A) : int = { x.n; }

@@ -1,0 +1,24 @@
+// expect: ok
+type Tree = { label : string; kids : list(Tree)<max 8>; } <nodes 512>;
+type Expr = Num(int) | Add(Pair) | Neg(Expr);
+type Pair = { l : Expr; r : Expr; };
+type Forest = list(Tree)<max 4>;
+type Wrap = { root : Tree; };
+cell leaf(s : string) : Tree = { Tree{label: s, kids: []}; }
+cell node(s : string, t : Tree) : Tree = { Tree{label: s, kids: [t, Tree{label: s, kids: [t]}]}; }
+cell grandkid(t : Tree) : string = { t.kids.size() > 0 && t.kids[0].kids.size() > 0 ? t.kids[0].kids[0].label : t.label; }
+cell wrap(t : Tree) : Wrap = { Wrap{root: t}; }
+cell forest(f : Forest) : int = { f.size(); }
+cell neg(n : int) : Expr = { Expr.Neg(Expr.Add(Pair{l: Expr.Num(n), r: Expr.Num(1)})); }
+cell top(e : Expr) : int = { match e { Num(n) -> n; Add(p) -> match p.l { Num(a) -> a; _ -> 0 }; Neg(x) -> 0 }; }
+graph g {
+  input s : string;
+  input n : int;
+  asset t = leaf(s);
+  asset t2 = node(s, t);
+  asset k = grandkid(t2);
+  asset w = wrap(t2);
+  asset e = neg(n);
+  asset v = top(e);
+  route e { Num(x) -> none; Add(p) -> none; Neg(x) -> v };
+}

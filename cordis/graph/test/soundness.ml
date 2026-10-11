@@ -39,15 +39,18 @@ let rec value (d : Typed_gen.draw) defs ?(depth = 3) (t : ty) : V.t =
   | Map (k, t, b) ->
       let keys = List.sort_uniq compare (List.init (if depth <= 0 then 0 else len b) (fun _ -> v k)) in
       (match V.make_map (List.map (fun key -> (key, v t)) keys) with V.Map _ as m -> m | _ -> V.Map [])
-  | Option t -> V.Optional (if d.pick 2 = 0 then None else Some (v t))
+  | Option t -> V.Optional (if depth <= 0 || d.pick 2 = 0 then None else Some (v t))
   | Record (fs, _) -> (match V.make_map (List.map (fun (f, t) -> (V.String f, v t)) fs) with V.Map _ as m -> m | e -> e)
   (* a protobuf message, from its descriptor in the bound registry *)
   | Named n when String.contains n '.' -> Option.value (Proto_gen.message ~depth:2 d n) ~default:V.Null
   | Named n -> (
       match List.assoc_opt n defs with
-      | Some (Type_def (_, Alias t)) -> value d defs ~depth t
-      | Some (Type_def (_, Variant cs)) ->
-          let c, p = Typed_gen.choose d cs in
+      | Some (Type_def (_, Alias t, _)) -> value d defs ~depth t
+      | Some (Type_def (_, Variant cs, _)) ->
+          (* deep in a recursive type, a case that ends it *)
+          let rec named (t : ty) = match t with Named _ -> true | List (t, _) | Option t | Map (_, t, _) -> named t | Record (fs, _) -> List.exists (fun (_, t) -> named t) fs | _ -> false in
+          let ends = List.filter (fun (_, p) -> match p with None -> true | Some t -> not (named t)) cs in
+          let c, p = Typed_gen.choose d (if depth <= 0 && ends <> [] then ends else cs) in
           (match V.make_map ((V.String "tag", V.String c) :: (match p with Some t -> [ (V.String "value", v t) ] | None -> [])) with
            | V.Map _ as m -> m
            | e -> e)
@@ -59,6 +62,7 @@ let rec value (d : Typed_gen.draw) defs ?(depth = 3) (t : ty) : V.t =
 let rec admits (t : C.t) (x : V.t) =
   match t, x with
   | C.Dyn, _ | C.Opaque _, _ -> true
+  | C.Rec (n, sc), x -> admits (C.unfold (n, sc)) x
   | C.Message n, V.Message { tname; _ } -> n = tname
   | (C.Message _ | C.Wrapper _), V.Null -> true
   | C.Wrapper t, x -> admits t x

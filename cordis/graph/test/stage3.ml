@@ -112,6 +112,8 @@ let base =
   {|type Diff = { path : string; patch : string };
 type V = A(int) | B;
 type W = P | Q(int);
+type Tree = { label : string; kids : list(Tree)<max 8>; };
+type E = Num(int) | Neg(E);
 effect k(int) : int;
 effect j(int) : int;
 effect unused(int) : int;
@@ -160,6 +162,13 @@ let compat_tests =
     ("an output of another type", `Quick, expect_approval "changes its output" "cell spare(n : int) : string = { string(n); }");
     ("an arity change", `Quick, expect_approval "takes 2 inputs" "cell spare(n : int, m : int) : int = { n + m; }");
     ("a variant's cases", `Quick, expect_approval "changes a variant" "type W = P | Q(int) | R;");
+    (* recursive types, compared by bisimulation with the cycle cut at the name (RFC 0002 revision 3) *)
+    ("a recursive type, its fields reordered", `Quick, expect_live "type Tree = { kids : list(Tree)<max 8>; label : string; };");
+    ("a recursive type, a node bound given", `Quick, expect_live "type Tree = { label : string; kids : list(Tree)<max 8>; } <nodes 64>;");
+    ("a recursive type, a level down changed", `Quick, expect_approval "changes the type" "type Tree = { label : string; kids : list(Tree)<max 8>; extra : int; };");
+    ("a recursive type, no longer recursive", `Quick, expect_approval "changes the type" "type Tree = { label : string; kids : list(string)<max 8>; };");
+    ("a recursive variant's cases", `Quick, expect_approval "changes a variant" "type E = Num(int) | Neg(E) | Zero;");
+    ("a recursive variant, a payload changed", `Quick, expect_approval "changes the type" "type E = Num(string) | Neg(E);");
     ("an effect's types", `Quick, expect_approval "request or receipt" "effect unused(string) : int;") ]
 
 (* ---- admission, as admission.qnt states it -------------------------------------------------------- *)
