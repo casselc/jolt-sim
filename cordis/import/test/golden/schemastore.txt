@@ -1,12 +1,10 @@
-# SchemaStore: 990 schemas; 919 import (their types check); 71 are refused.
-# Instances of imported schemas: 1469 positive, 681 negative; 1893 agree with jsonschema; 220 valid ones are refused as RFC 0003 documents; 37 jsonschema could not validate.
+# SchemaStore: 990 schemas; 926 import (their types check); 64 are refused.
+# Instances of imported schemas: 1473 positive, 682 negative; 1897 agree with jsonschema; 221 valid ones are refused as RFC 0003 documents; 37 jsonschema could not validate.
 # Refusals by kind:
 #     29  a remote $ref
 #     29  a pattern that uses lookaround
-#      5  a pattern that does not compile
 #      3  the schema false admits nothing
 #      3  not a schema
-#      2  a pattern that is not ASCII
 BizTalkServerApplicationSchema: imported, 7 types, 0 instances
 abc-clinical-demand-forecast-1.0.0: imported, 55 types, 2 instances
 abc-clinical-demand-forecast-2.0.0: imported, 55 types, 2 instances
@@ -702,13 +700,13 @@ partial-eslint-plugins: imported, 4 types, 0 instances
 partial-fastapi: imported, 1 types, 0 instances
 partial-fusion-pack-metadata: imported, 4 types, 0 instances
 partial-fusion-texture-metadata: imported, 2 types, 0 instances
-partial-inwards: refused: layerEntry: pattern "^[A-Za-z_\\u0080-\\uffff][A-Za-z0-9_\\u0080-\\uffff]*(\\.(\\*\\*?|[A-Za-z_\\u0080-\\uffff][A-Za-z0-9_\\u0080-\\uffff]*))+$" does not compile
+partial-inwards: imported, 21 types, 0 instances
 partial-mypy: imported, 1 types, 0 instances
 partial-pdm-dockerize: imported, 3 types, 0 instances
 partial-pdm: imported, 12 types, 0 instances
 partial-pixi: imported, 48 types, 1 instances
 partial-poe: imported, 53 types, 0 instances
-partial-poetry: refused: poetry-author-pattern: pattern "^(?:[- .,\\w\\d'\226\128\153\"():&]+)(?: <(?:.+?)>)?" is not ASCII
+partial-poetry: imported, 29 types, 0 instances
 partial-pyright: imported, 97 types, 0 instances
 partial-pytest: imported, 9 types, 0 instances
 partial-repo-review: imported, 2 types, 0 instances
@@ -735,7 +733,7 @@ pnpm-workspace: imported, 29 types, 0 instances
 pocketmine-plugin: imported, 4 types, 1 instances
 podman-desktop-extension-1.27: imported, 1 types, 0 instances
 podman-desktop-extension: imported, 1 types, 0 instances
-poetry: refused: poetry-author-pattern: pattern "^(?:[- .,\\w\\d'\226\128\153\"():&]+)(?: <(?:.+?)>)?" is not ASCII
+poetry: imported, 11 types, 0 instances
 popxf-1.0: imported, 14 types, 39 instances
 popxf-corr-1.0: imported, 2 types, 2 instances
 postcssrc: imported, 2 types, 6 instances
@@ -852,7 +850,7 @@ scikit-build: imported, 15 types, 0 instances
 semantic-release: imported, 2 types, 1 instances
 semgrep: refused: a remote $ref (https://raw.githubusercontent.com/returntocorp/semgrep-interfaces/main/rule_schema_v1.yaml): no document https://raw.githubusercontent.com/returntocorp/semgrep-interfaces/main/rule_schema_v1.yaml was given
 sergen: imported, 13 types, 15 instances
-serve: refused: ServeJsonHeadersHeaders_value: pattern "^[\\u0020-\\u007e\\u00a0-\\u00ff]+$" does not compile
+serve: imported, 6 types, 2 instances
 servicehub.config.schema: imported, 4 types, 0 instances
 servicehub.service.schema: imported, 1 types, 0 instances
 settings.job: imported, 1 types, 2 instances
@@ -976,10 +974,10 @@ web-types: refused: base-contribution: pattern "^(?!pattern|properties|pseudo-el
 webextension: imported, 13 types, 61 instances
 webjob-publish-settings: imported, 3 types, 3 instances
 webjobs-list: imported, 2 types, 2 instances
-winget-pkgs-installer-1.0.0: refused: PackageIdentifier: pattern "^[^\\.\\s\\\\/:\\*\\?\"<>\\|\\x01-\\x1f]{1,32}(\\.[^\\.\\s\\\\/:\\*\\?\"<>\\|\\x01-\\x1f]{1,32}){1,3}$" does not compile
-winget-pkgs-locale-1.0.0: refused: WingetPkgsLocale100_PackageIdentifier: pattern "^[^\\.\\s\\\\/:\\*\\?\"<>\\|\\x01-\\x1f]{1,32}(\\.[^\\.\\s\\\\/:\\*\\?\"<>\\|\\x01-\\x1f]{1,32}){1,3}$" does not compile
+winget-pkgs-installer-1.0.0: imported, 30 types, 1 instances
+winget-pkgs-locale-1.0.0: imported, 3 types, 1 instances
 winget-pkgs-singleton-0.1: imported, 3 types, 0 instances
-winget-pkgs-singleton-1.0.0: refused: PackageIdentifier: pattern "^[^\\.\\s\\\\/:\\*\\?\"<>\\|\\x01-\\x1f]{1,32}(\\.[^\\.\\s\\\\/:\\*\\?\"<>\\|\\x01-\\x1f]{1,32}){1,3}$" does not compile
+winget-pkgs-singleton-1.0.0: imported, 32 types, 1 instances
 winutil-applications: imported, 2 types, 2 instances
 winutil-presets: imported, 1 types, 2 instances
 workflows: imported, 25 types, 0 instances
