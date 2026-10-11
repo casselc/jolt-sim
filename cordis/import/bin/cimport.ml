@@ -4,6 +4,7 @@
      cimport jsonschema SCHEMA.json [--with FILE|DIR]... [--out DIR | --print types|report|names]
      cimport openapi DOC.(json|yaml) [--service NAME] [--out DIR | --print types|report|names|operations|allowlist|pf]
      cimport tableschema SCHEMA.json [--name ROW] [--dialect DIALECT.json] [--out DIR | --print types|report|names]
+     cimport csvrow TYPES.cg ROW [--dialect DIALECT.json] [--print names]
 
    reads a FileDescriptorSet and writes DIR/types.cg (the types and their
    check_ cells), DIR/report.txt (what was approximated) and DIR/names.json
@@ -129,6 +130,19 @@ let () =
           emit rest types
             (String.concat "" (List.map (fun (l, m) -> Printf.sprintf "%s: %s\n" l m) t.report))
             (Yojson.Safe.pretty_to_string (Table_schema.name_map t) ^ "\n"))
+  | _ :: "csvrow" :: path :: row :: rest -> (
+      (* a row type the graph declares: the CSV name map for it, which the codec reads *)
+      let dialect, rest = match rest with "--dialect" :: d :: r -> (Some d, r) | r -> (None, r) in
+      let file = match Cordis_graph.Parse.file (read path) with Ok f -> f | Error m -> die "%s: %s" path m in
+      match
+        let dialect = Option.map (fun d -> Table_schema.dialect_of (Yojson.Safe.from_string (read d))) dialect in
+        Table_schema.of_record ?dialect file row
+      with
+      | exception Table_schema.Refused m -> die "%s: %s" path m
+      | t -> (
+          match rest with
+          | [] | [ "--print"; "names" ] -> print_string (Yojson.Safe.pretty_to_string (Table_schema.name_map t) ^ "\n")
+          | _ -> die "usage: cimport csvrow TYPES.cg ROW [--dialect DIALECT.json] [--print names]"))
   | [ _; "protobuf"; set; "--print"; "attach" ] ->
       Printf.printf "uses descriptors sha256:%s;\n" (Cordis_cel.Sha256.digest (read set))
   | _ :: "protobuf" :: set :: rest -> (

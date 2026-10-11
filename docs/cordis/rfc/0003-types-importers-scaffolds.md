@@ -529,14 +529,18 @@ executor's pure half (rendering a request, reading a response);
 **The corpus** (`import/test/fetch_openapi_corpus.sh`, every sixth
 OpenAPI 3 document of the APIs.guru directory at a pinned commit, the
 listing checked in): all 329 documents (310 3.0, 19 3.1) import, their
-types checking; of 13,747 operations, 13,330 are imported and 417
-skipped: 357 for patterns the JSON Schema importer refuses (276 Unicode
-property classes, 81 lookaround), 56 for a request body in a media type
-not read (XML, octet streams, `*/*`), and 4 for parameter shapes. Before
-the pattern translation and the form and multipart bodies, 686 were
-skipped: 243 for request bodies, 155 for patterns that did not compile
-(mostly `\uXXXX`, `\xHH` and `\_` escapes, and repetitions over RE2's
-1000), 7 for non-ASCII patterns.
+types checking; of 13,747 operations, 13,488 are imported and 259
+skipped: 199 for patterns the JSON Schema importer refuses (106
+lookaround, 62 a property escape without braces, `\pL`, which ECMA's
+Unicode mode refuses and which without it is the letters p and L, and 31
+Unicode classes with no RE2 counterpart here: scripts and Java's POSIX
+names), 56 for a request body in a media type not read (XML, octet
+streams, `*/*`), and 4 for parameter shapes. Before the pattern
+translation, Unicode general categories, and the form and multipart
+bodies, 686 were skipped: 243 for request bodies, 198 for Unicode
+property classes, 155 for patterns that did not compile (mostly
+`\uXXXX`, `\xHH` and `\_` escapes, and repetitions over RE2's 1000),
+79 lookaround, 7 non-ASCII patterns.
 
 **Agreement with openapi-core** (`import/test/openapi_agreement.ml`,
 Hegel, over the OAI petstore example and a document of every style the

@@ -17,7 +17,7 @@ APIs/adyen.com/RecurringService/30/openapi.yaml: ok, 4 operations, 0 skipped
 APIs/adyen.com/TerminalAPI-v1/1/openapi.yaml: ok, 18 operations, 0 skipped
 APIs/adyen.com/TransferService/3/openapi.yaml: ok, 7 operations, 0 skipped
 APIs/amadeus.com/amadeus-location-score/1.0.2/openapi.yaml: ok, 1 operations, 0 skipped
-APIs/amazonaws.com/acm-pca/2017-08-22/openapi.yaml: ok, 19 operations, 4 skipped
+APIs/amazonaws.com/acm-pca/2017-08-22/openapi.yaml: ok, 23 operations, 0 skipped
 APIs/amazonaws.com/amplifyuibuilder/2021-08-11/openapi.yaml: ok, 25 operations, 0 skipped
 APIs/amazonaws.com/appfabric/2023-05-19/openapi.yaml: ok, 26 operations, 0 skipped
 APIs/amazonaws.com/appmesh/2018-10-01/openapi.yaml: ok, 19 operations, 0 skipped
@@ -29,32 +29,32 @@ APIs/amazonaws.com/cloudfront/2016-11-25/openapi.yaml: ok, 27 operations, 0 skip
 APIs/amazonaws.com/cloudfront/2020-05-31/openapi.yaml: ok, 106 operations, 0 skipped
 APIs/amazonaws.com/cloudtrail-data/2021-08-11/openapi.yaml: ok, 1 operations, 0 skipped
 APIs/amazonaws.com/codedeploy/2014-10-06/openapi.yaml: ok, 47 operations, 0 skipped
-APIs/amazonaws.com/codestar-notifications/2019-10-15/openapi.yaml: ok, 8 operations, 5 skipped
-APIs/amazonaws.com/comprehendmedical/2018-10-30/openapi.yaml: ok, 6 operations, 20 skipped
+APIs/amazonaws.com/codestar-notifications/2019-10-15/openapi.yaml: ok, 13 operations, 0 skipped
+APIs/amazonaws.com/comprehendmedical/2018-10-30/openapi.yaml: ok, 11 operations, 15 skipped
 APIs/amazonaws.com/connectcases/2022-10-03/openapi.yaml: ok, 29 operations, 1 skipped
 APIs/amazonaws.com/dataexchange/2017-07-25/openapi.yaml: ok, 29 operations, 0 skipped
-APIs/amazonaws.com/devops-guru/2020-12-01/openapi.yaml: ok, 16 operations, 15 skipped
+APIs/amazonaws.com/devops-guru/2020-12-01/openapi.yaml: ok, 31 operations, 0 skipped
 APIs/amazonaws.com/docdb/2014-10-31/openapi.yaml: ok, 106 operations, 0 skipped
 APIs/amazonaws.com/ec2-instance-connect/2018-04-02/openapi.yaml: ok, 2 operations, 0 skipped
 APIs/amazonaws.com/elastic-inference/2017-07-25/openapi.yaml: ok, 6 operations, 0 skipped
 APIs/amazonaws.com/elasticmapreduce/2009-03-31/openapi.yaml: ok, 54 operations, 0 skipped
 APIs/amazonaws.com/entityresolution/2018-05-10/openapi.yaml: ok, 16 operations, 0 skipped
-APIs/amazonaws.com/finspace/2021-03-12/openapi.yaml: ok, 27 operations, 7 skipped
-APIs/amazonaws.com/frauddetector/2019-11-15/openapi.yaml: ok, 53 operations, 20 skipped
-APIs/amazonaws.com/glue/2017-03-31/openapi.yaml: ok, 195 operations, 7 skipped
+APIs/amazonaws.com/finspace/2021-03-12/openapi.yaml: ok, 31 operations, 3 skipped
+APIs/amazonaws.com/frauddetector/2019-11-15/openapi.yaml: ok, 73 operations, 0 skipped
+APIs/amazonaws.com/glue/2017-03-31/openapi.yaml: ok, 202 operations, 0 skipped
 APIs/amazonaws.com/health/2016-08-04/openapi.yaml: ok, 13 operations, 0 skipped
 APIs/amazonaws.com/importexport/2010-06-01/openapi.yaml: ok, 12 operations, 0 skipped
 APIs/amazonaws.com/iot-roborunner/2018-05-10/openapi.yaml: ok, 20 operations, 0 skipped
 APIs/amazonaws.com/iotevents-data/2018-10-23/openapi.yaml: ok, 12 operations, 0 skipped
-APIs/amazonaws.com/iotthingsgraph/2018-09-06/openapi.yaml: ok, 7 operations, 28 skipped
+APIs/amazonaws.com/iotthingsgraph/2018-09-06/openapi.yaml: ok, 10 operations, 25 skipped
 APIs/amazonaws.com/kafka/2018-11-14/openapi.yaml: ok, 47 operations, 0 skipped
 APIs/amazonaws.com/kinesis-video-media/2017-09-30/openapi.yaml: ok, 1 operations, 0 skipped
-APIs/amazonaws.com/kinesisvideo/2017-09-30/openapi.yaml: ok, 22 operations, 8 skipped
+APIs/amazonaws.com/kinesisvideo/2017-09-30/openapi.yaml: ok, 30 operations, 0 skipped
 APIs/amazonaws.com/license-manager-linux-subscriptions/2018-05-10/openapi.yaml: ok, 4 operations, 0 skipped
-APIs/amazonaws.com/lookoutequipment/2020-12-15/openapi.yaml: ok, 12 operations, 29 skipped
+APIs/amazonaws.com/lookoutequipment/2020-12-15/openapi.yaml: ok, 32 operations, 9 skipped
 APIs/amazonaws.com/macie2/2020-01-01/openapi.yaml: ok, 79 operations, 0 skipped
 APIs/amazonaws.com/mediaconvert/2017-08-29/openapi.yaml: ok, 28 operations, 0 skipped
-APIs/amazonaws.com/mediastore/2017-09-01/openapi.yaml: ok, 17 operations, 4 skipped
+APIs/amazonaws.com/mediastore/2017-09-01/openapi.yaml: ok, 21 operations, 0 skipped
 APIs/amazonaws.com/migration-hub-refactor-spaces/2021-10-26/openapi.yaml: ok, 10 operations, 14 skipped
 APIs/amazonaws.com/models.lex.v2/2020-08-07/openapi.yaml: ok, 92 operations, 0 skipped
 APIs/amazonaws.com/network-firewall/2020-11-12/openapi.yaml: ok, 36 operations, 0 skipped
@@ -68,12 +68,12 @@ APIs/amazonaws.com/resiliencehub/2020-04-30/openapi.yaml: ok, 53 operations, 1 s
 APIs/amazonaws.com/route53-recovery-cluster/2019-12-02/openapi.yaml: ok, 4 operations, 0 skipped
 APIs/amazonaws.com/rum/2018-05-10/openapi.yaml: ok, 3 operations, 14 skipped
 APIs/amazonaws.com/s3outposts/2017-07-25/openapi.yaml: ok, 5 operations, 0 skipped
-APIs/amazonaws.com/sagemaker/2017-07-24/openapi.yaml: ok, 221 operations, 83 skipped
+APIs/amazonaws.com/sagemaker/2017-07-24/openapi.yaml: ok, 281 operations, 23 skipped
 APIs/amazonaws.com/securityhub/2018-10-26/openapi.yaml: ok, 66 operations, 1 skipped
 APIs/amazonaws.com/servicediscovery/2017-03-14/openapi.yaml: ok, 22 operations, 4 skipped
 APIs/amazonaws.com/sms/2016-10-24/openapi.yaml: ok, 35 operations, 0 skipped
 APIs/amazonaws.com/ssm-incidents/2018-05-10/openapi.yaml: ok, 28 operations, 1 skipped
-APIs/amazonaws.com/states/2016-11-23/openapi.yaml: ok, 30 operations, 4 skipped
+APIs/amazonaws.com/states/2016-11-23/openapi.yaml: ok, 33 operations, 1 skipped
 APIs/amazonaws.com/swf/2012-01-25/openapi.yaml: ok, 37 operations, 0 skipped
 APIs/amazonaws.com/transcribe/2017-10-26/openapi.yaml: ok, 39 operations, 0 skipped
 APIs/amazonaws.com/waf-regional/2016-11-28/openapi.yaml: ok, 81 operations, 0 skipped
@@ -328,10 +328,11 @@ APIs/xero.com/xero_accounting/2.9.4/openapi.yaml: ok, 202 operations, 22 skipped
 APIs/yodlee.com/1.1.0/openapi.yaml: ok, 70 operations, 0 skipped
 APIs/zoom.us/2.0.0/openapi.yaml: ok, 373 operations, 0 skipped
 
-summary: 329 documents (310 3.0, 19 3.1), 329 imported, 0 refused; 13330 operations imported, 417 skipped
-  skipped  276  uses a Unicode property class
-  skipped   81  uses lookaround
+summary: 329 documents (310 3.0, 19 3.1), 329 imported, 0 refused; 13488 operations imported, 259 skipped
+  skipped  106  uses lookaround
+  skipped   62  uses a property escape without braces
   skipped   56  a request body in
+  skipped   31  uses a Unicode property class
   skipped    2  described by content
   skipped    1  the style
   skipped    1  two parameters named

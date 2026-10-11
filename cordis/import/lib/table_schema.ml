@@ -194,3 +194,32 @@ let name_map (t : t) : J.t =
       ("missingValues", `List (List.map (fun s -> `String s) t.missing));
       ("unique", `List (List.map (fun ks -> `List (List.map (fun k -> `String k) ks)) t.unique));
       ("types", Jsonschema.name_map t.imp) ]
+
+(* A row type a graph declares itself: a record whose fields are scalars, or options of them. It is
+   written as a Table Schema (a field required unless it is an option; a string's <max N> its maxLength)
+   and imported as one, so the row type is the declared record again. uint, bytes, timestamp, duration
+   and dyn have no CSV form here yet. *)
+let of_record ?dialect ?(missing = [ "" ]) (file : Cordis_graph.Syntax.file) name : t =
+  let module S = Cordis_graph.Syntax in
+  let fields =
+    match List.find_map (function S.Type_def (n, S.Alias (S.Record (fs, false))) when n = name -> Some fs | _ -> None) file with
+    | Some fs -> fs
+    | None -> refuse "%s is not a closed record type in the file" name
+  in
+  let field (fname, ty) =
+    let scalar, required = match ty with S.Option t -> (t, false) | t -> (t, true) in
+    let typ, bound =
+      match scalar with
+      | S.Scalar ("string", b) -> ("string", b)
+      | S.Scalar ("int", _) -> ("integer", None)
+      | S.Scalar ("double", _) -> ("number", None)
+      | S.Scalar ("bool", _) -> ("boolean", None)
+      | S.Scalar (s, _) -> refuse "%s.%s: %s has no CSV form here yet" name fname s
+      | _ -> refuse "%s.%s: a column is a scalar, or an option of one" name fname
+    in
+    `Assoc
+      [ ("name", `String fname); ("type", `String typ);
+        ( "constraints",
+          `Assoc ((if required then [ ("required", `Bool true) ] else []) @ match bound with Some n -> [ ("maxLength", `Int n) ] | None -> []) ) ]
+  in
+  import ~name ?dialect (`Assoc [ ("fields", `List (List.map field fields)); ("missingValues", `List (List.map (fun m -> `String m) missing)) ])

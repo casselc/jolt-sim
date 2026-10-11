@@ -203,8 +203,15 @@ reads it, and frictionless reads the same rows; 1,710 tables in a
 3,000-case run, 1,023 of them valid. A codec that does not check primary
 keys is caught, shrunk to two rows sharing one.
 
-Still to come in this stage: a graph-language record type declared by
-the graph as the row type, and inference from a sample as a scaffold.
+**A row type the graph declares** (`Table_schema.of_record`, `cimport
+csvrow TYPES.cg ROW`): a closed record whose fields are `string`, `int`,
+`double` or `bool`, or options of them, is written as a Table Schema (a
+field required unless it is an option, a string's `<max N>` its
+`maxLength`) and imported as one, so the row type is the declared record
+again; `uint`, `bytes`, `timestamp`, `duration` and `dyn` columns are
+refused for now.
+
+Still to come in this stage: inference from a sample, as a scaffold.
 
 ## Typed data frames: Arrow, Parquet, Vortex
 

@@ -111,10 +111,29 @@ let rows_roundtrip () =
               Hegel.require tc ~msg:("refused rows that satisfy their schema: " ^ m)
                 ((not valid) || String.length m > 0 && (Schema_pred.replace ~sub:"repeats" ~by:"" m <> m))))
 
+(* a row type the graph declares reads and writes as the record it is *)
+let declared () =
+  let src = "type Reading = { sensor : string<max 8>; value : double; ok : option(bool); n : option(int); };" in
+  let file = match Cordis_graph.Parse.file src with Ok f -> f | Error m -> Alcotest.fail m in
+  let t = T.of_record file "Reading" in
+  let text = "sensor,value,ok,n\r\nt1,20.5,true,\r\nt2,-1,,3\r\n" in
+  match X.read t text with
+  | Error m -> Alcotest.fail m
+  | Ok rows ->
+      Alcotest.(check int) "rows" 2 (List.length rows);
+      Alcotest.(check (result string string)) "written back" (Ok text) (X.write t rows);
+      (match X.read t "sensor,value,ok,n\r\ntoolongname,1,,\r\n" with
+       | Ok _ -> Alcotest.fail "a sensor over its <max 8> was read"
+       | Error _ -> ());
+      (match T.of_record file "Nope" with _ -> Alcotest.fail "no such record" | exception T.Refused _ -> ());
+      let file2 = match Cordis_graph.Parse.file "type R = { at : timestamp; };" with Ok f -> f | Error m -> Alcotest.fail m in
+      match T.of_record file2 "R" with _ -> Alcotest.fail "a timestamp column" | exception T.Refused _ -> ()
+
 let () =
   Alcotest.run "csv"
     [ ("text", List.map (fun (s, want) -> Alcotest.test_case (Printf.sprintf "%S" s) `Quick (fun () -> Alcotest.check grid s want (parse s))) text_cases);
       ("imports", List.map (fun (sc, f) -> Alcotest.test_case f `Quick (refusal (sc, f))) refused);
+      ("declared", [ Alcotest.test_case "a row type the graph declares" `Quick declared ]);
       ( "tables",
         List.map
           (fun (s, want) ->

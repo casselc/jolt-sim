@@ -174,7 +174,7 @@
  (name csv_test)
  (modules csv_test)
  (deps (source_tree tables))
- (libraries typed_values cordis_import cordis_cel cel_testgen hegel alcotest yojson))
+ (libraries typed_values cordis_import cordis_graph cordis_cel cel_testgen hegel alcotest yojson))
 
 ; The CSV codec against frictionless. Needs python3 with frictionless:
 ;   dune build @import/test/csv-agreement
