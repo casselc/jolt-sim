@@ -656,3 +656,61 @@ let operations (t : t) : J.t =
                      | None -> [])
                    @ match op.idempotency with Some h -> [ ("idempotency", `String h) ] | None -> []) ))
              t.ops) ) ]
+
+(* ---- egress ------------------------------------------------------------------------------------------ *)
+
+(* where an operation may send: a server's scheme, host, port and base path *)
+type endpoint = { scheme : string; host : string; port : int; base : string }
+
+(* A server URL as an endpoint; None for a relative one (it has no host: a deployment's --api-base says
+   where to send) and for one this cannot read (a userinfo part, an unknown scheme) *)
+let endpoint url =
+  match String.index_opt url ':' with
+  | Some k when k + 2 < String.length url && String.sub url k 3 = "://" -> (
+      let scheme = String.lowercase_ascii (String.sub url 0 k) in
+      let rest = String.sub url (k + 3) (String.length url - k - 3) in
+      let auth, base = match String.index_opt rest '/' with Some j -> (String.sub rest 0 j, String.sub rest j (String.length rest - j)) | None -> (rest, "/") in
+      let default = match scheme with "https" -> Some 443 | "http" -> Some 80 | _ -> None in
+      if String.contains auth '@' || auth = "" then None
+      else
+        (* an IPv6 literal is bracketed; a port follows the last colon outside brackets *)
+        let host, port =
+          match String.rindex_opt auth ':' with
+          | Some c when not (String.contains (String.sub auth c (String.length auth - c)) ']') ->
+              (String.sub auth 0 c, int_of_string_opt (String.sub auth (c + 1) (String.length auth - c - 1)))
+          | _ -> (auth, default)
+        in
+        match port with Some port -> Some { scheme; host = String.lowercase_ascii host; port; base } | None -> None)
+  | _ -> None
+
+(* the document's servers (variables at their defaults) as the egress a deployment allows its outbox:
+   the endpoints, and the servers that name none (relative, or unreadable) *)
+let allowlist (t : t) =
+  let eps, none = List.partition_map (fun u -> match endpoint u with Some e -> Left e | None -> Right u) t.servers in
+  (List.sort_uniq compare eps, none)
+
+let allowlist_json (t : t) : J.t =
+  let eps, none = allowlist t in
+  `Assoc
+    [ ("service", `String t.service);
+      ( "endpoints",
+        `List
+          (List.map (fun e -> `Assoc [ ("scheme", `String e.scheme); ("host", `String e.host); ("port", `Int e.port); ("base", `String e.base) ]) eps) );
+      ("unresolved", `List (List.map (fun u -> `String u) none)) ]
+
+(* the allowlist as a pf.conf fragment: a table of hosts per port, and a rule passing the outbox's
+   traffic to it ($outbox is the outbox jail's address, the deployment's to define) *)
+let pf (t : t) =
+  let eps, none = allowlist t in
+  let name = String.map (fun c -> match c with 'a' .. 'z' | 'A' .. 'Z' | '0' .. '9' | '_' -> c | _ -> '_') t.service in
+  let ports = List.sort_uniq compare (List.map (fun e -> e.port) eps) in
+  let b = Buffer.create 256 in
+  Printf.bprintf b "# egress for %s, from its OpenAPI servers (cimport --print pf); $outbox is the outbox jail's address\n" t.service;
+  List.iter (fun u -> Printf.bprintf b "# not allowed (no host): %s\n" u) none;
+  List.iter
+    (fun port ->
+      let hosts = List.sort_uniq compare (List.filter_map (fun e -> if e.port = port then Some e.host else None) eps) in
+      Printf.bprintf b "table <cordis_%s_%d> const { %s }\n" name port (String.concat " " hosts);
+      Printf.bprintf b "pass out quick proto tcp from $outbox to <cordis_%s_%d> port %d\n" name port port)
+    ports;
+  Buffer.contents b

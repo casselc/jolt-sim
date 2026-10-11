@@ -1,0 +1,3 @@
+# egress for styles, from its OpenAPI servers (cimport --print pf); $outbox is the outbox jail's address
+table <cordis_styles_443> const { api.example.com }
+pass out quick proto tcp from $outbox to <cordis_styles_443> port 443

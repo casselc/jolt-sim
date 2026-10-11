@@ -1,0 +1,12 @@
+{
+  "service": "styles",
+  "endpoints": [
+    {
+      "scheme": "https",
+      "host": "api.example.com",
+      "port": 443,
+      "base": "/v1"
+    }
+  ],
+  "unresolved": []
+}

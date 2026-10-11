@@ -2,7 +2,7 @@
 
      cimport protobuf SET.binpb [--out DIR | --print types|report|names]
      cimport jsonschema SCHEMA.json [--with FILE|DIR]... [--out DIR | --print types|report|names]
-     cimport openapi DOC.(json|yaml) [--service NAME] [--out DIR | --print types|report|names|operations]
+     cimport openapi DOC.(json|yaml) [--service NAME] [--out DIR | --print types|report|names|operations|allowlist|pf]
 
    reads a FileDescriptorSet and writes DIR/types.cg (the types and their
    check_ cells), DIR/report.txt (what was approximated) and DIR/names.json
@@ -59,9 +59,14 @@ let () =
           let operations = Yojson.Safe.pretty_to_string (Openapi.operations t) ^ "\n" in
           match rest with
           | [ "--print"; "operations" ] -> print_string operations
+          | [ "--print"; "allowlist" ] -> print_string (Yojson.Safe.pretty_to_string (Openapi.allowlist_json t) ^ "\n")
+          | [ "--print"; "pf" ] -> print_string (Openapi.pf t)
           | [ "--out"; dir ] ->
               emit rest types report names;
-              Out_channel.with_open_text (Filename.concat dir "operations.json") (fun oc -> output_string oc operations)
+              Out_channel.with_open_text (Filename.concat dir "operations.json") (fun oc -> output_string oc operations);
+              Out_channel.with_open_text (Filename.concat dir "allowlist.json") (fun oc ->
+                  output_string oc (Yojson.Safe.pretty_to_string (Openapi.allowlist_json t) ^ "\n"));
+              Out_channel.with_open_text (Filename.concat dir "egress.pf") (fun oc -> output_string oc (Openapi.pf t))
           | _ -> emit rest types report names)
   | _ :: "jsonschema" :: path :: rest -> (
       (* --with FILE|DIR: further documents references may name, each

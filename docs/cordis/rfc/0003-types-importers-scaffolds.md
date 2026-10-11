@@ -596,8 +596,17 @@ parameter is. openapi-core reads a multipart `text/plain` part as a
 string whatever its schema (OpenAPI reads it by the schema), so the
 agreement document gives multipart bodies no number or boolean property.
 
-Still to come: the egress allowlist generated from `servers` (the
-executor sends only to the base it is given).
+**The egress allowlist.** `Openapi.allowlist` reads each server (its
+variables at their defaults) as a scheme, host, port and base path; a
+relative server, one carrying a credential, or one with no default port
+for its scheme names no host and is listed unresolved (a deployment's
+`--api-base` says where such a document's operations go). `cimport
+openapi DOC --print allowlist` writes it as JSON, `--print pf` as a
+pf.conf fragment (a const table of hosts per port, and a rule passing the
+outbox jail's traffic, `$outbox`, to it), and `--out DIR` writes both
+beside the operation map. `import/test/egress_test.ml` reads URLs (IPv6
+literals, explicit and default ports, case) and checks, with Hegel, that
+an endpoint written as a URL reads back as itself.
 
 ## Importers to come
 
