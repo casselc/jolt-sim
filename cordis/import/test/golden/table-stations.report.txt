@@ -1,0 +1,7 @@
+field code: a value equal to a missing value (NA) is not written: it would read back as missing
+field code: unique: checked across the table when it is read
+field name: a value equal to a missing value (NA) is not written: it would read back as missing
+field kind: a value equal to a missing value (NA) is not written: it would read back as missing
+field ref: a value equal to a missing value (NA) is not written: it would read back as missing
+primaryKey: unique, and every key field required: checked when the table is read
+(all): where the schema gives no maxLength, maxItems or maxProperties, the configured default ceiling applies

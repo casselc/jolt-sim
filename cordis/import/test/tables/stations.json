@@ -1,0 +1,14 @@
+{
+  "fields": [
+    {"name": "id", "type": "integer", "constraints": {"required": true, "minimum": 1}},
+    {"name": "code", "type": "string", "constraints": {"required": true, "pattern": "[A-Z]{3}", "unique": true}},
+    {"name": "name", "type": "string", "constraints": {"maxLength": 20}},
+    {"name": "kind", "type": "string", "constraints": {"enum": ["metro", "rail", "bus"]}},
+    {"name": "elevation", "type": "number", "constraints": {"minimum": -500, "maximum": 9000}},
+    {"name": "staffed", "type": "boolean", "trueValues": ["yes", "Y"], "falseValues": ["no", "N"]},
+    {"name": "ref", "type": "string", "format": "uuid"},
+    {"name": "note", "type": "any"}
+  ],
+  "missingValues": ["", "NA"],
+  "primaryKey": "id"
+}

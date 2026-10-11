@@ -168,3 +168,41 @@
 (rule (alias runtest) (action (diff golden/openapi-styles.allowlist.txt openapi-styles.allowlist.out)))
 (rule (with-stdout-to openapi-styles.pf.out (run %{exe:../bin/cimport.exe} openapi %{dep:openapi/styles.yaml} --print pf)))
 (rule (alias runtest) (action (diff golden/openapi-styles.pf.txt openapi-styles.pf.out)))
+
+; CSV, typed by a Frictionless Table Schema (RFC 0005 revision 3): the text, tables, and two properties
+(test
+ (name csv_test)
+ (modules csv_test)
+ (deps (source_tree tables))
+ (libraries typed_values cordis_import cordis_cel cel_testgen hegel alcotest yojson))
+
+; The CSV codec against frictionless. Needs python3 with frictionless:
+;   dune build @import/test/csv-agreement
+(executable
+ (name csv_agreement)
+ (modules csv_agreement)
+ (libraries typed_values cordis_import cordis_cel cel_testgen hegel alcotest unix yojson))
+
+(rule
+ (alias csv-agreement)
+ (deps csvvalid.py (source_tree tables))
+ (action
+  (run %{exe:csv_agreement.exe} csvvalid.py tables/kinds.json tables/stations.json tables/keys.json)))
+(rule (with-stdout-to table-stations.types.out (run %{exe:../bin/cimport.exe} tableschema %{dep:tables/stations.json} --print types)))
+(rule (alias runtest) (action (diff golden/table-stations.types.txt table-stations.types.out)))
+(rule (with-stdout-to table-stations.report.out (run %{exe:../bin/cimport.exe} tableschema %{dep:tables/stations.json} --print report)))
+(rule (alias runtest) (action (diff golden/table-stations.report.txt table-stations.report.out)))
+(rule (with-stdout-to table-stations.names.out (run %{exe:../bin/cimport.exe} tableschema %{dep:tables/stations.json} --print names)))
+(rule (alias runtest) (action (diff golden/table-stations.names.txt table-stations.names.out)))
+(rule (with-stdout-to table-kinds.types.out (run %{exe:../bin/cimport.exe} tableschema %{dep:tables/kinds.json} --print types)))
+(rule (alias runtest) (action (diff golden/table-kinds.types.txt table-kinds.types.out)))
+(rule (with-stdout-to table-kinds.report.out (run %{exe:../bin/cimport.exe} tableschema %{dep:tables/kinds.json} --print report)))
+(rule (alias runtest) (action (diff golden/table-kinds.report.txt table-kinds.report.out)))
+(rule (with-stdout-to table-kinds.names.out (run %{exe:../bin/cimport.exe} tableschema %{dep:tables/kinds.json} --print names)))
+(rule (alias runtest) (action (diff golden/table-kinds.names.txt table-kinds.names.out)))
+(rule (with-stdout-to table-keys.types.out (run %{exe:../bin/cimport.exe} tableschema %{dep:tables/keys.json} --print types)))
+(rule (alias runtest) (action (diff golden/table-keys.types.txt table-keys.types.out)))
+(rule (with-stdout-to table-keys.report.out (run %{exe:../bin/cimport.exe} tableschema %{dep:tables/keys.json} --print report)))
+(rule (alias runtest) (action (diff golden/table-keys.report.txt table-keys.report.out)))
+(rule (with-stdout-to table-keys.names.out (run %{exe:../bin/cimport.exe} tableschema %{dep:tables/keys.json} --print names)))
+(rule (alias runtest) (action (diff golden/table-keys.names.txt table-keys.names.out)))

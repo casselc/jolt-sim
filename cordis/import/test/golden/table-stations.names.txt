@@ -1,0 +1,44 @@
+{
+  "row": "Stations",
+  "dialect": { "delimiter": ",", "quoteChar": "\"", "header": true },
+  "columns": [
+    { "name": "id", "kind": "integer" },
+    { "name": "code", "kind": "string" },
+    { "name": "name", "kind": "string" },
+    { "name": "kind", "kind": "string" },
+    { "name": "elevation", "kind": "number" },
+    {
+      "name": "staffed",
+      "kind": "boolean",
+      "trueValues": [ "yes", "Y" ],
+      "falseValues": [ "no", "N" ]
+    },
+    { "name": "ref", "kind": "string" },
+    { "name": "note", "kind": "any" }
+  ],
+  "missingValues": [ "", "NA" ],
+  "unique": [ [ "code" ], [ "id" ] ],
+  "types": {
+    "$root": "Stations",
+    "Stations": {
+      "properties": {
+        "id": { "json": "id", "required": true, "nullable": false },
+        "code": { "json": "code", "required": true, "nullable": false },
+        "name": { "json": "name", "required": false, "nullable": false },
+        "kind": { "json": "kind", "required": false, "nullable": false },
+        "elevation": {
+          "json": "elevation",
+          "required": false,
+          "nullable": false
+        },
+        "staffed": {
+          "json": "staffed",
+          "required": false,
+          "nullable": false
+        },
+        "ref": { "json": "ref", "required": false, "nullable": false },
+        "note": { "json": "note", "required": false, "nullable": false }
+      }
+    }
+  }
+}

@@ -162,7 +162,8 @@ let translate p =
     | 'B' when not in_class -> add "\\B"; false
     | ('p' | 'P') as c -> (
         (* \p{name} (ECMA's Unicode mode): a general category, or ASCII or Any *)
-        if not (at "{") then unsupported "pattern %S uses \\%c without a name in braces" p c;
+        (* \pL: an error in ECMA's Unicode mode, the letters p and L without it *)
+        if not (at "{") then unsupported "pattern %S uses a property escape without braces (\\%c)" p c;
         let j = match String.index_from_opt p !i '}' with Some j -> j | None -> unsupported "pattern %S has an unterminated \\%c{" p c in
         let name = String.sub p (!i + 1) (j - !i - 1) in
         i := j + 1;

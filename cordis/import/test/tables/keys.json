@@ -1,0 +1,8 @@
+{
+  "fields": [
+    {"name": "id", "type": "integer"},
+    {"name": "tag", "type": "string", "constraints": {"unique": true}},
+    {"name": "v", "type": "number"}
+  ],
+  "primaryKey": ["id"]
+}

@@ -1,0 +1,3 @@
+field s: a value equal to a missing value (NA) is not written: it would read back as missing
+field t: a value equal to a missing value (NA) is not written: it would read back as missing
+(all): where the schema gives no maxLength, maxItems or maxProperties, the configured default ceiling applies

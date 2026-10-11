@@ -1,0 +1,32 @@
+{
+  "row": "Kinds",
+  "dialect": { "delimiter": ",", "quoteChar": "\"", "header": true },
+  "columns": [
+    { "name": "s", "kind": "string" },
+    { "name": "n", "kind": "integer" },
+    { "name": "x", "kind": "number" },
+    {
+      "name": "b",
+      "kind": "boolean",
+      "trueValues": [ "yes" ],
+      "falseValues": [ "no" ]
+    },
+    { "name": "a", "kind": "any" },
+    { "name": "t", "kind": "string" }
+  ],
+  "missingValues": [ "", "NA" ],
+  "unique": [],
+  "types": {
+    "$root": "Kinds",
+    "Kinds": {
+      "properties": {
+        "s": { "json": "s", "required": true, "nullable": false },
+        "n": { "json": "n", "required": false, "nullable": false },
+        "x": { "json": "x", "required": false, "nullable": false },
+        "b": { "json": "b", "required": false, "nullable": false },
+        "a": { "json": "a", "required": false, "nullable": false },
+        "t": { "json": "t", "required": false, "nullable": false }
+      }
+    }
+  }
+}

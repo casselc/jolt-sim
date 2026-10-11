@@ -1,0 +1,11 @@
+{
+  "fields": [
+    {"name": "s", "type": "string", "constraints": {"required": true}},
+    {"name": "n", "type": "integer"},
+    {"name": "x", "type": "number"},
+    {"name": "b", "type": "boolean", "trueValues": ["yes"], "falseValues": ["no"]},
+    {"name": "a", "type": "any"},
+    {"name": "t", "type": "string"}
+  ],
+  "missingValues": ["", "NA"]
+}

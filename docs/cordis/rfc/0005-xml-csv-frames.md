@@ -1,7 +1,8 @@
 # RFC 0005: XML and XSD, CSV, and typed data frames
 
-Status: proposed; not scheduled. Revision 2 settles the frames design
-(below) and its model. Records the design so that later work
+Status: proposed. Revision 2 settles the frames design (below) and its
+model. Revision 3 (proposed) settles CSV's first stage, typed by a
+Table Schema, and records it as built ("CSV", "Revision 3"). Records the design so that later work
 starts from it. Extends RFC 0003 (translating importers) and follows the
 pattern RFC 0004 set for protobuf. Each part needs a revision of this RFC,
 accepted, before it is built, and the frames part needs a Quint model
@@ -148,6 +149,62 @@ such as JSON-in-cell, which is reported.
 **The oracles** are Python's `csv` module and `frictionless validate`:
 - what the codec writes, they read to the same rows;
 - a row is valid exactly when the residue accepts it.
+
+### Revision 3: the first stage, as built
+
+**A Table Schema is imported through the JSON Schema importer.** Its
+fields become the properties of a JSON Schema for the row, so the types
+file, residue, report, name map and strict codec are that importer's, and
+the agreement test reuses its value generators
+(`import/lib/table_schema.ml`):
+
+| Table Schema | Row schema |
+| --- | --- |
+| `string` (format `default`); `uuid` | `string`; `uuid` as an anchored pattern |
+| `integer`, `number`, `boolean` | `integer`, `number`, `boolean`; `trueValues` and `falseValues` in the name map |
+| `any` | `string`: a cell is text |
+| `required` | required (a primary key's fields are too) |
+| `enum`, `minimum`, `maximum`, `exclusiveMinimum`, `exclusiveMaximum`, `minLength`, `maxLength` | the same keywords |
+| `pattern` | anchored, `^(?:p)$`: Table Schema's patterns match the whole cell |
+| `missingValues` | a missing cell is an absent property, so a field not required is `option(T)`; a string is never `""` when `""` is a missing value (`minLength: 1`), and another missing value (`NA`) is refused when written, as reported |
+| `unique`, `primaryKey` | checked across the table when it is read, and reported |
+
+Refused, naming the field: the calendar types (open question 2), the
+nested ones (`object`, `array`, `geopoint`, `geojson`), string formats
+other than `default` and `uuid`, and a `decimalChar`, `groupChar` or
+`bareNumber` other than the default. `foreignKeys` are reported, not
+checked. The dialect reads `delimiter`, `quoteChar` and `header`, and
+refuses an escape character, comment lines and `skipInitialSpace`.
+
+**The codec** (`import/lib/csv_codec.ml`) reads RFC 4180 strictly: a field
+is quoted from its first character or not at all, and a quote inside an
+unquoted field, text after a closing quote, a bare CR and a blank line
+are refused. Cells are read by their column's kind (an integer as
+`[+-]digits`, a number as a finite decimal), the row by the JSON Schema
+codec with its residue, then the header, every row's column count, and
+unique and primary keys across the table; a refusal names the row (the
+header is row 1) and the column. Writing quotes only where it must,
+writes CRLF, the shortest decimal that reads back as the same double,
+and a field's first true or false value.
+
+`cimport tableschema SCHEMA.json [--name ROW] [--dialect DIALECT.json]`
+writes the types file, the report and a name map that adds the dialect,
+the columns and the missing values.
+
+**Testing.** `import/test/csv_test.ml`: text cases, table cases with each
+refusal, import refusals, and two Hegel properties: any grid of awkward
+fields printed reads back as itself (a printer that does not double
+quotes is caught), and rows drawn from the row type, written, read back as
+themselves (a writer that ignores a field's own true values is caught).
+`csv_agreement.ml` against frictionless 5 (`csvvalid.py`, `dune build
+@import/test/csv-agreement`): for rows drawn from three Table Schemas, the
+table the codec writes is valid for frictionless exactly when the codec
+reads it, and frictionless reads the same rows; 1,710 tables in a
+3,000-case run, 1,023 of them valid. A codec that does not check primary
+keys is caught, shrunk to two rows sharing one.
+
+Still to come in this stage: a graph-language record type declared by
+the graph as the row type, and inference from a sample as a scaffold.
 
 ## Typed data frames: Arrow, Parquet, Vortex
 

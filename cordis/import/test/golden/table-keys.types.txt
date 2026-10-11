@@ -1,0 +1,5 @@
+type Keys = { id : int; tag : option(string); v : option(double); };
+
+cell check_Keys(x : Keys) : bool = {
+  (!x.tag.hasValue() || (!(type(x.tag.value()) == string) || size(x.tag.value()) >= 1));
+}

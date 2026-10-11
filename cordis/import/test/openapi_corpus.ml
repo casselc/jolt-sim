@@ -20,7 +20,7 @@ let has e sub = let n = String.length sub in let rec go k = k + n <= String.leng
 
 (* a reason's kind, for the summary: the phrase that names it *)
 let kinds =
-  [ "uses a Unicode property class"; "uses lookaround"; "uses a backreference"; "has a lone surrogate"; "is not ASCII"; "does not compile"; "a recursive $ref"; "a remote $ref";
+  [ "uses a Unicode property class"; "uses lookaround"; "uses a backreference"; "has a lone surrogate"; "uses a property escape without braces"; "is not ASCII"; "does not compile"; "a recursive $ref"; "a remote $ref";
     "a dangling reference"; "a reference outside the document"; "described by content"; "a request body in"; "the style"; "two parameters named";
     "a parameter named body"; "neither JSON nor YAML"; "Swagger 2.0"; "only 3.0 and 3.1"; "no such anchor"; "keyword"; "a predicate" ]
 

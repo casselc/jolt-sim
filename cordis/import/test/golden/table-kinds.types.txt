@@ -1,0 +1,5 @@
+type Kinds = { s : string; n : option(int); x : option(double); b : option(bool); a : option(string); t : option(string); };
+
+cell check_Kinds(x : Kinds) : bool = {
+  ((!(type(x.s) == string) || size(x.s) >= 1) && (!x.t.hasValue() || (!(type(x.t.value()) == string) || size(x.t.value()) >= 1)));
+}

@@ -51,13 +51,13 @@ let instances sub stem =
 let kinds =
   [ "a recursive $ref"; "a remote $ref"; "an embedded resource"; "a predicate of"; "a predicate over"; "a custom metaschema";
     "a metaschema this importer does not read"; "keyword unevaluatedProperties"; "keyword unevaluatedItems";
-    "keyword $dynamicRef"; "keyword $recursiveRef"; "uses lookaround"; "uses a backreference"; "uses a Unicode property class"; "has a lone surrogate";
+    "keyword $dynamicRef"; "keyword $recursiveRef"; "uses lookaround"; "uses a backreference"; "uses a Unicode property class"; "has a lone surrogate"; "uses a property escape without braces";
     "is not ASCII"; "does not compile"; "not a schema"; "the schema false admits nothing"; "no such anchor"; "not JSON" ]
 
 let kind why =
   match List.find_opt (fun k -> has why k) kinds with
   | Some "a predicate of" | Some "a predicate over" -> "a predicate over the size limit"
-  | Some ("uses lookaround" | "uses a backreference" | "uses a Unicode property class" | "has a lone surrogate" | "is not ASCII" | "does not compile" as k) -> "a pattern that " ^ k
+  | Some ("uses lookaround" | "uses a backreference" | "uses a Unicode property class" | "has a lone surrogate" | "uses a property escape without braces" | "is not ASCII" | "does not compile" as k) -> "a pattern that " ^ k
   | Some k -> k
   | None -> why
 

@@ -1,0 +1,21 @@
+{
+  "row": "Keys",
+  "dialect": { "delimiter": ",", "quoteChar": "\"", "header": true },
+  "columns": [
+    { "name": "id", "kind": "integer" },
+    { "name": "tag", "kind": "string" },
+    { "name": "v", "kind": "number" }
+  ],
+  "missingValues": [ "" ],
+  "unique": [ [ "tag" ], [ "id" ] ],
+  "types": {
+    "$root": "Keys",
+    "Keys": {
+      "properties": {
+        "id": { "json": "id", "required": true, "nullable": false },
+        "tag": { "json": "tag", "required": false, "nullable": false },
+        "v": { "json": "v", "required": false, "nullable": false }
+      }
+    }
+  }
+}

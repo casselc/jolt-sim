@@ -3,12 +3,15 @@
      cimport protobuf SET.binpb [--out DIR | --print types|report|names]
      cimport jsonschema SCHEMA.json [--with FILE|DIR]... [--out DIR | --print types|report|names]
      cimport openapi DOC.(json|yaml) [--service NAME] [--out DIR | --print types|report|names|operations|allowlist|pf]
+     cimport tableschema SCHEMA.json [--name ROW] [--dialect DIALECT.json] [--out DIR | --print types|report|names]
 
    reads a FileDescriptorSet and writes DIR/types.cg (the types and their
    check_ cells), DIR/report.txt (what was approximated) and DIR/names.json
    (the name map); without --out it prints the types file and the report.
    For OpenAPI it also writes DIR/operations.json, the operation map the
-   outbox's http executor reads.
+   outbox's http executor reads. A Frictionless Table Schema (RFC 0005
+   revision 3) imports a CSV table's row; its name map adds the dialect and
+   the columns the CSV codec reads.
 
    For protobuf this is a report tool: it shows what a schema would lose as
    graph-language records. Graphs use protobuf types directly, attaching
@@ -106,6 +109,26 @@ let () =
               emit rest types
                 (String.concat "" (List.map (fun (l, m) -> Printf.sprintf "%s: %s\n" l m) imp.report))
                 (Yojson.Safe.pretty_to_string (Jsonschema.name_map imp) ^ "\n")))
+  | _ :: "tableschema" :: path :: rest -> (
+      let rec opts name dialect = function
+        | "--name" :: n :: r -> opts n dialect r
+        | "--dialect" :: d :: r -> opts name (Some d) r
+        | r -> (name, dialect, r)
+      in
+      let stem = Filename.remove_extension (Filename.basename path) in
+      let name, dialect, rest = opts (String.capitalize_ascii stem) None rest in
+      let json p = match Yojson.Safe.from_string (read p) with j -> j | exception Yojson.Json_error m -> die "%s: not JSON: %s" p m in
+      match
+        let dialect = Option.map (fun d -> Table_schema.dialect_of (json d)) dialect in
+        Table_schema.import ~name ?dialect (json path)
+      with
+      | exception Table_schema.Refused m -> die "%s: %s" path m
+      | t ->
+          let types = Cordis_graph.Print.file (Jsonschema.types_file t.imp) in
+          check_output types;
+          emit rest types
+            (String.concat "" (List.map (fun (l, m) -> Printf.sprintf "%s: %s\n" l m) t.report))
+            (Yojson.Safe.pretty_to_string (Table_schema.name_map t) ^ "\n"))
   | [ _; "protobuf"; set; "--print"; "attach" ] ->
       Printf.printf "uses descriptors sha256:%s;\n" (Cordis_cel.Sha256.digest (read set))
   | _ :: "protobuf" :: set :: rest -> (
