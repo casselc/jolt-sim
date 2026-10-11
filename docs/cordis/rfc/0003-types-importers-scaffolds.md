@@ -529,14 +529,14 @@ executor's pure half (rendering a request, reading a response);
 **The corpus** (`import/test/fetch_openapi_corpus.sh`, every sixth
 OpenAPI 3 document of the APIs.guru directory at a pinned commit, the
 listing checked in): all 329 documents (310 3.0, 19 3.1) import, their
-types checking; of 13,747 operations, 13,061 are imported and 686
-skipped: 243 for a request body in a media type not yet read (forms,
-multipart), 439 for patterns the JSON Schema importer refuses (198
-Unicode property classes, 155 that do not compile, 79 lookaround, 7 not
-ASCII), and 4 for parameter shapes. Most of the 155 are `\uXXXX`
-escapes, which RE2 writes `\x{XXXX}`; translating them is a change to
-the JSON Schema importer, and its SchemaStore and Test Suite listings
-with it.
+types checking; of 13,747 operations, 13,330 are imported and 417
+skipped: 357 for patterns the JSON Schema importer refuses (276 Unicode
+property classes, 81 lookaround), 56 for a request body in a media type
+not read (XML, octet streams, `*/*`), and 4 for parameter shapes. Before
+the pattern translation and the form and multipart bodies, 686 were
+skipped: 243 for request bodies, 155 for patterns that did not compile
+(mostly `\uXXXX`, `\xHH` and `\_` escapes, and repetitions over RE2's
+1000), 7 for non-ASCII patterns.
 
 **Agreement with openapi-core** (`import/test/openapi_agreement.ml`,
 Hegel, over the OAI petstore example and a document of every style the
@@ -587,7 +587,14 @@ list or object has no field or part of its own (it would read back as
 absent), so it is not sendable. `openapi/bodies.yaml` joins the
 agreement documents: a form and a multipart body offered both ways, a
 form with `deepObject` and unexploded encodings, a multipart body with a
-JSON part, and a form body that is not an object.
+JSON part, and a form body that is not an object. The agreement test
+also checks that openapi-core reads a form or multipart body back as the
+one written (a field written in the wrong style reads back absent, which
+validity alone does not see; a planted style fault is caught). An empty
+list or object property that is not required is left out, as an empty
+parameter is. openapi-core reads a multipart `text/plain` part as a
+string whatever its schema (OpenAPI reads it by the schema), so the
+agreement document gives multipart bodies no number or boolean property.
 
 Still to come: the egress allowlist generated from `servers` (the
 executor sends only to the base it is given).
