@@ -1,0 +1,14 @@
+// Saves a note through the imported Notes API and reads it back: the
+// create is keyed (resent with its key after a lost receipt), the read
+// observational. Appended to the imported types (cimport openapi notes.yaml).
+cell save(text : string<max 200>) : string ! { notes.createNote, notes.getNote } = {
+  use created = notes.createNote(CreateNoteRequest{body: CreateNoteRequestBody{text: text}});
+  let id = match created { S201(n) -> n.id; Other(o) -> "" };
+  use got = notes.getNote(GetNoteRequest{id: id});
+  match got { S200(n) -> n.text; S404 -> "missing"; Other(o) -> "error" };
+}
+
+graph notes_loop {
+  input text : string<max 200>;
+  asset saved = save(text);
+}

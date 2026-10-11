@@ -34,6 +34,9 @@ type case = {
 
 type cls = Observational | Keyed | Effectful
 
+(* where a security scheme's credential goes *)
+type scheme = Api_key of location * string | Bearer | Basic
+
 type operation = {
   kind : string;  (** the effect: service.op *)
   meth : string;  (** upper case *)
@@ -54,6 +57,7 @@ type t = {
   service : string;
   ops : operation list;
   servers : string list;
+  schemes : (string * scheme) list;
   other : string;  (** the record for an undocumented status *)
   defaults : (string * string) list;  (** an operation's own record for its default response -> the body's type *)
   variants : (string * (string * string option) list) list;  (** response variant -> case, payload *)
@@ -527,7 +531,18 @@ let import ?service ?(idempotency_header = "idempotency-key") (doc : J.t) : t =
      executor reads it, each nested value against its own residue *)
   let boundary = List.map (fun op -> op.request) ops in
   let imp = { imp with residue = List.filter (fun (n, _) -> List.mem n boundary) imp.residue } in
-  { imp; service; ops; servers; other; defaults = List.rev !defaults; variants; report = List.rev !report @ imp.report }
+  let schemes =
+    List.filter_map
+      (fun (n, sc) ->
+        let sc = deref doc sc in
+        match str sc "type", str sc "in", str sc "name", str sc "scheme" with
+        | Some "apiKey", Some i, Some k, _ -> Option.map (fun l -> (n, Api_key (l, k))) (loc_of i)
+        | Some "http", _, _, Some b when String.lowercase_ascii b = "basic" -> Some (n, Basic)
+        | Some ("http" | "oauth2" | "openIdConnect"), _, _, _ -> Some (n, Bearer)
+        | _ -> None)
+      schemes
+  in
+  { imp; service; ops; servers; schemes; other; defaults = List.rev !defaults; variants; report = List.rev !report @ imp.report }
 
 (* ---- output ---------------------------------------------------------------------------------------- *)
 

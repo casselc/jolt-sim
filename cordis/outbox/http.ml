@@ -1,6 +1,7 @@
-(* A minimal HTTP/1.1 client for the outbox's executors: POST a JSON body
-   to a plain-HTTP endpoint (a local OpenAI-compatible server, such as
-   halo-flash's) and read the answer, with a timeout. TLS is the platform's
+(* A minimal HTTP/1.1 client for the outbox's executors: send a request
+   (any method, a body if any) to a plain-HTTP endpoint (a local
+   OpenAI-compatible server, such as halo-flash's, or an imported API
+   behind the egress proxy) and read the answer, with a timeout. TLS is the platform's
    egress proxy's job, not this client's. *)
 
 type response = { status : int; body : string }
@@ -51,7 +52,7 @@ let dechunk s =
   go 0;
   Buffer.contents out
 
-let post ?(timeout = 120.) ?(headers = []) url body =
+let request ?(timeout = 120.) ?(headers = []) ~meth url (body : (string * string) option) =
   let host, port, path = parse_url url in
   let addr =
     match Unix.getaddrinfo host (string_of_int port) [ Unix.AI_SOCKTYPE Unix.SOCK_STREAM ] with
@@ -63,11 +64,11 @@ let post ?(timeout = 120.) ?(headers = []) url body =
   Unix.setsockopt_float fd Unix.SO_RCVTIMEO timeout;
   Unix.setsockopt_float fd Unix.SO_SNDTIMEO timeout;
   (try Unix.connect fd addr with Unix.Unix_error (e, _, _) -> fail "connect %s:%d: %s" host port (Unix.error_message e));
+  let content = match body with Some (media, b) -> Printf.sprintf "Content-Type: %s\r\nContent-Length: %d\r\n" media (String.length b) | None -> "" in
   let req =
-    Printf.sprintf "POST %s HTTP/1.1\r\nHost: %s:%d\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n%s\r\n%s"
-      path host port (String.length body)
+    Printf.sprintf "%s %s HTTP/1.1\r\nHost: %s:%d\r\n%sConnection: close\r\n%s\r\n%s" meth path host port content
       (String.concat "" (List.map (fun (k, v) -> k ^ ": " ^ v ^ "\r\n") headers))
-      body
+      (match body with Some (_, b) -> b | None -> "")
   in
   let b = Bytes.of_string req in
   let rec send off = if off < Bytes.length b then send (off + Unix.write fd b off (Bytes.length b - off)) in
@@ -86,3 +87,5 @@ let post ?(timeout = 120.) ?(headers = []) url body =
     has 0
   in
   { status; body = (if chunked then dechunk body else body) }
+
+let post ?timeout ?headers url body = request ?timeout ?headers ~meth:"POST" url (Some ("application/json", body))

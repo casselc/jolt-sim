@@ -29,7 +29,10 @@ let checked =
      | Ok s -> s.checked
      | Error es -> failwith (String.concat "; " es))
 
-let classes = function "llm.complete" -> E.Observational | _ -> E.Effectful
+(* the kinds a test declares keyed (sent again with the same key, which the world deduplicates) *)
+let keyed_kinds = ref []
+
+let classes = function "llm.complete" -> E.Observational | k when List.mem k !keyed_kinds -> E.Keyed | _ -> E.Effectful
 
 (* a revision of the graph from its text: its id is the graph's hash, which covers its cells; a cell's
    state carries unless Compat's state plan, against [from], says to migrate it *)
@@ -124,14 +127,15 @@ type host = {
   budget : int option;
   mutable charged : int;  (** what the world has charged, across crashes *)
   mutable spend_errors : string list;  (** budget.qnt's withinBudget and accounted, checked after every step *)
-  effects : (string, int) Hashtbl.t;  (** times each effectful key took effect *)
+  effects : (string, int) Hashtbl.t;  (** times each effectful or keyed key took effect *)
+  server : (string, V.t * int) Hashtbl.t;  (** a keyed intent's key, as the world deduplicates it: its one answer and cost *)
   mutable inflight : (string * int * E.receipt) list;
   mutable reconciles : (string * int) list;
   mutable released_early : int;  (** intents released other than in answer to a Durable event: the output gate broken *)
 }
 
 let new_host ?(store = memory_store ()) ?(crashes = 0) ?budget t =
-  { budget; charged = 0; spend_errors = []; t; recording = None; captured = []; store; crashes; revisions = []; admitting = None; codec_errors = []; last_input = None; unsynced = 0; durable = 0; outbox = []; journal = Hashtbl.create 8; effects = Hashtbl.create 8;
+  { budget; charged = 0; spend_errors = []; t; recording = None; captured = []; store; crashes; revisions = []; admitting = None; codec_errors = []; last_input = None; unsynced = 0; durable = 0; outbox = []; journal = Hashtbl.create 8; effects = Hashtbl.create 8; server = Hashtbl.create 8;
     inflight = []; reconciles = []; released_early = 0 }
 
 let obey ?(durable = false) h cmds =
@@ -216,6 +220,25 @@ let take_ h (f : faults) ~next_input = function
                 Hashtbl.replace h.journal i.key r;
                 Hashtbl.replace h.effects i.key (1 + Option.value (Hashtbl.find_opt h.effects i.key) ~default:0);
                 r)
+        | E.Keyed -> (
+            (* each send is journaled by attempt; the world applies the key once: a send of a key it has
+               applied runs nothing and charges nothing *)
+            let jkey = Printf.sprintf "%s#%d" i.key i.attempt in
+            match Hashtbl.find_opt h.journal jkey with
+            | Some r -> r
+            | None ->
+                let r =
+                  match Hashtbl.find_opt h.server i.key with
+                  | Some (v, _) -> (v, 0)
+                  | None ->
+                      let r = (cassette i, actual i.kind) in
+                      h.charged <- h.charged + snd r;
+                      Hashtbl.replace h.server i.key r;
+                      Hashtbl.replace h.effects i.key (1 + Option.value (Hashtbl.find_opt h.effects i.key) ~default:0);
+                      r
+                in
+                Hashtbl.replace h.journal jkey r;
+                r)
         | E.Observational -> (
             (* each attempt runs once and is charged once; the same attempt released again (after a crash)
                is answered from the journal, as handoff.qnt has the outbox do for every key *)
@@ -235,7 +258,9 @@ let take_ h (f : faults) ~next_input = function
       feed h (E.Receipt (k, a, r))
   | Answer (k, n) ->
       h.reconciles <- List.filter (( <> ) (k, n)) h.reconciles;
-      feed h (E.Reconciled (k, n, Hashtbl.find_opt h.journal k))
+      (* asked by key: the journal for an effectful key, the world's record for a keyed one *)
+      let found = match Hashtbl.find_opt h.journal k with Some r -> Some r | None -> Hashtbl.find_opt h.server k in
+      feed h (E.Reconciled (k, n, found))
   | Change_input ->
       let v = next_input () in
       h.last_input <- Some v;

@@ -5,8 +5,13 @@
    and finishes.
 
      cordis-run --graph FILE --name GRAPH --store DB --socket PATH --input NAME=JSON
-                [--observational KIND]... [--worst KIND=N]... [--budget N]
+                [--observational KIND]... [--keyed KIND]... [--operations FILE]
+                [--worst KIND=N]... [--budget N]
                 [--timeout SECONDS] [--crash-after N]
+
+   An intent kind is effectful unless --observational or --keyed says
+   otherwise, or --operations (an OpenAPI import's operations.json) gives
+   its class.
 
    On rest it prints each asset's value as JSON and exits 0; blocked (by
    its budget, a failed computation, or intents the limiter has deferred
@@ -111,12 +116,30 @@ let cassette_of (records : Engine.record list) =
 
 let () =
   let graph = ref "" and name = ref "" and store = ref "" and socket = ref "" and inputs = ref [] in
-  let observational = ref [] and worst = ref [] and budget = ref None and timeout = ref 30. and crash_after = ref 0 and crash_receipts = ref 0 and max_wait = ref 0. and audit = ref false and dump = ref false and admit = ref "" in
+  let observational = ref [] and keyed = ref [] and worst = ref [] and budget = ref None and timeout = ref 30. and crash_after = ref 0 and crash_receipts = ref 0 and max_wait = ref 0. and audit = ref false and dump = ref false and admit = ref "" in
   let pair s = match String.index_opt s '=' with Some i -> (String.sub s 0 i, String.sub s (i + 1) (String.length s - i - 1)) | None -> failwith ("expected K=V: " ^ s) in
   Arg.parse
     [ ("--graph", Arg.Set_string graph, "FILE"); ("--name", Arg.Set_string name, "GRAPH"); ("--store", Arg.Set_string store, "DB");
       ("--socket", Arg.Set_string socket, "PATH"); ("--input", Arg.String (fun s -> inputs := !inputs @ [ pair s ]), "NAME=JSON");
       ("--observational", Arg.String (fun k -> observational := k :: !observational), "KIND");
+      ("--keyed", Arg.String (fun k -> keyed := k :: !keyed), "KIND");
+      ("--operations", Arg.String (fun f ->
+           match J.from_file f with
+           | `Assoc kv -> (
+               match List.assoc_opt "operations" kv with
+               | Some (`Assoc ops) ->
+                   List.iter
+                     (fun (k, o) ->
+                       match o with
+                       | `Assoc ov -> (
+                           match List.assoc_opt "class" ov with
+                           | Some (`String "observational") -> observational := k :: !observational
+                           | Some (`String "keyed") -> keyed := k :: !keyed
+                           | _ -> ())
+                       | _ -> ())
+                     ops
+               | _ -> ())
+           | _ -> ()), "FILE an OpenAPI import's operations.json: each operation's class");
       ("--worst", Arg.String (fun s -> let k, n = pair s in worst := (k, int_of_string n) :: !worst), "KIND=N");
       ("--budget", Arg.Int (fun n -> budget := Some n), "N"); ("--timeout", Arg.Set_float timeout, "SECONDS");
       ("--crash-after", Arg.Set_int crash_after, "N");
@@ -127,7 +150,7 @@ let () =
       ("--max-wait", Arg.Set_float max_wait, "SECONDS how long to wait on intents the limiter deferred (0: forever)") ]
     (fun _ -> ()) "cordis-run --graph FILE --name GRAPH --store DB --socket PATH --input NAME=JSON";
   let fail fmt = Printf.ksprintf (fun m -> prerr_endline ("cordis-run: " ^ m); exit 2) fmt in
-  let classes k = if List.mem k !observational then Engine.Observational else Engine.Effectful in
+  let classes k = if List.mem k !observational then Engine.Observational else if List.mem k !keyed then Engine.Keyed else Engine.Effectful in
   let worst k = Option.value (List.assoc_opt k !worst) ~default:0 in
   let st = Store.Sqlite.create !store in
   let durable = Store.Sqlite.load st in

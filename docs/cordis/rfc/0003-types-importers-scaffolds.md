@@ -528,9 +528,31 @@ at all is Other: openapi-core calls it invalid, the RFC a definite
 answer. Planted encoder faults it catches: `deepObject` keys written
 `name.k`, the idempotency header not set, list headers joined by `;`.
 
-Still to come: the outbox's `http` executor (sending, the credential,
-the allowlist), the keyed class in the engine and the outbox, and the end
-to end test.
+**The runtime.** The engine has the keyed class: a lost receipt sends
+the same key again under a new attempt, and when the attempts run out
+the intent is Uncertain and reconciled by key (the review loop's
+properties run with `repo.read` keyed too, and an example loses every
+send until a reconcile; a planted fault that fails the intent instead is
+caught). The outbox journals a keyed intent per send and answers a
+reconcile from whichever send is done. `cordis-outbox --api DOC` runs a
+document's operations with the `http` executor: it renders each intent,
+adds the credential for the operation's scheme from
+`CORDIS_CREDENTIAL_<SCHEME>` (never from the graph), sends to the
+document's server or `--api-base`, and reads any status as the response
+variant; no response is a lost receipt. A keyed or observational
+operation reconciles by sending again; an effectful one cannot be asked
+without a read the policy names, so the outbox leaves it Uncertain.
+`cordis-run --operations operations.json` takes each kind's class from
+the import. `outbox/test/openapi.sh` runs a graph over an imported Notes
+API against a stand-in server that requires the token and drops the
+first create's answer after applying it: the create is sent twice and
+applied once, with the runner crashed part way, and the graph reads the
+note back; against a server that ignores the key the same run applies it
+twice, as `keyIgnored` predicts.
+
+Still to come: the egress allowlist generated from `servers` (the
+executor sends only to the base it is given), form and multipart bodies,
+and `\uXXXX` in patterns.
 
 ## Importers to come
 

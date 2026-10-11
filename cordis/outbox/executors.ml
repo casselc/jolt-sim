@@ -1,12 +1,14 @@
 (* What the outbox runs: an executor per intent kind. [run] performs the
    intent and returns its receipt and actual cost; [reconcile], for an
-   effectful kind, reads the world to say whether an intent whose outcome
-   was lost took effect (None: it did not, and the key is fenced). *)
+   effectful or keyed kind, reads the world to say whether an intent whose
+   outcome was lost took effect (None: it did not, and the key is fenced).
+   Both are given the intent's key, which a keyed kind sends as its
+   idempotency key. *)
 
 module V = Cordis_cel.Value
 module J = Yojson.Safe
 
-type t = { run : V.t -> V.t * int; reconcile : V.t -> (V.t * int) option }
+type t = { run : key:string -> V.t -> V.t * int; reconcile : key:string -> V.t -> (V.t * int) option }
 
 let field v f = match v with V.Map m -> V.map_find m (V.String f) | _ -> None
 let text s = V.make_map [ (V.String "text", V.String s) ]
@@ -35,7 +37,7 @@ let llm_complete ~url =
     let tokens = match j |> member "usage" |> member "total_tokens" with `Int n -> n | _ -> 0 in
     (text content, tokens)
   in
-  { run; reconcile = (fun _ -> None) }
+  { run = (fun ~key:_ req -> run req); reconcile = (fun ~key:_ _ -> None) }
 
 (* repo.read: a file under the repository root. Reading has no outside
    effect, so reconciling is reading again. *)
@@ -47,4 +49,47 @@ let repo_read ~root =
     let content = if Sys.file_exists file then In_channel.with_open_bin file In_channel.input_all else "" in
     (text content, 1)
   in
-  { run; reconcile = (fun req -> Some (run req)) }
+  { run = (fun ~key:_ req -> run req); reconcile = (fun ~key:_ req -> Some (run req)) }
+
+(* An imported API (RFC 0003 revision 4): an executor per operation, sending
+   to [base] (the document's server, or the egress proxy's address for it)
+   with the credential for the operation's scheme added where the scheme
+   says (an API key's header, query parameter or cookie; a bearer or basic
+   Authorization header); [credential] gives a scheme's secret. Any HTTP
+   status is a definite answer, read as the response variant; no response
+   at all is a lost receipt. Each call costs one unit. A keyed or
+   observational operation reconciles by sending again with the same key,
+   which a keyed one's server deduplicates; an effectful one cannot be
+   asked without a read the policy names, so it fails loudly rather than
+   answer None, which would say it did not happen. *)
+let openapi ~(api : Cordis_import.Openapi.t) ~base ~(credential : string -> string option) =
+  let module O = Cordis_import.Openapi in
+  let module H = Cordis_import.Openapi_http in
+  List.map
+    (fun (op : O.operation) ->
+      let run ~key req =
+        let r = match H.encode api ~kind:op.kind ~key req with Ok r -> r | Error m -> failwith (op.kind ^ ": " ^ m) in
+        (* the first of the operation's schemes the outbox holds a credential for *)
+        let r =
+          match List.find_map (fun s -> match List.assoc_opt s api.schemes, credential s with Some sc, Some c -> Some (sc, c) | _ -> None) op.security with
+          | None -> r
+          | Some (O.Api_key (O.Header, h), c) -> { r with headers = r.headers @ [ (h, c) ] }
+          | Some (O.Api_key (O.Query, q), c) -> { r with target = r.target ^ (if String.contains r.target '?' then "&" else "?") ^ H.pct q ^ "=" ^ H.pct c }
+          | Some (O.Api_key (O.Cookie, k), c) -> { r with headers = r.headers @ [ ("Cookie", k ^ "=" ^ H.pct c) ] }
+          | Some (O.Api_key (O.Path, _), _) -> r
+          | Some (O.Bearer, c) -> { r with headers = r.headers @ [ ("Authorization", "Bearer " ^ c) ] }
+          | Some (O.Basic, c) -> { r with headers = r.headers @ [ ("Authorization", "Basic " ^ c) ] }
+        in
+        let body = match r.body with Some b -> Some (Option.value r.media ~default:"application/json", b) | None -> None in
+        let resp = Http.request ~timeout:30. ~headers:r.headers ~meth:r.meth (base ^ r.target) body in
+        match H.decode api ~kind:op.kind ~status:resp.status ~body:resp.body with
+        | Ok v -> (v, 1)
+        | Error m -> failwith (Printf.sprintf "%s: HTTP %d, unreadable: %s" op.kind resp.status m)
+      in
+      let reconcile ~key req =
+        match op.cls with
+        | O.Keyed | O.Observational -> Some (run ~key req)
+        | O.Effectful -> failwith (op.kind ^ ": an effectful operation cannot be reconciled without a read the policy names")
+      in
+      (op.kind, { run; reconcile }))
+    api.ops

@@ -20,3 +20,11 @@
  (deps cutover.sh stub_llm.py %{bin:cordis-run} %{bin:cordis-outbox} ../../graph/examples/review.cg)
  (action
   (run bash %{dep:cutover.sh} %{bin:cordis-run} %{bin:cordis-outbox} %{dep:../../graph/examples/review.cg} %{dep:stub_llm.py})))
+
+; An imported API end to end: the http executor against a stand-in Notes
+; server, a keyed create resent after a dropped answer and applied once
+(rule
+ (alias e2e)
+ (deps openapi.sh stub_notes.py notes.yaml notes_graph.cg %{bin:cordis-run} %{bin:cordis-outbox} ../../import/bin/cimport.exe)
+ (action
+  (run bash %{dep:openapi.sh} %{bin:cordis-run} %{bin:cordis-outbox} %{dep:../../import/bin/cimport.exe} %{dep:notes.yaml} %{dep:notes_graph.cg} %{dep:stub_notes.py})))

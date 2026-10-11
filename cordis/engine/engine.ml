@@ -43,7 +43,10 @@
    - lost receipts (quint/observe.qnt, quint/lifecycle.qnt): an
      observational intent is attempted again, up to a bound, and then the
      computation fails; an effectful one makes the fiber Uncertain, which
-     only a reconcile answer moves on.
+     only a reconcile answer moves on; a keyed one (RFC 0003 revision 4:
+     an HTTP PUT or DELETE, or a POST with an idempotency key) is sent
+     again with the same key, which the world deduplicates, and is
+     Uncertain once its sends run out (observe.qnt's keyed class).
 
    The kernel (cordis/kernel) is the control plane for installing and
    retiring fibers across revisions (cutover, stage 5); within one
@@ -55,7 +58,7 @@ module V = Cordis_cel.Value
 module Check = Cordis_graph.Check
 module Smap = Map.Make (String)
 
-type cls = Observational | Effectful
+type cls = Observational | Keyed | Effectful
 
 type intent = { key : string; kind : string; request : V.t; cls : cls; attempt : int }
 
@@ -504,7 +507,7 @@ let handle t ev =
           let wc = t.worst intent.kind in
           let charged = { t with reserved = t.reserved - wc; settled = t.settled + wc } in
           match intent.cls with
-          | Observational when intent.attempt < t.max_attempts && fits charged wc ->
+          | (Observational | Keyed) when intent.attempt < t.max_attempts && fits charged wc ->
               let intent = { intent with attempt = intent.attempt + 1 } in
               let s = { s with fiber = Awaiting { w with intent } } in
               let t = { (with_slot charged a s) with reserved = charged.reserved + wc } in
@@ -515,7 +518,8 @@ let handle t ev =
               let s = { s with fiber = Failed (Printf.sprintf "%s: %d %s" intent.key intent.attempt why) } in
               let t, r = record (with_slot charged a s) [ Slot (a, s); Budget (charged.reserved, charged.settled) ] in
               (t, [ Persist r ])
-          | Effectful ->
+          | Keyed | Effectful ->
+              (* a keyed intent whose sends ran out may have taken effect: Uncertain, as an effectful one *)
               let s = { s with fiber = Uncertain { turn = w.turn; args = w.args; receipts = w.receipts; basis = w.basis; intent } } in
               let t, r = record (with_slot t a s) [ Slot (a, s) ] in
               (t, [ Persist r; Reconcile (intent.key, intent.attempt) ]))

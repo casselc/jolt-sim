@@ -68,14 +68,14 @@ let int_ j = match j with `Int n -> n | j -> bad "not an int: %s" (J.to_string j
 
 let intent (i : E.intent) =
   `Assoc [ ("key", `String i.key); ("kind", `String i.kind); ("request", value i.request);
-           ("cls", `String (match i.cls with E.Observational -> "observational" | E.Effectful -> "effectful"));
+           ("cls", `String (match i.cls with E.Observational -> "observational" | E.Keyed -> "keyed" | E.Effectful -> "effectful"));
            ("attempt", `Int i.attempt) ]
 
 let of_intent j =
   let f k = match j with `Assoc kv -> (match List.assoc_opt k kv with Some x -> x | None -> bad "intent: no %s" k) | _ -> bad "not an intent" in
   { E.key = (match f "key" with `String s -> s | _ -> bad "key"); kind = (match f "kind" with `String s -> s | _ -> bad "kind");
     request = of_value (f "request");
-    cls = (match f "cls" with `String "observational" -> E.Observational | `String "effectful" -> E.Effectful | _ -> bad "cls");
+    cls = (match f "cls" with `String "observational" -> E.Observational | `String "keyed" -> E.Keyed | `String "effectful" -> E.Effectful | _ -> bad "cls");
     attempt = int_ (f "attempt") }
 
 let progress tag ~turn ~args ~receipts ~basis extra =

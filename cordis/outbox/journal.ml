@@ -45,6 +45,15 @@ let find db jkey =
           Some { jkey; state = state_of (Sqlite3.column_text st 0); value; cost = Int64.to_int (Sqlite3.column_int64 st 2) }
       | _ -> None)
 
+(* the journal key that answers for an intent key: the key itself (an effectful intent), else, for an
+   intent journaled per attempt (observational, keyed), a done attempt if any, else the latest *)
+let answering db key =
+  match find db key with
+  | Some _ -> Some key
+  | None ->
+      with_stmt db "SELECT jkey FROM journal WHERE key = ? ORDER BY (state = 'done') DESC, attempt DESC LIMIT 1" [ `T key ] (fun st ->
+          match Sqlite3.step st with Sqlite3.Rc.ROW -> Some (Sqlite3.column_text st 0) | _ -> None)
+
 let step_done db st what = check db (Sqlite3.step st) what
 
 (* journal before running: the row is durable when this returns *)

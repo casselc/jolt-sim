@@ -131,8 +131,10 @@ let settings =
 
 let inputs = [| diff "a.ml" "let a = 1"; diff "b.ml" "let b = 2"; diff "c.ml" ""; diff "n.ml" "never" |]
 
-let schedules () =
-  Hegel.run_hegel_test ~settings ~database_key:"cordis:engine:review-loop" (fun tc ->
+let schedules ?(keyed = []) () =
+  keyed_kinds := keyed;
+  Fun.protect ~finally:(fun () -> keyed_kinds := []) @@ fun () ->
+  Hegel.run_hegel_test ~settings ~database_key:("cordis:engine:review-loop" ^ String.concat "," keyed) (fun tc ->
       let draw n = if n <= 1 then 0 else Hegel.draw tc (Hegel.Generators.integers ~min_value:0 ~max_value:(n - 1) ()) in
       let first = draw (Array.length inputs) and final = draw (Array.length inputs) in
       let change = draw 2 = 1 in
@@ -186,6 +188,36 @@ let schedules () =
       Hegel.require tc ~msg:"a reservation outlived its intent" (fst (E.spend h.t) = 0);
       Hegel.require tc ~msg:(Printf.sprintf "%d intents left before their records were durable" h.released_early) (h.released_early = 0))
 
+(* a keyed kind whose every send is lost: Uncertain once its sends run out, reconciled by key from what
+   the world applied, and the loop rests where the fault-free run does, the key applied once *)
+let keyed_example () =
+  keyed_kinds := [ "repo.read" ];
+  Fun.protect ~finally:(fun () -> keyed_kinds := []) @@ fun () ->
+  let reference = start () in
+  let _ = run ~pick:(fun _ -> 0) reference in
+  let h = start () in
+  (* lose the first three receipts, all repo.read's (the critic reads before it completes) *)
+  let lost = ref 0 in
+  let faults = { lose = (fun () -> !lost < 3 && (incr lost; true)); dup = (fun () -> false) } in
+  let uncertain = ref false in
+  let rec go k =
+    if k > 5000 then failwith "no rest"
+    else
+      match choices h ~change:false with
+      | [] -> ()
+      | c :: _ ->
+          take h faults ~next_input:(fun () -> V.Null) c;
+          if E.Smap.exists (fun _ (s : E.slot) -> match s.fiber with E.Uncertain _ -> true | _ -> false) h.t.slots then uncertain := true;
+          go (k + 1)
+  in
+  go 0;
+  Alcotest.(check int) "three sends lost" 3 !lost;
+  Alcotest.(check bool) "Uncertain once the sends ran out" true !uncertain;
+  Alcotest.(check (list (pair string string))) "no failures" [] (E.failures h.t);
+  Alcotest.(check (list (pair string (option string)))) "rests where the fault-free run does" (snapshot reference) (snapshot h);
+  Hashtbl.iter (fun k n -> Alcotest.(check int) (k ^ " applied once") 1 n) h.effects;
+  Alcotest.(check (list string)) "spend" [] h.spend_errors
+
 (* ---- the durable form ---------------------------------------------------------------------------- *)
 
 let codec_round_trip () =
@@ -224,5 +256,7 @@ let () =
           Alcotest.test_case "on SQLite, crashing twice, it rests where the uncrashed run does" `Quick sqlite_example;
           Alcotest.test_case "a budget too small stops the loop within it" `Quick tight_budget;
           Alcotest.test_case "the replay audit reads records against the code" `Quick audit_example;
-          Alcotest.test_case "a route arm appending to two streams appends to both" `Quick two_appends ]);
-      ("properties", [ Alcotest.test_case "every value round-trips through the durable form" `Quick codec_round_trip; Alcotest.test_case "any schedule, with faults and a changed input, rests where a fault-free run does" `Quick schedules ]) ]
+          Alcotest.test_case "a route arm appending to two streams appends to both" `Quick two_appends;
+          Alcotest.test_case "a keyed kind whose sends are all lost is reconciled by key" `Quick keyed_example ]);
+      ("properties", [ Alcotest.test_case "every value round-trips through the durable form" `Quick codec_round_trip; Alcotest.test_case "any schedule, with faults and a changed input, rests where a fault-free run does" `Quick (schedules ?keyed:None);
+                        Alcotest.test_case "the same, with repo.read keyed" `Quick (schedules ~keyed:[ "repo.read" ]) ]) ]

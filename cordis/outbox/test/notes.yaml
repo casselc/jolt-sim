@@ -1,0 +1,39 @@
+# A small API for the OpenAPI end-to-end test (docs/cordis/rfc/0003-types-
+# importers-scaffolds.md, revision 4): a keyed create (an Idempotency-Key)
+# and an observational read, behind a bearer token.
+openapi: 3.1.0
+info: {title: Notes, version: "1"}
+servers: [{url: "http://127.0.0.1:8080"}]
+components:
+  securitySchemes:
+    token: {type: http, scheme: bearer}
+  schemas:
+    Note:
+      type: object
+      required: [id, text]
+      additionalProperties: false
+      properties:
+        id: {type: string, maxLength: 40}
+        text: {type: string, maxLength: 200}
+security: [{token: []}]
+paths:
+  /notes:
+    post:
+      operationId: createNote
+      parameters:
+        - {name: Idempotency-Key, in: header, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {type: object, required: [text], additionalProperties: false, properties: {text: {type: string, maxLength: 200}}}
+      responses:
+        "201": {description: created, content: {application/json: {schema: {$ref: "#/components/schemas/Note"}}}}
+  /notes/{id}:
+    get:
+      operationId: getNote
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string, maxLength: 40}}
+      responses:
+        "200": {description: ok, content: {application/json: {schema: {$ref: "#/components/schemas/Note"}}}}
+        "404": {description: missing}

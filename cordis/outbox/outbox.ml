@@ -27,7 +27,9 @@ module E = Cordis_engine.Engine
 module Codec = Cordis_engine.Codec
 module J = Yojson.Safe
 
-let jkey (i : E.intent) = match i.cls with E.Effectful -> i.key | E.Observational -> Printf.sprintf "%s#%d" i.key i.attempt
+(* an effectful intent is journaled by its key; an observational or keyed one by key and attempt, each
+   send once (a keyed one's sends share the key the server deduplicates by) *)
+let jkey (i : E.intent) = match i.cls with E.Effectful -> i.key | E.Observational | E.Keyed -> Printf.sprintf "%s#%d" i.key i.attempt
 
 let frame op kvs : J.t = `Assoc (("op", `String op) :: kvs)
 let ka key attempt = [ ("key", `String key); ("attempt", `Int attempt) ]
@@ -49,7 +51,7 @@ let run_now ctx ~jkey ~key ~attempt ~kind ~request send =
       Journal.set_state ctx.journal ~jkey Journal.Unknown;
       send (frame "lost" (ka key attempt))
   | Some (x : Executors.t) -> (
-      match x.run request with
+      match x.run ~key request with
       | (v, cost) ->
           Journal.finish ctx.journal ~jkey ~value:(J.to_string (Codec.value v)) ~cost;
           send (receipt_frame key attempt (v, cost))
@@ -91,23 +93,29 @@ let handle_reconcile ctx key attempt send =
   let journal = ctx.journal and executors = ctx.executors in
   let reply r = send (frame "reconciled" (ka key attempt @ [ ("receipt", r) ])) in
   let some (v, c) = `Assoc [ ("value", Codec.value v); ("cost", `Int c) ] in
-  match Journal.find journal key with
+  (* the journal row that answers: the key's own (effectful), or for a keyed intent, journaled per send,
+     whichever send is done, else the latest; the reconcile itself is asked by the intent's key *)
+  let jk = Option.value (Journal.answering journal key) ~default:key in
+  match Journal.find journal jk with
   | Some { state = Journal.Done; value = Some v; cost; _ } -> reply (some (Codec.of_value (J.from_string v), cost))
   | Some { state = Journal.Unknown | Journal.Sent; _ } -> (
-      let req = Option.map (fun s -> Codec.of_value (J.from_string s)) (Journal.request journal key) in
+      let req = Option.map (fun s -> Codec.of_value (J.from_string s)) (Journal.request journal jk) in
       let kind =
-        Journal.with_stmt journal "SELECT kind FROM journal WHERE jkey = ?" [ `T key ] (fun st ->
+        Journal.with_stmt journal "SELECT kind FROM journal WHERE jkey = ?" [ `T jk ] (fun st ->
             match Sqlite3.step st with Sqlite3.Rc.ROW -> Some (Sqlite3.column_text st 0) | _ -> None)
       in
       match req, Option.bind kind (fun k -> List.assoc_opt k executors) with
       | Some req, Some (x : Executors.t) -> (
-          match x.reconcile req with
+          match x.reconcile ~key req with
           | Some (v, c) ->
-              Journal.finish journal ~jkey:key ~value:(J.to_string (Codec.value v)) ~cost:c;
+              Journal.finish journal ~jkey:jk ~value:(J.to_string (Codec.value v)) ~cost:c;
               reply (some (v, c))
           | None ->
-              Journal.set_state journal ~jkey:key Journal.Fenced;
-              reply `Null)
+              Journal.set_state journal ~jkey:jk Journal.Fenced;
+              reply `Null
+          | exception e ->
+              (* the world cannot be asked: no answer, so the engine keeps the intent Uncertain *)
+              prerr_endline ("outbox: reconcile " ^ key ^ ": " ^ Printexc.to_string e))
       | _ -> reply `Null)
   | _ -> reply `Null
 
