@@ -222,21 +222,22 @@ sim observe_modes.qnt keyIgnored accounted ok
 sim observe_modes.qnt releaseObs accounted VIOLATED
 # a world, not a mutant: a stopped original past the grace window; an answer that says nothing is charged, so it holds
 STEPS=60 SAMPLES=5000 sim observe_modes.qnt graceExpiry accounted ok
-# ... and when the answer says it was generated afresh (Halo-Answer): the other sends are charged
-STEPS=60 SAMPLES=5000 sim observe_modes.qnt graceExpiryReported accounted ok
-verify observe_modes.qnt graceExpiryReported accounted ok
+# ... and with Halo-Answer alone: a replay of a generation made after another was stopped misses the
+# stopped one (the discarded count must come with replays too); a fresh answer is charged
+# rare: three sends of one intent, the first stopped, the second generated and lost, the third a replay
+STEPS=100 SAMPLES=30000 sim observe_modes.qnt graceExpiryReported accounted VIOLATED
 STEPS=60 SAMPLES=5000 sim observe_modes.qnt graceExpiryReported "not(freshCharged)" VIOLATED
 
 # what a keyed answer reports (observe_report.qnt): releasing an answer that says nothing breaks accounted
 # with a world that keeps no keys, or one that stops a generation; charging what the world says it
-# discarded holds it, and charging only the latest stopped send's does not
+# discarded, on every answer, holds it, and charging only the latest stopped generation's does not
 STEPS=60 SAMPLES=5000 sim observe_report.qnt releaseUnreported "not(supersededReleased)" VIOLATED
 sim observe_report.qnt keyIgnoredRelease accounted VIOLATED
 STEPS=60 SAMPLES=5000 sim observe_report.qnt graceExpiryRelease accounted VIOLATED
-STEPS=60 SAMPLES=5000 sim observe_report.qnt graceExpiryDiscarded accounted ok
+STEPS=100 SAMPLES=30000 sim observe_report.qnt graceExpiryDiscarded accounted ok
 verify observe_report.qnt graceExpiryDiscarded accounted ok
 STEPS=60 SAMPLES=5000 sim observe_report.qnt graceExpiryDiscarded "not(exactCharged)" VIOLATED
-STEPS=60 SAMPLES=5000 sim observe_report.qnt underReport accounted VIOLATED
+STEPS=100 SAMPLES=30000 sim observe_report.qnt underReport accounted VIOLATED
 # ---- engine.qnt (RFC 0006: the turn commit protocol) -------------------------------------
 for inv in releasedOnlyDurable effectMatchesCommit commitAtomic receiptOnce uncertainSurvives; do sim engine.qnt design "$inv" ok; done
 # Apalache: depth 6 in about 75 s, 7 in about 400 s (checked once), 8 over 30 minutes

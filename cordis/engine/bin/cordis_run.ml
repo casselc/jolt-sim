@@ -273,12 +273,14 @@ let () =
   let cost_of j = match J.Util.member "cost" j with `Int c -> c | _ -> -1 in
   (* the world's word on where an answer came from (halo-flash's Halo-Answer): only a replayed or adopted
      answer covers a keyed intent's other sends; one generated afresh, or one the world says nothing of
-     (a world that keeps no keys says nothing), does not, and carries what was discarded if the world said *)
+     (a world that keeps no keys says nothing), does not; and any answer may say what was discarded under the
+     key (generations the world stopped), which is then what the other sends are charged *)
   let generated j = match J.Util.member "answer" j with `String ("replayed" | "adopted") -> false | _ -> true in
   let done_ j =
     let v = Codec.of_value (J.Util.member "value" j) and c = cost_of j in
     let discarded = match J.Util.member "discarded" j with `Int d -> Some d | _ -> None in
-    if generated j then Engine.Generated (v, c, discarded) else Engine.Done (v, c)
+    (* a discarded count, on any answer, is the other sends' exact charge *)
+    if generated j || discarded <> None then Engine.Generated (v, c, discarded) else Engine.Done (v, c)
   in
   let sync () =
     let d = Store.Sqlite.sync st in

@@ -110,7 +110,10 @@ let drain ctx send =
              charges them *)
           if Hashtbl.mem ctx.keyed key then
             Journal.supersede ctx.journal ~key ~answered:jkey
-              ~state:(match a.source with Some ("replayed" | "adopted") -> Journal.Superseded | _ -> Journal.Charged);
+              ~state:
+                (match a.source, a.discarded with
+                 | Some ("replayed" | "adopted"), (None | Some 0) -> Journal.Superseded
+                 | _ -> Journal.Charged);
           send (receipt_frame key attempt a)
       | Run, (No_answer _ | Not_applied) ->
           prerr_endline ("outbox: " ^ kind ^ ": " ^ (match outcome with No_answer m -> m | _ -> "no answer"));

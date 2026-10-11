@@ -27,7 +27,12 @@
 #      (observe_report.qnt's graceExpiryDiscarded);
 #   J. a server that keeps no keys and says nothing (no Halo-Answer), which
 #      drops the first answer: the resend generates again, and the lost send
-#      is charged its worst case (observe_modes.qnt's keyIgnored).
+#      is charged its worst case (observe_modes.qnt's keyIgnored);
+#   K. the server forgets the first answer (4 tokens discarded), generates
+#      the second and drops it, and answers the third from it, a replay that
+#      says what was discarded: both lost sends are charged exactly 4, not
+#      released (observe_modes.qnt's graceExpiryReported: a replay alone
+#      would have hidden the stopped generation).
 #
 #   latency.sh CORDIS_RUN CORDIS_OUTBOX REVIEW.cg STUB_LLM.py
 set -euo pipefail
@@ -119,6 +124,16 @@ elif phase in ("H", "I", "J"):
     lost = 4 if phase == "I" else 4096
     assert out["settled"] == lost + 10 * computations + computations and out["reserved"] == 0, out
     print(f"{phase} ok: a lost send behind an answer generated afresh charged {lost}, its row charged; settled {out['settled']}")
+elif phase == "K":
+    assert code == 0 and a["shipped"] is True, (code, out, err)
+    generated = int(open(sys.argv[4] + ".generated").read())
+    assert count == generated + 1, f"requests {count}, generated {generated}: the third send is a replay"
+    states = [s for _, s in rows]
+    assert states.count("charged") == 2 and states.count("unknown") == 0 and states.count("superseded") == 0, rows
+    assert sources.count("replayed") == 1, sources
+    computations = generated - 1
+    assert out["settled"] == 4 + 10 * computations + computations and out["reserved"] == 0, out
+    print(f"K ok: a replay that says 4 tokens were discarded under its key charged the lost sends 4; settled {out['settled']}")
 elif phase == "F":
     assert code == 0 and a["shipped"] is True and count == 1, (code, count, out)
     assert "//" not in a["draft"]["patch"], a["draft"]
@@ -146,5 +161,6 @@ start keys drop-first; CLASS=--keyed run; check E $code
 start keys forget-first; CLASS=--keyed run; check H $code
 start keys forget-first report-discarded; CLASS=--keyed run; check I $code
 start drop-first; CLASS=--keyed run; check J $code
+start keys forget-first drop-second report-discarded; CLASS=--keyed run; check K $code
 start approve verdict-last; run; check F $code
 start busy-first=2; run; check G $code

@@ -68,10 +68,11 @@ type receipt =
           intent, the world says this answer covers every send of it (halo-flash's [Halo-Answer: replayed]
           or [adopted]), so the other sends are released *)
   | Generated of V.t * int * int option
-      (** as [Done], but no earlier send's work is in the answer: the world generated it afresh, or did
-          not say (a world that keeps no keys says nothing). For a keyed intent the other sends are
-          charged: what the world says it discarded under the key, if it says (halo-flash's
-          [Halo-Discarded-Tokens]), else their worst case (observe.qnt's REPORTED and DISCARDED) *)
+      (** as [Done], but the answer does not cover the other sends: the world generated it afresh, did
+          not say (a world that keeps no keys says nothing), or said it discarded work under the key. For
+          a keyed intent the other sends are charged: what the world says it discarded under the key, if
+          it says (halo-flash's [Halo-Discarded-Tokens], on any answer), else their worst case
+          (observe.qnt's REPORTED and DISCARDED) *)
   | Lost  (** no answer: the outcome is unknown *)
   | Refused of string  (** a definite failure (the world refused it, and it did not run): the computation fails *)
 

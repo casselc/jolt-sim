@@ -64,14 +64,18 @@
  * A world, not a mutant: GRACE_EXPIRY (`graceExpiry`) stops an abandoned
  * send's generation part way when its client has been gone longer than
  * the server's grace window, keeping nothing, so a resend generates afresh
- * and the stopped part's tokens are in no answer. A keyed answer releases
- * the other sends only when the world says it covers them (REPORTED, and
- * not fresh: halo-flash's Halo-Answer replayed or adopted); one generated
- * afresh, or one the world says nothing of (a world that keeps no keys
- * says nothing), charges them their worst case, or, with DISCARDED, what
- * the world says it discarded under the key (Halo-Discarded-Tokens).
- * `accounted` holds under grace expiry and a world that ignores keys
- * alike. Mutants (in observe_report.qnt): RELEASE_UNREPORTED, the rule
+ * and the stopped part's tokens are in no answer. With DISCARDED the
+ * world reports, on every answer, the tokens it discarded under the key
+ * (halo-flash's Halo-Discarded-Tokens), and the other sends are charged
+ * exactly that: `accounted` holds under grace expiry. Without it, a keyed
+ * answer releases the other sends when the world says it covers them
+ * (REPORTED, not fresh: Halo-Answer replayed or adopted) and charges them
+ * their worst case otherwise (generated, or an answer the world says
+ * nothing of: a world that keeps no keys says nothing), so `accounted`
+ * holds with a world that ignores keys; under grace expiry, a replay of a
+ * generation made after another was stopped misses the stopped one's
+ * tokens (graceExpiryReported breaks `accounted`): the report must come
+ * with replays too. Mutants (in observe_report.qnt): RELEASE_UNREPORTED, the rule
  * before Halo-Answer, releases an answer that says nothing ->
  * accounted (keyIgnoredRelease, graceExpiryRelease); UNDER_REPORT, the
  * world reports only the latest stopped send's tokens -> accounted
@@ -131,6 +135,7 @@ module observe {
     applied: List[int],      // per intent, answers applied
     lates: int, retries: int, reconciles: int,
     resent: int, deduped: int, keyedUncertain: bool, released: int, charged: int, exact: int,
+    stopped: List[int], lastStop: List[int],  // per intent: tokens of generations the world stopped; the latest's
   }
 
   var s: S
@@ -139,7 +144,7 @@ module observe {
     pc: 0, phase: Ready, tries: 0, cur: NONE, attempts: List(),
     reserved: 0, settled: 0, real: 0, effects: [0, 0, 0], applied: [0, 0, 0],
     lates: 0, retries: 0, reconciles: 0,
-    resent: 0, deduped: 0, keyedUncertain: false, released: 0, charged: 0, exact: 0,
+    resent: 0, deduped: 0, keyedUncertain: false, released: 0, charged: 0, exact: 0, stopped: [0, 0, 0], lastStop: [0, 0, 0],
   }
 
   pure def inc(l: List[int], i: int): List[int] = l.replaceAt(i, l[i] + 1)
@@ -197,20 +202,24 @@ module observe {
     val current = a == s.cur and s.phase == Sent
     val st = settle(at)
     val closed = if (current and releasable(at.intent)) others(a) else Set()
-    // REPORTED: the answer says whether it came from a fresh generation (halo-flash's Halo-Answer:
-    // generated); then the other sends may have spent tokens no answer reports, and are charged; an
-    // answer replayed or adopted releases them. An answer that says nothing is charged too (a world
-    // that keeps no keys says nothing), unless RELEASE_UNREPORTED (the rule before Halo-Answer).
-    val charge = if (REPORTED) at.fresh else not(RELEASE_UNREPORTED)
+    // DISCARDED: every answer says how many tokens the world discarded under the key, the generations
+    // it stopped (halo-flash's Halo-Discarded-Tokens), and the other sends are charged that, exactly,
+    // whether the answer was generated or replayed. UNDER_REPORT: it says only the latest one's.
+    val reportsDiscard = REPORTED and DISCARDED
+    val discarded = if (UNDER_REPORT) s.lastStop[at.intent] else s.stopped[at.intent]
+    // REPORTED: else the answer says whether it came from a fresh generation (Halo-Answer:
+    // generated), and then the other sends are charged their worst case; replayed or adopted
+    // releases them, which under grace expiry misses a generation stopped before the one replayed
+    // (graceExpiryReported). An answer that says nothing is charged too (a world that keeps no keys
+    // says nothing), unless RELEASE_UNREPORTED (the rule before Halo-Answer). RELEASE_OBS releases an
+    // observational intent's other attempts, each of which ran.
+    val charge =
+      if (RELEASE_OBS and KIND[at.intent] == Obs) false
+      else if (reportsDiscard) true
+      else if (REPORTED) at.fresh
+      else not(RELEASE_UNREPORTED)
     val release = if (charge) Set() else closed
-    // DISCARDED: a fresh answer also says how many tokens the world discarded under the key (halo-
-    // flash's Halo-Discarded-Tokens): every other send that ran as a generation of its own, stopped;
-    // they are charged that, not their worst case. UNDER_REPORT: it says only the latest one's.
-    val gens = closed.filter(b => s.attempts[b].ran and s.attempts[b].fresh)
-    val discarded =
-      if (UNDER_REPORT) gens.fold(0, (m, b) => if (s.attempts[b].cost > m) s.attempts[b].cost else m)
-      else gens.fold(0, (t, b) => t + s.attempts[b].cost)
-    val amount = if (REPORTED and DISCARDED) discarded else R * closed.size()
+    val amount = if (closed.size() == 0) 0 else if (reportsDiscard) discarded else R * closed.size()
     all {
       at.live, at.ran,
       s' = { ...s,
@@ -292,7 +301,12 @@ module observe {
     val at = s.attempts[a]
     all {
       GRACE_EXPIRY, at.ran, at.kept, at.live, a != s.cur,
-      s' = { ...s, attempts: s.attempts.replaceAt(a, { ...at, kept: false }) },
+      s' = { ...s,
+        attempts: s.attempts.replaceAt(a, { ...at, kept: false }),
+        // a generation of its own, stopped: its tokens are in no answer
+        stopped: if (at.fresh) s.stopped.replaceAt(at.intent, s.stopped[at.intent] + at.cost) else s.stopped,
+        lastStop: if (at.fresh) s.lastStop.replaceAt(at.intent, at.cost) else s.lastStop,
+      },
     }
   }
 

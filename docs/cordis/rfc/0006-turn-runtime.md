@@ -1153,6 +1153,20 @@ importers wait for the slice.
    instances moved to `observe_modes.qnt` and `observe_report.qnt`, apart
    from the module, so that each file stays under Apalache's request size.
 
+   The gate then found the release unsound under grace expiry even with
+   `Halo-Answer`: a first send stopped past the grace window, a second
+   generated afresh and its answer lost, and a third answered as a replay
+   of the second: `replayed` releases both lost sends, and the first's
+   stopped tokens are in no answer (`graceExpiryReported` breaks
+   `accounted`, in 30,000 samples of 100 steps). The discarded count must
+   therefore come on every answer under a key that has any, a replay or an
+   adoption too, and be the key's total; the runtime charges it whatever
+   the answer's source (`latency.sh` phase K: a forgotten first answer, a
+   dropped second, a replay of it reporting 4: both lost sends charged 4).
+   With the count on every answer, `accounted` holds (`graceExpiryDiscarded`,
+   sampled at 100 steps and verified to 8); reporting only the latest
+   stopped generation's breaks it (`underReport`).
+
    `outbox/test/latency.sh` replays the run's conditions against a
    stand-in: calls slower than the runner's timeout with long multi-line
    answers (one completion per computation, none charged as lost, notes
