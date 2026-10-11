@@ -1,0 +1,62 @@
+{
+  "$root": "OpenapiRoot",
+  "GrantGrantType": {
+    "enum": {
+      "Password": "password",
+      "ClientCredentials": "client_credentials"
+    }
+  },
+  "Grant": {
+    "properties": {
+      "grant_type": {
+        "json": "grant_type",
+        "required": true,
+        "nullable": false
+      },
+      "scope": { "json": "scope", "required": false, "nullable": false },
+      "count": { "json": "count", "required": false, "nullable": false },
+      "active": { "json": "active", "required": false, "nullable": false },
+      "note": { "json": "note", "required": false, "nullable": false }
+    }
+  },
+  "UploadInfo": {
+    "properties": {
+      "owner": { "json": "owner", "required": false, "nullable": false },
+      "pages": { "json": "pages", "required": false, "nullable": false }
+    }
+  },
+  "Upload": {
+    "properties": {
+      "name": { "json": "name", "required": true, "nullable": false },
+      "tags": { "json": "tags", "required": false, "nullable": false },
+      "info": { "json": "info", "required": false, "nullable": false }
+    }
+  },
+  "CreateTokenRequest": {
+    "properties": {
+      "body": { "json": "body", "required": true, "nullable": false }
+    }
+  },
+  "SaveFilterRequestBodyBy": {
+    "properties": {
+      "name": { "json": "name", "required": false, "nullable": false },
+      "min": { "json": "min", "required": false, "nullable": false }
+    }
+  },
+  "SaveFilterRequestBody": {
+    "properties": {
+      "by": { "json": "by", "required": false, "nullable": false },
+      "ids": { "json": "ids", "required": false, "nullable": false }
+    }
+  },
+  "SaveFilterRequest": {
+    "properties": {
+      "body": { "json": "body", "required": false, "nullable": false }
+    }
+  },
+  "UploadRequest": {
+    "properties": {
+      "body": { "json": "body", "required": true, "nullable": false }
+    }
+  }
+}

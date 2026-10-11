@@ -184,6 +184,24 @@ corpus guards a URL or an e-mail address, which `format` describes), or
 the harness can admit it as `dyn` with the pattern dropped and reported,
 which is an explicit, reviewed choice and not this importer's default.
 
+**A pattern is translated, where the two dialects spell one thing
+differently.** CEL's `matches` matches by code point (`cel/lib/re2.ml`,
+RFC 0001), so a class or a range may name characters beyond ASCII, as
+ECMA-262's may. The translation (`Schema_pred.translate`) rewrites
+`\uHHHH` (a surrogate pair as the one character it encodes) and `\xHH`
+as `\x{...}`, `\cX` as its control character and `\0` as NUL; `.`
+excludes all four of ECMA's line terminators, not only `\n`; `\s` and
+`\S` are ECMA's white space (Unicode's spaces and the BOM), not RE2's
+ASCII four, written out as ranges; a letter escaped for no reason is the
+letter (ECMA's identity escape, which RE2 rejects); `(?<name>` is
+`(?P<name>`; `[^]` is any character. It refuses a lone surrogate, a
+legacy octal escape and the empty class `[]`, besides lookaround,
+backreferences and Unicode property classes. The suite's
+`optional/ecmascript-regex.json` and `optional/non-bmp-regex.json` are
+vendored with the Test Suite, and all their tests agree but the four
+groups that use `\p{...}`; a translation that gives `\s` RE2's meaning
+fails five of them.
+
 ### The validation predicate
 
 Every supported subschema compiles to a CEL predicate over the instance
@@ -195,7 +213,7 @@ applies to, so a predicate never errors:
 | --- | --- |
 | `type` | `type(x) == string`, …; `integer` is a finite double with `math.trunc(x) == x` |
 | `minLength`, `maxLength` | `size(x)` (CEL counts code points, as JSON Schema does) |
-| `pattern` | `x.matches(re)`: both search unanchored; ECMA-262 features RE2 lacks (lookaround, backreferences) are refused |
+| `pattern` | `x.matches(re)`, the pattern translated from ECMA-262 to RE2 (below): both search unanchored; ECMA-262 features RE2 lacks (lookaround, backreferences, Unicode property classes) are refused |
 | `minimum`, `maximum`, `exclusive…`, `multipleOf` | comparisons; `multipleOf m`: `math.trunc(x / m) == x / m` |
 | `const`, `enum` | `==`, `in` (CEL's equality is JSON's: `1 == 1.0`, `false != 0`) |
 | `properties`, `required`, `additionalProperties`, `patternProperties`, `propertyNames`, `min/maxProperties`, `dependentRequired`, `dependentSchemas` | `'p' in x`, `x.all(k, …)` |
@@ -552,9 +570,27 @@ applied once, with the runner crashed part way, and the graph reads the
 note back; against a server that ignores the key the same run applies it
 twice, as `keyIgnored` predicts.
 
+**Form and multipart bodies.** A request body is read in the first of
+JSON, `application/x-www-form-urlencoded`, `multipart/form-data` and
+`text/*` the document offers. A form's or multipart body's schema must
+be an object (a body that is not one is skipped, naming it), and its
+properties are written as its Encoding Object says: a form field per
+property by its style (form and exploded by default, so a list repeats
+its key and an object spreads its keys; `deepObject` writes `k[p]=v`; a
+JSON `contentType` writes the value as JSON), and a multipart part per
+property, a list a part per item, `text/plain` for a primitive,
+`application/octet-stream` for a binary string (or its
+`contentMediaType`), `application/json` for anything else, or the
+Encoding Object's `contentType`. The boundary is a digest of the parts,
+so the same body is the same bytes, and occurs in none of them. An empty
+list or object has no field or part of its own (it would read back as
+absent), so it is not sendable. `openapi/bodies.yaml` joins the
+agreement documents: a form and a multipart body offered both ways, a
+form with `deepObject` and unexploded encodings, a multipart body with a
+JSON part, and a form body that is not an object.
+
 Still to come: the egress allowlist generated from `servers` (the
-executor sends only to the base it is given), form and multipart bodies,
-and `\uXXXX` in patterns.
+executor sends only to the base it is given).
 
 ## Importers to come
 

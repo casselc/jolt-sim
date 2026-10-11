@@ -34,6 +34,9 @@ type case = {
 
 type cls = Observational | Keyed | Effectful
 
+(* how a form or multipart body writes one of its properties (an Encoding Object) *)
+type encoding = { content_type : string option; style : string option; explode : bool option }
+
 (* where a security scheme's credential goes *)
 type scheme = Api_key of location * string | Bearer | Basic
 
@@ -45,6 +48,7 @@ type operation = {
   response : string;  (** the response variant *)
   params : param list;
   body : (string * string) option;  (** the body's field and media type *)
+  encoding : (string * encoding) list;  (** a form or multipart body's properties, as its Encoding Objects say *)
   cases : case list;
   security : string list;  (** the schemes any of which authorises it *)
   cls : cls;
@@ -219,9 +223,14 @@ let class_of meth idem =
   | "put" | "delete" -> Keyed
   | _ -> if idem <> None then Keyed else Effectful
 
+let base_media m = String.lowercase_ascii (List.hd (String.split_on_char ';' m)) |> String.trim
+
 let is_json m =
-  let m = String.lowercase_ascii (List.hd (String.split_on_char ';' m)) |> String.trim in
+  let m = base_media m in
   m = "application/json" || (String.length m > 5 && String.sub m (String.length m - 5) 5 = "+json")
+
+let is_form m = base_media m = "application/x-www-form-urlencoded"
+let is_multipart m = base_media m = "multipart/form-data"
 
 let loc_of = function "path" -> Some Path | "query" -> Some Query | "header" -> Some Header | "cookie" -> Some Cookie | _ -> None
 let loc_name = function Path -> "path" | Query -> "query" | Header -> "header" | Cookie -> "cookie"
@@ -329,25 +338,68 @@ let import ?service ?(idempotency_header = "idempotency-key") (doc : J.t) : t =
                     ([], [], []) ps
                 in
                 let params = List.rev params in
-                let body, props, required =
+                let body, encoding, props, required =
                   match get op "requestBody" with
-                  | None -> (None, props, required)
+                  | None -> (None, [], props, required)
                   | Some rb ->
                       let rb = deref doc rb in
                       let content = assoc rb "content" in
                       let req = get rb "required" = Some (`Bool true) in
                       if List.mem_assoc "body" props then raise (Skip "a parameter named body and a request body");
+                      (* JSON first, then a form, then multipart, then text: the first the document offers *)
+                      let first p = List.find_opt (fun (m, _) -> p m) content in
+                      let schema mt = match get mt "schema" with Some s -> fix ~v30 s | None -> `Bool true in
+                      (* a form's or multipart body's properties are its fields or parts: it is an object *)
+                      let fields m mt =
+                        let o = match get mt "schema" with Some s -> deref doc s | None -> `Null in
+                        if not (get o "type" = Some (`String "object") || get o "properties" <> None) then
+                          raise (Skip (Printf.sprintf "a request body in %s that is not an object" (base_media m)));
+                        let enc =
+                          List.map
+                            (fun (k, e) ->
+                              ( k,
+                                { content_type = str e "contentType"; style = str e "style";
+                                  explode = (match get e "explode" with Some (`Bool b) -> Some b | _ -> None) } ))
+                            (assoc mt "encoding")
+                        in
+                        (* a multipart part's content type by default: a binary string's is application/octet-stream (or
+                           its contentMediaType); the encoder gives the rest theirs by their values *)
+                        let binary =
+                          if not (is_multipart m) then []
+                          else
+                            List.filter_map
+                              (fun (k, ps) ->
+                                let ps = deref doc ps in
+                                (* a list's parts are its items *)
+                                let ps = if get ps "type" = Some (`String "array") then (match get ps "items" with Some i -> deref doc i | None -> ps) else ps in
+                                let ct =
+                                  match str ps "contentMediaType", str ps "format" with
+                                  | Some c, _ -> Some c
+                                  | None, Some ("binary" | "base64") -> Some "application/octet-stream"
+                                  | _ -> None
+                                in
+                                match ct with
+                                | Some c when not (List.exists (fun (k', e) -> k' = k && e.content_type <> None) enc) ->
+                                    Some (k, { content_type = Some c; style = None; explode = None })
+                                | _ -> None)
+                              (assoc o "properties")
+                        in
+                        Some (m, schema mt, List.filter (fun (k, _) -> not (List.mem_assoc k binary)) enc @ binary)
+                      in
                       let pick =
-                        match List.find_opt (fun (m, _) -> is_json m) content with
-                        | Some (m, mt) -> Some (m, (match get mt "schema" with Some s -> fix ~v30 s | None -> `Bool true))
+                        match first is_json with
+                        | Some (m, mt) -> Some (m, schema mt, [])
                         | None -> (
-                            match List.find_opt (fun (m, _) -> String.length m >= 5 && String.sub m 0 5 = "text/") content with
-                            | Some (m, _) -> Some (m, `Assoc [ ("type", `String "string") ])
-                            | None -> None)
+                            match first is_form, first is_multipart with
+                            | Some (m, mt), _ | None, Some (m, mt) -> fields m mt
+                            | None, None -> (
+                                match first (fun m -> String.length m >= 5 && String.sub m 0 5 = "text/") with
+                                | Some (m, _) -> Some (m, `Assoc [ ("type", `String "string") ], [])
+                                | None -> None))
                       in
                       (match pick with
                        | None -> raise (Skip ("a request body in " ^ String.concat ", " (List.map fst content)))
-                       | Some (m, s) -> (Some ("body", m), props @ [ ("body", s) ], if req then "body" :: required else required))
+                       | Some (m, s, enc) -> (Some ("body", m), enc, props @ [ ("body", s) ], if req then "body" :: required else required))
                 in
                 let request_key = def_key (base ^ "Request") in
                 defs :=
@@ -404,7 +456,7 @@ let import ?service ?(idempotency_header = "idempotency-key") (doc : J.t) : t =
                 List.iter (fun cb -> say where "the callback %s is not imported" cb) (List.map fst (assoc op "callbacks"));
                 let cls = class_of meth !idem in
                 ops :=
-                  ( { kind; meth = String.uppercase_ascii meth; path; request = request_key; response = base ^ "Response"; params; body; cases = List.map fst cases;
+                  ( { kind; meth = String.uppercase_ascii meth; path; request = request_key; response = base ^ "Response"; params; body; encoding; cases = List.map fst cases;
                       security; cls; idempotency = !idem; default = "" },
                     request_key,
                     List.map snd cases,
@@ -591,6 +643,16 @@ let operations (t : t) : J.t =
                                  @ match c.payload with Some p -> [ ("payload", `String p) ] | None -> []))
                              op.cases) );
                       ("default", `String op.default); ("security", `List (List.map (fun s -> `String s) op.security)); ("class", `String (cls_name op.cls)) ]
-                   @ (match op.body with Some (f, m) -> [ ("body", `Assoc [ ("field", `String f); ("media", `String m) ]) ] | None -> [])
+                   @ (match op.body with
+                     | Some (f, m) ->
+                         let enc (k, e) =
+                           ( k,
+                             `Assoc
+                               (List.filter_map Fun.id
+                                  [ Option.map (fun c -> ("contentType", `String c)) e.content_type; Option.map (fun c -> ("style", `String c)) e.style;
+                                    Option.map (fun b -> ("explode", `Bool b)) e.explode ]) )
+                         in
+                         [ ("body", `Assoc ([ ("field", `String f); ("media", `String m) ] @ if op.encoding = [] then [] else [ ("encoding", `Assoc (List.map enc op.encoding)) ])) ]
+                     | None -> [])
                    @ match op.idempotency with Some h -> [ ("idempotency", `String h) ] | None -> []) ))
              t.ops) ) ]

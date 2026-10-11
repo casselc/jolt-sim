@@ -28,8 +28,11 @@ let has e sub = let n = String.length sub in let rec go k = k + n <= String.leng
 let documented e = has e " has no property " || has e " is a record: " || has e " is beyond int64" || has e " given twice"
 let env = C.Checker.declare_ident (C.Checker.empty ()) "x" C.Checker.Dyn
 
+(* a draft's files, and those of its optional/ directory if it has one (optional/ecmascript-regex.json) *)
 let groups dir =
-  Sys.readdir dir |> Array.to_list |> List.filter (fun f -> Filename.check_suffix f ".json") |> List.sort compare
+  let files d = Sys.readdir d |> Array.to_list |> List.filter (fun f -> Filename.check_suffix f ".json") |> List.sort compare in
+  let optional = Filename.concat dir "optional" in
+  (files dir @ if Sys.file_exists optional then List.map (Filename.concat "optional") (files optional) else [])
   |> List.concat_map (fun file ->
          match J.from_file (Filename.concat dir file) with
          | `List gs ->

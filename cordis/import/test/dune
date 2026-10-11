@@ -125,7 +125,7 @@
  (alias openapi-agreement)
  (deps oasvalid.py (glob_files openapi/*.yaml))
  (action
-  (run %{exe:openapi_agreement.exe} oasvalid.py openapi/petstore-expanded.yaml openapi/styles.yaml)))
+  (run %{exe:openapi_agreement.exe} oasvalid.py openapi/petstore-expanded.yaml openapi/styles.yaml openapi/bodies.yaml)))
 
 ; Golden files: the OpenAPI importer's output for the agreement documents
 (rule (with-stdout-to openapi-petstore-expanded.types.out (run %{exe:../bin/cimport.exe} openapi %{dep:openapi/petstore-expanded.yaml} --print types)))
@@ -144,3 +144,11 @@
 (rule (alias runtest) (action (diff golden/openapi-styles.names.txt openapi-styles.names.out)))
 (rule (with-stdout-to openapi-styles.operations.out (run %{exe:../bin/cimport.exe} openapi %{dep:openapi/styles.yaml} --print operations)))
 (rule (alias runtest) (action (diff golden/openapi-styles.operations.txt openapi-styles.operations.out)))
+(rule (with-stdout-to openapi-bodies.types.out (run %{exe:../bin/cimport.exe} openapi %{dep:openapi/bodies.yaml} --print types)))
+(rule (alias runtest) (action (diff golden/openapi-bodies.types.txt openapi-bodies.types.out)))
+(rule (with-stdout-to openapi-bodies.report.out (run %{exe:../bin/cimport.exe} openapi %{dep:openapi/bodies.yaml} --print report)))
+(rule (alias runtest) (action (diff golden/openapi-bodies.report.txt openapi-bodies.report.out)))
+(rule (with-stdout-to openapi-bodies.names.out (run %{exe:../bin/cimport.exe} openapi %{dep:openapi/bodies.yaml} --print names)))
+(rule (alias runtest) (action (diff golden/openapi-bodies.names.txt openapi-bodies.names.out)))
+(rule (with-stdout-to openapi-bodies.operations.out (run %{exe:../bin/cimport.exe} openapi %{dep:openapi/bodies.yaml} --print operations)))
+(rule (alias runtest) (action (diff golden/openapi-bodies.operations.txt openapi-bodies.operations.out)))

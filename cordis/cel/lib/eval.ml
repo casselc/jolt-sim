@@ -94,7 +94,8 @@ let compile_regex p =
   match Hashtbl.find_opt regex_cache p with
   | Some r -> r
   | None ->
-      let r = try Some (Re.compile (Re.Perl.re p)) with _ -> None in
+      (* RE2 syntax, matched by code point (re2.ml), as the CEL spec says *)
+      let r = try Some (Re.compile (Re2.compile p)) with Re2.Error _ -> None in
       Hashtbl.add regex_cache p r;
       r
 

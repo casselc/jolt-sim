@@ -1,0 +1,95 @@
+# A document for the OpenAPI importer's agreement test (docs/cordis/rfc/
+# 0003-types-importers-scaffolds.md, revision 4): request bodies that are
+# not JSON. A form (application/x-www-form-urlencoded) writes each property
+# as a field, by its style; a multipart/form-data body writes each as a
+# part, a list a part per item, as the Encoding Object says. A body the
+# document offers both ways is sent as a form; a form body that is not an
+# object is not imported. A multipart body here has no number or boolean
+# property: openapi-core reads a text/plain part as a string whatever its
+# schema says ("0" is not an integer to it), where OpenAPI reads it by the
+# schema.
+openapi: 3.1.0
+info: {title: Bodies, version: "1"}
+servers:
+  - url: https://api.example.com/v1
+components:
+  schemas:
+    Grant:
+      type: object
+      required: [grant_type]
+      additionalProperties: false
+      properties:
+        grant_type: {type: string, enum: [password, client_credentials]}
+        scope: {type: array, items: {type: string, pattern: "^[a-z]+$"}, maxItems: 3}
+        count: {type: integer, minimum: 0, maximum: 9}
+        active: {type: boolean}
+        note: {type: string, maxLength: 12}
+    Upload:
+      type: object
+      required: [name]
+      additionalProperties: false
+      properties:
+        name: {type: string, maxLength: 12}
+        tags: {type: array, items: {type: string, pattern: "^[a-z]*$"}, maxItems: 3}
+        info:
+          type: object
+          additionalProperties: false
+          properties:
+            owner: {type: string, maxLength: 8}
+            pages: {type: integer}
+paths:
+  /tokens:
+    post:
+      operationId: createToken
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema: {$ref: "#/components/schemas/Grant"}
+          multipart/form-data:
+            schema: {$ref: "#/components/schemas/Grant"}
+      responses:
+        "201": {description: created}
+  /filters:
+    post:
+      operationId: saveFilter
+      requestBody:
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                by:
+                  type: object
+                  additionalProperties: false
+                  properties:
+                    name: {type: string, pattern: "^[a-z]*$"}
+                    min: {type: integer}
+                ids: {type: array, items: {type: integer}, maxItems: 3}
+            encoding:
+              by: {style: deepObject, explode: true}
+              ids: {style: form, explode: false}
+      responses:
+        "204": {description: saved}
+  /uploads:
+    post:
+      operationId: upload
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema: {$ref: "#/components/schemas/Upload"}
+            encoding:
+              info: {contentType: application/json}
+      responses:
+        "201": {description: uploaded}
+  /counts:
+    post:
+      operationId: postCount
+      requestBody:
+        content:
+          application/x-www-form-urlencoded:
+            schema: {type: integer}
+      responses:
+        "204": {description: counted}

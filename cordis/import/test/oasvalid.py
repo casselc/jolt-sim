@@ -10,7 +10,8 @@ Each input line is a request, {"request": R}, or a response to one,
 R is {"method", "target" (path and query, as sent), "headers": [[k, v]],
 "body": text or null, "media": m or null}; the target is relative to the
 document's first server. Each output line is {"valid": bool, "errors":
-[...]}.
+[...]}, and for a valid request with a body, "body": the body as
+openapi-core read it (a binary part as text).
 """
 import json
 import sys
@@ -65,6 +66,11 @@ for line in sys.stdin:
         else:
             result = api.unmarshal_request(req)
         errors = [repr(e) for e in result.errors]
+        body = None if "response" in q or errors else result.body
     except Exception as e:  # a request the validator cannot even route
         errors = [repr(e)]
-    print(json.dumps({"valid": not errors, "errors": errors}), flush=True)
+        body = None
+    out = {"valid": not errors, "errors": errors}
+    if body is not None:
+        out["body"] = body
+    print(json.dumps(out, default=lambda b: b.decode("utf-8", "replace") if isinstance(b, bytes) else str(b)), flush=True)

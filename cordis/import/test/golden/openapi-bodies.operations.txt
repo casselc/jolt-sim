@@ -1,0 +1,57 @@
+{
+  "service": "bodies",
+  "servers": [ "https://api.example.com/v1" ],
+  "other": "HttpOther",
+  "operations": {
+    "bodies.createToken": {
+      "method": "POST",
+      "path": "/tokens",
+      "request": "CreateTokenRequest",
+      "response": "CreateTokenResponse",
+      "params": [],
+      "cases": [ { "case": "S201", "status": "201" } ],
+      "default": "HttpOther",
+      "security": [],
+      "class": "effectful",
+      "body": {
+        "field": "body",
+        "media": "application/x-www-form-urlencoded"
+      }
+    },
+    "bodies.saveFilter": {
+      "method": "POST",
+      "path": "/filters",
+      "request": "SaveFilterRequest",
+      "response": "SaveFilterResponse",
+      "params": [],
+      "cases": [ { "case": "S204", "status": "204" } ],
+      "default": "HttpOther",
+      "security": [],
+      "class": "effectful",
+      "body": {
+        "field": "body",
+        "media": "application/x-www-form-urlencoded",
+        "encoding": {
+          "by": { "style": "deepObject", "explode": true },
+          "ids": { "style": "form", "explode": false }
+        }
+      }
+    },
+    "bodies.upload": {
+      "method": "POST",
+      "path": "/uploads",
+      "request": "UploadRequest",
+      "response": "UploadResponse",
+      "params": [],
+      "cases": [ { "case": "S201", "status": "201" } ],
+      "default": "HttpOther",
+      "security": [],
+      "class": "effectful",
+      "body": {
+        "field": "body",
+        "media": "multipart/form-data",
+        "encoding": { "info": { "contentType": "application/json" } }
+      }
+    }
+  }
+}

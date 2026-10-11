@@ -52,6 +52,12 @@
  (modules extensions_test)
  (libraries cordis_cel alcotest))
 
+; RE2 syntax matched by code point: cases a byte-wise matcher gets wrong
+(test
+ (name re2_test)
+ (modules re2_test)
+ (libraries cordis_cel re alcotest))
+
 ; Registries as values: isolation, also across domains; conflicts
 (test
  (name registry_test)

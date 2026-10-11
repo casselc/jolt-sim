@@ -60,21 +60,109 @@ let nat (j : J.t) = match j with `Int i when i >= 0 -> i | `Float f when Float.i
 
 (* ---- regular expressions --------------------------------------------------------------------------- *)
 
-(* JSON Schema's patterns are ECMA-262; CEL's matches is RE2-like (here
-   ocaml-re's Perl syntax). Both search unanchored. Features with no
-   counterpart are refused rather than approximated. *)
-let regex p =
-  let has sub =
-    let n = String.length sub in
-    let rec go i = i + n <= String.length p && (String.sub p i n = sub || go (i + 1)) in
-    go 0
+(* JSON Schema's patterns are ECMA-262; CEL's matches is RE2 (cel/lib/
+   re2.ml). Both search unanchored, and both match here by code point (as
+   ECMA does with its u flag, and as the JSON Schema test suite's Unicode
+   cases expect), so a character beyond the BMP is one `.`, not two. [translate] rewrites what the two spell differently:
+   ECMA's \uHHHH (a surrogate pair as the one character it encodes) and
+   \xHH become \x{...}, \cX its control character, \0 NUL; `.` excludes
+   all four of ECMA's line terminators, and \s and \S are ECMA's white
+   space (Unicode's, not RE2's ASCII), written out as ranges; a letter
+   escaped for no reason is the letter (ECMA's identity escape, which RE2
+   rejects); (?<name> is RE2's (?P<name>; [^] is any character. Features
+   with no counterpart are refused rather than approximated: lookaround,
+   backreferences, Unicode property classes, legacy octal escapes, a lone
+   surrogate, and the empty class []. *)
+
+let ecma_space =
+  [ (0x09, 0x0D); (0x20, 0x20); (0xA0, 0xA0); (0x1680, 0x1680); (0x2000, 0x200A); (0x2028, 0x2029); (0x202F, 0x202F); (0x205F, 0x205F);
+    (0x3000, 0x3000); (0xFEFF, 0xFEFF) ]
+
+let ranges rs = String.concat "" (List.map (fun (a, b) -> if a = b then Printf.sprintf "\\x{%x}" a else Printf.sprintf "\\x{%x}-\\x{%x}" a b) rs)
+
+let translate p =
+  let n = String.length p and i = ref 0 and b = Buffer.create (String.length p + 16) in
+  let add = Buffer.add_string b in
+  let at s = !i + String.length s <= n && String.sub p !i (String.length s) = s in
+  let hex k =
+    if !i + k > n then None
+    else
+      let h = String.sub p !i k in
+      if String.for_all (function '0' .. '9' | 'a' .. 'f' | 'A' .. 'F' -> true | _ -> false) h then (i := !i + k; Some (int_of_string ("0x" ^ h))) else None
   in
-  if has "(?=" || has "(?!" || has "(?<=" || has "(?<!" then unsupported "pattern %S uses lookaround" p;
-  if List.exists (fun d -> has ("\\" ^ string_of_int d)) [ 1; 2; 3; 4; 5; 6; 7; 8; 9 ] then unsupported "pattern %S uses a backreference" p;
-  if has "\\p{" || has "\\P{" then unsupported "pattern %S uses a Unicode property class" p;
-  String.iter (fun c -> if Char.code c >= 0x80 then unsupported "pattern %S is not ASCII" p) p;
-  if Cordis_cel.Eval.compile_regex p = None then unsupported "pattern %S does not compile" p;
-  cel_string p
+  let cp v = Printf.sprintf "\\x{%x}" v in
+  let surrogate v = v >= 0xD800 && v <= 0xDFFF in
+  (* after a backslash *)
+  let escape ~in_class =
+    if !i >= n then unsupported "pattern %S ends in a backslash" p;
+    let c = p.[!i] in
+    incr i;
+    match c with
+    | 'u' -> (
+        match hex 4 with
+        | Some hi when hi >= 0xD800 && hi <= 0xDBFF && (not in_class) && at "\\u" -> (
+            let save = !i in
+            i := !i + 2;
+            match hex 4 with
+            | Some lo when lo >= 0xDC00 && lo <= 0xDFFF -> add (cp (0x10000 + ((hi - 0xD800) lsl 10) + (lo - 0xDC00)))
+            | _ -> i := save; unsupported "pattern %S has a lone surrogate" p)
+        | Some v when surrogate v -> unsupported "pattern %S has a lone surrogate" p
+        | Some v -> add (cp v)
+        | None -> add "u")
+    | 'x' -> (match hex 2 with Some v -> add (cp v) | None -> add "x")
+    | 'c' when !i < n && ((p.[!i] >= 'a' && p.[!i] <= 'z') || (p.[!i] >= 'A' && p.[!i] <= 'Z')) ->
+        add (cp (Char.code p.[!i] land 31));
+        incr i
+    | '0' when not (!i < n && p.[!i] >= '0' && p.[!i] <= '9') -> add (cp 0)
+    | '0' .. '9' -> unsupported "pattern %S uses a backreference or an octal escape" p
+    | 'd' | 'D' | 'w' | 'W' | 'f' | 'n' | 'r' | 't' | 'v' -> add ("\\" ^ String.make 1 c)
+    | 's' -> add (if in_class then ranges ecma_space else "[" ^ ranges ecma_space ^ "]")
+    | 'S' -> add (if in_class then ranges (Cordis_cel.Re2.complement ecma_space) else "[^" ^ ranges ecma_space ^ "]")
+    | 'b' -> add (if in_class then cp 8 else "\\b")
+    | 'B' when not in_class -> add "\\B"
+    | 'p' | 'P' -> unsupported "pattern %S uses a Unicode property class" p
+    | 'k' -> unsupported "pattern %S uses a backreference" p
+    | c when (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') -> add (String.make 1 c)
+    | c when Char.code c < 0x80 -> add ("\\" ^ String.make 1 c)
+    | c -> Buffer.add_char b c
+  in
+  while !i < n do
+    let c = p.[!i] in
+    incr i;
+    match c with
+    | '\\' -> escape ~in_class:false
+    | '.' -> add "[^\\n\\r\\x{2028}\\x{2029}]"
+    | '(' when at "?=" || at "?!" || at "?<=" || at "?<!" -> unsupported "pattern %S uses lookaround" p
+    | '(' when at "?<" -> add "(?P<"; i := !i + 2
+    | '[' ->
+        let neg = at "^" in
+        if neg then incr i;
+        if at "]" then (
+          incr i;
+          if neg then add ("[" ^ ranges [ (0, 0x10FFFF) ] ^ "]") else unsupported "pattern %S has the empty class []" p)
+        else begin
+          add (if neg then "[^" else "[");
+          let closed = ref false in
+          while (not !closed) && !i < n do
+            let c = p.[!i] in
+            incr i;
+            match c with
+            | ']' -> closed := true
+            | '\\' -> escape ~in_class:true
+            | '[' -> add "\\["
+            | c -> Buffer.add_char b c
+          done;
+          if not !closed then unsupported "pattern %S has an unterminated class" p;
+          add "]"
+        end
+    | c -> Buffer.add_char b c
+  done;
+  Buffer.contents b
+
+let regex p =
+  let t = translate p in
+  if Cordis_cel.Eval.compile_regex t = None then unsupported "pattern %S does not compile" p;
+  cel_string t
 
 (* ---- references ------------------------------------------------------------------------------------ *)
 

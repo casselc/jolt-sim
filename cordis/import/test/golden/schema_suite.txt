@@ -1,21 +1,20 @@
-# draft2020-12: the predicate: 1030 tests agree; 271 tests in 106 groups do not compile.
-# draft2020-12: the interpreter: 1237 tests agree; 59 tests in 28 groups are not read.
-# draft2020-12: the importer and codec: 1209 tests agree; 14 valid instances are refused as RFC 0003 documents; 78 tests in 33 groups do not import.
-# draft2019-09: the predicate: 1018 tests agree; 243 tests in 90 groups do not compile.
-# draft2019-09: the interpreter: 1210 tests agree; 46 tests in 15 groups are not read.
-# draft2019-09: the importer and codec: 1182 tests agree; 14 valid instances are refused as RFC 0003 documents; 65 tests in 20 groups do not import.
-# draft7: the predicate: 903 tests agree; 26 tests in 12 groups do not compile.
-# draft7: the interpreter: 911 tests agree; 18 tests in 9 groups are not read.
-# draft7: the importer and codec: 883 tests agree; 14 valid instances are refused as RFC 0003 documents; 32 tests in 12 groups do not import.
-# draft6: the predicate: 815 tests agree; 26 tests in 12 groups do not compile.
-# draft6: the interpreter: 823 tests agree; 18 tests in 9 groups are not read.
-# draft6: the importer and codec: 795 tests agree; 14 valid instances are refused as RFC 0003 documents; 32 tests in 12 groups do not import.
-# draft4: the predicate: 600 tests agree; 18 tests in 8 groups do not compile.
-# draft4: the interpreter: 606 tests agree; 12 tests in 6 groups are not read.
-# draft4: the importer and codec: 592 tests agree; 14 valid instances are refused as RFC 0003 documents; 12 tests in 6 groups do not import.
+# draft2020-12: the predicate: 1104 tests agree; 283 tests in 109 groups do not compile.
+# draft2020-12: the interpreter: 1311 tests agree; 71 tests in 31 groups are not read.
+# draft2020-12: the importer and codec: 1283 tests agree; 14 valid instances are refused as RFC 0003 documents; 90 tests in 36 groups do not import.
+# draft2019-09: the predicate: 1020 tests agree; 241 tests in 89 groups do not compile.
+# draft2019-09: the interpreter: 1212 tests agree; 44 tests in 14 groups are not read.
+# draft2019-09: the importer and codec: 1184 tests agree; 14 valid instances are refused as RFC 0003 documents; 63 tests in 19 groups do not import.
+# draft7: the predicate: 905 tests agree; 24 tests in 11 groups do not compile.
+# draft7: the interpreter: 913 tests agree; 16 tests in 8 groups are not read.
+# draft7: the importer and codec: 885 tests agree; 14 valid instances are refused as RFC 0003 documents; 30 tests in 11 groups do not import.
+# draft6: the predicate: 817 tests agree; 24 tests in 11 groups do not compile.
+# draft6: the interpreter: 825 tests agree; 16 tests in 8 groups are not read.
+# draft6: the importer and codec: 797 tests agree; 14 valid instances are refused as RFC 0003 documents; 30 tests in 11 groups do not import.
+# draft4: the predicate: 602 tests agree; 16 tests in 7 groups do not compile.
+# draft4: the interpreter: 608 tests agree; 10 tests in 5 groups are not read.
+# draft4: the importer and codec: 594 tests agree; 14 valid instances are refused as RFC 0003 documents; 10 tests in 5 groups do not import.
 
 ## draft2020-12: schemas the predicate does not compile
-draft2020-12/additionalProperties.json: non-ASCII pattern with additionalProperties: pattern "^\195\161" is not ASCII
 draft2020-12/defs.json: validate definition against metaschema: a remote $ref (https://json-schema.org/draft/2020-12/schema): no document https://json-schema.org/draft/2020-12/schema was given
 draft2020-12/dynamicRef.json: A $dynamicRef to a $dynamicAnchor in the same schema resource behaves like a normal $ref to an $anchor: keyword $dynamicRef
 draft2020-12/dynamicRef.json: A $dynamicRef to an $anchor in the same schema resource behaves like a normal $ref to an $anchor: keyword $dynamicRef
@@ -121,9 +120,12 @@ draft2020-12/unevaluatedProperties.json: Evaluated properties collection needs t
 draft2020-12/unevaluatedProperties.json: Evaluated properties collection needs to consider instance location with additionalProperties: keyword unevaluatedProperties
 draft2020-12/vocabulary.json: schema that uses custom metaschema with with no validation vocabulary: a metaschema this importer does not read: //localhost:1234/draft2020-12/metaschema-no-validation.json
 draft2020-12/vocabulary.json: ignore unrecognized optional vocabulary: a metaschema this importer does not read: //localhost:1234/draft2020-12/metaschema-optional-vocabulary.json
+draft2020-12/optional/ecmascript-regex.json: patterns always use unicode semantics with pattern: pattern "\\p{Letter}cole" uses a Unicode property class
+draft2020-12/optional/ecmascript-regex.json: pattern with non-ASCII digits: pattern "^\\p{digit}+$" uses a Unicode property class
+draft2020-12/optional/ecmascript-regex.json: patterns always use unicode semantics with patternProperties: pattern "\\p{Letter}cole" uses a Unicode property class
+draft2020-12/optional/ecmascript-regex.json: patternProperties with non-ASCII digits: pattern "^\\p{digit}+$" uses a Unicode property class
 
 ## draft2020-12: schemas the interpreter does not read
-draft2020-12/additionalProperties.json: non-ASCII pattern with additionalProperties: pattern "^\195\161" is not ASCII
 draft2020-12/defs.json: validate definition against metaschema: a remote $ref (https://json-schema.org/draft/2020-12/schema): no document https://json-schema.org/draft/2020-12/schema was given
 draft2020-12/dynamicRef.json: A $dynamicRef to a $dynamicAnchor in the same schema resource behaves like a normal $ref to an $anchor: keyword $dynamicRef
 draft2020-12/dynamicRef.json: A $dynamicRef to an $anchor in the same schema resource behaves like a normal $ref to an $anchor: keyword $dynamicRef
@@ -151,9 +153,12 @@ draft2020-12/patternProperties.json: patternProperties with Unicode property esc
 draft2020-12/ref.json: remote ref, containing refs itself: a remote $ref (https://json-schema.org/draft/2020-12/schema): no document https://json-schema.org/draft/2020-12/schema was given
 draft2020-12/unevaluatedItems.json: unevaluatedItems with $dynamicRef: keyword $dynamicRef
 draft2020-12/unevaluatedProperties.json: unevaluatedProperties with $dynamicRef: keyword $dynamicRef
+draft2020-12/optional/ecmascript-regex.json: patterns always use unicode semantics with pattern: pattern "\\p{Letter}cole" uses a Unicode property class
+draft2020-12/optional/ecmascript-regex.json: pattern with non-ASCII digits: pattern "^\\p{digit}+$" uses a Unicode property class
+draft2020-12/optional/ecmascript-regex.json: patterns always use unicode semantics with patternProperties: pattern "\\p{Letter}cole" uses a Unicode property class
+draft2020-12/optional/ecmascript-regex.json: patternProperties with non-ASCII digits: pattern "^\\p{digit}+$" uses a Unicode property class
 
 ## draft2020-12: schemas that do not import
-draft2020-12/additionalProperties.json: non-ASCII pattern with additionalProperties: Root: pattern "^\195\161" is not ASCII
 draft2020-12/boolean_schema.json: boolean schema 'false': Root: the schema false admits nothing
 draft2020-12/defs.json: validate definition against metaschema: a remote $ref (https://json-schema.org/draft/2020-12/schema): no document https://json-schema.org/draft/2020-12/schema was given
 draft2020-12/dynamicRef.json: A $dynamicRef to a $dynamicAnchor in the same schema resource behaves like a normal $ref to an $anchor: foo: keyword $dynamicAnchor
@@ -186,9 +191,12 @@ draft2020-12/unevaluatedItems.json: unevaluatedItems with $dynamicRef: derived: 
 draft2020-12/unevaluatedProperties.json: unevaluatedProperties with $dynamicRef: derived: keyword $dynamicAnchor
 draft2020-12/vocabulary.json: schema that uses custom metaschema with with no validation vocabulary: a metaschema this importer does not read: //localhost:1234/draft2020-12/metaschema-no-validation.json
 draft2020-12/vocabulary.json: ignore unrecognized optional vocabulary: a metaschema this importer does not read: //localhost:1234/draft2020-12/metaschema-optional-vocabulary.json
+draft2020-12/optional/ecmascript-regex.json: patterns always use unicode semantics with pattern: Root: pattern "\\p{Letter}cole" uses a Unicode property class
+draft2020-12/optional/ecmascript-regex.json: pattern with non-ASCII digits: Root: pattern "^\\p{digit}+$" uses a Unicode property class
+draft2020-12/optional/ecmascript-regex.json: patterns always use unicode semantics with patternProperties: Root: pattern "\\p{Letter}cole" uses a Unicode property class
+draft2020-12/optional/ecmascript-regex.json: patternProperties with non-ASCII digits: Root: pattern "^\\p{digit}+$" uses a Unicode property class
 
 ## draft2019-09: schemas the predicate does not compile
-draft2019-09/additionalProperties.json: non-ASCII pattern with additionalProperties: pattern "^\195\161" is not ASCII
 draft2019-09/defs.json: validate definition against metaschema: a remote $ref (https://json-schema.org/draft/2019-09/schema): no document https://json-schema.org/draft/2019-09/schema was given
 draft2019-09/not.json: collect annotations inside a 'not', even if collection is disabled: keyword unevaluatedProperties
 draft2019-09/recursiveRef.json: $recursiveRef without $recursiveAnchor works like $ref: keyword $recursiveRef
@@ -280,7 +288,6 @@ draft2019-09/vocabulary.json: schema that uses custom metaschema with with no va
 draft2019-09/vocabulary.json: ignore unrecognized optional vocabulary: a metaschema this importer does not read: //localhost:1234/draft2019-09/metaschema-optional-vocabulary.json
 
 ## draft2019-09: schemas the interpreter does not read
-draft2019-09/additionalProperties.json: non-ASCII pattern with additionalProperties: pattern "^\195\161" is not ASCII
 draft2019-09/defs.json: validate definition against metaschema: a remote $ref (https://json-schema.org/draft/2019-09/schema): no document https://json-schema.org/draft/2019-09/schema was given
 draft2019-09/recursiveRef.json: $recursiveRef without $recursiveAnchor works like $ref: keyword $recursiveRef
 draft2019-09/recursiveRef.json: $recursiveRef without using nesting: keyword $recursiveAnchor
@@ -297,7 +304,6 @@ draft2019-09/unevaluatedItems.json: unevaluatedItems with $recursiveRef: keyword
 draft2019-09/unevaluatedProperties.json: unevaluatedProperties with $recursiveRef: keyword $recursiveAnchor
 
 ## draft2019-09: schemas that do not import
-draft2019-09/additionalProperties.json: non-ASCII pattern with additionalProperties: Root: pattern "^\195\161" is not ASCII
 draft2019-09/boolean_schema.json: boolean schema 'false': Root: the schema false admits nothing
 draft2019-09/defs.json: validate definition against metaschema: a remote $ref (https://json-schema.org/draft/2019-09/schema): no document https://json-schema.org/draft/2019-09/schema was given
 draft2019-09/properties.json: properties with boolean schema: Root_bar: the schema false admits nothing
@@ -319,7 +325,6 @@ draft2019-09/vocabulary.json: schema that uses custom metaschema with with no va
 draft2019-09/vocabulary.json: ignore unrecognized optional vocabulary: a metaschema this importer does not read: //localhost:1234/draft2019-09/metaschema-optional-vocabulary.json
 
 ## draft7: schemas the predicate does not compile
-draft7/additionalProperties.json: non-ASCII pattern with additionalProperties: pattern "^\195\161" is not ASCII
 draft7/definitions.json: validate definition against metaschema: a remote $ref (http://json-schema.org/draft-07/schema#): no document http://json-schema.org/draft-07/schema was given
 draft7/ref.json: root pointer ref: a recursive $ref (#)
 draft7/ref.json: remote ref, containing refs itself: a remote $ref (http://json-schema.org/draft-07/schema#): no document http://json-schema.org/draft-07/schema was given
@@ -333,7 +338,6 @@ draft7/refRemote.json: Location-independent identifier in remote ref: $ref http:
 draft7/refRemote.json: $ref to $ref finds location-independent $id: $ref http://localhost:1234/draft7/detached-ref.json#detached: no such anchor
 
 ## draft7: schemas the interpreter does not read
-draft7/additionalProperties.json: non-ASCII pattern with additionalProperties: pattern "^\195\161" is not ASCII
 draft7/definitions.json: validate definition against metaschema: a remote $ref (http://json-schema.org/draft-07/schema#): no document http://json-schema.org/draft-07/schema was given
 draft7/ref.json: remote ref, containing refs itself: a remote $ref (http://json-schema.org/draft-07/schema#): no document http://json-schema.org/draft-07/schema was given
 draft7/ref.json: Location-independent identifier: $ref #foo: no such anchor
@@ -344,7 +348,6 @@ draft7/refRemote.json: Location-independent identifier in remote ref: $ref http:
 draft7/refRemote.json: $ref to $ref finds location-independent $id: $ref http://localhost:1234/draft7/detached-ref.json#detached: no such anchor
 
 ## draft7: schemas that do not import
-draft7/additionalProperties.json: non-ASCII pattern with additionalProperties: Root: pattern "^\195\161" is not ASCII
 draft7/boolean_schema.json: boolean schema 'false': Root: the schema false admits nothing
 draft7/definitions.json: validate definition against metaschema: a remote $ref (http://json-schema.org/draft-07/schema): no document http://json-schema.org/draft-07/schema was given
 draft7/properties.json: properties with boolean schema: Root_bar: the schema false admits nothing
@@ -358,7 +361,6 @@ draft7/refRemote.json: Location-independent identifier in remote ref: $ref http:
 draft7/refRemote.json: $ref to $ref finds location-independent $id: $ref http://localhost:1234/draft7/detached-ref.json#detached: no such anchor
 
 ## draft6: schemas the predicate does not compile
-draft6/additionalProperties.json: non-ASCII pattern with additionalProperties: pattern "^\195\161" is not ASCII
 draft6/definitions.json: validate definition against metaschema: a remote $ref (http://json-schema.org/draft-06/schema#): no document http://json-schema.org/draft-06/schema was given
 draft6/ref.json: root pointer ref: a recursive $ref (#)
 draft6/ref.json: remote ref, containing refs itself: a remote $ref (http://json-schema.org/draft-06/schema#): no document http://json-schema.org/draft-06/schema was given
@@ -372,7 +374,6 @@ draft6/refRemote.json: Location-independent identifier in remote ref: $ref http:
 draft6/refRemote.json: $ref to $ref finds location-independent $id: $ref http://localhost:1234/draft6/detached-ref.json#detached: no such anchor
 
 ## draft6: schemas the interpreter does not read
-draft6/additionalProperties.json: non-ASCII pattern with additionalProperties: pattern "^\195\161" is not ASCII
 draft6/definitions.json: validate definition against metaschema: a remote $ref (http://json-schema.org/draft-06/schema#): no document http://json-schema.org/draft-06/schema was given
 draft6/ref.json: remote ref, containing refs itself: a remote $ref (http://json-schema.org/draft-06/schema#): no document http://json-schema.org/draft-06/schema was given
 draft6/ref.json: Location-independent identifier: $ref #foo: no such anchor
@@ -383,7 +384,6 @@ draft6/refRemote.json: Location-independent identifier in remote ref: $ref http:
 draft6/refRemote.json: $ref to $ref finds location-independent $id: $ref http://localhost:1234/draft6/detached-ref.json#detached: no such anchor
 
 ## draft6: schemas that do not import
-draft6/additionalProperties.json: non-ASCII pattern with additionalProperties: Root: pattern "^\195\161" is not ASCII
 draft6/boolean_schema.json: boolean schema 'false': Root: the schema false admits nothing
 draft6/definitions.json: validate definition against metaschema: a remote $ref (http://json-schema.org/draft-06/schema): no document http://json-schema.org/draft-06/schema was given
 draft6/properties.json: properties with boolean schema: Root_bar: the schema false admits nothing
@@ -397,7 +397,6 @@ draft6/refRemote.json: Location-independent identifier in remote ref: $ref http:
 draft6/refRemote.json: $ref to $ref finds location-independent $id: $ref http://localhost:1234/draft6/detached-ref.json#detached: no such anchor
 
 ## draft4: schemas the predicate does not compile
-draft4/additionalProperties.json: non-ASCII pattern with additionalProperties: pattern "^\195\161" is not ASCII
 draft4/definitions.json: validate definition against metaschema: a remote $ref (http://json-schema.org/draft-04/schema#): no document http://json-schema.org/draft-04/schema was given
 draft4/ref.json: root pointer ref: a recursive $ref (#)
 draft4/ref.json: remote ref, containing refs itself: a remote $ref (http://json-schema.org/draft-04/schema#): no document http://json-schema.org/draft-04/schema was given
@@ -407,7 +406,6 @@ draft4/ref.json: Location-independent identifier with base URI change in subsche
 draft4/refRemote.json: Location-independent identifier in remote ref: $ref http://localhost:1234/draft4/locationIndependentIdentifier.json#foo: no such anchor
 
 ## draft4: schemas the interpreter does not read
-draft4/additionalProperties.json: non-ASCII pattern with additionalProperties: pattern "^\195\161" is not ASCII
 draft4/definitions.json: validate definition against metaschema: a remote $ref (http://json-schema.org/draft-04/schema#): no document http://json-schema.org/draft-04/schema was given
 draft4/ref.json: remote ref, containing refs itself: a remote $ref (http://json-schema.org/draft-04/schema#): no document http://json-schema.org/draft-04/schema was given
 draft4/ref.json: Location-independent identifier: $ref #foo: no such anchor
@@ -415,7 +413,6 @@ draft4/ref.json: Location-independent identifier with base URI change in subsche
 draft4/refRemote.json: Location-independent identifier in remote ref: $ref http://localhost:1234/draft4/locationIndependentIdentifier.json#foo: no such anchor
 
 ## draft4: schemas that do not import
-draft4/additionalProperties.json: non-ASCII pattern with additionalProperties: Root: pattern "^\195\161" is not ASCII
 draft4/definitions.json: validate definition against metaschema: a remote $ref (http://json-schema.org/draft-04/schema): no document http://json-schema.org/draft-04/schema was given
 draft4/ref.json: remote ref, containing refs itself: a remote $ref (http://json-schema.org/draft-04/schema): no document http://json-schema.org/draft-04/schema was given
 draft4/ref.json: Location-independent identifier: $ref #foo: no such anchor

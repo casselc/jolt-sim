@@ -134,6 +134,10 @@ let compare_types tc ours theirs =
       Hegel.note tc (Printf.sprintf "type: ours %s, cel-go %s" t t');
       Hegel.require tc ~msg:"checked types differ" (t = t')
   | Result.Error _, Some _, _ -> ()
+  (* indexing null: this checker has the optional library's overloads, where null fits
+     optional_type(list(A)) (cel-spec's legacy nullable types); cel/celgo runs cel-go without that
+     library, so it has no overload for it *)
+  | Result.Ok _, Some e, _ when Conformance_values.mentions e "'_[_]' applied to '(null" -> ()
   | Result.Ok t, Some e, _ ->
       Hegel.note tc (Printf.sprintf "ours: %s; cel-go: %s" t e);
       Hegel.require tc ~msg:"this checker accepts what cel-go's rejects" false
@@ -194,6 +198,76 @@ let compare_estimates tc src ast theirs our_cost =
       | _ -> ())
   | _ -> ()
 
+(* ---- regular expressions (RE2 syntax, matched by code point: re2.ml) ------------------------- *)
+
+(* a CEL string literal of any text: every character escaped by its code point *)
+let cel_lit s =
+  let b = Buffer.create (String.length s * 10) in
+  Buffer.add_char b '"';
+  let i = ref 0 in
+  while !i < String.length s do
+    let cp, len = Re2.decode s !i in
+    i := !i + len;
+    if (cp >= 0x61 && cp <= 0x7A) || (cp >= 0x41 && cp <= 0x5A) || (cp >= 0x30 && cp <= 0x39) then Buffer.add_char b (Char.chr cp)
+    else Buffer.add_string b (Printf.sprintf "\\U%08x" cp)
+  done;
+  Buffer.add_char b '"';
+  Buffer.contents b
+
+(* text to match: ASCII, two-byte, three-byte and four-byte characters, a newline *)
+let subject_chars = [ "a"; "b"; "c"; "A"; "1"; "_"; " "; "-"; "\n"; "\r"; "\xc3\xa9"; "\xc3\xbc"; "\xe2\x80\xa8"; "\xf0\x9f\x98\x80" ]
+
+let subject tc =
+  let n = pick tc 5 in
+  String.concat "" (List.init n (fun _ -> choose tc subject_chars))
+
+(* a pattern; [ascii] keeps it to ASCII, for under the i flag (no folding beyond ASCII here) *)
+let rec pattern ?(ascii = false) tc depth =
+  let lits = if ascii then [ "a"; "b"; "A"; "\\."; "-"; "1" ] else [ "a"; "b"; "A"; "\xc3\xa9"; "\xf0\x9f\x98\x80"; "\\."; "-"; "1"; "\\n" ] in
+  let classes =
+    [ "[a-c]"; "[^a-c]"; "[[:alpha:]]"; "[\\d_]"; "[^\\s]"; "[-a]"; "[]a]"; "\\d"; "\\w"; "\\s"; "\\D"; "\\W"; "\\S" ]
+    @ if ascii then [] else [ "[\xc3\xa0-\xc3\xbf]"; "[^\xc3\xa9]"; "[\\x{1F600}-\\x{1F64F}]"; "[\\x{80}-\\x{10FFFF}]"; "\\x{e9}"; "\\x61"; "[\\x{2028}\\n]" ]
+  in
+  let atom () =
+    match pick tc (if depth <= 0 then 5 else 10) with
+    | 0 | 1 -> choose tc lits
+    | 2 -> choose tc classes
+    | 3 -> "."
+    | 4 -> choose tc [ "^"; "$"; "\\A"; "\\z"; "\\b"; "\\B" ]
+    | 5 -> "(" ^ pattern ~ascii tc (depth - 1) ^ ")"
+    | 6 -> "(?:" ^ pattern ~ascii tc (depth - 1) ^ ")"
+    | 7 -> "(?i:" ^ pattern ~ascii:true tc (depth - 1) ^ ")"
+    | 8 -> choose tc [ "(?s:"; "(?m:"; "(?P<n>" ] ^ pattern ~ascii tc (depth - 1) ^ ")"
+    | _ -> pattern ~ascii tc (depth - 1) ^ "|" ^ pattern ~ascii tc (depth - 1)
+  in
+  let quant () = choose tc [ ""; ""; ""; "*"; "+"; "?"; "{2}"; "{1,}"; "{0,2}"; "*?"; "+?"; "{1,2}?"; "{"; "{,2}" ] in
+  (* now and then something RE2 rejects: both must reject it *)
+  let junk () = choose tc [ "("; ")"; "\\1"; "(?=a)"; "[b-a]"; "a**"; "\\"; "[z" ] in
+  let n = 1 + pick tc 3 in
+  String.concat "" (List.init n (fun _ -> if pick tc 40 = 0 then junk () else atom () ^ quant ()))
+
+let regex_cases path settings =
+  let count = ref 0 and errors = ref 0 in
+  Hegel.run_hegel_test ~settings ~database_key:"cordis:cel:differential-regex" (fun tc ->
+      (* anchored half the time, so a character's length in bytes shows (a byte-wise . or class would
+         still find something to match unanchored) *)
+      let p = pattern tc 2 in
+      let p = if pick tc 2 = 0 then "^(?:" ^ p ^ ")$" else p in
+      let s = subject tc in
+      let src = Printf.sprintf "%s.matches(%s)" (cel_lit s) (cel_lit p) in
+      let ours = match Cel.eval src with Ok r -> r.value | Error e -> Value.Error e in
+      let theirs = ask path src in
+      incr count;
+      if Value.is_error ours then (incr errors; if Sys.getenv_opt "CEL_DIFF_VERBOSE" <> None then Printf.eprintf "rejected %S: %s\n" p (Value.to_string ours));
+      (* \b is ocaml-re's word boundary, whose words include Latin-1 letters: RE2's only on ASCII *)
+      let ascii = String.for_all (fun c -> Char.code c < 0x80) s in
+      let has_b = let re = Re.compile (Re.str "\\b") and re' = Re.compile (Re.str "\\B") in Re.execp re p || Re.execp re' p in
+      if ascii || not has_b then begin
+        Hegel.note tc (Printf.sprintf "pattern %S, text %S\nours: %s\ncel-go: %s" p s (Value.to_string ours) (Yojson.Safe.to_string theirs));
+        Hegel.require tc ~msg:"cel-go's RE2 disagrees" (agree ours theirs)
+      end);
+  Printf.printf "%d patterns matched against cel-go's RE2 (%d rejected by both)\n" !count !errors
+
 let () =
   let path = ref "" and cases = ref 500 in
   (* cel-go has no fold *)
@@ -202,6 +276,7 @@ let () =
   if !path = "" then (prerr_endline "usage: differential.exe CELGO"; exit 2);
   let checked = ref 0 and known = ref 0 in
   let settings = Hegel.Settings.create ~test_cases:!cases ~seed:7 () in
+  regex_cases !path settings;
   Hegel.run_hegel_test ~settings ~database_key:"cordis:cel:differential" (fun tc ->
       iterates_map := false;
       let src = expr tc ~scope:[] 4 in

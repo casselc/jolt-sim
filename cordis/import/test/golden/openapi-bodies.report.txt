@@ -1,0 +1,4 @@
+POST /counts: skipped: a request body in application/x-www-form-urlencoded that is not an object
+Grant_grant_type: the value "password" is the case Password
+Grant_grant_type: the value "client_credentials" is the case ClientCredentials
+(all): where the schema gives no maxLength, maxItems or maxProperties, the configured default ceiling applies

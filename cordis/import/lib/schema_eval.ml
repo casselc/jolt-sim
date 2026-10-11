@@ -42,7 +42,7 @@ let length s =
 
 let matches re s =
   ignore (P.regex re : string);
-  match Cordis_cel.Eval.compile_regex re with Some r -> Re.execp r s | None -> P.unsupported "pattern %S does not compile" re
+  match Cordis_cel.Eval.compile_regex (P.translate re) with Some r -> Re.execp r s | None -> P.unsupported "pattern %S does not compile" re
 
 let nat = P.nat
 let num j = match number j with Some f -> f | None -> P.unsupported "not a number: %s" (J.to_string j)

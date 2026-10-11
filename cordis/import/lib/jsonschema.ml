@@ -422,8 +422,16 @@ and record c ~loc ~name s =
         let t, r = translate c ~loc:(name ^ "_" ^ fname) ps in
         let req = List.mem p required in
         let nullable = match t with Opt _ -> true | _ -> false in
+        (* a property that need not be present, with a type that admits null but a schema that does not
+           (an enum without null): absent and null are both None, so it is not nullable (the codec refuses
+           null) and its residue lets absence through *)
+        let null_refused =
+          (not req) && nullable && (match Schema_eval.check ~docs:c.docs ps `Null with Ok b -> not b | Error _ -> false)
+        in
+        let nullable = nullable && not null_refused in
         let ty, r =
-          if req || nullable then (t, r)
+          if null_refused then (t, fun q -> match r q with [] -> [] | inner -> [ Printf.sprintf "(!%s.hasValue() || %s)" q (conj inner) ])
+          else if req || nullable then (t, r)
           else (Opt t, fun q -> match r (q ^ ".value()") with [] -> [] | inner -> [ Printf.sprintf "(!%s.hasValue() || %s)" q (conj inner) ])
         in
         ({ name = fname; json = p; ty; required = req; nullable }, r))

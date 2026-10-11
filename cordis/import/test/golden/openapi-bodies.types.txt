@@ -1,0 +1,43 @@
+type GrantGrantType = Password | ClientCredentials;
+
+type Grant = { grant_type : GrantGrantType; scope : option(list(string)<max 3>); count : option(int); active : option(bool); note : option(string<max 12>); };
+
+type UploadInfo = { owner : option(string<max 8>); pages : option(int); };
+
+type Upload = { name : string<max 12>; tags : option(list(string)<max 3>); info : option(UploadInfo); };
+
+type CreateTokenRequest = { body : Grant; };
+
+type SaveFilterRequestBodyBy = { name : option(string); min : option(int); };
+
+type SaveFilterRequestBody = { by : option(SaveFilterRequestBodyBy); ids : option(list(int)<max 3>); };
+
+type SaveFilterRequest = { body : option(SaveFilterRequestBody); };
+
+type UploadRequest = { body : Upload; };
+
+type HttpOther = { status : int; body : dyn; };
+
+type CreateTokenResponse = S201 | Other(HttpOther);
+
+type SaveFilterResponse = S204 | Other(HttpOther);
+
+type UploadResponse = S201 | Other(HttpOther);
+
+effect bodies.createToken(CreateTokenRequest) : CreateTokenResponse;
+
+effect bodies.saveFilter(SaveFilterRequest) : SaveFilterResponse;
+
+effect bodies.upload(UploadRequest) : UploadResponse;
+
+cell check_CreateTokenRequest(x : CreateTokenRequest) : bool = {
+  ((!x.body.scope.hasValue() || ((!(type(x.body.scope.value()) == list) || size(x.body.scope.value()) <= 3) && x.body.scope.value().all(v20, (!(type(v20) == string) || v20.matches("^[a-z]+$"))))) && (!x.body.count.hasValue() || ((!((type(x.body.count.value()) == double || type(x.body.count.value()) == int || type(x.body.count.value()) == uint)) || x.body.count.value() >= 0.0) && (!((type(x.body.count.value()) == double || type(x.body.count.value()) == int || type(x.body.count.value()) == uint)) || x.body.count.value() <= 9.0))) && (!x.body.note.hasValue() || (!(type(x.body.note.value()) == string) || size(x.body.note.value()) <= 12)));
+}
+
+cell check_SaveFilterRequest(x : SaveFilterRequest) : bool = {
+  (!x.body.hasValue() || ((!x.body.value().by.hasValue() || (!x.body.value().by.value().name.hasValue() || (!(type(x.body.value().by.value().name.value()) == string) || x.body.value().by.value().name.value().matches("^[a-z]*$")))) && (!x.body.value().ids.hasValue() || (!(type(x.body.value().ids.value()) == list) || size(x.body.value().ids.value()) <= 3))));
+}
+
+cell check_UploadRequest(x : UploadRequest) : bool = {
+  ((!(type(x.body.name) == string) || size(x.body.name) <= 12) && (!x.body.tags.hasValue() || ((!(type(x.body.tags.value()) == list) || size(x.body.tags.value()) <= 3) && x.body.tags.value().all(v19, (!(type(v19) == string) || v19.matches("^[a-z]*$"))))) && (!x.body.info.hasValue() || (!x.body.info.value().owner.hasValue() || (!(type(x.body.info.value().owner.value()) == string) || size(x.body.info.value().owner.value()) <= 8))));
+}

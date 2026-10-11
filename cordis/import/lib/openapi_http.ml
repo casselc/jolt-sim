@@ -7,7 +7,12 @@
 
    Parameters are serialised by their style: path and header `simple`,
    query `form` (exploded or not) and `deepObject`, cookie `form`. The body
-   is the JSON Schema codec's JSON, or the string itself for text. Reading
+   is the JSON Schema codec's JSON; a form (application/x-www-form-
+   urlencoded) or multipart/form-data body writes each of its properties as
+   a field or a part, as its Encoding Object says (a form's by style, form
+   and exploded by default; a part's content type text/plain for a
+   primitive, application/json for anything else); text is the string
+   itself. Reading
    a response is lenient about properties a server adds (they are
    dropped); everything else is as strict as the codec. *)
 
@@ -65,12 +70,79 @@ let query_pairs (p : param) (j : J.t) =
   | _, `Assoc kv when p.explode -> List.map (fun (k, x) -> (e k, e (text x))) kv
   | _, j -> [ (e p.wire, simple ~explode:false ~enc:e j) ]
 
+(* ---- bodies ---------------------------------------------------------------------------------------- *)
+
+(* a form's or multipart body's properties; an empty list or object has no field or part of its own (it
+   would read back as absent), so it is left out, and a required one cannot be sent *)
+let props ~required what (j : J.t) =
+  match j with
+  | `Assoc kv ->
+      List.filter
+        (fun (k, x) ->
+          match x with
+          | `List [] | `Assoc [] ->
+              if List.mem k required then raise (C.Bad (Printf.sprintf "not sendable: the %s body's property %s is required and empty" what k));
+              false
+          | _ -> true)
+        kv
+  | _ -> raise (C.Bad (Printf.sprintf "the %s body is not an object" what))
+
+let encoding_of (op : operation) k = List.assoc_opt k op.encoding
+
+(* application/x-www-form-urlencoded: each property a field, written as a query parameter of its style
+   would be *)
+let form_body ~required (op : operation) j =
+  String.concat "&"
+    (List.concat_map
+       (fun (k, x) ->
+         let e = encoding_of op k in
+         match Option.bind e (fun e -> e.content_type) with
+         | Some ct when Openapi.is_json ct -> [ pct k ^ "=" ^ pct (J.to_string x) ]
+         | _ ->
+             let style = Option.value (Option.bind e (fun e -> e.style)) ~default:"form" in
+             let explode = Option.value (Option.bind e (fun e -> e.explode)) ~default:(style = "form") in
+             List.map (fun (a, b) -> a ^ "=" ^ b) (query_pairs { field = k; wire = k; loc = Query; style; explode; required = false } x))
+       (props ~required "form" j))
+
+(* multipart/form-data: each property a part (a list one part per item), named by the property; the
+   boundary is a digest of the parts, so the same body is the same bytes, and occurs in none of them *)
+let multipart_body ~required (op : operation) j =
+  let part k x =
+    let ct = match Option.bind (encoding_of op k) (fun e -> e.content_type) with Some c -> c | None -> (match x with `Assoc _ | `List _ -> "application/json" | _ -> "text/plain") in
+    (k, ct, if Openapi.is_json ct then J.to_string x else text x)
+  in
+  (* a list is a part per item, unless its Encoding Object makes it one JSON part *)
+  let json_part k = match Option.bind (encoding_of op k) (fun e -> e.content_type) with Some c -> Openapi.is_json c | None -> false in
+  let parts = List.concat_map (fun (k, x) -> match x with `List xs when not (json_part k) -> List.map (part k) xs | x -> [ part k x ]) (props ~required "multipart" j) in
+  let rec boundary n =
+    let b = "cordis-" ^ String.sub (Cordis_cel.Sha256.digest (string_of_int n ^ String.concat "\n" (List.map (fun (_, _, c) -> c) parts))) 0 24 in
+    if List.exists (fun (k, _, c) -> Schema_pred.replace ~sub:b ~by:"" (k ^ c) <> k ^ c) parts then boundary (n + 1) else b
+  in
+  let b = boundary 0 in
+  let quote k = Schema_pred.replace ~sub:"\"" ~by:"%22" (Schema_pred.replace ~sub:"\r" ~by:"%0D" (Schema_pred.replace ~sub:"\n" ~by:"%0A" k)) in
+  let body =
+    String.concat ""
+      (List.map (fun (k, ct, c) -> Printf.sprintf "--%s\r\nContent-Disposition: form-data; name=\"%s\"\r\nContent-Type: %s\r\n\r\n%s\r\n" b (quote k) ct c) parts)
+    ^ Printf.sprintf "--%s--\r\n" b
+  in
+  (body, "multipart/form-data; boundary=" ^ b)
+
 (* ---- requests -------------------------------------------------------------------------------------- *)
 
 (* a value the codec accepts that HTTP cannot carry *)
 let unsendable e = String.length e >= 13 && String.sub e 0 13 = "not sendable:"
 
 let fields (t : t) n = match List.assoc_opt n t.imp.defs with Some (JS.Record fs) -> fs | _ -> raise (C.Bad ("no record " ^ n))
+
+(* the properties a body requires: its record's required fields, by the request's body field *)
+let body_required (t : t) (fs : JS.field list) f =
+  let rec named = function JS.Named n -> Some n | JS.Opt ty -> named ty | _ -> None in
+  match List.find_opt (fun (x : JS.field) -> x.json = f) fs with
+  | Some x -> (
+      match Option.bind (named x.ty) (fun n -> List.assoc_opt n t.imp.defs) with
+      | Some (JS.Record gs) -> List.filter_map (fun (g : JS.field) -> if g.required then Some g.json else None) gs
+      | _ -> [])
+  | None -> []
 
 let encode (t : t) ~kind ~key (v : V.t) : (request, string) result =
   match
@@ -126,7 +198,11 @@ let encode (t : t) ~kind ~key (v : V.t) : (request, string) result =
       | Some (f, media) -> (
           match json f with
           | None -> (None, None)
-          | Some j -> if Openapi.is_json media then (Some (J.to_string j), Some media) else (Some (text j), Some media))
+          | Some j ->
+              if Openapi.is_json media then (Some (J.to_string j), Some media)
+              else if Openapi.is_form media then (Some (form_body ~required:(body_required t fs f) op j), Some media)
+              else if Openapi.is_multipart media then (let b, m = multipart_body ~required:(body_required t fs f) op j in (Some b, Some m))
+              else (Some (text j), Some media))
     in
     { meth = op.meth; target; headers; body; media }
   with
