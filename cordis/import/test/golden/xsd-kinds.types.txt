@@ -1,0 +1,37 @@
+type Ints = list(int);
+
+type Part = { name : option(string); a : option(string); c : int; };
+
+type Measure = { unit : string; value : double; };
+
+type DocChoiceLeft = { value : int; };
+
+type DocChoiceRight = { value : Part; };
+
+type DocChoice = Left(DocChoiceLeft) | Right(DocChoiceRight);
+
+type Doc = { id : string; flag : option(bool); level : int; s : string; n : option(int); x : list(double)<max 3>; d : option(double); b : list(bool); t : option(string); ns : option(string); ints : option(list(int)); part : list(Part)<max 2>; choice : list(DocChoice)<max 2>; measure : option(Measure); };
+
+cell check_Ints(x : Ints) : bool = {
+  x.all(v1, ((!((type(v1) == double || type(v1) == int || type(v1) == uint)) || v1 >= -2147483648.0) && (!((type(v1) == double || type(v1) == int || type(v1) == uint)) || v1 <= 2147483647.0)));
+}
+
+cell check_Part(x : Part) : bool = {
+  ((!x.name.hasValue() || (!(type(x.name.value()) == string) || x.name.value().matches("^([^\t\n\r ]+( [^\t\n\r ]+)*)?$"))) && ((!((type(x.c) == double || type(x.c) == int || type(x.c) == uint)) || x.c >= -2147483648.0) && (!((type(x.c) == double || type(x.c) == int || type(x.c) == uint)) || x.c <= 2147483647.0)));
+}
+
+cell check_DocChoiceLeft(x : DocChoiceLeft) : bool = {
+  ((!((type(x.value) == double || type(x.value) == int || type(x.value) == uint)) || x.value >= -2147483648.0) && (!((type(x.value) == double || type(x.value) == int || type(x.value) == uint)) || x.value <= 2147483647.0));
+}
+
+cell check_DocChoiceRight(x : DocChoiceRight) : bool = {
+  ((!x.value.name.hasValue() || (!(type(x.value.name.value()) == string) || x.value.name.value().matches("^([^\t\n\r ]+( [^\t\n\r ]+)*)?$"))) && ((!((type(x.value.c) == double || type(x.value.c) == int || type(x.value.c) == uint)) || x.value.c >= -2147483648.0) && (!((type(x.value.c) == double || type(x.value.c) == int || type(x.value.c) == uint)) || x.value.c <= 2147483647.0)));
+}
+
+cell check_DocChoice(x : DocChoice) : bool = {
+  match x {Left(c1) -> ((!((type(c1.value) == double || type(c1.value) == int || type(c1.value) == uint)) || c1.value >= -2147483648.0) && (!((type(c1.value) == double || type(c1.value) == int || type(c1.value) == uint)) || c1.value <= 2147483647.0)); Right(c1) -> ((!c1.value.name.hasValue() || (!(type(c1.value.name.value()) == string) || c1.value.name.value().matches("^([^\t\n\r ]+( [^\t\n\r ]+)*)?$"))) && ((!((type(c1.value.c) == double || type(c1.value.c) == int || type(c1.value.c) == uint)) || c1.value.c >= -2147483648.0) && (!((type(c1.value.c) == double || type(c1.value.c) == int || type(c1.value.c) == uint)) || c1.value.c <= 2147483647.0))); _ -> true};
+}
+
+cell check_Doc(x : Doc) : bool = {
+  (((!((type(x.level) == double || type(x.level) == int || type(x.level) == uint)) || x.level >= -2147483648.0) && (!((type(x.level) == double || type(x.level) == int || type(x.level) == uint)) || x.level <= 2147483647.0)) && (!x.n.hasValue() || ((!((type(x.n.value()) == double || type(x.n.value()) == int || type(x.n.value()) == uint)) || x.n.value() >= -9.2233720368547758e+18) && (!((type(x.n.value()) == double || type(x.n.value()) == int || type(x.n.value()) == uint)) || x.n.value() <= 9.2233720368547758e+18))) && ((!(type(x.x) == list) || size(x.x) >= 1) && (!(type(x.x) == list) || size(x.x) <= 3)) && (!x.t.hasValue() || (!(type(x.t.value()) == string) || x.t.value().matches("^([^\t\n\r ]+( [^\t\n\r ]+)*)?$"))) && (!x.ns.hasValue() || (!(type(x.ns.value()) == string) || x.ns.value().matches("^[^\t\n\r]*$"))) && (!x.ints.hasValue() || x.ints.value().all(v14, ((!((type(v14) == double || type(v14) == int || type(v14) == uint)) || v14 >= -2147483648.0) && (!((type(v14) == double || type(v14) == int || type(v14) == uint)) || v14 <= 2147483647.0)))) && (!(type(x.part) == list) || size(x.part) <= 2) && x.part.all(v6, ((!v6.name.hasValue() || (!(type(v6.name.value()) == string) || v6.name.value().matches("^([^\t\n\r ]+( [^\t\n\r ]+)*)?$"))) && ((!((type(v6.c) == double || type(v6.c) == int || type(v6.c) == uint)) || v6.c >= -2147483648.0) && (!((type(v6.c) == double || type(v6.c) == int || type(v6.c) == uint)) || v6.c <= 2147483647.0)))) && (!(type(x.choice) == list) || size(x.choice) <= 2) && x.choice.all(v8, match v8 {Left(c2) -> ((!((type(c2.value) == double || type(c2.value) == int || type(c2.value) == uint)) || c2.value >= -2147483648.0) && (!((type(c2.value) == double || type(c2.value) == int || type(c2.value) == uint)) || c2.value <= 2147483647.0)); Right(c2) -> ((!c2.value.name.hasValue() || (!(type(c2.value.name.value()) == string) || c2.value.name.value().matches("^([^\t\n\r ]+( [^\t\n\r ]+)*)?$"))) && ((!((type(c2.value.c) == double || type(c2.value.c) == int || type(c2.value.c) == uint)) || c2.value.c >= -2147483648.0) && (!((type(c2.value.c) == double || type(c2.value.c) == int || type(c2.value.c) == uint)) || c2.value.c <= 2147483647.0))); _ -> true}));
+}

@@ -1,0 +1,2 @@
+Doc_d: xs:decimal is a double: lossy beyond its 53 bits (RFC 0005, open question 1)
+(all): where the schema gives no maxLength, maxItems or maxProperties, the configured default ceiling applies

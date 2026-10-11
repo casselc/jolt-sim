@@ -1,0 +1,5 @@
+Line: xs:decimal is a double: lossy beyond its 53 bits (RFC 0005, open question 1)
+Status: the value "open" is the case Open
+Status: the value "paid" is the case Paid
+Status: the value "shipped" is the case Shipped
+(all): where the schema gives no maxLength, maxItems or maxProperties, the configured default ceiling applies

@@ -1,0 +1,196 @@
+{
+  "root": {
+    "namespace": "urn:example:kinds",
+    "element": "doc",
+    "type": "Doc"
+  },
+  "elementFormDefault": "unqualified",
+  "shape": {
+    "attributes": [
+      { "name": "id", "type": "string" },
+      { "name": "flag", "type": "boolean" },
+      { "name": "level", "type": "integer", "default": "3" }
+    ],
+    "content": {
+      "sequence": [
+        {
+          "element": "s",
+          "namespace": "",
+          "occurs": "1..1",
+          "type": { "simple": "string" }
+        },
+        {
+          "element": "n",
+          "namespace": "",
+          "occurs": "0..1",
+          "type": { "simple": "integer" }
+        },
+        {
+          "element": "x",
+          "namespace": "",
+          "occurs": "1..3",
+          "type": { "simple": "double" }
+        },
+        {
+          "element": "d",
+          "namespace": "",
+          "occurs": "0..1",
+          "type": { "simple": "decimal" }
+        },
+        {
+          "element": "b",
+          "namespace": "",
+          "occurs": "0..*",
+          "type": { "simple": "boolean" }
+        },
+        {
+          "element": "t",
+          "namespace": "",
+          "occurs": "0..1",
+          "type": { "simple": "string (whitespace collapsed)" }
+        },
+        {
+          "element": "ns",
+          "namespace": "",
+          "occurs": "0..1",
+          "type": { "simple": "string (whitespace replaced)" }
+        },
+        {
+          "element": "ints",
+          "namespace": "",
+          "occurs": "0..1",
+          "type": { "simple": "list of integer" }
+        },
+        {
+          "element": "part",
+          "namespace": "",
+          "occurs": "0..2",
+          "type": {
+            "attributes": [
+              { "name": "name", "type": "string (whitespace collapsed)" }
+            ],
+            "content": {
+              "all": [
+                {
+                  "element": "a",
+                  "namespace": "",
+                  "occurs": "0..1",
+                  "type": { "simple": "string" }
+                },
+                {
+                  "element": "c",
+                  "namespace": "",
+                  "occurs": "1..1",
+                  "type": { "simple": "integer" }
+                }
+              ]
+            }
+          }
+        },
+        {
+          "choice": "choice",
+          "occurs": "0..2",
+          "cases": [
+            {
+              "element": "left",
+              "namespace": "",
+              "occurs": "1..1",
+              "type": { "simple": "integer" }
+            },
+            {
+              "element": "right",
+              "namespace": "",
+              "occurs": "1..1",
+              "type": {
+                "attributes": [
+                  { "name": "name", "type": "string (whitespace collapsed)" }
+                ],
+                "content": {
+                  "all": [
+                    {
+                      "element": "a",
+                      "namespace": "",
+                      "occurs": "0..1",
+                      "type": { "simple": "string" }
+                    },
+                    {
+                      "element": "c",
+                      "namespace": "",
+                      "occurs": "1..1",
+                      "type": { "simple": "integer" }
+                    }
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        {
+          "element": "measure",
+          "namespace": "",
+          "occurs": "0..1",
+          "type": {
+            "attributes": [ { "name": "unit", "type": "string" } ],
+            "content": { "value": "double" }
+          }
+        }
+      ]
+    }
+  },
+  "types": {
+    "$root": "XsdRoot",
+    "Ints": { "alias": true },
+    "Part": {
+      "properties": {
+        "name": { "json": "name", "required": false, "nullable": false },
+        "a": { "json": "a", "required": false, "nullable": false },
+        "c": { "json": "c", "required": true, "nullable": false }
+      }
+    },
+    "Measure": {
+      "properties": {
+        "unit": { "json": "unit", "required": true, "nullable": false },
+        "value": { "json": "value", "required": true, "nullable": false }
+      }
+    },
+    "DocChoiceLeft": {
+      "properties": {
+        "value": { "json": "value", "required": true, "nullable": false }
+      }
+    },
+    "DocChoiceRight": {
+      "properties": {
+        "value": { "json": "value", "required": true, "nullable": false }
+      }
+    },
+    "DocChoice": {
+      "discriminator": "kind",
+      "cases": {
+        "Left": { "value": "left", "payload": "DocChoiceLeft" },
+        "Right": { "value": "right", "payload": "DocChoiceRight" }
+      }
+    },
+    "Doc": {
+      "properties": {
+        "id": { "json": "id", "required": true, "nullable": false },
+        "flag": { "json": "flag", "required": false, "nullable": false },
+        "level": { "json": "level", "required": true, "nullable": false },
+        "s": { "json": "s", "required": true, "nullable": false },
+        "n": { "json": "n", "required": false, "nullable": false },
+        "x": { "json": "x", "required": true, "nullable": false },
+        "d": { "json": "d", "required": false, "nullable": false },
+        "b": { "json": "b", "required": true, "nullable": false },
+        "t": { "json": "t", "required": false, "nullable": false },
+        "ns": { "json": "ns", "required": false, "nullable": false },
+        "ints": { "json": "ints", "required": false, "nullable": false },
+        "part": { "json": "part", "required": true, "nullable": false },
+        "choice": { "json": "choice", "required": true, "nullable": false },
+        "measure": {
+          "json": "measure",
+          "required": false,
+          "nullable": false
+        }
+      }
+    }
+  }
+}

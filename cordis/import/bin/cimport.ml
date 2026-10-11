@@ -6,6 +6,7 @@
      cimport tableschema SCHEMA.json [--name ROW] [--dialect DIALECT.json] [--out DIR | --print types|report|names]
      cimport csvrow TYPES.cg ROW [--dialect DIALECT.json] [--print names]
      cimport csvinfer SAMPLE.csv   (a Table Schema guessed for review, and what was seen)
+     cimport xsd SCHEMA.xsd [--root ELEMENT] [--out DIR | --print types|report|names]
 
    reads a FileDescriptorSet and writes DIR/types.cg (the types and their
    check_ cells), DIR/report.txt (what was approximated) and DIR/names.json
@@ -150,6 +151,16 @@ let () =
       | schema, notes ->
           print_string (Yojson.Safe.pretty_to_string schema ^ "\n");
           List.iter (fun n -> prerr_endline ("inferred " ^ n)) notes)
+  | _ :: "xsd" :: path :: rest -> (
+      let root, rest = match rest with "--root" :: r :: rest -> (Some r, rest) | rest -> (None, rest) in
+      match Xsd.of_string ?root (read path) with
+      | exception Xsd.Refused m -> die "%s: %s" path m
+      | t ->
+          let types = Cordis_graph.Print.file (Jsonschema.types_file t.imp) in
+          check_output types;
+          emit rest types
+            (String.concat "" (List.map (fun (l, m) -> Printf.sprintf "%s: %s\n" l m) t.report))
+            (Yojson.Safe.pretty_to_string (Xsd.name_map t) ^ "\n"))
   | [ _; "protobuf"; set; "--print"; "attach" ] ->
       Printf.printf "uses descriptors sha256:%s;\n" (Cordis_cel.Sha256.digest (read set))
   | _ :: "protobuf" :: set :: rest -> (

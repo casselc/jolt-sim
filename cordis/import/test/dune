@@ -206,3 +206,35 @@
 (rule (alias runtest) (action (diff golden/table-keys.report.txt table-keys.report.out)))
 (rule (with-stdout-to table-keys.names.out (run %{exe:../bin/cimport.exe} tableschema %{dep:tables/keys.json} --print names)))
 (rule (alias runtest) (action (diff golden/table-keys.names.txt table-keys.names.out)))
+
+; XSD and XML (RFC 0005 revision 4): documents read and refused, canonical writing, a round trip
+(test
+ (name xml_test)
+ (modules xml_test)
+ (deps (source_tree xsd))
+ (libraries typed_values cordis_import cordis_cel cel_testgen hegel alcotest yojson re))
+
+; The XML codec against xmlschema and lxml. Needs python3 with xmlschema and lxml:
+;   dune build @import/test/xml-agreement
+(executable
+ (name xml_agreement)
+ (modules xml_agreement)
+ (libraries typed_values cordis_import cordis_cel cel_testgen hegel alcotest unix yojson))
+
+(rule
+ (alias xml-agreement)
+ (deps xmlvalid.py (source_tree xsd))
+ (action
+  (run %{exe:xml_agreement.exe} xmlvalid.py xsd/kinds.xsd xsd/order.xsd)))
+(rule (with-stdout-to xsd-order.types.out (run %{exe:../bin/cimport.exe} xsd %{dep:xsd/order.xsd} --print types)))
+(rule (alias runtest) (action (diff golden/xsd-order.types.txt xsd-order.types.out)))
+(rule (with-stdout-to xsd-order.report.out (run %{exe:../bin/cimport.exe} xsd %{dep:xsd/order.xsd} --print report)))
+(rule (alias runtest) (action (diff golden/xsd-order.report.txt xsd-order.report.out)))
+(rule (with-stdout-to xsd-order.names.out (run %{exe:../bin/cimport.exe} xsd %{dep:xsd/order.xsd} --print names)))
+(rule (alias runtest) (action (diff golden/xsd-order.names.txt xsd-order.names.out)))
+(rule (with-stdout-to xsd-kinds.types.out (run %{exe:../bin/cimport.exe} xsd %{dep:xsd/kinds.xsd} --print types)))
+(rule (alias runtest) (action (diff golden/xsd-kinds.types.txt xsd-kinds.types.out)))
+(rule (with-stdout-to xsd-kinds.report.out (run %{exe:../bin/cimport.exe} xsd %{dep:xsd/kinds.xsd} --print report)))
+(rule (alias runtest) (action (diff golden/xsd-kinds.report.txt xsd-kinds.report.out)))
+(rule (with-stdout-to xsd-kinds.names.out (run %{exe:../bin/cimport.exe} xsd %{dep:xsd/kinds.xsd} --print names)))
+(rule (alias runtest) (action (diff golden/xsd-kinds.names.txt xsd-kinds.names.out)))

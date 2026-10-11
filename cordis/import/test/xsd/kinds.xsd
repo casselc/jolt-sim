@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Every structural feature the XSD importer reads, without constraints, so
+     most values drawn from its types are valid: attributes (required, optional,
+     defaulted), a sequence with optional and repeated elements, all, a choice
+     that repeats, a list, simple content, nesting, and unqualified local
+     elements under a target namespace. -->
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:k="urn:example:kinds" targetNamespace="urn:example:kinds">
+  <xs:element name="doc" type="k:Doc"/>
+  <xs:complexType name="Doc">
+    <xs:sequence>
+      <xs:element name="s" type="xs:string"/>
+      <xs:element name="n" type="xs:long" minOccurs="0"/>
+      <xs:element name="x" type="xs:double" maxOccurs="3"/>
+      <xs:element name="d" type="xs:decimal" minOccurs="0"/>
+      <xs:element name="b" type="xs:boolean" minOccurs="0" maxOccurs="unbounded"/>
+      <xs:element name="t" type="xs:token" minOccurs="0"/>
+      <xs:element name="ns" type="xs:normalizedString" minOccurs="0"/>
+      <xs:element name="ints" type="k:Ints" minOccurs="0"/>
+      <xs:element name="part" type="k:Part" minOccurs="0" maxOccurs="2"/>
+      <xs:choice minOccurs="0" maxOccurs="2">
+        <xs:element name="left" type="xs:int"/>
+        <xs:element name="right" type="k:Part"/>
+      </xs:choice>
+      <xs:element name="measure" type="k:Measure" minOccurs="0"/>
+    </xs:sequence>
+    <xs:attribute name="id" type="xs:string" use="required"/>
+    <xs:attribute name="flag" type="xs:boolean"/>
+    <xs:attribute name="level" type="xs:int" default="3"/>
+  </xs:complexType>
+  <xs:complexType name="Part">
+    <xs:all>
+      <xs:element name="a" type="xs:string" minOccurs="0"/>
+      <xs:element name="c" type="xs:int"/>
+    </xs:all>
+    <xs:attribute name="name" type="xs:token"/>
+  </xs:complexType>
+  <xs:complexType name="Measure">
+    <xs:simpleContent>
+      <xs:extension base="xs:float">
+        <xs:attribute name="unit" type="xs:string" use="required"/>
+      </xs:extension>
+    </xs:simpleContent>
+  </xs:complexType>
+  <xs:simpleType name="Ints">
+    <xs:list itemType="xs:int"/>
+  </xs:simpleType>
+</xs:schema>

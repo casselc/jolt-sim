@@ -2,7 +2,9 @@
 
 Status: proposed. Revision 2 settles the frames design (below) and its
 model. Revision 3 (proposed) settles CSV's first stage, typed by a
-Table Schema, and records it as built ("CSV", "Revision 3"). Records the design so that later work
+Table Schema, and records it as built ("CSV", "Revision 3"). Revision 4
+(proposed) does the same for XSD and XML without recursion ("XML and
+XSD", "Revision 4"). Records the design so that later work
 starts from it. Extends RFC 0003 (translating importers) and follows the
 pattern RFC 0004 set for protobuf. Each part needs a revision of this RFC,
 accepted, before it is built, and the frames part needs a Quint model
@@ -115,6 +117,84 @@ The oracles are Python `xmlschema` and lxml/libxml2:
 - What the oracle reads, the codec reads to the same value.
 - Golden imports cover a corpus of schemas, including a slice of the W3C
   XSD test suite.
+
+### Revision 4: the second stage, as built
+
+**An XSD is imported through the JSON Schema importer**, as a Table
+Schema is (`import/lib/xsd.ml`): the document element's type, and every
+named type it reaches, become `$defs` of a synthetic JSON Schema, so the
+types file, residue, report, name map and strict codec are that
+importer's. Beside it the import builds the *shape* the XML codec goes
+by: which properties are attributes (with their defaults), the elements
+in order with their namespace and occurrence, the choices, and each
+simple value's lexical kind. As built, against the table above:
+
+- a choice is a variant, one case per element, each case's payload
+  `{value}` (in JSON, `{kind: element, value}`);
+- a particle that may repeat is a `list`, always present: no elements
+  is the empty list (an `option(list)` would have two values for it);
+- an attribute with a default or a fixed value is always present once
+  read (the default filled), so its field is not an `option`;
+- `string`, `normalizedString`, `token` and `anyURI` are strings, read
+  with their whitespace preserved, replaced or collapsed as XSD says;
+  a value that would not survive that (a tab in a `normalizedString`)
+  is refused by a pattern in the residue;
+- the integer types are `int` with their widths as bounds, `float` and
+  `double` are `double`, and `xs:decimal` is a `double`, reported as
+  lossy (open question 1 stays open; this is its second choice);
+- a pattern is XSD's own dialect, matched whole: it is rewritten as an
+  ECMA-262 one (`^` and `$` are characters, `.` excludes only CR and LF,
+  `\d` is any decimal digit, `\w` anything but punctuation, separators
+  and others, `\s` XML's four white-space characters) and translated to
+  RE2 as JSON Schema's patterns are.
+
+Refused, naming what: recursion (stage 3), `include`, `import` and
+`redefine`, groups and attribute groups, `xs:any` and `anyAttribute`,
+mixed content, `nillable`, unions, element defaults, substitution groups
+and abstract types, qualified attributes, the calendar types (open
+question 2), the binary and name-like types, and patterns using XSD's
+name classes (`\i`, `\c`), block escapes or class subtraction. `key`,
+`keyref` and `unique` are reported, not checked.
+
+**The parser is the harness's own** (`import/lib/xml_tree.ml`), not
+Xmlm: Xmlm collapses every attribute value, which XML asks only of
+non-CDATA attributes, so a string attribute could not hold two spaces
+or a tab and a document would be read as another. It reads XML 1.0 with
+namespaces strictly: no DTD (refused), only the five predefined
+entities and character references, line ends and attribute values
+normalised as the spec says (a reference stays what it names), every
+character UTF-8 and allowed by XML 1.0, duplicate attributes refused,
+and the size, depth and attribute count limited by policy.
+
+**The codec** (`import/lib/xml_codec.ml`) reads by the shape: the
+document element must be the schema's; an attribute or element the type
+does not name, a sequence out of order, an element occurring more or
+fewer times than it may, and text where only elements may be are
+refused; values are read in their lexical space; then the row codec
+reads the whole with its residue. Writing is canonical: the declaration,
+the target namespace declared once at the root (the default namespace
+when every element is qualified, else a `tns` prefix for the qualified
+ones), elements in sequence order, attributes sorted, no indentation, a
+CR (and in attributes a tab or LF) as a character reference, the
+shortest decimal that reads back (without an exponent for
+`xs:decimal`). A value XML 1.0 cannot hold is refused.
+
+`cimport xsd SCHEMA.xsd [--root ELEMENT]` writes the types, the report
+and a name map holding the shape.
+
+**Testing.** `import/test/xml_test.ml`: documents read and refused for
+each rule (order, cardinality, unknown elements and attributes, text,
+namespaces, a DTD, an unknown entity, residue), canonical writing,
+import refusals, XSD pattern cases, and a Hegel property that values
+drawn from a schema of every structural feature, written, read back as
+themselves when they satisfy their schema (a value outside it may read
+back normalised, as XSD reads it). `xml_agreement.ml` against xmlschema
+and lxml (`xmlvalid.py`, `dune build @import/test/xml-agreement`): the
+document the codec writes is valid for xmlschema exactly when the codec
+reads it, and libxml2 agrees; 2,758 documents in a 3,000-case run, 593
+valid. A reader that does not replace a `normalizedString`'s whitespace
+is caught. The decoded values are compared through the codec's own
+round trip, not yet against xmlschema's decoding.
 
 ## CSV
 

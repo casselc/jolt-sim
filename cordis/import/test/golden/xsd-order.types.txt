@@ -1,0 +1,61 @@
+type Name = string<max 40>;
+
+type Customer = { name : string<max 40>; email : option(string); };
+
+type Sku = string;
+
+type Line = { sku : string; qty : int; value : double; };
+
+type CardNumber = string;
+
+type TagList = list(string);
+
+type Status = Open | Paid | Shipped;
+
+type OrderChoiceCard = { value : string; };
+
+type OrderChoiceInvoice = { value : string; };
+
+type OrderChoice = Card(OrderChoiceCard) | Invoice(OrderChoiceInvoice);
+
+type Order = { id : int; status : Status; customer : Customer; line : list(Line)<max 5>; note : option(string); choice : OrderChoice; tags : option(list(string)); };
+
+cell check_Name(x : Name) : bool = {
+  ((!(type(x) == string) || size(x) >= 1) && (!(type(x) == string) || size(x) <= 40));
+}
+
+cell check_Customer(x : Customer) : bool = {
+  ((!(type(x.name) == string) || size(x.name) >= 1) && (!(type(x.name) == string) || size(x.name) <= 40));
+}
+
+cell check_Sku(x : Sku) : bool = {
+  (!(type(x) == string) || x.matches("^(?:(?:[A-Z]{2}-[0-9]{3}))$"));
+}
+
+cell check_Line(x : Line) : bool = {
+  ((!(type(x.sku) == string) || x.sku.matches("^(?:(?:[A-Z]{2}-[0-9]{3}))$")) && ((!((type(x.qty) == double || type(x.qty) == int || type(x.qty) == uint)) || x.qty >= 0.0) && (!((type(x.qty) == double || type(x.qty) == int || type(x.qty) == uint)) || x.qty <= 65535.0)));
+}
+
+cell check_CardNumber(x : CardNumber) : bool = {
+  (!(type(x) == string) || x.matches("^(?:(?:\\p{Nd}{4}( \\p{Nd}{4}){3}))$"));
+}
+
+cell check_TagList(x : TagList) : bool = {
+  x.all(v1, ((!(type(v1) == string) || v1.matches("^([^\t\n\r ]+( [^\t\n\r ]+)*)?$")) && (!(type(v1) == string) || v1.matches("^[^\t\n\r ]+$"))));
+}
+
+cell check_OrderChoiceCard(x : OrderChoiceCard) : bool = {
+  (!(type(x.value) == string) || x.value.matches("^(?:(?:\\p{Nd}{4}( \\p{Nd}{4}){3}))$"));
+}
+
+cell check_OrderChoiceInvoice(x : OrderChoiceInvoice) : bool = {
+  (!(type(x.value) == string) || x.value.matches("^([^\t\n\r ]+( [^\t\n\r ]+)*)?$"));
+}
+
+cell check_OrderChoice(x : OrderChoice) : bool = {
+  match x {Card(c1) -> (!(type(c1.value) == string) || c1.value.matches("^(?:(?:\\p{Nd}{4}( \\p{Nd}{4}){3}))$")); Invoice(c1) -> (!(type(c1.value) == string) || c1.value.matches("^([^\t\n\r ]+( [^\t\n\r ]+)*)?$")); _ -> true};
+}
+
+cell check_Order(x : Order) : bool = {
+  ((!((type(x.id) == double || type(x.id) == int || type(x.id) == uint)) || x.id >= 1.0) && ((!(type(x.customer.name) == string) || size(x.customer.name) >= 1) && (!(type(x.customer.name) == string) || size(x.customer.name) <= 40)) && ((!(type(x.line) == list) || size(x.line) >= 1) && (!(type(x.line) == list) || size(x.line) <= 5)) && x.line.all(v6, ((!(type(v6.sku) == string) || v6.sku.matches("^(?:(?:[A-Z]{2}-[0-9]{3}))$")) && ((!((type(v6.qty) == double || type(v6.qty) == int || type(v6.qty) == uint)) || v6.qty >= 0.0) && (!((type(v6.qty) == double || type(v6.qty) == int || type(v6.qty) == uint)) || v6.qty <= 65535.0)))) && match x.choice {Card(c8) -> (!(type(c8.value) == string) || c8.value.matches("^(?:(?:\\p{Nd}{4}( \\p{Nd}{4}){3}))$")); Invoice(c8) -> (!(type(c8.value) == string) || c8.value.matches("^([^\t\n\r ]+( [^\t\n\r ]+)*)?$")); _ -> true} && (!x.tags.hasValue() || x.tags.value().all(v14, ((!(type(v14) == string) || v14.matches("^([^\t\n\r ]+( [^\t\n\r ]+)*)?$")) && (!(type(v14) == string) || v14.matches("^[^\t\n\r ]+$"))))));
+}

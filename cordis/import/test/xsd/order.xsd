@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns="urn:example:orders" targetNamespace="urn:example:orders"
+           elementFormDefault="qualified">
+  <xs:element name="order" type="Order"/>
+  <xs:complexType name="Order">
+    <xs:sequence>
+      <xs:element name="customer" type="Customer"/>
+      <xs:element name="line" type="Line" maxOccurs="5"/>
+      <xs:element name="note" type="xs:string" minOccurs="0"/>
+      <xs:choice>
+        <xs:element name="card" type="CardNumber"/>
+        <xs:element name="invoice" type="xs:token"/>
+      </xs:choice>
+      <xs:element name="tags" type="TagList" minOccurs="0"/>
+    </xs:sequence>
+    <xs:attribute name="id" type="xs:positiveInteger" use="required"/>
+    <xs:attribute name="status" type="Status" default="open"/>
+  </xs:complexType>
+  <xs:complexType name="Customer">
+    <xs:all>
+      <xs:element name="name" type="Name"/>
+      <xs:element name="email" type="xs:string" minOccurs="0"/>
+    </xs:all>
+  </xs:complexType>
+  <xs:complexType name="Line">
+    <xs:simpleContent>
+      <xs:extension base="xs:decimal">
+        <xs:attribute name="sku" type="Sku" use="required"/>
+        <xs:attribute name="qty" type="xs:unsignedShort" default="1"/>
+      </xs:extension>
+    </xs:simpleContent>
+  </xs:complexType>
+  <xs:simpleType name="Name">
+    <xs:restriction base="xs:string">
+      <xs:minLength value="1"/>
+      <xs:maxLength value="40"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:simpleType name="Sku">
+    <xs:restriction base="xs:string">
+      <xs:pattern value="[A-Z]{2}-[0-9]{3}"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:simpleType name="CardNumber">
+    <xs:restriction base="xs:string">
+      <xs:pattern value="\d{4}( \d{4}){3}"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:simpleType name="Status">
+    <xs:restriction base="xs:string">
+      <xs:enumeration value="open"/>
+      <xs:enumeration value="paid"/>
+      <xs:enumeration value="shipped"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:simpleType name="TagList">
+    <xs:list itemType="xs:token"/>
+  </xs:simpleType>
+</xs:schema>

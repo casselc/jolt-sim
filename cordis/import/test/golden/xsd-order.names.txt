@@ -1,0 +1,139 @@
+{
+  "root": {
+    "namespace": "urn:example:orders",
+    "element": "order",
+    "type": "Order"
+  },
+  "elementFormDefault": "qualified",
+  "shape": {
+    "attributes": [
+      { "name": "id", "type": "integer" },
+      { "name": "status", "type": "string", "default": "open" }
+    ],
+    "content": {
+      "sequence": [
+        {
+          "element": "customer",
+          "namespace": "urn:example:orders",
+          "occurs": "1..1",
+          "type": {
+            "attributes": [],
+            "content": {
+              "all": [
+                {
+                  "element": "name",
+                  "namespace": "urn:example:orders",
+                  "occurs": "1..1",
+                  "type": { "simple": "string" }
+                },
+                {
+                  "element": "email",
+                  "namespace": "urn:example:orders",
+                  "occurs": "0..1",
+                  "type": { "simple": "string" }
+                }
+              ]
+            }
+          }
+        },
+        {
+          "element": "line",
+          "namespace": "urn:example:orders",
+          "occurs": "1..5",
+          "type": {
+            "attributes": [
+              { "name": "sku", "type": "string" },
+              { "name": "qty", "type": "integer", "default": "1" }
+            ],
+            "content": { "value": "decimal" }
+          }
+        },
+        {
+          "element": "note",
+          "namespace": "urn:example:orders",
+          "occurs": "0..1",
+          "type": { "simple": "string" }
+        },
+        {
+          "choice": "choice",
+          "occurs": "1..1",
+          "cases": [
+            {
+              "element": "card",
+              "namespace": "urn:example:orders",
+              "occurs": "1..1",
+              "type": { "simple": "string" }
+            },
+            {
+              "element": "invoice",
+              "namespace": "urn:example:orders",
+              "occurs": "1..1",
+              "type": { "simple": "string (whitespace collapsed)" }
+            }
+          ]
+        },
+        {
+          "element": "tags",
+          "namespace": "urn:example:orders",
+          "occurs": "0..1",
+          "type": { "simple": "list of string (whitespace collapsed)" }
+        }
+      ]
+    }
+  },
+  "types": {
+    "$root": "XsdRoot",
+    "Name": { "alias": true },
+    "Customer": {
+      "properties": {
+        "name": { "json": "name", "required": true, "nullable": false },
+        "email": { "json": "email", "required": false, "nullable": false }
+      }
+    },
+    "Sku": { "alias": true },
+    "Line": {
+      "properties": {
+        "sku": { "json": "sku", "required": true, "nullable": false },
+        "qty": { "json": "qty", "required": true, "nullable": false },
+        "value": { "json": "value", "required": true, "nullable": false }
+      }
+    },
+    "CardNumber": { "alias": true },
+    "TagList": { "alias": true },
+    "Status": {
+      "enum": { "Open": "open", "Paid": "paid", "Shipped": "shipped" }
+    },
+    "OrderChoiceCard": {
+      "properties": {
+        "value": { "json": "value", "required": true, "nullable": false }
+      }
+    },
+    "OrderChoiceInvoice": {
+      "properties": {
+        "value": { "json": "value", "required": true, "nullable": false }
+      }
+    },
+    "OrderChoice": {
+      "discriminator": "kind",
+      "cases": {
+        "Card": { "value": "card", "payload": "OrderChoiceCard" },
+        "Invoice": { "value": "invoice", "payload": "OrderChoiceInvoice" }
+      }
+    },
+    "Order": {
+      "properties": {
+        "id": { "json": "id", "required": true, "nullable": false },
+        "status": { "json": "status", "required": true, "nullable": false },
+        "customer": {
+          "json": "customer",
+          "required": true,
+          "nullable": false
+        },
+        "line": { "json": "line", "required": true, "nullable": false },
+        "note": { "json": "note", "required": false, "nullable": false },
+        "choice": { "json": "choice", "required": true, "nullable": false },
+        "tags": { "json": "tags", "required": false, "nullable": false }
+      }
+    }
+  }
+}
