@@ -44,6 +44,10 @@ type t =
       (** the graph language's records (RFC 0002): fields, and whether the
           record is open (at least these fields). A value is a map with a
           string key per field. *)
+  | Rec of string * int
+      (** a recursive named type of the graph language (RFC 0002 revision 3): its name, and the scope its
+          definition is in ([unfold]). Recursive types are nominal here, resolved on demand, so a type is
+          never a cyclic value; two are compared structurally, by a bisimulation ([assignable]) *)
   | Param of string  (** a type parameter in a signature *)
   | Var of int  (** a type variable during inference *)
 
@@ -51,9 +55,36 @@ exception Check_error of string
 
 let fail fmt = Printf.ksprintf (fun s -> raise (Check_error s)) fmt
 
+(* ---- recursive types' definitions ---------------------------------------------------------- *)
+
+(* A scope holds one file's recursive definitions; a Rec names one in its scope. Scopes are never
+   reused, so two revisions' definitions of one name stay apart. *)
+let scopes : (int, (string, t) Hashtbl.t) Hashtbl.t = Hashtbl.create 8
+let next_scope = ref 0
+
+let new_scope () =
+  incr next_scope;
+  Hashtbl.replace scopes !next_scope (Hashtbl.create 8);
+  !next_scope
+
+let define scope name t = Hashtbl.replace (Hashtbl.find scopes scope) name t
+
+(* A recursive type's definition: its body, in which it and its cycle appear as Rec; a definition that
+   is only another name is followed, and a cycle of those (unguarded: it has no finite value, which the
+   graph checker refuses first) is an error rather than a loop *)
+let unfold (name, scope) =
+  let rec go seen n =
+    match Option.bind (Hashtbl.find_opt scopes scope) (fun tbl -> Hashtbl.find_opt tbl n) with
+    | Some (Rec (m, sc)) when sc = scope -> if List.mem m seen then fail "the recursive type %s is unguarded" name else go (m :: seen) m
+    | Some t -> t
+    | None -> fail "the recursive type %s is not defined" n
+  in
+  go [ name ] name
+
 (* ---- printing and parsing the text form ------------------------------------------- *)
 
 let rec to_string = function
+  | Rec (n, _) -> n
   | Dyn -> "dyn"
   | Null -> "null_type"
   | Bool -> "bool"
@@ -156,6 +187,8 @@ type env = {
   mutable next : int;
   types : (int, t) Hashtbl.t;  (** expression id -> inferred type, for the cost estimator *)
   named : (string * t) list;  (** the graph language's declared records and variants, by name *)
+  assumed : ((string * int) * (string * int)) list ref;
+      (** pairs of recursive types assumed related while their unfoldings are compared (a bisimulation) *)
 }
 
 let fresh env =
@@ -247,10 +280,14 @@ let rec join env a b =
   | Opt x, Opt y -> Opt (join env x y)
   | Opaque (n, ps), Opaque (m, qs) when n = m && List.length ps = List.length qs ->
       Opaque (n, List.map2 (join env) ps qs)
+  (* recursive types: the same where each fits the other; else unfolded *)
+  | (Rec _ as x), (Rec _ as y) -> if assignable env x y && assignable env y x then x else Dyn
+  | Rec (n, sc), y -> join env (unfold (n, sc)) y
+  | x, Rec (n, sc) -> join env x (unfold (n, sc))
   | x, y -> if x = y then x else Dyn
 
 (* Is a value of type [a] acceptable where [p] is expected? Binds variables. *)
-let rec assignable env p a =
+and assignable env p a =
   match resolve env p, resolve env a with
   (* variables bind first, even to dyn, so dyn(x) makes a parameter dyn *)
   | Var i, Var j when i = j -> true
@@ -275,6 +312,22 @@ let rec assignable env p a =
   | Record (ps, open_), Record (fs, _) ->
       (open_ || List.length ps = List.length fs)
       && List.for_all (fun (f, t) -> match List.assoc_opt f fs with Some u -> assignable env t u | None -> false) ps
+  (* recursive types, coinductively: a pair already being compared is assumed to fit, so a cycle closes
+     instead of unfolding forever; a recursive type against a finite one unfolds, and the finite side
+     bounds it *)
+  | Rec (n, sc), Rec (m, sd) ->
+      let pair = ((n, sc), (m, sd)) in
+      (n = m && sc = sd)
+      || List.mem pair !(env.assumed)
+      || begin
+           let saved = !(env.assumed) in
+           env.assumed := pair :: saved;
+           let r = assignable env (unfold (n, sc)) (unfold (m, sd)) in
+           env.assumed := saved;
+           r
+         end
+  | Rec (n, sc), y -> assignable env (unfold (n, sc)) y
+  | x, Rec (m, sd) -> assignable env x (unfold (m, sd))
   | Variant cs, Variant ds ->
       (* the same cases, by name, with assignable payloads *)
       List.length cs = List.length ds
@@ -321,6 +374,7 @@ let rec most_general env a b =
   | Map (k1, v1), Map (k2, v2) -> Map (most_general env k1 k2, most_general env v1 v2)
   | Opaque (n, ps), Opaque (m, qs) when n = m && List.length ps = List.length qs ->
       Opaque (n, List.map2 (most_general env) ps qs)
+  | (Rec _ as x), _ -> x
   | x, _ -> x
 
 (* Flexible assignment of an argument to a parameter (cel-go's
@@ -429,7 +483,8 @@ let standard : (string * (bool * t list * t) list) list Lazy.t =
 (* ---- declarations ------------------------------------------------------------------------ *)
 
 let empty ?(container = "") () =
-  { idents = []; functions = []; container; subst = Hashtbl.create 16; trail = ref []; next = 0; types = Hashtbl.create 64; named = [] }
+  { idents = []; functions = []; container; subst = Hashtbl.create 16; trail = ref []; next = 0; types = Hashtbl.create 64; named = [];
+    assumed = ref [] }
 
 let declare_ident env name ty = { env with idents = (name, ty) :: env.idents }
 
@@ -438,6 +493,14 @@ let declare_function env name overloads = { env with functions = (name, overload
 (* A named record or variant type: Name{f: e} builds a record, and
    Name.Case(x) or Name.Case a variant. *)
 let declare_type env name ty = { env with named = (name, ty) :: env.named }
+
+(* A named type's definition, to build a value by, and the type the value has: a recursive one is its
+   unfolding, and the value has the Rec *)
+let named_def env n =
+  match List.assoc_opt n env.named with
+  | Some (Rec (m, sc) as r) -> Some (unfold (m, sc), r)
+  | Some t -> Some (t, t)
+  | None -> None
 
 (* ---- types of protobuf fields ---------------------------------------------------------------- *)
 
@@ -581,18 +644,18 @@ and infer_kind env locals (e : Ast.expr) : t =
   | Ast.Ident n -> (
       match lookup_ident env locals n with Some t -> t | None -> fail "undeclared reference to '%s'" n)
   | Ast.Select { operand = { kind = Ast.Ident n; _ }; field; test_only = false }
-    when (not (List.mem_assoc n locals)) && (match List.assoc_opt n env.named with Some (Variant _) -> true | _ -> false) -> (
-      match List.assoc_opt n env.named with
-      | Some (Variant cs as vt) -> (
+    when (not (List.mem_assoc n locals)) && (match named_def env n with Some (Variant _, _) -> true | _ -> false) -> (
+      match named_def env n with
+      | Some (Variant cs, vt) -> (
           match List.assoc_opt field cs with
           | Some None -> vt
           | Some (Some _) -> fail "case %s.%s carries a value: %s.%s(x)" n field n field
           | None -> fail "no case '%s' in %s" field n)
       | _ -> assert false)
   | Ast.Call { fn; target = Some { kind = Ast.Ident n; _ }; args }
-    when (not (List.mem_assoc n locals)) && (match List.assoc_opt n env.named with Some (Variant _) -> true | _ -> false) -> (
-      match List.assoc_opt n env.named, args with
-      | Some (Variant cs as vt), [ x ] -> (
+    when (not (List.mem_assoc n locals)) && (match named_def env n with Some (Variant _, _) -> true | _ -> false) -> (
+      match named_def env n, args with
+      | Some (Variant cs, vt), [ x ] -> (
           match List.assoc_opt fn cs with
           | Some (Some pt) ->
               let at = infer env locals x in
@@ -631,9 +694,9 @@ and infer_kind env locals (e : Ast.expr) : t =
           (fresh env, fresh env) kvs
       in
       Map (k, v)
-  | Ast.Struct_lit { tname; fields } when (match List.assoc_opt tname env.named with Some (Record _) -> true | _ -> false) -> (
-      match List.assoc_opt tname env.named with
-      | Some (Record (fs, _) as rt) ->
+  | Ast.Struct_lit { tname; fields } when (match named_def env tname with Some (Record _, _) -> true | _ -> false) -> (
+      match named_def env tname with
+      | Some (Record (fs, _), rt) ->
           List.iter
             (fun (f, fe, optional) ->
               if optional then fail "a record field cannot be optional ('?%s')" f;
@@ -753,6 +816,7 @@ and infer_kind env locals (e : Ast.expr) : t =
    None for a scrutinee whose type does not say (dyn, a map). *)
 and match_cases env t =
   match resolve env t with
+  | Rec (n, sc) -> match_cases env (unfold (n, sc))
   | Variant cs -> Some cs
   | Opt t -> Some [ ("Some", Some t); ("None", None) ]
   | _ -> None
@@ -766,6 +830,7 @@ and element env locals (e : Ast.expr) =
 
 and select_type env ot field =
   match resolve env ot with
+  | Rec (n, sc) -> select_type env (unfold (n, sc)) field
   | Dyn | Var _ -> Dyn
   | Map (k, v) -> if assignable env k String then v else fail "map key type does not support field selection"
   | Message m -> (

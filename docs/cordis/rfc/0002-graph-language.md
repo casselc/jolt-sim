@@ -27,8 +27,8 @@ What changed, and why:
 | Identity by canonical Preserves; Irmin store | Identity by SHA-256 of canonical text (and of the definitions named); definitions in files | The Preserves codec and Irmin are later work; only the hashing input will change |
 | Admission gates listed | Admission built for parse, check, cost budget and compatibility; hash-guarded patches | Cedar Analysis, the Quint gate per graph and soak follow with phase 3 |
 
-**Revision 3 (proposed, not built): recursive types.** See "Recursive
-types (revision 3, proposed)" below. Three importers stop at recursion
+**Revision 3 (accepted): recursive types.** See "Recursive types
+(revision 3)" below. Three importers stop at recursion
 today (JSON Schema's recursive `$ref` becomes `dyn`, XSD is refused, the
 protobuf importer's records become `dyn`), and RFC 0004's descriptor
 types already recurse; this revision would let a graph declare a
@@ -347,10 +347,23 @@ them as "Routes and streams at run time" states.
 - **Models:** `admission.qnt`, `assets.qnt` and `routes.qnt` in the model
   gate (`quint/check.sh`), each with its mutants and witnesses.
 
-## Recursive types (revision 3, proposed)
+## Recursive types (revision 3)
 
-Not built; recorded so that the importers' recursion work starts from an
-agreed design. DESIGN.md's line ("recursion is the line not crossed")
+Accepted, with the decisions below; being built in the order given at
+the end of this section.
+
+**Built so far:** structural equality. `Checker.Rec (name, scope)` is a
+recursive type, nominal in the CEL checker and resolved through its
+scope (`Checker.define`, `unfold`), so a type is never a cyclic value;
+assignability compares two by a bisimulation, assuming a pair while
+their unfoldings are compared, and unfolds one against a finite type;
+field selection and `match` unfold; an unguarded cycle is an error, not
+a loop. `cel/test/rec_types_test.ml`: cases (fields two levels down, a
+mutual recursion's match, one name in two scopes) and a Hegel property
+over drawn mutually recursive definitions: renamed into another scope
+they are equal both ways (1,000 drawn), and a changed leaf in a root's
+body tells them apart (919); a bisimulation that assumes every pair is
+caught. DESIGN.md's line ("recursion is the line not crossed")
 is about **cell bodies**, and it stays: CEL has no recursion, so a cell
 still reaches a fixed depth into a value. What this revision admits is a
 recursive **type**, whose values are finite trees.
@@ -394,16 +407,28 @@ recursive **type**, whose values are finite trees.
    round trips and the agreement tests (jsonschema, xmlschema) over
    recursive schemas.
 
-**Decisions this needs** before it is built:
+**Decisions** (accepted):
 
-- the node bound's syntax and default (`<nodes N>` on the definition,
-  and a default of, say, 1,024);
-- whether mutual recursion is admitted (the examples above use it; a
-  self-reference-only rule would be simpler to check and refuse `Expr`
-  and `Pair`);
-- whether a recursive type's equality across revisions is by name (cheap,
-  but a rename breaks compatibility) or by structure with the cycle cut
-  (what point 2 proposes).
+- **Mutual recursion is admitted.** Guardedness is checked per cycle:
+  every cycle among the named types (a strongly connected component of
+  the reference graph) must pass through an `option`, `list`, `map` or a
+  variant payload; an unguarded cycle is reported as its path.
+- **The node bound is `<nodes N>` on the definition, default 1,024.** An
+  imported recursive type takes its bound from the schema where it gives
+  one, else the default, reported.
+- **Equality across revisions is structural, with the cycle cut at the
+  name**: two recursive types are compatible when their unfoldings agree
+  (a bisimulation, with the pairs assumed equal while one is compared),
+  so a rename of the same shape stays compatible. A definition's hash
+  stays its identity (canonical text, names included, a reference back
+  into a cycle contributing its name): two revisions' definitions with
+  different hashes are compared by the bisimulation, which is what
+  decides compatibility, so no name-free hash is needed.
+
+**Build order:** structural equality of cyclic types first (with Hegel:
+equality survives renaming, unequal ones are told apart); then guardedness and nominal typing
+in the checker; then the node bound in the cost estimator and the
+codecs; then the importers (JSON Schema, XSD stage 3, protobuf records).
 
 ## Deferred
 
