@@ -1095,6 +1095,18 @@ importers wait for the slice.
    first review) and G (a 429 with Retry-After: 2 is asked again 2 s
    later); a planted outbox that ignores Retry-After fails G.
 
+   For the fifth: `graph/examples/review_fix.cg` is the loop with a
+   writer that applies the notes (a completion asked for the whole revised
+   patch; asked once with no notes too, since a cell's effects are not
+   conditional), so a wrong patch can be fixed and the loop converge
+   (`outbox/test/fix.sh`). `outbox/test/fanout.sh` runs N agents at once
+   against one server, each with its own outbox, store and agent, and
+   checks for every agent one answered completion per intent, no send
+   left unknown, and settled equal to the journal's costs, counting the
+   429s and 503s waited out; the end-to-end suite runs it with four agents
+   against the stand-in, and it takes a real server's URL for a halo-flash
+   run.
+
    `outbox/test/latency.sh` replays the run's conditions against a
    stand-in: calls slower than the runner's timeout with long multi-line
    answers (one completion per computation, none charged as lost, notes

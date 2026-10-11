@@ -23,6 +23,7 @@ Modes, for the real-latency test (what the halo-flash run found):
   approve     approve every patch
   verdict-last  approve as a model that reasons first does: the reasons,
               then LGTM on the last line
+  fenced      a writer's revised patch comes in code fences
   busy-first=S  answer the first request HTTP 429 with Retry-After: S
               (COUNT_FILE.times holds each request's arrival time)
 """
@@ -86,8 +87,15 @@ class Handler(BaseHTTPRequestHandler):
         parts = prompt.split("\n\n")
         # the file's context is the part before the patch
         context = parts[-2] if len(parts) >= 2 else parts[0]
-        approve = (prompt.count("\n// ") >= 2 or "approve" in modes) and "length" not in modes
-        if approve and "verdict-last" in modes:
+        writer = prompt.startswith("Apply the review notes")
+        approve = (prompt.count("\n// ") >= 2 or "(fixed)" in prompt or "approve" in modes) and "length" not in modes
+        if writer:
+            # review_fix.cg's writer: [instruction, patch, notes]; with notes, the patch fixed
+            _, patch, notes = (prompt.split("\n\n", 2) + ["", ""])[:3]
+            text = patch if not notes.strip() else patch + "\n(fixed)"
+            if "fenced" in modes:
+                text = "```ocaml\n" + text + "\n```"
+        elif approve and "verdict-last" in modes:
             text = "The patch is correct and complete as it stands.\n\nLGTM"
         elif approve:
             text = "LGTM"

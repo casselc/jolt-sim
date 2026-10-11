@@ -1,0 +1,63 @@
+// The review loop of docs/cordis/rfc/0002-graph-language.md, with a writer that applies the notes
+// (graph/examples/review.cg's writer only appends them as comments).
+
+type Diff    = { path : string; patch : string<max 65536> };
+type Review  = { passed : bool; notes : string<max 500> };
+type Verdict = Pass(Review) | Fail(Review);
+// thinking: whether the model may reason before it answers (its reasoning counts against max_tokens);
+// temperature: how freely it samples (0 for a verdict that should not depend on the draw)
+type Prompt  = { prompt : list(string); max_tokens : int; thinking : bool; temperature : double };
+type Text    = { text : string<max 65536> };
+// a completion: its text, and why it stopped (stop, length, ...): a cut-off answer is not a verdict
+// reasoning: the tokens the model spent reasoning, as the server reports them (0 if it does not)
+type Completion = { text : string<max 65536>; finish : string<max 20>; reasoning : int };
+
+effect repo.read(string) : Text;
+effect llm.complete(Prompt) : Completion;
+
+// The writer applies the critic's notes: it asks the model for the whole revised patch, so a wrong patch
+// can be fixed and the loop converge (review.cg's writer only folds notes in as comments). With no notes
+// yet it is asked anyway, and told to return the patch as it is: one call an episode the language cannot
+// skip, since a cell's effects are not conditional. A reply cut off by its length, or empty, keeps the
+// patch it was given.
+cell fix(request : Diff, notes : list(string<max 500>)<max 4>) : Diff
+  ! { llm.complete }
+= {
+  use resp = llm.complete(Prompt{prompt: ['Apply the review notes below to the patch, and reply with the whole revised patch and nothing else: no explanation and no code fences. If there are no notes, reply with the patch unchanged.', request.patch, notes.join('\n\n')], max_tokens: 4000, thinking: false, temperature: 0.0});
+  let t    = resp.text.trim();
+  // a fenced reply: the code between its fences
+  let open = t.startsWith('```') && t.lastIndexOf('```') > t.indexOf('\n');
+  let code = open ? t.substring(t.indexOf('\n') + 1, t.lastIndexOf('```')).trim() : t;
+  Diff{path: request.path, patch: resp.finish == 'stop' && size(code) > 0 ? code : request.patch};
+}
+
+cell critic(diff : Diff) : Verdict
+  ! { repo.read, llm.complete }
+  state { attempts : int = 0; }
+= {
+  use ctx  = repo.read(diff.path);
+  use resp = llm.complete(Prompt{prompt: ['Review the patch below against the file before it. Put your verdict on the first line: LGTM, alone on that line, only if the code is correct and complete as it stands; lines beginning // are earlier review notes, not fixes. Otherwise say briefly what to change.', ctx.text, diff.patch], max_tokens: 4000, thinking: false, temperature: 0.0});
+  // only an answer that finished can approve; the notes are bounded where they are made, as the
+  // stream they go to requires
+  // the verdict is LGTM alone on the first or the last non-empty line (a model that reasons first puts
+  // it last, whatever it is asked)
+  let t    = resp.text.trim();
+  let r    = Review{passed: resp.finish == 'stop' && (t == 'LGTM' || t.startsWith('LGTM\n') || t.endsWith('\nLGTM')),
+                    notes: size(resp.text) > 500 ? resp.text.substring(0, 500) : resp.text};
+  r.passed ? Verdict.Pass(r) : Verdict.Fail(r)
+    with state.attempts := state.attempts + 1;
+}
+
+cell gate(v : Verdict) : bool = {
+  match v { Pass(r) -> true; Fail(r) -> false };
+}
+
+graph fix_loop {
+  input  request : Diff;
+  stream notes : string<max 500> up to 4;
+  asset  draft   = fix(request, notes) ~fresh:on_change;
+  asset  verdict = critic(draft);
+  asset  shipped = gate(verdict);
+  route verdict { Pass(_) -> shipped; Fail(r) -> notes <~ r.notes };
+  invariant critic before gate;
+}

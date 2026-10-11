@@ -36,3 +36,18 @@
  (deps latency.sh stub_llm.py %{bin:cordis-run} %{bin:cordis-outbox} ../../graph/examples/review.cg)
  (action
   (run bash %{dep:latency.sh} %{bin:cordis-run} %{bin:cordis-outbox} %{dep:../../graph/examples/review.cg} %{dep:stub_llm.py})))
+
+; The review loop with a writer that applies the notes (review_fix.cg)
+(rule
+ (alias e2e)
+ (deps fix.sh stub_llm.py %{bin:cordis-run} %{bin:cordis-outbox} ../../graph/examples/review_fix.cg)
+ (action
+  (run bash %{dep:fix.sh} %{bin:cordis-run} %{bin:cordis-outbox} %{dep:../../graph/examples/review_fix.cg} %{dep:stub_llm.py})))
+
+; Several agents at once against one server: contention, a 429 waited out,
+; exactly-once per agent (fanout.sh also drives a real server for a halo run)
+(rule
+ (alias e2e)
+ (deps fanout.sh stub_llm.py %{bin:cordis-run} %{bin:cordis-outbox} ../../graph/examples/review.cg)
+ (action
+  (run bash %{dep:fanout.sh} %{bin:cordis-run} %{bin:cordis-outbox} %{dep:../../graph/examples/review.cg} review_loop stub:busy-first=1 4)))
