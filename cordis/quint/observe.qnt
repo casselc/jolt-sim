@@ -25,7 +25,11 @@
  *    by that identity: a resend of an intent that already took effect runs
  *    nothing and charges nothing. Each send reserves as an observational
  *    attempt does. When its sends run out it is Uncertain, not Failed,
- *    since it may have taken effect.
+ *    since it may have taken effect. A world that keeps keys answers a
+ *    resend with the usage of its one generation, so a keyed intent's
+ *    answer releases its other sends' reservations rather than charging
+ *    them (the halo-flash run: 4096 charged for a lost send of a
+ *    105-token generation).
  *
  * One fiber emits the intents KIND[0], KIND[1], ... in order. The world
  * may run an attempt or not, answer it or lose the answer, and answer
@@ -53,7 +57,10 @@
  *    waits on a reconcile no provider can answer);
  *  - KEY_IGNORED (`keyIgnored`): the world does not deduplicate a keyed
  *    intent (a server that ignores the idempotency key, or a POST policy
- *    wrongly granted the class) -> effectOnce.
+ *    wrongly granted the class) -> effectOnce;
+ *  - RELEASE_OBS (`releaseObs`): an observational intent's earlier attempts
+ *    are released, not charged, when it is answered, as a keyed intent's
+ *    are; but each of its attempts may have run -> accounted.
  * Witnesses (checked as not(w), expected VIOLATED): retriedThenDone,
  * lateSettled, exhausted, effectfulUncertain, reconciled, keyedResent (a
  * keyed intent sent again completed), keyedDeduplicated (a resend found the
@@ -66,6 +73,7 @@ module observe {
   const APPLY_LATE: bool
   const ONE_CLASS: bool
   const KEY_IGNORED: bool
+  const RELEASE_OBS: bool
 
   type Kind = Obs | Eff | Key
   type Phase = Ready | Sent | Lost | Uncertain | Failed | Done
@@ -96,7 +104,7 @@ module observe {
     effects: List[int],      // ghost: per intent, times it took effect
     applied: List[int],      // per intent, answers applied
     lates: int, retries: int, reconciles: int,
-    resent: int, deduped: int, keyedUncertain: bool,
+    resent: int, deduped: int, keyedUncertain: bool, released: int,
   }
 
   var s: S
@@ -105,7 +113,7 @@ module observe {
     pc: 0, phase: Ready, tries: 0, cur: NONE, attempts: List(),
     reserved: 0, settled: 0, real: 0, effects: [0, 0, 0], applied: [0, 0, 0],
     lates: 0, retries: 0, reconciles: 0,
-    resent: 0, deduped: 0, keyedUncertain: false,
+    resent: 0, deduped: 0, keyedUncertain: false, released: 0,
   }
 
   pure def inc(l: List[int], i: int): List[int] = l.replaceAt(i, l[i] + 1)
@@ -129,15 +137,16 @@ module observe {
     nondet a = s.attempts.indices().oneOf()
     nondet c = 1.to(R).oneOf()
     val at = s.attempts[a]
-    // a keyed intent already applied: the world answers from what it kept, running and charging nothing
-    val dedup = KIND[at.intent] == Key and not(KEY_IGNORED)
-      and s.attempts.indices().exists(b => b != a and s.attempts[b].intent == at.intent and s.attempts[b].ran)
-    val cost = if (dedup) 0 else c
+    // a keyed intent already applied: the world answers from what it kept, running and charging
+    // nothing, and reports the usage of the one generation it kept (as halo-flash's replay does)
+    val firsts = s.attempts.indices().filter(b => b != a and s.attempts[b].intent == at.intent and s.attempts[b].ran)
+    val dedup = KIND[at.intent] == Key and not(KEY_IGNORED) and firsts.size() > 0
+    val cost = if (dedup) firsts.fold(0, (m, b) => if (s.attempts[b].cost > m) s.attempts[b].cost else m) else c
     all {
       at.live, not(at.ran),
       s' = { ...s,
         attempts: s.attempts.replaceAt(a, { ...at, ran: true, cost: cost }),
-        real: s.real + cost,
+        real: if (dedup) s.real else s.real + cost,
         effects: if (KIND[at.intent] != Obs and not(dedup)) inc(s.effects, at.intent) else s.effects,
         deduped: if (dedup) s.deduped + 1 else s.deduped,
       },
@@ -149,16 +158,26 @@ module observe {
     (if (NO_RESERVE) s.reserved else s.reserved - R, s.settled + at.cost)
 
   // an answer arrives for a live attempt that ran
+  // a keyed intent's answer covers every send of it (the world generated it once, and reports that
+  // generation's usage): the other sends' reservations are released, not charged (RELEASE_OBS also
+  // releases an observational intent's, whose attempts each ran)
+  def releasable(i: int): bool = KIND[i] == Key or (RELEASE_OBS and KIND[i] == Obs)
+  def others(a: int): Set[int] =
+    s.attempts.indices().filter(b => b != a and s.attempts[b].intent == s.attempts[a].intent and s.attempts[b].live)
+
   action answer: bool = {
     nondet a = s.attempts.indices().oneOf()
     val at = s.attempts[a]
     val current = a == s.cur and s.phase == Sent
     val st = settle(at)
+    val release = if (current and releasable(at.intent)) others(a) else Set()
     all {
       at.live, at.ran,
       s' = { ...s,
-        attempts: s.attempts.replaceAt(a, { ...at, live: false }),
-        reserved: st._1, settled: st._2,
+        attempts: s.attempts.indices().fold(s.attempts, (l, b) =>
+          if (b == a or release.contains(b)) l.replaceAt(b, { ...l[b], live: false }) else l),
+        reserved: if (NO_RESERVE) st._1 else st._1 - R * release.size(), settled: st._2,
+        released: s.released + release.size(),
         pc: if (current) s.pc + 1 else s.pc,
         phase: if (current) Ready else s.phase,
         tries: if (current) 0 else s.tries,
@@ -182,12 +201,14 @@ module observe {
     },
   }
 
-  // an abandoned attempt will never answer: charge it at the worst case
+  // an abandoned attempt will never answer: charge it at the worst case (a keyed intent's sends are
+  // held until the intent is answered, which releases them, or given up)
   action expire: bool = {
     nondet a = s.attempts.indices().oneOf()
     val at = s.attempts[a]
     all {
       at.live, a != s.cur,
+      not(releasable(at.intent)) or at.intent < s.pc or s.phase == Failed,
       s' = { ...s,
         attempts: s.attempts.replaceAt(a, { ...at, live: false }),
         reserved: if (NO_RESERVE) s.reserved else s.reserved - R,
@@ -239,26 +260,30 @@ module observe {
   val keyedResent: bool = s.resent > 0 and s.pc == N
   val keyedDeduplicated: bool = s.deduped > 0
   val keyedUncertainW: bool = s.keyedUncertain
+  val supersededReleased: bool = s.released > 0
 }
 
 module design {
-  import observe(MISCLASSIFY = false, REFUND_LOST = false, NO_RESERVE = false, APPLY_LATE = false, ONE_CLASS = false, KEY_IGNORED = false).* from "./observe"
+  import observe(MISCLASSIFY = false, REFUND_LOST = false, NO_RESERVE = false, APPLY_LATE = false, ONE_CLASS = false, KEY_IGNORED = false, RELEASE_OBS = false).* from "./observe"
 }
 module misclassify {
-  import observe(MISCLASSIFY = true, REFUND_LOST = false, NO_RESERVE = false, APPLY_LATE = false, ONE_CLASS = false, KEY_IGNORED = false).* from "./observe"
+  import observe(MISCLASSIFY = true, REFUND_LOST = false, NO_RESERVE = false, APPLY_LATE = false, ONE_CLASS = false, KEY_IGNORED = false, RELEASE_OBS = false).* from "./observe"
 }
 module refundLost {
-  import observe(MISCLASSIFY = false, REFUND_LOST = true, NO_RESERVE = false, APPLY_LATE = false, ONE_CLASS = false, KEY_IGNORED = false).* from "./observe"
+  import observe(MISCLASSIFY = false, REFUND_LOST = true, NO_RESERVE = false, APPLY_LATE = false, ONE_CLASS = false, KEY_IGNORED = false, RELEASE_OBS = false).* from "./observe"
 }
 module noReserve {
-  import observe(MISCLASSIFY = false, REFUND_LOST = false, NO_RESERVE = true, APPLY_LATE = false, ONE_CLASS = false, KEY_IGNORED = false).* from "./observe"
+  import observe(MISCLASSIFY = false, REFUND_LOST = false, NO_RESERVE = true, APPLY_LATE = false, ONE_CLASS = false, KEY_IGNORED = false, RELEASE_OBS = false).* from "./observe"
 }
 module applyLate {
-  import observe(MISCLASSIFY = false, REFUND_LOST = false, NO_RESERVE = false, APPLY_LATE = true, ONE_CLASS = false, KEY_IGNORED = false).* from "./observe"
+  import observe(MISCLASSIFY = false, REFUND_LOST = false, NO_RESERVE = false, APPLY_LATE = true, ONE_CLASS = false, KEY_IGNORED = false, RELEASE_OBS = false).* from "./observe"
 }
 module oneClass {
-  import observe(MISCLASSIFY = false, REFUND_LOST = false, NO_RESERVE = false, APPLY_LATE = false, ONE_CLASS = true, KEY_IGNORED = false).* from "./observe"
+  import observe(MISCLASSIFY = false, REFUND_LOST = false, NO_RESERVE = false, APPLY_LATE = false, ONE_CLASS = true, KEY_IGNORED = false, RELEASE_OBS = false).* from "./observe"
 }
 module keyIgnored {
-  import observe(MISCLASSIFY = false, REFUND_LOST = false, NO_RESERVE = false, APPLY_LATE = false, ONE_CLASS = false, KEY_IGNORED = true).* from "./observe"
+  import observe(MISCLASSIFY = false, REFUND_LOST = false, NO_RESERVE = false, APPLY_LATE = false, ONE_CLASS = false, KEY_IGNORED = true, RELEASE_OBS = false).* from "./observe"
+}
+module releaseObs {
+  import observe(MISCLASSIFY = false, REFUND_LOST = false, NO_RESERVE = false, APPLY_LATE = false, ONE_CLASS = false, KEY_IGNORED = false, RELEASE_OBS = true).* from "./observe"
 }

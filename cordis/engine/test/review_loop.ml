@@ -245,6 +245,24 @@ let long_notes () =
        | None -> ());
       Hegel.require tc ~msg:"rest differs from the fault-free run" (snapshot h = snapshot reference))
 
+(* a keyed completion whose first answer is lost is sent again and answered from the one generation
+   the world kept: the lost send is released, not charged its worst case, so the run settles exactly
+   what the fault-free run does (the halo-flash run: 4096 charged for a lost 105-token answer) *)
+let keyed_release () =
+  keyed_kinds := [ "llm.complete" ];
+  Fun.protect ~finally:(fun () -> keyed_kinds := []) @@ fun () ->
+  let reference = start () in
+  let _ = run ~pick:(fun _ -> 0) reference in
+  let h = start () in
+  (* the second receipt is the first completion's: lose it *)
+  let n = ref 0 in
+  let faults = { lose = (fun () -> incr n; !n = 2); dup = (fun () -> false) } in
+  let _ = run ~faults ~pick:(fun _ -> 0) h in
+  Alcotest.(check (list (pair string (option string)))) "rests where the fault-free run does" (snapshot reference) (snapshot h);
+  Alcotest.(check (pair int int)) "settled what the fault-free run settles, nothing held" (E.spend reference.t) (E.spend h.t);
+  Alcotest.(check int) "the world generated what the fault-free run did" reference.charged h.charged;
+  Alcotest.(check (list string)) "spend" [] h.spend_errors
+
 (* a cell whose result is over its declared bound fails its computation: what reads it assumed the bound *)
 let result_over_bound () =
   let text =
@@ -300,7 +318,8 @@ let () =
           Alcotest.test_case "the replay audit reads records against the code" `Quick audit_example;
           Alcotest.test_case "a route arm appending to two streams appends to both" `Quick two_appends;
           Alcotest.test_case "a keyed kind whose sends are all lost is reconciled by key" `Quick keyed_example;
-          Alcotest.test_case "a result over its declared bound fails its computation" `Quick result_over_bound ]);
+          Alcotest.test_case "a result over its declared bound fails its computation" `Quick result_over_bound;
+          Alcotest.test_case "a keyed answer releases its lost send's reservation" `Quick keyed_release ]);
       ("properties", [ Alcotest.test_case "every value round-trips through the durable form" `Quick codec_round_trip; Alcotest.test_case "any schedule, with faults and a changed input, rests where a fault-free run does" `Quick (schedules ?keyed:None);
                         Alcotest.test_case "the same, with repo.read keyed" `Quick (schedules ~keyed:[ "repo.read" ]);
                         Alcotest.test_case "long multi-line notes are bounded, every line a comment" `Quick long_notes ]) ]

@@ -25,7 +25,7 @@ mkdir -p "$T/repo/src" && echo "let x = 1 (* the file *)" > "$T/repo/src/main.ml
 start() {
   kill "${llm_pid:-}" "${outbox_pid:-}" 2>/dev/null || true
   wait "${llm_pid:-}" "${outbox_pid:-}" 2>/dev/null || true
-  rm -f "$T/port" "$T/count" "$T/count.thinking" "$T/count.generated" "$T/run.db" "$T/journal.db" "$T/outbox.out"
+  rm -f "$T/port" "$T/count" "$T/count.thinking" "$T/count.temperature" "$T/count.generated" "$T/run.db" "$T/journal.db" "$T/outbox.out"
   python3 "$stub" "$T/port" "$T/count" "$@" & llm_pid=$!
   for _ in $(seq 100); do [ -s "$T/port" ] && break; sleep 0.1; done
   "$outbox_bin" --socket "$T/outbox.sock" --journal "$T/journal.db" --llm "http://127.0.0.1:$(cat "$T/port")" --repo "$T/repo" \
@@ -60,6 +60,8 @@ if phase == "A":
     # the critic asks the model not to think, and the receipt says it did not
     thinking = [l.strip() for l in open(sys.argv[4] + ".thinking")]
     assert thinking and all(t == "false" for t in thinking), thinking
+    temperature = [l.strip() for l in open(sys.argv[4] + ".temperature")]
+    assert temperature and all(t == "0.0" for t in temperature), temperature
     print(f"A ok: {count} slow completions, each once, none charged as lost, thinking off; settled {out['settled']}")
 elif phase == "B":
     assert code == 4 and out["outcome"] == "rest_unbound", (code, out)
@@ -74,12 +76,16 @@ elif phase == "E":
     assert code == 0 and a["shipped"] is True, (code, out, err)
     generated = int(open(sys.argv[4] + ".generated").read())
     assert count == generated + 1, f"requests {count}, generated {generated}: the resend should be answered from the kept key"
+    # the dropped send is marked superseded by the send that was answered
+    assert [s for _, s in rows].count("superseded") == 1 and [s for _, s in rows].count("unknown") == 0, rows
     # one intent sent twice (its first send's answer dropped), every other once
     sends = {}
     for k, _ in rows:
         sends[k.rsplit("#", 1)[0]] = sends.get(k.rsplit("#", 1)[0], 0) + 1
     assert sorted(sends.values()) == [1] * (len(sends) - 1) + [2], rows
-    print(f"E ok: a dropped answer resent with its key and replayed: {count} requests, {generated} generated")
+    # the dropped send is released, not charged its worst case: 10 tokens a generation, 1 a read
+    assert out["settled"] == 10 * generated + generated and out["reserved"] == 0, out
+    print(f"E ok: a dropped answer resent with its key and replayed: {count} requests, {generated} generated; settled {out['settled']}, the lost send not charged")
 elif phase == "D":
     assert code == 2 and out["outcome"] == "failed", (code, out)
     assert count == 1 and rows and rows[0][1] == "refused", (count, rows)

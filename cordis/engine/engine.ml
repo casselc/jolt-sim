@@ -493,6 +493,11 @@ let awaiting t key attempt =
       | _ -> acc)
     t.slots None
 
+(* what an intent holds reserved: its worst case, or for a keyed intent its worst case once per send
+   (observe.qnt): a lost send is not charged but held, since a world that keeps keys answers every send
+   of the intent from one generation, whose usage the answer reports *)
+let held t (intent : intent) = match intent.cls with Keyed -> intent.attempt * t.worst intent.kind | _ -> t.worst intent.kind
+
 let resume t a (s : slot) v cost =
   match s.fiber with
   | Awaiting { turn; args; receipts; basis; intent } | Uncertain { turn; args; receipts; basis; intent } ->
@@ -502,7 +507,8 @@ let resume t a (s : slot) v cost =
       (* the reservation settles at the actual cost, once: this fiber awaits the key no longer *)
       (* a cost the world did not report is charged at the worst case, never as nothing *)
       let cost = if cost < 0 then t.worst intent.kind else cost in
-      let t = { (with_slot t a s) with reserved = t.reserved - t.worst intent.kind; settled = t.settled + cost } in
+      (* a keyed intent's answer covers all its sends: every one's reservation is released *)
+      let t = { (with_slot t a s) with reserved = t.reserved - held t intent; settled = t.settled + cost } in
       let t, r = record t [ Slot (a, s); Budget (t.reserved, t.settled) ] in
       (t, [ Persist r ])
   | _ -> (t, [])
@@ -530,7 +536,7 @@ let handle t ev =
       match awaiting t key n with
       | Some (a, ({ fiber = Awaiting { intent; _ }; _ } as s)) ->
           let s = { s with fiber = Failed (Printf.sprintf "%s: %d refused: %s" intent.key intent.attempt why) } in
-          let t = { (with_slot t a s) with reserved = t.reserved - t.worst intent.kind } in
+          let t = { (with_slot t a s) with reserved = t.reserved - held t intent } in
           let t, r = record t [ Slot (a, s); Budget (t.reserved, t.settled) ] in
           (t, [ Persist r ])
       | _ -> (t, []))
@@ -541,7 +547,15 @@ let handle t ev =
           let wc = t.worst intent.kind in
           let charged = { t with reserved = t.reserved - wc; settled = t.settled + wc } in
           match intent.cls with
-          | (Observational | Keyed) when intent.attempt < t.max_attempts && fits charged wc ->
+          | Keyed when intent.attempt < t.max_attempts && fits t wc ->
+              (* sent again with the same key, under a reservation of its own; the lost send's is held, not
+                 charged, until the intent is answered *)
+              let intent = { intent with attempt = intent.attempt + 1 } in
+              let s = { s with fiber = Awaiting { w with intent } } in
+              let t = { (with_slot t a s) with reserved = t.reserved + wc } in
+              let t, r = record t [ Slot (a, s); Budget (t.reserved, t.settled) ] in
+              ({ t with gated = t.gated @ [ (r.seq, intent) ] }, [ Persist r ])
+          | Observational when intent.attempt < t.max_attempts && fits charged wc ->
               let intent = { intent with attempt = intent.attempt + 1 } in
               let s = { s with fiber = Awaiting { w with intent } } in
               let t = { (with_slot charged a s) with reserved = charged.reserved + wc } in
@@ -565,7 +579,9 @@ let handle t ev =
       | Some (a, ({ fiber = Uncertain u; _ } as s)) ->
           let intent = { u.intent with attempt = u.intent.attempt + 1 } in
           let s = { s with fiber = Awaiting { turn = u.turn; args = u.args; receipts = u.receipts; basis = u.basis; intent } } in
-          let t, r = record (with_slot t a s) [ Slot (a, s) ] in
+          (* a keyed intent's new send reserves its own worst case, as every send of it does *)
+          let t = match intent.cls with Keyed -> { t with reserved = t.reserved + t.worst intent.kind } | _ -> t in
+          let t, r = record (with_slot t a s) [ Slot (a, s); Budget (t.reserved, t.settled) ] in
           ({ t with gated = t.gated @ [ (r.seq, intent) ] }, [ Persist r ])
       | _ -> (t, []))
 

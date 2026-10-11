@@ -54,6 +54,7 @@ type ctx = {
   lock : Mutex.t;
   wake : Unix.file_descr;  (** written when a call ends, to wake the loop *)
   backoff : (string, float * float) Hashtbl.t;  (** journal key -> (not before, the last delay): asked to come back later *)
+  keyed : (string, unit) Hashtbl.t;  (** intent keys released as keyed: an answer to one send supersedes the others *)
 }
 
 and job = Run | Reconcile
@@ -98,6 +99,8 @@ let drain ctx send =
       match job, outcome with
       | Run, Ran (v, cost) ->
           Journal.finish ctx.journal ~jkey ~value:(J.to_string (Codec.value v)) ~cost;
+          (* a keyed intent's earlier sends, lost, are answered by this one: one key, one generation *)
+          if Hashtbl.mem ctx.keyed key then Journal.supersede ctx.journal ~key ~answered:jkey;
           send (receipt_frame key attempt (v, cost))
       | Run, (No_answer _ | Not_applied) ->
           prerr_endline ("outbox: " ^ kind ^ ": " ^ (match outcome with No_answer m -> m | _ -> "no answer"));
@@ -129,6 +132,7 @@ let granted ctx jkey =
 
 let handle_intent ctx (i : E.intent) send =
   let k = jkey i in
+  if i.cls = E.Keyed then Hashtbl.replace ctx.keyed i.key ();
   let ack () = send (frame "ack" (ka i.key i.attempt)) in
   match Journal.find ctx.journal k with
   | Some { state = Journal.Done; value = Some v; cost; _ } ->
@@ -187,7 +191,7 @@ let serve ?limiter ?(agent = "agent") ~socket ~journal ~executors () =
   let wake_r, wake_w = Unix.pipe ~cloexec:true () in
   let ctx =
     { journal; executors; limiter; agent; inflight = Hashtbl.create 8; finished = Queue.create (); lock = Mutex.create (); wake = wake_w;
-      backoff = Hashtbl.create 8 }
+      backoff = Hashtbl.create 8; keyed = Hashtbl.create 8 }
   in
   (* an engine that dies mid-answer must not take the outbox with it *)
   Sys.set_signal Sys.sigpipe Sys.Signal_ignore;

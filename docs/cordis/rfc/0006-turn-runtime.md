@@ -1040,6 +1040,33 @@ importers wait for the slice.
    generations), and a key that varies by attempt, planted, generates
    four.
 
+   A third run, keyed, on halo-flash's G3 build (its main does not keep
+   keys, so a keyed class there would regenerate: keep `--observational`
+   against main): the G3 build answered a resend of a stream dropped
+   mid-answer with the whole answer from one generation, replayed a
+   finished key, and adopted a call whose client had left; nine
+   computations made nine generations through an outbox killed
+   mid-decode. It found two things:
+
+   - *A lost keyed send was still charged its worst case* (4096 for a
+     105-token generation the resend replayed). `observe.qnt` now has a
+     world that reports the one generation's usage on a replay, and a
+     keyed intent's answer releases its other sends' reservations
+     instead of charging them (witness `supersededReleased`; mutant
+     `releaseObs`, the same release for observational attempts, each of
+     which may have run, breaks `accounted`; `keyIgnored` now breaks it
+     too, since the release rests on the key being kept). The engine
+     holds a keyed intent's worst case once per send and releases them
+     all when it is answered; the outbox marks the other sends' journal
+     rows `superseded`.
+   - *The review loop can ship code that does not compile*: the writer
+     only folds notes in as comments, so whether a wrong patch ships
+     rests on a sampled critic. The critic now asks for temperature 0
+     and is told comment lines are notes, not fixes; the writer is
+     documented as never changing the code, so a wrong patch should rest
+     unshipped at the cap. A converging loop needs a writer that applies
+     the notes, a completion of its own.
+
    `outbox/test/latency.sh` replays the run's conditions against a
    stand-in: calls slower than the runner's timeout with long multi-line
    answers (one completion per computation, none charged as lost, notes

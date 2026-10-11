@@ -32,7 +32,7 @@ let checked =
 (* the kinds a test declares keyed (sent again with the same key, which the world deduplicates) *)
 let keyed_kinds = ref []
 
-let classes = function "llm.complete" -> E.Observational | k when List.mem k !keyed_kinds -> E.Keyed | _ -> E.Effectful
+let classes = function k when List.mem k !keyed_kinds -> E.Keyed | "llm.complete" -> E.Observational | _ -> E.Effectful
 
 (* a revision of the graph from its text: its id is the graph's hash, which covers its cells; a cell's
    state carries unless Compat's state plan, against [from], says to migrate it *)
@@ -234,7 +234,8 @@ let take_ h (f : faults) ~next_input = function
             | None ->
                 let r =
                   match Hashtbl.find_opt h.server i.key with
-                  | Some (v, _) -> (v, 0)
+                  (* a replay: nothing generated, nothing charged, and the kept generation's usage reported *)
+                  | Some (v, c) -> (v, c)
                   | None ->
                       let r = (cassette i, actual i.kind) in
                       h.charged <- h.charged + snd r;

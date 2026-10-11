@@ -94,6 +94,8 @@ let llm_complete ?(idle = 120.) ~url () =
     let max_tokens = match field req "max_tokens" with Some (V.Int n) -> Int64.to_int n | _ -> 1024 in
     (* a model that thinks by default spends max_tokens on it: the request says whether it may *)
     let thinking = match field req "thinking" with Some (V.Bool b) -> [ ("chat_template_kwargs", `Assoc [ ("enable_thinking", `Bool b) ]) ] | _ -> [] in
+    (* and how freely it samples, if the request says *)
+    let thinking = thinking @ match field req "temperature" with Some (V.Double t) -> [ ("temperature", `Float t) ] | _ -> [] in
     let body =
       J.to_string
         (`Assoc

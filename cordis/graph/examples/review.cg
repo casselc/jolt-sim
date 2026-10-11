@@ -3,8 +3,9 @@
 type Diff    = { path : string; patch : string<max 65536> };
 type Review  = { passed : bool; notes : string<max 500> };
 type Verdict = Pass(Review) | Fail(Review);
-// thinking: whether the model may reason before it answers (its reasoning counts against max_tokens)
-type Prompt  = { prompt : list(string); max_tokens : int; thinking : bool };
+// thinking: whether the model may reason before it answers (its reasoning counts against max_tokens);
+// temperature: how freely it samples (0 for a verdict that should not depend on the draw)
+type Prompt  = { prompt : list(string); max_tokens : int; thinking : bool; temperature : double };
 type Text    = { text : string<max 65536> };
 // a completion: its text, and why it stopped (stop, length, ...): a cut-off answer is not a verdict
 // reasoning: the tokens the model spent reasoning, as the server reports them (0 if it does not)
@@ -16,6 +17,10 @@ effect llm.complete(Prompt) : Completion;
 // The bounds are what keep the fold's cost finite: without them the notes
 // stream would be estimated at the default ceiling, and the turn would be
 // over its budget.
+// The writer only folds the critic's notes into the patch as comments: it never changes the code. So a
+// patch that is wrong stays wrong, and its loop rests unshipped at the stream's cap; the loop ships only
+// a patch the critic approves as it stands. (A writer that applies the notes would be an effect, a
+// completion of its own.)
 cell write(request : Diff, notes : list(string<max 500>)<max 8>) : Diff = {
   // a revision folds the notes into the patch, every line of a note a comment
   Diff{path: request.path, patch: notes.fold(p, request.patch, n, p + '\n// ' + n.replace('\n', '\n// '))};
@@ -26,7 +31,7 @@ cell critic(diff : Diff) : Verdict
   state { attempts : int = 0; }
 = {
   use ctx  = repo.read(diff.path);
-  use resp = llm.complete(Prompt{prompt: ['Review the patch below against the file before it. If it is correct, reply with LGTM and nothing else; otherwise say briefly what to change.', ctx.text, diff.patch], max_tokens: 4000, thinking: false});
+  use resp = llm.complete(Prompt{prompt: ['Review the patch below against the file before it. Reply with LGTM and nothing else only if the code is correct and complete as it stands; lines beginning // are earlier review notes, not fixes. Otherwise say briefly what to change.', ctx.text, diff.patch], max_tokens: 4000, thinking: false, temperature: 0.0});
   // only an answer that finished can approve; the notes are bounded where they are made, as the
   // stream they go to requires
   let r    = Review{passed: resp.finish == 'stop' && resp.text.startsWith('LGTM'),

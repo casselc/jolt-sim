@@ -210,12 +210,16 @@ sim frames.qnt keepAcc accConsistent VIOLATED
 for inv in effectOnce receiptOnce withinBudget accounted obsNeverUncertain; do sim observe.qnt design "$inv" ok; done
 verify observe.qnt design safety ok
 for w in retriedThenDone lateSettled exhausted effectfulUncertain reconciled keyedResent keyedDeduplicated keyedUncertainW; do sim observe.qnt design "not($w)" VIOLATED; done
+# rare: a keyed send lost, resent, and answered while the lost one is still live
+STEPS=60 SAMPLES=5000 sim observe.qnt design "not(supersededReleased)" VIOLATED
 sim observe.qnt misclassify effectOnce VIOLATED
 sim observe.qnt refundLost accounted VIOLATED
 sim observe.qnt noReserve withinBudget VIOLATED
 sim observe.qnt applyLate receiptOnce VIOLATED
 sim observe.qnt oneClass obsNeverUncertain VIOLATED
 sim observe.qnt keyIgnored effectOnce VIOLATED
+sim observe.qnt keyIgnored accounted VIOLATED
+sim observe.qnt releaseObs accounted VIOLATED
 
 # ---- engine.qnt (RFC 0006: the turn commit protocol) -------------------------------------
 for inv in releasedOnlyDurable effectMatchesCommit commitAtomic receiptOnce uncertainSurvives; do sim engine.qnt design "$inv" ok; done

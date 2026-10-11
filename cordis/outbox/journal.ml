@@ -10,15 +10,18 @@
    it waits on across a restart (outbox.qnt's WaitGrant), as does one the
    world asked to come back later (an HTTP 429 or 503). A row [Refused]
    was refused by the world (an HTTP 4xx): it did not run, and is answered
-   as refused again. *)
+   as refused again. A row [Superseded] is a send of a keyed intent whose
+   later send was answered from the same generation. *)
 
-type state = Waiting | Sent | Done | Unknown | Fenced | Refused
+type state = Waiting | Sent | Done | Unknown | Fenced | Refused | Superseded
 
 let state_name = function
   | Waiting -> "waiting" | Sent -> "sent" | Done -> "done" | Unknown -> "unknown" | Fenced -> "fenced" | Refused -> "refused"
+  | Superseded -> "superseded"
 
 let state_of = function
   | "waiting" -> Waiting | "sent" -> Sent | "done" -> Done | "unknown" -> Unknown | "fenced" -> Fenced | "refused" -> Refused
+  | "superseded" -> Superseded
   | s -> failwith ("journal state " ^ s)
 
 type row = { jkey : string; state : state; value : string option; cost : int }
@@ -81,6 +84,12 @@ let waiting db =
 
 let finish db ~jkey ~value ~cost =
   with_stmt db "UPDATE journal SET state = 'done', value = ?, cost = ? WHERE jkey = ?" [ `T value; `I cost; `T jkey ] (fun st -> step_done db st "finish")
+
+(* the other sends of an intent one of whose sends was answered: under one idempotency key, the answer
+   covers them (a world that keeps keys generated once), so their outcome is no longer unknown *)
+let supersede db ~key ~answered =
+  with_stmt db "UPDATE journal SET state = 'superseded' WHERE key = ? AND jkey <> ? AND state IN ('unknown', 'sent')" [ `T key; `T answered ]
+    (fun st -> step_done db st "supersede")
 
 (* a definite failure: it did not run, and answers the same again *)
 let refuse db ~jkey ~why =

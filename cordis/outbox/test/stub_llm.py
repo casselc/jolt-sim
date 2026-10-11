@@ -51,6 +51,8 @@ class Handler(BaseHTTPRequestHandler):
         with open(count_file, "w") as f:
             f.write(str(count))
         thinks = body.get("chat_template_kwargs", {}).get("enable_thinking", True)
+        with open(count_file + ".temperature", "a") as f:
+            f.write(json.dumps(body.get("temperature")) + "\n")
         with open(thinking_file, "a") as f:
             f.write(json.dumps(body.get("chat_template_kwargs", {}).get("enable_thinking")) + "\n")
         if "refuse" in modes:
