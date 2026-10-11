@@ -206,12 +206,20 @@ let rec schema ?(top = true) d depth : J.t =
     | 29 when top && d.pick 2 = 0 ->
         (* recursive: a tree, or nested lists, of a leaf type *)
         let leaf = sub () in
-        let node =
-          if d.pick 2 = 0 then
-            `Assoc [ ("type", `String "object"); ("properties", `Assoc [ ("v", leaf); ("kids", `Assoc [ ("type", `String "array"); ("items", `Assoc [ ("$ref", `String "#/$defs/d") ]) ]) ]) ]
-          else `Assoc [ ("anyOf", `List [ leaf; `Assoc [ ("type", `String "array"); ("items", `Assoc [ ("$ref", `String "#/$defs/d") ]) ] ]) ]
+        let r n = `Assoc [ ("$ref", `String ("#/$defs/" ^ n)) ] in
+        let obj ?(required = []) props =
+          `Assoc ([ ("type", `String "object"); ("properties", `Assoc props) ] @ if required = [] then [] else [ ("required", `List (List.map (fun x -> `String x) required)) ])
         in
-        [ ("$defs", `Assoc [ ("d", node) ]); ("$ref", `String "#/$defs/d") ]
+        let arr t = `Assoc [ ("type", `String "array"); ("items", t) ] in
+        (match d.pick 4 with
+        | 0 -> [ ("$defs", `Assoc [ ("d", obj [ ("v", leaf); ("kids", arr (r "d")) ]) ]); ("$ref", `String "#/$defs/d") ]
+        | 1 -> [ ("$defs", `Assoc [ ("d", `Assoc [ ("anyOf", `List [ leaf; arr (r "d") ]) ]) ]); ("$ref", `String "#/$defs/d") ]
+        (* required all the way round: no finite value, as a type (dyn) or an instance *)
+        | 2 -> [ ("$defs", `Assoc [ ("d", obj ~required:[ "next" ] [ ("v", leaf); ("next", r "d") ]) ]); ("$ref", `String "#/$defs/d") ]
+        (* mutual: a requires b, b holds a list of a; guarded through the list *)
+        | _ ->
+            [ ("$defs", `Assoc [ ("a", obj ~required:[ "b"; "v" ] [ ("v", leaf); ("b", r "b") ]); ("b", obj [ ("as", arr (r "a")) ]) ]);
+              ("$ref", `String (if d.pick 2 = 0 then "#/$defs/a" else "#/$defs/b")) ])
     | _ when top -> [ ("$defs", `Assoc [ ("d", sub ()) ]); ("$ref", `String "#/$defs/d") ]
     | _ -> [ ("type", `String "string") ]
   in
@@ -287,7 +295,11 @@ let test_predicate () =
         | _, Error e -> Hegel.require tc ~msg:("the predicate: " ^ e ^ "\n" ^ src) false
       done)
 
+(* imports whose recursion closed as a recursive type, and as dyn (required all the way round) *)
+let recursion_seen = ref (0, 0)
+
 let test_import () =
+  Fun.protect ~finally:(fun () -> Printf.printf "%d imports with a recursive type, %d with a required recursion left dyn\n" (fst !recursion_seen) (snd !recursion_seen)) @@ fun () ->
   Hegel.run_hegel_test ~settings ~database_key:"cordis:import:schema-import" (fun tc ->
       let d = Typed_gen.of_hegel tc in
       new_swarm d;
@@ -297,6 +309,9 @@ let test_import () =
       | imp ->
           let types = Cordis_graph.Print.file (Jsonschema.types_file imp) in
           Hegel.note tc (J.to_string s ^ "\n" ^ types);
+          let has p = List.exists (fun (_, m) -> String.length m >= String.length p && String.sub m 0 (String.length p) = p) imp.report in
+          if has "a recursive type" then recursion_seen := (fst !recursion_seen + 1, snd !recursion_seen);
+          if has "a required recursive reference" then recursion_seen := (fst !recursion_seen, snd !recursion_seen + 1);
           (* guide the search toward schemas the importer types rather than
              leaves dyn: that is where its own rules live *)
           if Sys.getenv_opt "TARGET" <> Some "0" then begin

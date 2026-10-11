@@ -6,7 +6,7 @@ type Line = { sku : string; quantity : int; price : option(Money); };
 
 type Stamp = { at : string; };
 
-type Category = { name : string; children : option(list(dyn)); };
+type Category = { name : string; children : option(list(Category)); };
 
 type Address = { line1 : string; postal_code : option(string); };
 

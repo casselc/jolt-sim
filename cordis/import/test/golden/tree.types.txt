@@ -1,6 +1,6 @@
 type NodeLabel = Leaf | Branch;
 
-type Node = { value : int; label : option(NodeLabel); children : option(list(dyn)<max 3>); };
+type Node = { value : int; label : option(NodeLabel); children : option(list(Node)<max 3>); };
 
 cell check_Node(x : Node) : bool = {
   (((!((type(x.value) == double || type(x.value) == int || type(x.value) == uint)) || x.value >= 0.0) && (!((type(x.value) == double || type(x.value) == int || type(x.value) == uint)) || x.value <= 3.0)) && (!x.children.hasValue() || (!(type(x.children.value()) == list) || size(x.children.value()) <= 3)));

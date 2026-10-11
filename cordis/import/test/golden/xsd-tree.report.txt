@@ -1,0 +1,6 @@
+Node_note: a recursive reference to #/$defs/Node: check_ cells do not look beneath it; the codec checks every level
+Node_kid[]: a recursive reference to #/$defs/Node: check_ cells do not look beneath it; the codec checks every level
+NodeChoiceBranch_value: a recursive reference to #/$defs/Branch: check_ cells do not look beneath it; the codec checks every level
+Node: a recursive type: a value holds at most 1,024 nodes, the default node bound (JSON Schema gives no count of nodes)
+Branch: a recursive type: a value holds at most 1,024 nodes, the default node bound (JSON Schema gives no count of nodes)
+(all): where the schema gives no maxLength, maxItems or maxProperties, the configured default ceiling applies

@@ -126,8 +126,14 @@ let rec text (l : S.lex) (j : J.t) : string =
 
 (* ---- reading ----------------------------------------------------------------------------------------- *)
 
+(* the complex types by name, which a recursive type's Ref names: the type being read's *)
+let named : (string * S.complex) list ref = ref []
+
+let resolve n = match List.assoc_opt n !named with Some c -> c | None -> bad "no complex type %s" n
+
 let rec read_shape (path : string) (sh : S.shape) (e : X.el) : J.t =
   match sh with
+  | S.Ref n -> read_shape path (S.Complex (resolve n)) e
   | S.Simple l ->
       if X.elements e <> [] then bad "%s: an element inside a simple value" path;
       (try value l (X.text e) with Bad m -> bad "%s: %s" path m)
@@ -211,6 +217,7 @@ let read ?limits (t : S.t) (doc : string) : (V.t, string) result =
     let e = try X.parse ?limits doc with X.Bad m -> bad "%s" m in
     let ns, name = t.root in
     if e.ns <> ns || e.name <> name then bad "the document element is {%s}%s, not {%s}%s" e.ns e.name ns name;
+    named := t.named;
     let j = read_shape ("/" ^ name) t.shape e in
     match C.read t.imp t.row j with Ok v -> v | Error m -> bad "%s" m
   with
@@ -231,7 +238,9 @@ let write (t : S.t) (v : V.t) : (string, string) result =
       let tg = tag ns name in
       add ("<" ^ tg);
       if root && t.tns <> "" then add (if t.qualified then Printf.sprintf " xmlns=\"%s\"" (X.escape ~attr:true t.tns) else Printf.sprintf " xmlns:tns=\"%s\"" (X.escape ~attr:true t.tns));
+      let sh = match sh with S.Ref n -> (match List.assoc_opt n t.named with Some c -> S.Complex c | None -> bad "no complex type %s" n) | sh -> sh in
       match sh with
+      | S.Ref n -> bad "no complex type %s" n
       | S.Simple l -> add ">"; add (X.escape ~attr:false (text l j)); add ("</" ^ tg ^ ">")
       | S.Complex c ->
           let props = match j with `Assoc kv -> kv | j -> bad "%s: not a record: %s" name (J.to_string j) in

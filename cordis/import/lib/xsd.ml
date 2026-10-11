@@ -45,7 +45,10 @@ let xs = "http://www.w3.org/2001/XMLSchema"
 type ws = Preserve | Replace | Collapse
 type lex = Str of ws | Int | Dec | Dbl | Bool | Lst of lex
 
-type shape = Simple of lex | Complex of complex
+type shape =
+  | Simple of lex
+  | Complex of complex
+  | Ref of string  (** a complex type by name, where it is referred to inside itself: a recursive type *)
 and complex = { attrs : attr list; content : content }
 and attr = { aname : string; ajson : string; alex : lex; adefault : string option }
 and content = Empty | Seq of particle list | All of particle list | Value of lex
@@ -58,6 +61,7 @@ type t = {
   root : string * string;  (** the document element: namespace, name *)
   row : string;  (** its type *)
   shape : shape;
+  named : (string * complex) list;  (** the complex types by name, which a [Ref] names *)
   tns : string;
   qualified : bool;  (** elementFormDefault qualified: every element in the target namespace *)
   report : (string * string) list;
@@ -266,7 +270,7 @@ let import ?root (doc : X.el) : t =
     match Hashtbl.find_opt complex_cache n with
     | Some c -> (ref_ n, c)
     | None ->
-        if List.mem n !building then refuse "%s: the type %s is recursive (RFC 0002's references first)" loc n;
+        if List.mem n !building then refuse "%s: the type %s extends a type being defined in it" loc n;
         let ct = match List.assoc_opt n complexes with Some ct -> ct | None -> refuse "%s: no complex type %s" loc n in
         building := n :: !building;
         let schema, c = complex_type n ct in
@@ -452,6 +456,8 @@ let import ?root (doc : X.el) : t =
       | Some t, _, _ -> (
           match resolve k t with
           | `Builtin n -> let kw, l = builtin loc n in (Simple l, `Assoc kw)
+          (* a type referred to inside itself: a recursive type (RFC 0002 revision 3), by name *)
+          | `Own n when List.mem_assoc n complexes && List.mem n !building -> (Ref n, ref_ n)
           | `Own n when List.mem_assoc n complexes -> let s, c = complex_named loc n in (Complex c, s)
           | `Own _ -> let s, l = simple_ref loc k t in (Simple l, s))
       | None, Some ct, _ -> let s, c = complex_type loc ct in (Complex c, s)
@@ -481,7 +487,12 @@ let import ?root (doc : X.el) : t =
       local = List.filter (fun (n, _) -> n <> imp.root) imp.local }
   in
   let row = match List.assoc_opt (uri ^ "#/$defs/" ^ key) imp.by_def with Some n -> n | None -> refuse "no type for %s" key in
-  { imp; root = (tns, rname); row; shape = e.shape; tns; qualified; report = List.rev !report @ imp.report; schema = synthetic }
+  (* an element whose type holds it where it is required has no finite document *)
+  (match List.find_opt (fun (_, m) -> String.length m > 30 && String.sub m 0 30 = "a required recursive reference") imp.report with
+   | Some (loc, _) -> refuse "%s: a recursive element that is required: no document is finite" loc
+   | None -> ());
+  let named = List.of_seq (Hashtbl.to_seq complex_cache) |> List.sort compare in
+  { imp; root = (tns, rname); row; shape = e.shape; named; tns; qualified; report = List.rev !report @ imp.report; schema = synthetic }
 
 let of_string ?root s =
   match X.parse s with
@@ -497,6 +508,7 @@ let name_map (t : t) : J.t =
   let occ min max = `String (Printf.sprintf "%d..%s" min (match max with Some n -> string_of_int n | None -> "*")) in
   let rec shape = function
     | Simple l -> `Assoc [ ("simple", `String (lex l)) ]
+    | Ref n -> `Assoc [ ("ref", `String n) ]
     | Complex c ->
         `Assoc
           [ ( "attributes",
@@ -516,6 +528,15 @@ let name_map (t : t) : J.t =
     | Choice c -> `Assoc [ ("choice", `String c.cjson); ("occurs", occ c.cmin c.cmax); ("cases", `List (List.map elem c.cases)) ]
   in
   `Assoc
-    [ ("root", `Assoc [ ("namespace", `String (fst t.root)); ("element", `String (snd t.root)); ("type", `String t.row) ]);
-      ("elementFormDefault", `String (if t.qualified then "qualified" else "unqualified")); ("shape", shape t.shape);
-      ("types", Jsonschema.name_map t.imp) ]
+    ([ ("root", `Assoc [ ("namespace", `String (fst t.root)); ("element", `String (snd t.root)); ("type", `String t.row) ]);
+      ("elementFormDefault", `String (if t.qualified then "qualified" else "unqualified")); ("shape", shape t.shape) ]
+    @ (* the recursive types, which a ref names *)
+    (let rec refs = function
+       | Ref n -> [ n ]
+       | Simple _ -> []
+       | Complex c -> (match c.content with Seq ps | All ps -> List.concat_map parts ps | _ -> [])
+     and parts = function Elem (e : elem) -> refs e.shape | Choice c -> List.concat_map (fun (e : elem) -> refs e.shape) c.cases in
+     let named = List.sort_uniq compare (refs t.shape @ List.concat_map (fun (_, c) -> refs (Complex c)) t.named) in
+     if named = [] then [] else [ ("recursive", `Assoc (List.map (fun n -> (n, shape (Complex (List.assoc n t.named)))) named)) ])
+    @ [
+      ("types", Jsonschema.name_map t.imp) ])

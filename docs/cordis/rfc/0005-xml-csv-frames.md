@@ -74,7 +74,7 @@ The work these share with what exists:
 | `xsi:type`, substitution groups | a variant over the derived types | |
 | `key`, `keyref`, `unique` | the types alone | residue: CEL over the lists the selectors reach |
 | `xs:any`, `anyAttribute`, mixed content | `dyn`, or the generic node type once it exists | report |
-| a recursive reference | `dyn` until RFC 0002 adds references, as for protobuf | report |
+| a recursive reference | the named type (stage 3, built): a complex type referred to inside itself; one required all the way round has no finite document and is refused | report |
 | `redefine`, `override`, assertions (1.1) | — | refused or reported |
 
 **Namespaces.** A type is named by its target namespace's prefix and its
@@ -503,6 +503,20 @@ from the imported type:
    - the agreement property.
 2. XSD import and the XML codec, without recursion.
 3. Recursion in XSD, and the XML node type, once RFC 0002 has references.
+   **Recursion built** (the node type waits): a complex type referred to
+   inside itself is a `Ref` in the codec's shape, resolved through the
+   import's named complex types, and a `$ref` in the JSON Schema, which
+   the JSON Schema importer closes as a recursive type wherever its cycle
+   is guarded (an optional or repeated element, or an optional choice
+   around a required one); a recursive element required all the way
+   round is refused (no document is finite), as is a type extending one
+   being defined. Tests: `xsd/tree.xsd` (a node in itself optionally,
+   repeated and through a choice; mutually through `Branch`, whose `left`
+   is required), read cases ten levels deep and refusals four levels down
+   (a label's length, a weight's range), the types checked by the graph
+   checker, a round trip property (500 documents, 118 valid read back
+   alike), and the xmlschema/lxml agreement with `tree.xsd` among its
+   schemas.
 4. The Arrow import and the batch semantics in the turn runtime, under
    `frames.qnt` (written: revision 2), with the batching-invariance and
    combiner properties in Hegel.

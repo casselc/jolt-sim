@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Recursive element types (RFC 0002 revision 3, RFC 0005 stage 3): a node
+     holding itself beneath an optional element, a repeated one and a choice,
+     and mutually through Branch, whose left is required: the cycle is guarded
+     by the choice that holds Branch. Constraints at every level: a label's
+     length, a weight's range. -->
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns="urn:example:tree" targetNamespace="urn:example:tree"
+           elementFormDefault="qualified">
+  <xs:element name="tree" type="Node"/>
+  <xs:complexType name="Node">
+    <xs:sequence>
+      <xs:element name="label" type="Label"/>
+      <xs:element name="note" type="Node" minOccurs="0"/>
+      <xs:element name="kid" type="Node" minOccurs="0" maxOccurs="3"/>
+      <xs:choice minOccurs="0">
+        <xs:element name="leaf" type="xs:int"/>
+        <xs:element name="branch" type="Branch"/>
+      </xs:choice>
+    </xs:sequence>
+    <xs:attribute name="weight" type="Weight"/>
+  </xs:complexType>
+  <xs:complexType name="Branch">
+    <xs:sequence>
+      <xs:element name="left" type="Node"/>
+      <xs:element name="right" type="Node" minOccurs="0"/>
+    </xs:sequence>
+  </xs:complexType>
+  <xs:simpleType name="Label">
+    <xs:restriction base="xs:string"><xs:maxLength value="4"/></xs:restriction>
+  </xs:simpleType>
+  <xs:simpleType name="Weight">
+    <xs:restriction base="xs:integer"><xs:minInclusive value="0"/><xs:maxInclusive value="9"/></xs:restriction>
+  </xs:simpleType>
+</xs:schema>

@@ -10,6 +10,7 @@ module J = Yojson.Safe
 module V = Cordis_cel.Value
 
 let order = lazy (Xsd.of_string (In_channel.with_open_bin "xsd/order.xsd" In_channel.input_all))
+let tree = lazy (Xsd.of_string (In_channel.with_open_bin "xsd/tree.xsd" In_channel.input_all))
 let kinds = lazy (Xsd.of_string (In_channel.with_open_bin "xsd/kinds.xsd" In_channel.input_all))
 
 let ok_doc =
@@ -67,7 +68,7 @@ let canonical () =
           match Xml_codec.read t s with Ok v' -> Alcotest.(check bool) "reads back" true (same v v') | Error m -> Alcotest.fail m)
 
 let refused =
-  [ ({|<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"><xs:element name="a" type="T"/><xs:complexType name="T"><xs:sequence><xs:element name="b" type="T" minOccurs="0"/></xs:sequence></xs:complexType></xs:schema>|}, "recursive");
+  [ ({|<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"><xs:element name="a" type="T"/><xs:complexType name="T"><xs:sequence><xs:element name="b" type="T"/></xs:sequence></xs:complexType></xs:schema>|}, "no document is finite");
     ({|<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"><xs:element name="a" type="xs:date"/></xs:schema>|}, "open question 2");
     ({|<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"><xs:element name="a"><xs:complexType mixed="true"/></xs:element></xs:schema>|}, "mixed");
     ({|<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"><xs:element name="a"><xs:simpleType><xs:restriction base="xs:string"><xs:pattern value="\i\c*"/></xs:restriction></xs:simpleType></xs:element></xs:schema>|}, "name classes");
@@ -90,6 +91,61 @@ let xsd_pattern (p, s, want) () =
   match Cordis_cel.Eval.compile_regex (Schema_pred.translate ecma) with
   | None -> Alcotest.failf "%s does not compile" p
   | Some r -> Alcotest.(check bool) (Printf.sprintf "%S ~ %S" p s) want (Re.execp r s)
+
+(* ---- recursive element types (RFC 0002 revision 3) ---- *)
+
+let tree_doc body = {|<tree xmlns="urn:example:tree" weight="3">|} ^ body ^ "</tree>"
+
+let deep k =
+  let rec go k = if k = 0 then "<label>z</label>" else "<label>n</label><kid>" ^ go (k - 1) ^ "</kid>" in
+  tree_doc (go k)
+
+let tree_cases =
+  [ ("a node in a node in a node", tree_doc "<label>a</label><note><label>b</label><kid><label>c</label></kid></note><kid><label>d</label></kid>", None);
+    ("mutually, through a choice", tree_doc "<label>a</label><branch><left><label>b</label><branch><left><label>c</label></left></branch></left></branch>", None);
+    ("ten levels", deep 10, None);
+    ("a label too long, four levels down", tree_doc "<label>a</label><kid><label>b</label><kid><label>c</label><kid><label>d</label><kid><label>toolong</label></kid></kid></kid></kid>", Some "does not satisfy");
+    ("a weight out of range beneath the recursion", tree_doc "<label>a</label><kid weight=\"12\"><label>b</label></kid>", Some "does not satisfy");
+    ("a branch without its left", tree_doc "<label>a</label><branch><right><label>b</label></right></branch>", Some "left occurs 0 times");
+    ("four kids", tree_doc ("<label>a</label>" ^ String.concat "" (List.init 4 (fun _ -> "<kid><label>k</label></kid>"))), Some "not expected here") ]
+
+let tree_case (label, doc, want) () =
+  match Xml_codec.read (Lazy.force tree) doc, want with
+  | Ok _, None -> ()
+  | Ok _, Some f -> Alcotest.failf "%s: read, expected a refusal (%s)" label f
+  | Error m, None -> Alcotest.failf "%s: refused: %s" label m
+  | Error m, Some f -> if not (contains m f) then Alcotest.failf "%s: refused as %s, expected %s" label m f
+
+(* the imported types are recursive types the graph checker admits *)
+let tree_types () =
+  let t = Lazy.force tree in
+  let text = Cordis_graph.Print.file (Jsonschema.types_file t.imp) in
+  (match Cordis_graph.Patch.load text with Ok _ -> () | Error es -> Alcotest.failf "the types do not check: %s\n%s" (String.concat "; " es) text);
+  Alcotest.(check bool) "Node is recursive" true (contains text "kid : list(Node)<max 3>");
+  Alcotest.(check bool) "Branch is recursive" true (contains text "left : Node;");
+  (* required in its record, but guarded around the cycle by the optional choice: the type, not dyn *)
+  Alcotest.(check bool) "the choice's branch is a Branch" true (contains text "type NodeChoiceBranch = { value : Branch; };")
+
+let tree_written = ref 0 and tree_back = ref 0
+
+let tree_roundtrip () =
+  Fun.protect ~finally:(fun () -> Printf.printf "%d recursive documents written, %d valid ones read back alike\n" !tree_written !tree_back) @@ fun () ->
+  let t = Lazy.force tree in
+  pools_for t.schema;
+  strings := !strings @ [ "a"; "abcd"; "b"; "c" ];
+  let settings = Hegel.Settings.create ~test_cases:500 ~seed:9 () in
+  Hegel.run_hegel_test ~settings ~database_key:"cordis:import:xml-tree" (fun tc ->
+      let d = Typed_gen.of_hegel tc in
+      let v = value t.imp d 5 (Jsonschema.Named t.row) in
+      match Xml_codec.write t v with
+      | Error m -> Hegel.note tc ("not written: " ^ m)
+      | Ok s -> (
+          incr tree_written;
+          Hegel.note tc s;
+          let valid = match Jsonschema_codec.write t.imp t.row v with Ok j -> Result.is_ok (Jsonschema_codec.read t.imp t.row j) | Error _ -> false in
+          match Xml_codec.read t s with
+          | Ok v' -> if valid then (Hegel.require tc ~msg:"read back as a different value" (same v v'); incr tree_back)
+          | Error m -> Hegel.require tc ~msg:("refused a value that satisfies its schema: " ^ m) (not valid)))
 
 let written = ref 0 and read_back = ref 0
 
@@ -119,6 +175,9 @@ let roundtrip () =
 let () =
   Alcotest.run "xml"
     [ ("read", List.map (fun ((l, _, _) as c) -> Alcotest.test_case l `Quick (read_case c)) read_cases);
+      ("recursive", List.map (fun ((l, _, _) as c) -> Alcotest.test_case l `Quick (tree_case c)) tree_cases
+                    @ [ Alcotest.test_case "the types check, recursive" `Quick tree_types;
+                        Alcotest.test_case "recursive values written read back as themselves" `Quick tree_roundtrip ]);
       ("write", [ Alcotest.test_case "canonical, and read back" `Quick canonical ]);
       ("imports", List.map (fun (s, f) -> Alcotest.test_case f `Quick (refusal (s, f))) refused);
       ("patterns", List.map (fun ((p, s, _) as c) -> Alcotest.test_case (Printf.sprintf "%S %S" p s) `Quick (xsd_pattern c)) xsd_patterns);

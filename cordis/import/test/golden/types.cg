@@ -8,7 +8,13 @@ type Order = { id : string; status : Status; lines : list(Line); counters : map(
 
 type Order_Audit = { who : string; score : double; weight : double; ok : bool; blob : bytes; delta : int; check : uint; big : uint; };
 
-type Category = { name : string; children : list(dyn); };
+type Category = { name : string; children : list(Category); };
+
+type Expr_kind = Num(int) | Neg(Expr) | Add(Pair);
+
+type Expr = { kind : option(Expr_kind); };
+
+type Pair = { l : option(Expr); r : option(Expr); weight : uint; };
 
 type UsesSingle = { s : Single; };
 
@@ -19,6 +25,8 @@ type Single = | ONLY;
 type legacy_Money = { cents : int; currency : option(string); history : list(int); };
 
 type Ledger = { balance : option(legacy_Money); by_account : map(uint, legacy_Money); };
+
+type Chain = { v : int; next : dyn; };
 
 cell check_acme_shop_v1_Money(x : acme_shop_v1_Money) : bool = {
   (-2147483648 <= x.nanos && x.nanos <= 2147483647);
@@ -40,10 +48,26 @@ cell check_Order_Audit(x : Order_Audit) : bool = {
   x.check <= 4294967295u;
 }
 
+cell check_Expr_kind(x : Expr_kind) : bool = {
+  match x {Num(c0) -> (-2147483648 <= c0 && c0 <= 2147483647); Add(c0) -> c0.weight <= 4294967295u; _ -> true};
+}
+
+cell check_Expr(x : Expr) : bool = {
+  (!x.kind.hasValue() || (match x.kind.value() {Num(c0) -> (-2147483648 <= c0 && c0 <= 2147483647); Add(c0) -> c0.weight <= 4294967295u; _ -> true}));
+}
+
+cell check_Pair(x : Pair) : bool = {
+  (!x.l.hasValue() || ((!x.l.value().kind.hasValue() || (match x.l.value().kind.value() {Num(c0) -> (-2147483648 <= c0 && c0 <= 2147483647); _ -> true})))) && (!x.r.hasValue() || ((!x.r.value().kind.hasValue() || (match x.r.value().kind.value() {Num(c0) -> (-2147483648 <= c0 && c0 <= 2147483647); _ -> true})))) && x.weight <= 4294967295u;
+}
+
 cell check_legacy_Money(x : legacy_Money) : bool = {
   x.history.all(e0, (-2147483648 <= e0 && e0 <= 2147483647));
 }
 
 cell check_Ledger(x : Ledger) : bool = {
   (!x.balance.hasValue() || (x.balance.value().history.all(e0, (-2147483648 <= e0 && e0 <= 2147483647)))) && x.by_account.all(k0, k0 <= 4294967295u && x.by_account[k0].history.all(e1, (-2147483648 <= e1 && e1 <= 2147483647)));
+}
+
+cell check_Chain(x : Chain) : bool = {
+  (-2147483648 <= x.v && x.v <= 2147483647);
 }

@@ -212,7 +212,7 @@
  (name xml_test)
  (modules xml_test)
  (deps (source_tree xsd))
- (libraries typed_values cordis_import cordis_cel cel_testgen hegel alcotest yojson re))
+ (libraries typed_values cordis_import cordis_graph cordis_cel cel_testgen hegel alcotest yojson re))
 
 ; The XML codec against xmlschema and lxml. Needs python3 with xmlschema and lxml:
 ;   dune build @import/test/xml-agreement
@@ -225,7 +225,7 @@
  (alias xml-agreement)
  (deps xmlvalid.py (source_tree xsd))
  (action
-  (run %{exe:xml_agreement.exe} xmlvalid.py xsd/kinds.xsd xsd/order.xsd)))
+  (run %{exe:xml_agreement.exe} xmlvalid.py xsd/kinds.xsd xsd/order.xsd xsd/tree.xsd)))
 (rule (with-stdout-to xsd-order.types.out (run %{exe:../bin/cimport.exe} xsd %{dep:xsd/order.xsd} --print types)))
 (rule (alias runtest) (action (diff golden/xsd-order.types.txt xsd-order.types.out)))
 (rule (with-stdout-to xsd-order.report.out (run %{exe:../bin/cimport.exe} xsd %{dep:xsd/order.xsd} --print report)))
@@ -238,3 +238,9 @@
 (rule (alias runtest) (action (diff golden/xsd-kinds.report.txt xsd-kinds.report.out)))
 (rule (with-stdout-to xsd-kinds.names.out (run %{exe:../bin/cimport.exe} xsd %{dep:xsd/kinds.xsd} --print names)))
 (rule (alias runtest) (action (diff golden/xsd-kinds.names.txt xsd-kinds.names.out)))
+(rule (with-stdout-to xsd-tree.types.out (run %{exe:../bin/cimport.exe} xsd %{dep:xsd/tree.xsd} --print types)))
+(rule (alias runtest) (action (diff golden/xsd-tree.types.txt xsd-tree.types.out)))
+(rule (with-stdout-to xsd-tree.report.out (run %{exe:../bin/cimport.exe} xsd %{dep:xsd/tree.xsd} --print report)))
+(rule (alias runtest) (action (diff golden/xsd-tree.report.txt xsd-tree.report.out)))
+(rule (with-stdout-to xsd-tree.names.out (run %{exe:../bin/cimport.exe} xsd %{dep:xsd/tree.xsd} --print names)))
+(rule (alias runtest) (action (diff golden/xsd-tree.names.txt xsd-tree.names.out)))

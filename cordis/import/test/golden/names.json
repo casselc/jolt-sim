@@ -62,6 +62,26 @@
       "children": { "json": "children" }
     }
   },
+  "Expr_kind": {
+    "oneof_of": "Expr",
+    "cases": {
+      "Num": { "field": "num", "json": "num" },
+      "Neg": { "field": "neg", "json": "neg" },
+      "Add": { "field": "add", "json": "add" }
+    }
+  },
+  "Expr": {
+    "message": ".acme.shop.v1.Expr",
+    "fields": { "kind": { "json": "kind" } }
+  },
+  "Pair": {
+    "message": ".acme.shop.v1.Pair",
+    "fields": {
+      "l": { "json": "l" },
+      "r": { "json": "r" },
+      "weight": { "json": "weight" }
+    }
+  },
   "UsesSingle": {
     "message": ".acme.shop.v1.UsesSingle",
     "fields": { "s": { "json": "s" } }
@@ -89,5 +109,9 @@
       "balance": { "json": "balance" },
       "by_account": { "json": "byAccount" }
     }
+  },
+  "Chain": {
+    "message": ".legacy.Chain",
+    "fields": { "v": { "json": "v" }, "next": { "json": "next" } }
   }
 }

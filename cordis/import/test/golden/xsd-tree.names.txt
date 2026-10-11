@@ -1,0 +1,169 @@
+{
+  "root": {
+    "namespace": "urn:example:tree",
+    "element": "tree",
+    "type": "Node"
+  },
+  "elementFormDefault": "qualified",
+  "shape": {
+    "attributes": [ { "name": "weight", "type": "integer" } ],
+    "content": {
+      "sequence": [
+        {
+          "element": "label",
+          "namespace": "urn:example:tree",
+          "occurs": "1..1",
+          "type": { "simple": "string" }
+        },
+        {
+          "element": "note",
+          "namespace": "urn:example:tree",
+          "occurs": "0..1",
+          "type": { "ref": "Node" }
+        },
+        {
+          "element": "kid",
+          "namespace": "urn:example:tree",
+          "occurs": "0..3",
+          "type": { "ref": "Node" }
+        },
+        {
+          "choice": "choice",
+          "occurs": "0..1",
+          "cases": [
+            {
+              "element": "leaf",
+              "namespace": "urn:example:tree",
+              "occurs": "1..1",
+              "type": { "simple": "integer" }
+            },
+            {
+              "element": "branch",
+              "namespace": "urn:example:tree",
+              "occurs": "1..1",
+              "type": {
+                "attributes": [],
+                "content": {
+                  "sequence": [
+                    {
+                      "element": "left",
+                      "namespace": "urn:example:tree",
+                      "occurs": "1..1",
+                      "type": { "ref": "Node" }
+                    },
+                    {
+                      "element": "right",
+                      "namespace": "urn:example:tree",
+                      "occurs": "0..1",
+                      "type": { "ref": "Node" }
+                    }
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "recursive": {
+    "Node": {
+      "attributes": [ { "name": "weight", "type": "integer" } ],
+      "content": {
+        "sequence": [
+          {
+            "element": "label",
+            "namespace": "urn:example:tree",
+            "occurs": "1..1",
+            "type": { "simple": "string" }
+          },
+          {
+            "element": "note",
+            "namespace": "urn:example:tree",
+            "occurs": "0..1",
+            "type": { "ref": "Node" }
+          },
+          {
+            "element": "kid",
+            "namespace": "urn:example:tree",
+            "occurs": "0..3",
+            "type": { "ref": "Node" }
+          },
+          {
+            "choice": "choice",
+            "occurs": "0..1",
+            "cases": [
+              {
+                "element": "leaf",
+                "namespace": "urn:example:tree",
+                "occurs": "1..1",
+                "type": { "simple": "integer" }
+              },
+              {
+                "element": "branch",
+                "namespace": "urn:example:tree",
+                "occurs": "1..1",
+                "type": {
+                  "attributes": [],
+                  "content": {
+                    "sequence": [
+                      {
+                        "element": "left",
+                        "namespace": "urn:example:tree",
+                        "occurs": "1..1",
+                        "type": { "ref": "Node" }
+                      },
+                      {
+                        "element": "right",
+                        "namespace": "urn:example:tree",
+                        "occurs": "0..1",
+                        "type": { "ref": "Node" }
+                      }
+                    ]
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "types": {
+    "$root": "XsdRoot",
+    "Label": { "alias": true },
+    "Weight": { "alias": true },
+    "NodeChoiceLeaf": {
+      "properties": {
+        "value": { "json": "value", "required": true, "nullable": false }
+      }
+    },
+    "NodeChoiceBranch": {
+      "properties": {
+        "value": { "json": "value", "required": true, "nullable": false }
+      }
+    },
+    "NodeChoice": {
+      "discriminator": "kind",
+      "cases": {
+        "Leaf": { "value": "leaf", "payload": "NodeChoiceLeaf" },
+        "Branch": { "value": "branch", "payload": "NodeChoiceBranch" }
+      }
+    },
+    "Node": {
+      "properties": {
+        "weight": { "json": "weight", "required": false, "nullable": false },
+        "label": { "json": "label", "required": true, "nullable": false },
+        "note": { "json": "note", "required": false, "nullable": false },
+        "kid": { "json": "kid", "required": true, "nullable": false },
+        "choice": { "json": "choice", "required": false, "nullable": false }
+      }
+    },
+    "Branch": {
+      "properties": {
+        "left": { "json": "left", "required": true, "nullable": false },
+        "right": { "json": "right", "required": false, "nullable": false }
+      }
+    }
+  }
+}

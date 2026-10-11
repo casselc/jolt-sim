@@ -2,7 +2,9 @@ shop.proto: acme.shop.v1.Order.Audit.weight: float: single precision is widened 
 shop.proto: acme.shop.v1.Status: open enum: unknown numbers are refused at the boundary
 shop.proto: acme.shop.v1.Single: open enum: unknown numbers are refused at the boundary
 legacy.proto: legacy.Money.currency: default "USD" is not applied: an absent field stays absent (option)
-Category: Category.children refers back to Category: recursion is not representable yet (dyn), and the residue does not check beneath it
+Category: Category.children refers back to Category: a recursive type, its values bounded by the default node bound (1,024); the residue does not check beneath it, the codec checks every level
+Expr: Expr.kind refers back to Expr_kind: a recursive type, its values bounded by the default node bound (1,024); the residue does not check beneath it, the codec checks every level
+Chain: Chain.next refers back to Chain where a value is required: dyn, as a type it would have no finite value
 (all): protobuf has no size bounds: the configured default ceiling applies
 check_Order: costs up to 7386180 with the default size ceiling, over the default budget of 1000000: bound its collections, or raise the budget
 check_Ledger: costs up to 7358477 with the default size ceiling, over the default budget of 1000000: bound its collections, or raise the budget

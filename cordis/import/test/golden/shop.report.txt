@@ -2,9 +2,10 @@ status: the value "open" is the case Open
 status: the value "closed" is the case Closed
 status: the value "on-hold" is the case OnHold
 stamp: the object is open in the schema; the record is closed: a property it does not name is refused
-Category_children[]: a recursive reference to #/$defs/category: dyn in the graph language (check_ cells do not look beneath it); the codec reads it as #/$defs/category
+Category_children[]: a recursive reference to #/$defs/category: check_ cells do not look beneath it; the codec checks every level
 address.postal-code: the property is the field postal_code
 Order_audit: the object is open in the schema; the record is closed: a property it does not name is refused
 order.ship-to: the property is the field ship_to
 Order_extra: keywords the types cannot hold (not): dyn, checked by the whole schema
+Category: a recursive type: a value holds at most 1,024 nodes, the default node bound (JSON Schema gives no count of nodes)
 (all): where the schema gives no maxLength, maxItems or maxProperties, the configured default ceiling applies

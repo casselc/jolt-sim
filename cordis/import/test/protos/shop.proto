@@ -63,5 +63,16 @@ message Category {
   repeated Category children = 2;   // recursive
 }
 
+// mutual recursion through a oneof, with 32-bit fields beneath it: the
+// residue checks the first level, the codec every level
+message Expr {
+  oneof kind {
+    int32 num = 1;
+    Expr neg = 2;
+    Pair add = 3;
+  }
+}
+message Pair { Expr l = 1; Expr r = 2; uint32 weight = 3; }
+
 enum Single { ONLY = 0; }
 message UsesSingle { Single s = 1; }

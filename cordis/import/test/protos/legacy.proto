@@ -13,3 +13,9 @@ message Ledger {
   optional Money balance = 1;
   map<uint32, Money> by_account = 2;
 }
+
+// a required reference back: no finite value as a type (dyn)
+message Chain {
+  required int32 v = 1;
+  required Chain next = 2;
+}

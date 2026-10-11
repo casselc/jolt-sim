@@ -23,7 +23,9 @@ type t =
   | Opt of t
   | Lst of t * int option
   | Mp of t * int option  (** map(string, T) *)
-  | Rec of string  (** a recursive schema reference: dyn in the graph language; the codec reads it as the referenced type *)
+  | Rec of string
+      (** a recursive schema reference where a value is required (unguarded): dyn in the graph language; the
+          codec reads it as the referenced type. One beneath an option, list or map becomes [Named] *)
   | Checked of J.t
       (** dyn in the graph language, its value checked at the boundary by the interpreter against this
           subschema: where the compiled predicate cannot go (recursion, size) *)
@@ -335,7 +337,7 @@ and plain_object s =
 and reference c ~loc s =
   let r = match get s "$ref" with Some (`String r) -> canon r | _ -> "" in
   if List.mem r c.visiting then begin
-    say c loc "a recursive reference to %s: dyn in the graph language (check_ cells do not look beneath it); the codec reads it as %s" (shown c r) (shown c r);
+    say c loc "a recursive reference to %s: check_ cells do not look beneath it; the codec checks every level" (shown c r);
     (Rec r, fun _ -> [])
   end
   else
@@ -522,6 +524,57 @@ let rec import_docs ?(name = "Root") (docs : P.docs) =
   in
   List.iter (fun r -> ignore (define c r)) defs;
   let root = define ~name:root_name c docs.main in
+  (* A recursive reference is the type it names, a recursive type (RFC 0002 revision 3), wherever every
+     cycle through it passes beneath an option, list or map; its values are bounded by the default node
+     bound, as JSON Schema counts no nodes. One closing a cycle that is required all the way round stays
+     dyn: as a type it has no finite value, though the schema may give it some (a null, through a type
+     list), and the codec reads it as the type. A variant's payload is counted as required here. *)
+  let target r = List.assoc_opt (canon r) c.by_def in
+  let rec edges ~guarded = function
+    | Named n -> [ (n, guarded) ]
+    | Rec r -> (match target r with Some n -> [ (n, guarded) ] | None -> [])
+    | Opt t | Lst (t, _) | Mp (t, _) -> edges ~guarded:true t
+    | _ -> []
+  in
+  let def_edges n =
+    match List.assoc_opt n c.defs with
+    | Some (Record fs) -> List.concat_map (fun f -> edges ~guarded:false f.ty) fs
+    | Some (Alias t) -> edges ~guarded:false t
+    | Some (Variant { cases; _ }) -> List.map (fun (_, _, p) -> (p, false)) cases
+    | _ -> []
+  in
+  (* does [a] reach [b] by required references only (itself, at no step)? *)
+  let required_path a b =
+    let seen = Hashtbl.create 8 in
+    let rec go n = n = b || ((not (Hashtbl.mem seen n)) && (Hashtbl.replace seen n (); List.exists (fun (m, g) -> (not g) && go m) (def_edges n))) in
+    go a
+  in
+  let rec close ~loc ~guarded = function
+    | Rec r -> (
+        match target r with
+        | Some n when guarded || not (required_path n loc) ->
+            say c n "a recursive type: a value holds at most 1,024 nodes, the default node bound (JSON Schema gives no count of nodes)";
+            Named n
+        | _ ->
+            say c loc "a required recursive reference to %s: dyn in the graph language, as a type it would have no finite value; the codec reads it as %s" (shown c r) (shown c r);
+            Rec r)
+    | Opt t -> Opt (close ~loc ~guarded:true t)
+    | Lst (t, n) -> Lst (close ~loc ~guarded:true t, n)
+    | Mp (t, n) -> Mp (close ~loc ~guarded:true t, n)
+    | t -> t
+  in
+  (* decided against the references as translated, so one decision does not change another *)
+  let closed =
+    List.map
+      (fun (n, d) ->
+        ( n,
+          match d with
+          | Record fs -> Record (List.map (fun f -> { f with ty = close ~loc:n ~guarded:false f.ty }) fs)
+          | Alias t -> Alias (close ~loc:n ~guarded:false t)
+          | d -> d ))
+      c.defs
+  in
+  c.defs <- closed;
   let bounded = ref false in
   let rec unbounded = function
     | Str None | Lst (_, None) | Mp (_, None) | Dyn | Rec _ | Checked _ -> true

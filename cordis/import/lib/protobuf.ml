@@ -14,7 +14,10 @@ type t =
   | Ts | Dur | Dyn | Struct | ListV | Empty
   | Wrap of t  (** a wrapper: present or absent *)
   | Named of string  (** an imported message, enum or oneof variant, by graph name *)
-  | Rec of string  (** a recursive reference to a named type: dyn in the graph language *)
+  | Rec of string
+      (** a recursive reference where a value is required (proto2 required, no presence): dyn in the graph
+          language, as a type it would have no finite value. One beneath presence, a list, a map or a
+          oneof stays [Named]: a guarded recursive type (RFC 0002 revision 3) *)
   | Opt of t | Lst of t | Mp of t * t
 
 type rfield = { name : string; json : string; ty : t; required : bool  (** proto2 required: reading refuses its absence *) }
@@ -201,27 +204,34 @@ let import (files : file list) =
     Hashtbl.replace state g `Done
   in
   List.iter (fun (g, _) -> if not (Hashtbl.mem state g) then visit g) defs;
-  (* only the recursive reference becomes dyn: repeated Category stays a
-     list, of dyn *)
-  let cut g fname ty =
+  (* a reference back is kept where it is guarded: beneath presence, a list or a map, or a oneof's case
+     (held in its owner as an option); only one where a value is required becomes dyn *)
+  let cut ~case g fname ty =
     match Hashtbl.find_opt back (g, fname) with
     | None -> ty
     | Some targets ->
-        say g "%s.%s refers back to %s: recursion is not representable yet (dyn), and the residue does not check beneath it"
-          g fname (String.concat ", " targets);
-        let rec go = function
-          | Named n when List.mem n targets -> Rec n
-          | Opt t -> Opt (go t) | Lst t -> Lst (go t) | Wrap t -> Wrap (go t) | Mp (k, v) -> Mp (go k, go v)
+        let rec go guarded = function
+          | Named n when List.mem n targets ->
+              if guarded then begin
+                say g "%s.%s refers back to %s: a recursive type, its values bounded by the default node bound (1,024); the residue does not check beneath it, the codec checks every level"
+                  g fname n;
+                Named n
+              end
+              else begin
+                say g "%s.%s refers back to %s where a value is required: dyn, as a type it would have no finite value" g fname n;
+                Rec n
+              end
+          | Opt t -> Opt (go true t) | Lst t -> Lst (go true t) | Wrap t -> Wrap (go true t) | Mp (k, v) -> Mp (go true k, go true v)
           | t -> t
         in
-        go ty
+        go case ty
   in
   let defs =
     List.map
       (fun (g, d) ->
         match d with
-        | Message m -> (g, Message { m with fields = List.map (fun f -> { f with ty = cut g f.name f.ty }) m.fields })
-        | Oneof o -> (g, Oneof { o with cases = List.map (fun (c, f) -> (c, { f with ty = cut g c f.ty })) o.cases })
+        | Message m -> (g, Message { m with fields = List.map (fun f -> { f with ty = cut ~case:false g f.name f.ty }) m.fields })
+        | Oneof o -> (g, Oneof { o with cases = List.map (fun (c, f) -> (c, { f with ty = cut ~case:true g c f.ty })) o.cases })
         | e -> (g, e))
       defs
   in
@@ -249,8 +259,10 @@ let rec graph_ty = function
   | Lst t -> S.List (graph_ty t, None)
   | Mp (k, v) -> S.Map (graph_ty k, graph_ty v, None)
 
-(* The residue reachable from a value of type [t] at CEL path [p]. *)
-let rec residue (imp : import) t p depth =
+(* The residue reachable from a value of type [t] at CEL path [p], up to each recursive edge: a type
+   already being expanded ([seen]) contributes nothing (CEL has no recursion; the codec checks there) *)
+let rec residue ?(seen = []) (imp : import) t p depth =
+  let residue = residue ~seen in
   let conj = String.concat " && " in
   match t with
   | I32 -> [ Printf.sprintf "(-2147483648 <= %s && %s <= 2147483647)" p p ]
@@ -267,7 +279,9 @@ let rec residue (imp : import) t p depth =
       match residue imp k v (depth + 1) @ residue imp vt (Printf.sprintf "%s[%s]" p v) (depth + 1) with
       | [] -> []
       | inner -> [ Printf.sprintf "%s.all(%s, %s)" p v (conj inner) ])
+  | Named n when List.mem n seen -> []
   | Named n -> (
+      let residue = residue_in ~seen:(n :: seen) in
       match List.assoc_opt n imp.defs with
       | Some (Message { fields; _ }) -> List.concat_map (fun f -> residue imp f.ty (p ^ "." ^ sel f.name) depth) fields
       | Some (Oneof { cases; _ }) -> (
@@ -280,6 +294,8 @@ let rec residue (imp : import) t p depth =
           match arms with [] -> [] | arms -> [ Printf.sprintf "match %s { %s; _ -> true }" p (String.concat "; " arms) ])
       | _ -> [])
   | _ -> []
+
+and residue_in ~seen imp t p depth = residue ~seen imp t p depth
 
 let types_file (imp : import) : S.file =
   let types =

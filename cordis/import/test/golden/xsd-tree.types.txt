@@ -1,0 +1,37 @@
+type Label = string<max 4>;
+
+type Weight = int;
+
+type NodeChoiceLeaf = { value : int; };
+
+type NodeChoiceBranch = { value : Branch; };
+
+type NodeChoice = Leaf(NodeChoiceLeaf) | Branch(NodeChoiceBranch);
+
+type Node = { weight : option(int); label : string<max 4>; note : option(Node); kid : list(Node)<max 3>; choice : option(NodeChoice); };
+
+type Branch = { left : Node; right : option(Node); };
+
+cell check_Label(x : Label) : bool = {
+  (!(type(x) == string) || size(x) <= 4);
+}
+
+cell check_Weight(x : Weight) : bool = {
+  ((!((type(x) == double || type(x) == int || type(x) == uint)) || x >= 0.0) && (!((type(x) == double || type(x) == int || type(x) == uint)) || x <= 9.0));
+}
+
+cell check_NodeChoiceLeaf(x : NodeChoiceLeaf) : bool = {
+  ((!((type(x.value) == double || type(x.value) == int || type(x.value) == uint)) || x.value >= -2147483648.0) && (!((type(x.value) == double || type(x.value) == int || type(x.value) == uint)) || x.value <= 2147483647.0));
+}
+
+cell check_NodeChoice(x : NodeChoice) : bool = {
+  match x {Leaf(c1) -> ((!((type(c1.value) == double || type(c1.value) == int || type(c1.value) == uint)) || c1.value >= -2147483648.0) && (!((type(c1.value) == double || type(c1.value) == int || type(c1.value) == uint)) || c1.value <= 2147483647.0)); _ -> true};
+}
+
+cell check_Node(x : Node) : bool = {
+  ((!x.weight.hasValue() || ((!((type(x.weight.value()) == double || type(x.weight.value()) == int || type(x.weight.value()) == uint)) || x.weight.value() >= 0.0) && (!((type(x.weight.value()) == double || type(x.weight.value()) == int || type(x.weight.value()) == uint)) || x.weight.value() <= 9.0))) && (!(type(x.label) == string) || size(x.label) <= 4) && (!(type(x.kid) == list) || size(x.kid) <= 3) && (!x.choice.hasValue() || match x.choice.value() {Leaf(c16) -> ((!((type(c16.value) == double || type(c16.value) == int || type(c16.value) == uint)) || c16.value >= -2147483648.0) && (!((type(c16.value) == double || type(c16.value) == int || type(c16.value) == uint)) || c16.value <= 2147483647.0)); _ -> true}));
+}
+
+cell check_Branch(x : Branch) : bool = {
+  ((!x.left.weight.hasValue() || ((!((type(x.left.weight.value()) == double || type(x.left.weight.value()) == int || type(x.left.weight.value()) == uint)) || x.left.weight.value() >= 0.0) && (!((type(x.left.weight.value()) == double || type(x.left.weight.value()) == int || type(x.left.weight.value()) == uint)) || x.left.weight.value() <= 9.0))) && (!(type(x.left.label) == string) || size(x.left.label) <= 4) && (!(type(x.left.kid) == list) || size(x.left.kid) <= 3) && (!x.left.choice.hasValue() || match x.left.choice.value() {Leaf(c21) -> ((!((type(c21.value) == double || type(c21.value) == int || type(c21.value) == uint)) || c21.value >= -2147483648.0) && (!((type(c21.value) == double || type(c21.value) == int || type(c21.value) == uint)) || c21.value <= 2147483647.0)); _ -> true}) && (!x.right.hasValue() || ((!x.right.value().weight.hasValue() || ((!((type(x.right.value().weight.value()) == double || type(x.right.value().weight.value()) == int || type(x.right.value().weight.value()) == uint)) || x.right.value().weight.value() >= 0.0) && (!((type(x.right.value().weight.value()) == double || type(x.right.value().weight.value()) == int || type(x.right.value().weight.value()) == uint)) || x.right.value().weight.value() <= 9.0))) && (!(type(x.right.value().label) == string) || size(x.right.value().label) <= 4) && (!(type(x.right.value().kid) == list) || size(x.right.value().kid) <= 3) && (!x.right.value().choice.hasValue() || match x.right.value().choice.value() {Leaf(c30) -> ((!((type(c30.value) == double || type(c30.value) == int || type(c30.value) == uint)) || c30.value >= -2147483648.0) && (!((type(c30.value) == double || type(c30.value) == int || type(c30.value) == uint)) || c30.value <= 2147483647.0)); _ -> true}))));
+}

@@ -22,7 +22,7 @@ types concrete:
 | --- | --- | --- |
 | A separate OCaml IR | The IR is the graph language's type form (RFC 0002 "Types"), plus what an importer records beside it: the name map, the residue and the report | One type form already checked, bounded and costed end to end; a second one would need its own checker |
 | Residue as free-standing CEL predicates | Residue as one pure cell per type, `cell check_T(x : T) : bool`, in the emitted file | The graph checker checks the residue like any cell, and a graph can gate on it today |
-| `Ref` for recursion | A recursive edge becomes `dyn`, reported | The graph language rejects recursive types; references come with a later revision of RFC 0002 |
+| `Ref` for recursion | A recursive edge is the named type where its cycle is guarded (RFC 0002 revision 3); one required all the way round becomes `dyn`, reported | Built: see "Recursive types" in RFC 0002 |
 | `Any` becomes `bytes` plus residue | `Any` becomes `dyn`, reported | At the boundary an `Any` is a JSON object with `@type`, not bytes |
 | Identity (document, name, content hash) | Each emitted type's hash is its graph-language hash (RFC 0002 "Identity"); the report records the source document | The same hashing as every other definition |
 
@@ -114,7 +114,7 @@ directly.
 | `Struct`, `Value`, `ListValue` | `map(string, dyn)`, `dyn`, `list(dyn)` | |
 | `Empty`, `FieldMask` | `{}`, `string` | |
 | `Any` | `dyn` | report: the type URL is not checked |
-| a reference that leads back to a message being defined | that reference becomes `dyn` (`repeated Category` stays a list, of `dyn`) | report: recursion is not representable yet, and the residue does not check beneath it |
+| a reference that leads back to a message being defined | the message itself where it is guarded (presence, `repeated`, a map, a oneof): `repeated Category` is `list(Category)`, a recursive type; where a value is required (proto2 `required`) it becomes `dyn` | report: a recursive type with the default node bound; the residue does not check beneath it (it expands each type once), the codec checks every level |
 
 **Presence.** A proto3 singular scalar without `optional` is always present
 (absent means its default), so it is `T`. A field with explicit presence
@@ -274,7 +274,7 @@ The types are the structural part of the schema, the predicate the rest:
 | `oneOf`/`anyOf` of objects with a discriminating property (each branch's `const`, or OpenAPI's `discriminator`) | a variant, a case per branch named by the constant, carrying the branch's record without the discriminator | |
 | `allOf` of objects | one record: properties and `required` merged | a property both define differently: report and `dyn` |
 | `$ref` to `$defs/X` | `X` | |
-| a recursive `$ref` | `dyn` | report; the codec reads the value as the referenced type, residue and all, so the boundary checks every level; `check_T` inside a graph stops at the edge |
+| a recursive `$ref` | the referenced type, where every cycle through it passes beneath an option, list or map (RFC 0002 revision 3); `dyn` where the cycle is required all the way round (no finite value as a type) | report, with the default node bound (JSON Schema counts no nodes); the codec reads every level as its type, residue and all; `check_T` inside a graph stops at the edge |
 | `true`, `{}`, and anything else (`not`, `if`, undiscriminated `oneOf`, mixed `type`) | `dyn` | the whole predicate |
 | `false` | refused | |
 

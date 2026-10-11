@@ -349,8 +349,8 @@ them as "Routes and streams at run time" states.
 
 ## Recursive types (revision 3)
 
-Accepted, with the decisions below; being built in the order given at
-the end of this section.
+Accepted, with the decisions below; built in the order given at the end
+of this section.
 
 **Built so far:** structural equality. `Checker.Rec (name, scope)` is a
 recursive type, nominal in the CEL checker and resolved through its
@@ -398,7 +398,24 @@ recursive type inside another, a tree of exactly its bound and one node
 over it, which caught an off-by-one mutant that the property alone
 missed; and drawn trees refused exactly when over, 140 within and 60
 over), and in `review_loop.ml` a cell's result over its node bound
-failing its computation. DESIGN.md's line ("recursion is the line not crossed")
+failing its computation. **The importers** (RFC 0003, 0005):
+JSON Schema closes a recursive `$ref` as the type it names wherever no
+cycle through it is required all the way round (decided against the
+references as translated, a variant's payload counted as required, so
+the graph checker never sees an unguarded cycle; an earlier rule that
+looked only at the reference itself left a guarded cycle `dyn` when the
+traversal happened to reach it at its required edge); protobuf keeps a
+message's reference back where it has presence, is repeated or mapped,
+or is a oneof's case, and its residue expands each type once; XSD stage
+3 gives the codec's shape a `Ref`. None gives a node bound (no format
+counts nodes): each reports the default. Tests: the protobuf agreement
+draws within range above the first recursive edge (where the residue
+looks) and a second property over the recursive messages draws out of
+range at every level, the codec refusing exactly what protobuf's parser
+refuses (250 and 50); generated JSON Schemas include a required
+self-reference (left `dyn`) and a mutual recursion guarded through a
+list; mutants that close every reference, or only locally guarded
+ones, are caught. DESIGN.md's line ("recursion is the line not crossed")
 is about **cell bodies**, and it stays: CEL has no recursion, so a cell
 still reaches a fixed depth into a value. What this revision admits is a
 recursive **type**, whose values are finite trees.

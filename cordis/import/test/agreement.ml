@@ -54,9 +54,12 @@ let protobuf_parse full json =
 (* [inject]: this case may put 32-bit fields out of range. Most cases do
    not, so a large message is often entirely in range and everything else
    about it is tested; values are drawn at the boundaries, both sides. *)
-let rec gen ?(inject = false) pick (t : Protobuf.t) depth : V.t =
+let rec gen ?(inject = false) ?(deep = false) ?(path = []) pick (t : Protobuf.t) depth : V.t =
   let choose l = List.nth l (pick (List.length l)) in
-  let g t = gen ~inject pick t (depth - 1) in
+  (* beneath a recursive edge (a type already on the path) the residue does not look, by design: the
+     codec checks there, so values stay within range *)
+  let path, inject = match t with Protobuf.Named n -> (n :: path, inject && (deep || not (List.mem n path))) | _ -> (path, inject) in
+  let g t = gen ~inject ~deep ~path pick t (depth - 1) in
   let out = inject && pick 3 = 0 in
   match t with
   | Protobuf.I32 ->
@@ -116,13 +119,22 @@ let residue name (v : V.t) =
           | V.Bool b -> Ok b
           | e -> Error (V.to_string e)))
 
-let messages = List.filter_map (fun (g, d) -> match d with Protobuf.Message { full; _ } -> Some (g, full) | _ -> None) imp.defs
+(* a message with a required reference back (dyn, Rec) has no instance protobuf accepts: its importing
+   is the golden report's to show *)
+let messages =
+  let required_back = function Protobuf.Rec _ -> true | _ -> false in
+  List.filter_map
+    (fun (g, d) ->
+      match d with
+      | Protobuf.Message { full; fields; _ } when not (List.exists (fun (f : Protobuf.rfield) -> required_back f.ty) fields) -> Some (g, full)
+      | _ -> None)
+    imp.defs
 
 let test_agreement () =
   Hegel.run_hegel_test ~settings ~database_key:"cordis:import:protobuf" (fun tc ->
       let pick n = (Typed_gen.of_hegel tc).pick n in
       let name, full = List.nth messages (pick (List.length messages)) in
-      let v = gen ~inject:(pick 4 = 0) pick (Protobuf.Named name) 3 in
+      let v = gen ~inject:(pick 4 = 0) pick (Protobuf.Named name) 6 in
       let json = Codec.to_json_string imp name v in
       Hegel.note tc (Printf.sprintf "%s\nvalue: %s\njson: %s" full (V.to_string v) json);
       (* the codec reads back what it writes *)
@@ -145,6 +157,41 @@ let test_agreement () =
               | Error e -> Hegel.require tc ~msg:("protobuf's output does not decode: " ^ e) false)
           | Error _ -> ()))
 
+(* The recursive messages (in a cycle of references): out-of-range values drawn at every level, where
+   the residue stops at the first recursive edge; the codec, which recurses, refuses exactly what
+   protobuf's parser refuses (RFC 0002 revision 3, "Residue and boundaries") *)
+let recursive =
+  let rec refs = function Protobuf.Named n -> [ n ] | Opt t | Lst t | Wrap t -> refs t | Mp (k, v) -> refs k @ refs v | _ -> [] in
+  let edges g =
+    match List.assoc_opt g imp.defs with
+    | Some (Protobuf.Message { fields; _ }) -> List.concat_map (fun (f : Protobuf.rfield) -> refs f.ty) fields
+    | Some (Protobuf.Oneof { cases; _ }) -> List.concat_map (fun (_, (f : Protobuf.rfield)) -> refs f.ty) cases
+    | _ -> []
+  in
+  let reaches a b =
+    let seen = Hashtbl.create 8 in
+    let rec go n = List.exists (fun m -> m = b || ((not (Hashtbl.mem seen m)) && (Hashtbl.replace seen m (); go m))) (edges n) in
+    go a
+  in
+  List.filter (fun (g, _) -> reaches g g) messages
+
+let test_recursive () =
+  let counts = ref (0, 0) in
+  Fun.protect ~finally:(fun () -> Printf.printf "%d recursive values both accept, %d both refuse\n" (fst !counts) (snd !counts)) @@ fun () ->
+  Alcotest.(check bool) "recursive messages to draw" true (List.length recursive >= 3);
+  Hegel.run_hegel_test ~settings ~database_key:"cordis:import:protobuf-recursive" (fun tc ->
+      let pick n = (Typed_gen.of_hegel tc).pick n in
+      let name, full = List.nth recursive (pick (List.length recursive)) in
+      let v = gen ~inject:true ~deep:true pick (Protobuf.Named name) 8 in
+      let json = Codec.to_json_string imp name v in
+      Hegel.note tc (Printf.sprintf "%s\njson: %s" full json);
+      let pb = protobuf_parse (String.sub full 1 (String.length full - 1)) json in
+      let ours = Codec.of_json_string imp name json in
+      Hegel.note tc (Printf.sprintf "protobuf: %s; codec: %s" (match pb with Ok _ -> "accepted" | Error e -> e) (match ours with Ok _ -> "accepted" | Error e -> e));
+      Hegel.require tc ~msg:"the codec and protobuf's parser disagree" (Result.is_ok pb = Result.is_ok ours);
+      counts := if Result.is_ok pb then (fst !counts + 1, snd !counts) else (fst !counts, snd !counts + 1))
+
 let () =
   Alcotest.run ~argv:[| Sys.argv.(0) |] "import-agreement"
-    [ ("protobuf", [ Alcotest.test_case "protobuf's parser and the residue agree; values round-trip" `Quick test_agreement ]) ]
+    [ ("protobuf", [ Alcotest.test_case "protobuf's parser and the residue agree; values round-trip" `Quick test_agreement;
+                      Alcotest.test_case "recursive messages: the codec refuses at every level what protobuf does" `Quick test_recursive ]) ]

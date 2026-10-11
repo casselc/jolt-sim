@@ -30,8 +30,12 @@ let validate xsd text =
 module S = Xsd
 
 (* a value, as the codec's JSON, in xmlschema's decoded form, by the shape *)
+(* the complex types a recursive type's Ref names: the schema being compared's *)
+let named : (string * S.complex) list ref = ref []
+
 let rec xmlschema_form (sh : S.shape) (j : J.t) : J.t =
   match sh, j with
+  | S.Ref n, j -> xmlschema_form (S.Complex (List.assoc n !named)) j
   (* an empty list element decodes as xmlschema's null *)
   | S.Simple (S.Lst _), `List [] -> `Null
   | S.Simple _, j -> j
@@ -101,6 +105,7 @@ let agreement () =
           match ours with
           | Ok back when valid ->
               incr valid_docs;
+              named := t.named;
               let mine = match Jsonschema_codec.write t.imp t.row back with Ok j -> xmlschema_form t.shape j | Error m -> failwith m in
               Hegel.note tc (Printf.sprintf "ours, in xmlschema's form: %s\nxmlschema decodes: %s" (J.to_string mine) (J.to_string decoded));
               Hegel.require tc ~msg:"xmlschema decodes a different value" (same_form mine decoded)
