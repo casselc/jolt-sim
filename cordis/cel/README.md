@@ -24,7 +24,9 @@ expression, against cel-go.
 | `conformance/` | cel-spec's `tests/simple` suite and the descriptors of its protos, as JSON and as a binary `FileDescriptorSet` (Apache-2.0; see its README) |
 | `celgo/` | A JSON-lines front end to cel-go v0.30.0, the reference for the differential test |
 | `test/conformance.ml` | Runs the suite; `--check-all` also type-checks every test that evaluates to a value and checks its actual cost against the static estimate |
-| `test/differential.ml` | Hegel draws expressions; each must give the same value (or both an error), the same checked type and the same actual cost as cel-go |
+| `lib/re2.ml`, `lib/unicode_tables.ml`, `gen/unicode_tables.py` | `matches`: RE2 syntax compiled to ocaml-re over UTF-8, matched by code point, with Unicode's general categories (tables generated from Unicode 15.1) |
+| `test/re2_test.ml` | The cases a byte-wise matcher gets wrong, each checked against cel-go |
+| `test/differential.ml` | Hegel draws expressions; each must give the same value (or both an error), the same checked type and the same actual cost as cel-go; and patterns drawn from an RE2 grammar match as cel-go's RE2 does |
 | `test/typed_gen.ml` | A type-directed generator: well-typed expressions over typed, bound variables |
 | `test/proto_gen.ml` | Protobuf messages generated from their descriptors, boundaries included (shared with the graph soundness property) |
 | `test/registry_test.ml` | Registries as values: isolation, also across domains; conflicting sets |
