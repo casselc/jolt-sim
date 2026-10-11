@@ -202,3 +202,38 @@ let write (t : T.t) (rows : V.t list) : (string, string) result =
   with
   | s -> Ok s
   | exception Bad m -> Error m
+
+(* ---- inference, a scaffold ------------------------------------------------------------------------- *)
+
+(* A Table Schema guessed from a sample with a header row, for review: never at run time (RFC 0005, "CSV",
+   method 3). A column is the narrowest kind every present cell fits (integer, number, boolean by the
+   default true and false values, else string), and required when no cell is missing; the report says
+   what was seen. *)
+let infer ?(dialect = T.default_dialect) ?(missing = [ "" ]) (s : string) : J.t * string list =
+  match parse dialect s with
+  | [] -> raise (Bad "an empty sample")
+  | header :: rows ->
+      let width = List.length header in
+      List.iteri (fun k r -> if List.length r <> width then bad "row %d: %d columns, not %d" (k + 2) (List.length r) width) rows;
+      let column k = List.map (fun r -> List.nth r k) rows in
+      let trues = [ "true"; "True"; "TRUE" ] and falses = [ "false"; "False"; "FALSE" ] in
+      let fields, notes =
+        List.split
+          (List.mapi
+             (fun k name ->
+               let cells = column k in
+               let present = List.filter (fun c -> not (List.mem c missing)) cells in
+               let all p = present <> [] && List.for_all p present in
+               let typ =
+                 if all integer then "integer"
+                 else if all (fun c -> number c && Float.is_finite (float_of_string c)) then "number"
+                 else if all (fun c -> List.mem c trues || List.mem c falses) then "boolean"
+                 else "string"
+               in
+               let required = List.length present = List.length cells && cells <> [] in
+               ( `Assoc ([ ("name", `String name); ("type", `String typ) ] @ if required then [ ("constraints", `Assoc [ ("required", `Bool true) ]) ] else []),
+                 Printf.sprintf "%s: %s from %d of %d cells present%s" name typ (List.length present) (List.length cells)
+                   (if present = [] then " (none: string)" else "") ))
+             header)
+      in
+      (`Assoc [ ("fields", `List fields); ("missingValues", `List (List.map (fun m -> `String m) missing)) ], notes)

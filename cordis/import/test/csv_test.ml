@@ -129,11 +129,21 @@ let declared () =
       let file2 = match Cordis_graph.Parse.file "type R = { at : timestamp; };" with Ok f -> f | Error m -> Alcotest.fail m in
       match T.of_record file2 "R" with _ -> Alcotest.fail "a timestamp column" | exception T.Refused _ -> ()
 
+(* inference: the narrowest kind, required when nothing is missing; what it guesses imports and reads the
+   sample *)
+let inferred () =
+  let sample = "a,b,c,d,e\r\n1,1.5,true,x,\r\n-2,3,FALSE,7,\r\n" in
+  let schema, _ = X.infer sample in
+  let types = List.map (fun f -> J.Util.(member "type" f |> to_string, member "constraints" f <> `Null)) J.Util.(member "fields" schema |> to_list) in
+  Alcotest.(check (list (pair string bool))) "kinds" [ ("integer", true); ("number", true); ("boolean", true); ("string", true); ("string", false) ] types;
+  Alcotest.(check (result int string)) "reads its sample" (Ok 2) (shape (X.read (T.import schema) sample))
+
 let () =
   Alcotest.run "csv"
     [ ("text", List.map (fun (s, want) -> Alcotest.test_case (Printf.sprintf "%S" s) `Quick (fun () -> Alcotest.check grid s want (parse s))) text_cases);
       ("imports", List.map (fun (sc, f) -> Alcotest.test_case f `Quick (refusal (sc, f))) refused);
       ("declared", [ Alcotest.test_case "a row type the graph declares" `Quick declared ]);
+      ("inferred", [ Alcotest.test_case "a Table Schema guessed from a sample" `Quick inferred ]);
       ( "tables",
         List.map
           (fun (s, want) ->

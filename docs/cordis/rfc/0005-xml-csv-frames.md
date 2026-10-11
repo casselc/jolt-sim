@@ -211,7 +211,13 @@ field required unless it is an option, a string's `<max N>` its
 again; `uint`, `bytes`, `timestamp`, `duration` and `dyn` columns are
 refused for now.
 
-Still to come in this stage: inference from a sample, as a scaffold.
+**Inference from a sample** (`Csv_codec.infer`, `cimport csvinfer
+SAMPLE.csv`), a scaffold only: a Table Schema for review, each column the
+narrowest kind every present cell fits (integer, number, boolean, else
+string) and required when no cell is missing, with what was seen on
+standard error. It never runs at run time.
+
+This completes stage 1 of the build stages below.
 
 ## Typed data frames: Arrow, Parquet, Vortex
 

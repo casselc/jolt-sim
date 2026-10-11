@@ -5,6 +5,7 @@
      cimport openapi DOC.(json|yaml) [--service NAME] [--out DIR | --print types|report|names|operations|allowlist|pf]
      cimport tableschema SCHEMA.json [--name ROW] [--dialect DIALECT.json] [--out DIR | --print types|report|names]
      cimport csvrow TYPES.cg ROW [--dialect DIALECT.json] [--print names]
+     cimport csvinfer SAMPLE.csv   (a Table Schema guessed for review, and what was seen)
 
    reads a FileDescriptorSet and writes DIR/types.cg (the types and their
    check_ cells), DIR/report.txt (what was approximated) and DIR/names.json
@@ -143,6 +144,12 @@ let () =
           match rest with
           | [] | [ "--print"; "names" ] -> print_string (Yojson.Safe.pretty_to_string (Table_schema.name_map t) ^ "\n")
           | _ -> die "usage: cimport csvrow TYPES.cg ROW [--dialect DIALECT.json] [--print names]"))
+  | [ _; "csvinfer"; sample ] -> (
+      match Csv_codec.infer (read sample) with
+      | exception Csv_codec.Bad m -> die "%s: %s" sample m
+      | schema, notes ->
+          print_string (Yojson.Safe.pretty_to_string schema ^ "\n");
+          List.iter (fun n -> prerr_endline ("inferred " ^ n)) notes)
   | [ _; "protobuf"; set; "--print"; "attach" ] ->
       Printf.printf "uses descriptors sha256:%s;\n" (Cordis_cel.Sha256.digest (read set))
   | _ :: "protobuf" :: set :: rest -> (
