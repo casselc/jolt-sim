@@ -3,10 +3,12 @@
 type Diff    = { path : string; patch : string<max 65536> };
 type Review  = { passed : bool; notes : string<max 500> };
 type Verdict = Pass(Review) | Fail(Review);
-type Prompt  = { prompt : list(string); max_tokens : int };
+// thinking: whether the model may reason before it answers (its reasoning counts against max_tokens)
+type Prompt  = { prompt : list(string); max_tokens : int; thinking : bool };
 type Text    = { text : string<max 65536> };
 // a completion: its text, and why it stopped (stop, length, ...): a cut-off answer is not a verdict
-type Completion = { text : string<max 65536>; finish : string<max 20> };
+// reasoning: the tokens the model spent reasoning, as the server reports them (0 if it does not)
+type Completion = { text : string<max 65536>; finish : string<max 20>; reasoning : int };
 
 effect repo.read(string) : Text;
 effect llm.complete(Prompt) : Completion;
@@ -24,7 +26,7 @@ cell critic(diff : Diff) : Verdict
   state { attempts : int = 0; }
 = {
   use ctx  = repo.read(diff.path);
-  use resp = llm.complete(Prompt{prompt: ['Review the patch below against the file before it. If it is correct, reply with LGTM and nothing else; otherwise say briefly what to change.', ctx.text, diff.patch], max_tokens: 4000});
+  use resp = llm.complete(Prompt{prompt: ['Review the patch below against the file before it. If it is correct, reply with LGTM and nothing else; otherwise say briefly what to change.', ctx.text, diff.patch], max_tokens: 4000, thinking: false});
   // only an answer that finished can approve; the notes are bounded where they are made, as the
   // stream they go to requires
   let r    = Review{passed: resp.finish == 'stop' && resp.text.startsWith('LGTM'),

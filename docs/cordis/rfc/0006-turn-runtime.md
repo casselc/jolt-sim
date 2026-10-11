@@ -1010,6 +1010,16 @@ importers wait for the slice.
        edges; Apalache checks `engine`, `budget` and `schedule` to depth 6
        only; rollback fidelity is still to be run on ZFS.
 
+   A second run (phases A and B again) held: each shipped at the first
+   computation with one completion and one journal row, the 69 s call
+   waited on, not resent, and a crash between a receipt and its sync
+   recovered without a second completion. It found that thinking spends
+   `max_tokens` (3996 of 4000 to say LGTM), so a slightly longer think
+   ends at `length`, which the critic rightly refuses: `Prompt` now says
+   whether the model may think (`thinking`, sent as
+   `chat_template_kwargs.enable_thinking`; the critic turns it off), and
+   a `Completion` carries the reasoning tokens the server reports.
+
    `outbox/test/latency.sh` replays the run's conditions against a
    stand-in: calls slower than the runner's timeout with long multi-line
    answers (one completion per computation, none charged as lost, notes

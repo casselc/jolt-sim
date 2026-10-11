@@ -31,8 +31,16 @@ let text s = V.make_map [ (V.String "text", V.String s) ]
    it stopped, and the tokens the server reports (None: it did not say) *)
 let read_completion body =
   let open J.Util in
-  let content = Buffer.create 1024 and finish = ref "" and tokens = ref None in
-  let usage j = match j |> member "usage" with `Assoc _ as u -> (match u |> member "total_tokens" with `Int n -> tokens := Some n | _ -> ()) | _ -> () in
+  let content = Buffer.create 1024 and finish = ref "" and tokens = ref None and reasoning = ref 0 in
+  let usage j =
+    match j |> member "usage" with
+    | `Assoc _ as u ->
+        (match u |> member "total_tokens" with `Int n -> tokens := Some n | _ -> ());
+        (match u |> member "completion_tokens_details" with
+         | `Assoc _ as d -> (match d |> member "reasoning_tokens" with `Int n -> reasoning := n | _ -> ())
+         | _ -> ())
+    | _ -> ()
+  in
   let choice j =
     match j |> member "choices" with
     | `List (c :: _) ->
@@ -51,11 +59,15 @@ let read_completion body =
           if d <> "[DONE]" then match J.from_string d with j -> choice j; usage j | exception Yojson.Json_error _ -> ())
       lines
   else (let j = J.from_string body in choice j; usage j);
-  (Buffer.contents content, !finish, !tokens)
+  (Buffer.contents content, !finish, !tokens, !reasoning)
 
 (* llm.complete against an OpenAI-compatible chat-completions endpoint
    (halo-flash serves one), streamed, so the client's timeout is a limit on
-   silence, not on a long answer; the receipt is the text and why it
+   silence, not on a long answer. A request's thinking field, if it has
+   one, says whether the model may reason first (chat_template_kwargs'
+   enable_thinking: halo-flash reasons by default, and its reasoning counts
+   against max_tokens). The receipt is the text, the reasoning tokens the
+   server reports, and why it
    stopped (a completion cut off by its length is not one that finished);
    the cost is the tokens the server reports, or unknown (charged the
    worst case) when it does not say. Observational: a completion has no
@@ -68,16 +80,21 @@ let llm_complete ?(idle = 120.) ~url () =
       | _ -> failwith "llm.complete: no prompt"
     in
     let max_tokens = match field req "max_tokens" with Some (V.Int n) -> Int64.to_int n | _ -> 1024 in
+    (* a model that thinks by default spends max_tokens on it: the request says whether it may *)
+    let thinking = match field req "thinking" with Some (V.Bool b) -> [ ("chat_template_kwargs", `Assoc [ ("enable_thinking", `Bool b) ]) ] | _ -> [] in
     let body =
       J.to_string
-        (`Assoc [ ("model", `String "default"); ("max_tokens", `Int max_tokens); ("stream", `Bool true);
-                  ("stream_options", `Assoc [ ("include_usage", `Bool true) ]);
-                  ("messages", `List [ `Assoc [ ("role", `String "user"); ("content", `String prompt) ] ]) ])
+        (`Assoc
+          ([ ("model", `String "default"); ("max_tokens", `Int max_tokens); ("stream", `Bool true);
+             ("stream_options", `Assoc [ ("include_usage", `Bool true) ]);
+             ("messages", `List [ `Assoc [ ("role", `String "user"); ("content", `String prompt) ] ]) ]
+          @ thinking))
     in
     let r = Http.post ~timeout:idle (url ^ "/v1/chat/completions") body in
     classify_status "llm.complete" r.status;
-    let content, finish, tokens = read_completion r.body in
-    (V.make_map [ (V.String "text", V.String content); (V.String "finish", V.String finish) ], match tokens with Some n -> n | None -> -1)
+    let content, finish, tokens, reasoning = read_completion r.body in
+    ( V.make_map [ (V.String "text", V.String content); (V.String "finish", V.String finish); (V.String "reasoning", V.Int (Int64.of_int reasoning)) ],
+      match tokens with Some n -> n | None -> -1 )
   in
   { run = (fun ~key:_ req -> run req); reconcile = (fun ~key:_ _ -> None) }
 

@@ -22,7 +22,7 @@ mkdir -p "$T/repo/src" && echo "let x = 1 (* the file *)" > "$T/repo/src/main.ml
 start() {
   kill "${llm_pid:-}" "${outbox_pid:-}" 2>/dev/null || true
   wait "${llm_pid:-}" "${outbox_pid:-}" 2>/dev/null || true
-  rm -f "$T/port" "$T/count" "$T/run.db" "$T/journal.db" "$T/outbox.out"
+  rm -f "$T/port" "$T/count" "$T/count.thinking" "$T/run.db" "$T/journal.db" "$T/outbox.out"
   python3 "$stub" "$T/port" "$T/count" "$@" & llm_pid=$!
   for _ in $(seq 100); do [ -s "$T/port" ] && break; sleep 0.1; done
   "$outbox_bin" --socket "$T/outbox.sock" --journal "$T/journal.db" --llm "http://127.0.0.1:$(cat "$T/port")" --repo "$T/repo" \
@@ -54,7 +54,10 @@ if phase == "A":
     # (each critic computation reads the file once too: one unit)
     # every line of a note is a comment in the draft
     assert all(l.startswith("// ") for l in a["draft"]["patch"].split("\n")[1:]), a["draft"]["patch"]
-    print(f"A ok: {count} slow completions, each once, none charged as lost; settled {out['settled']}")
+    # the critic asks the model not to think, and the receipt says it did not
+    thinking = [l.strip() for l in open(sys.argv[4] + ".thinking")]
+    assert thinking and all(t == "false" for t in thinking), thinking
+    print(f"A ok: {count} slow completions, each once, none charged as lost, thinking off; settled {out['settled']}")
 elif phase == "B":
     assert code == 4 and out["outcome"] == "rest_unbound", (code, out)
     assert out["unbound"] == ["shipped"] and a["verdict"]["tag"] == "Fail", out

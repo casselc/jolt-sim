@@ -22,6 +22,8 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
 
 port_file, count_file = sys.argv[1], sys.argv[2]
+# what each request said of thinking (chat_template_kwargs.enable_thinking), one line per request
+thinking_file = count_file + ".thinking"
 modes = sys.argv[3:]
 delay = next((float(m.split("=", 1)[1]) for m in modes if m.startswith("delay=")), 0.0)
 count = 0
@@ -39,6 +41,9 @@ class Handler(BaseHTTPRequestHandler):
         count += 1
         with open(count_file, "w") as f:
             f.write(str(count))
+        thinks = body.get("chat_template_kwargs", {}).get("enable_thinking", True)
+        with open(thinking_file, "a") as f:
+            f.write(json.dumps(body.get("chat_template_kwargs", {}).get("enable_thinking")) + "\n")
         if "refuse" in modes:
             out = b'{"error": "bad request"}'
             self.send_response(400)
@@ -60,7 +65,8 @@ class Handler(BaseHTTPRequestHandler):
         else:
             text = "needs work (" + context + ")"
         finish = "length" if "length" in modes else "stop"
-        usage = None if "no-usage" in modes else {"total_tokens": 10}
+        # a model that thinks (by default) reports what it spent reasoning
+        usage = None if "no-usage" in modes else {"total_tokens": 10, "completion_tokens_details": {"reasoning_tokens": 7 if thinks else 0}}
         if delay:
             time.sleep(delay)
         if body.get("stream"):

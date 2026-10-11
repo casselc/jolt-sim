@@ -82,7 +82,7 @@ let cassette (i : E.intent) =
       (* the prompt is [instruction, context, patch]; the note names what it reviewed, so a note left
          from another request shows *)
       let part n = match field i.request "prompt" with Some (V.List xs) when Array.length xs = 3 -> (match xs.(n + 1) with V.String p -> p | _ -> "") | _ -> "" in
-      let done_ t = V.make_map [ (str "text", str t); (str "finish", str "stop") ] in
+      let done_ t = V.make_map [ (str "text", str t); (str "finish", str "stop"); (str "reasoning", V.Int 0L) ] in
       (* a patch that says never is never approved: its loop rests at the stream's cap *)
       if count_sub (part 1) "\n// " >= 2 && count_sub (part 1) "never" = 0 then done_ "LGTM" else done_ ("needs work (" ^ part 0 ^ ")" ^ String.concat "" (List.init !note_lines (fun k -> Printf.sprintf "\nline %d: %s" k (String.make 70 'x')))))
   | k -> failwith ("no cassette for " ^ k)
