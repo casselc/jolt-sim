@@ -1,10 +1,13 @@
 # RFC 0007: Boundaries, and the inference operation contract
 
-Status: proposed, in its fourth revision. This is the normative text: it
+Status: **accepted** (revision 4, 2026-10-12). This is the normative text: it
 states the contract as it now stands and keeps no superseded description.
 The path to it is in "History". halo-flash's half is its
-`docs/OPERATIONS.md` (branch `rfc/operation-api`, e2d5030 at the time of
-writing), which this RFC adopts; where the two differ, this RFC says so.
+`docs/OPERATIONS.md` (branch `rfc/operation-api`; revision 3, 7b5536e, aligns
+with this text: every verb carries `Halo-Not-After` and `Halo-Digest`, and
+records are bounded with a `max_records` ceiling, a 503 with reason
+`records`, and the contract reporting records in use), which this RFC
+adopts; where the two differ, this RFC says so.
 
 ## Purpose
 
@@ -290,6 +293,99 @@ all three are pinned, and failure evidence is retained.
 
 1. Refusal cost: what reservation at acceptance costs callers who set
    `max_tokens` far above what they use, measured on halo's 8-agent pool.
+2. A completion handoff for inference, if restarts make `unknown` common.
+
+Answered by halo's revision 3: the outbox gets its first `Halo-Time` from the
+contract call (`time_ms`); the ceiling on retained records is `max_records`,
+and a platform that stops acknowledging sees records in use, unacknowledged
+outcomes and the oldest one's age in the contract and `/metrics`, and a 503
+naming `records`; a refused cancel leaves the outbox waiting for `closed`.
+
+## History: decisions and evidence are append-only
+
+The outbox's journal records what was known when a decision was made. This
+borrows the discipline of casselc/observability (STPA requirement R-L6 and
+its near miss 49, R-L3):
+
+- **Facts are appended, never rewritten.** Each has a stable id, a custody
+  time, a source (the halo answer, with its incarnation and `Halo-Time`, or
+  the outbox's own decision), and the fact it **supersedes**, if any.
+  Precedence is stated by the writer through `supersedes`, never inferred
+  from arrival order: at-least-once retries reorder arrivals, and "latest
+  wins" would let a retried older fact override a newer one.
+- **Later evidence does not overwrite an earlier decision's basis.** The
+  attempt's current state is a resolution of the chain; the chain is kept.
+- **Any accounting adjustment is an explicit, authorized, exactly-once
+  ledger event** that names what it adjusts, with a stable id so a retry
+  cannot apply it twice. Cost is computed from price facts that carry
+  valid time, and every cost result names its price facts' as-of.
+- **Audits query a durable basis**: a store identity and a commit position.
+  A basis that has expired (compacted past, or from another store) is
+  refused, never answered with incomplete history.
+- **Valid-time history is added selectively**, where pricing or lifecycle
+  facts need retroactive correction, not as general bitemporal execution.
+  **Historical authorization explains a past action; it never grants current
+  authority.**
+
+The current journal updates rows in place (`journal.ml`); moving it to this
+shape is a build step, not a property it has.
+
+## Workspace
+
+The invariant: **a resumed workflow observes the workspace version on which
+its retained state and receipts depend.** Rolling the run store and the
+workspace back together is the implementation (what is built, and what
+`rollback-fidelity.sh` checks); an explicit checkpoint-to-artifact reference
+is another, right for branching, and waits until a replacement proves the
+invariant including branching and garbage collection. It is revisited
+separately. A model cache is disposable acceleration.
+
+## The models
+
+| Model | States | Mutants (each breaks one property) |
+| --- | --- | --- |
+| `operation.qnt` | Identity, a lossy network, incarnation fencing, tombstones, never-accepted abandoned only through a cancel, unknown settled at R | `noFence`, `noTomb`, `abandonUntombed`, `cacheNoTomb`, `resubmitSame` |
+| `capture.qnt` | The durable handoff across crashes and lost or duplicated messages | `ackFirst`, `clearEarly`, `noKey` |
+| `expiry.qnt` | The deadline, the capture window, the outcome kept until acknowledged, the monotonic clock, the verb carrying the deadline | `dropOutcome`, `closedEarly`, `guessDeadline`, `pruneEarly`, `lateAccept`, `clockBack` |
+
+halo-flash's `spec/operation/` is the mirror from the executor's side (it
+reports 10 mutants, all caught, and the design at 100,000 samples of 80
+steps); I have not rerun it. The two scopes differ: ours is the outbox's
+accounting and handoff, theirs the executor's identity, delivery, time and
+retention. Their correspondence table is in `OPERATIONS.md` section 7. The
+operation model is also proved by Apalache to 8 steps (6 in the gate).
+
+## Order of work
+
+1. **Consolidate** (this revision).
+2. **halo-flash implements its API**: `Halo-Incarnation`, `Halo-Time` and the
+   contract first; then operation keys in the scheduler (binding digests,
+   incarnation and deadline checks, tombstones, reservation, the capture
+   window, ack release); then the endpoints and the stream. Disconnect never
+   cancels; metadata is bounded; `exact` and `relaxed` are advertised.
+3. **The outbox's durable halo adapter**, in the order of "The durable
+   handoff". The adapter is built against a stand-in server that speaks the
+   verbs, as the header rules were; the header rules stay for ordinary
+   clients and for a server run with `--operations off`, and retire for
+   operations once the adapter moves.
+4. **The journal's history**: append-only facts with `supersedes`, ledger
+   events, and an audit basis.
+5. **One end-to-end milestone** (below).
+6. **Only then** ask whether a second executor calls for extraction.
+
+### The milestone
+
+Cordis, the outbox adapter and halo run together through: lost and delayed
+submissions, cancellation races, outbox and executor crashes, lost
+acknowledgements, duplicate receipt delivery, and expiry. It verifies the
+accounting, that every receipt is preserved and applied once, the retention
+and metadata bounds, and that audit views reproduce. The tested revisions of
+all three are pinned, and failure evidence is retained.
+
+## Open questions
+
+1. Refusal cost: what reservation at acceptance costs callers who set
+   `max_tokens` far above what they use, measured on halo's 8-agent pool.
 2. How the outbox obtains its `Halo-Time` reading before its first submit
    (the contract call returns it).
 3. The ceiling on retained metadata, and what a platform that stops
@@ -310,7 +406,7 @@ all three are pinned, and failure evidence is retained.
   six requirements and answered that finding by keeping an expired outcome
   until it is acknowledged, which makes `closed` sound at no cost and which
   this RFC adopted in place of its own proposal (answer `expired`, settle R).
-- Revision 4: the fourth review. One normative text; inference-only,
+- Revision 4 (accepted): the fourth review. One normative text; inference-only,
   implemented in the outbox, extraction deferred; the verbs carry the
   deadline (`guessDeadline`); metadata bounded; history append-only;
   temporal scope narrow; one milestone.
