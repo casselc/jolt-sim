@@ -72,3 +72,11 @@
  (deps ops.sh stub_ops.py %{bin:cordis-run} %{bin:cordis-outbox} ../../graph/examples/review.cg)
  (action
   (run bash %{dep:ops.sh} %{bin:cordis-run} %{bin:cordis-outbox} %{dep:../../graph/examples/review.cg} %{dep:stub_ops.py})))
+
+; RFC 0007's milestone against the stand-in: engine crashes, an outbox restart and a server restart through lost,
+; delayed and duplicated submits and a lost acknowledgement; receipts once, nothing held, the audit clean
+(rule
+ (alias e2e)
+ (deps milestone.sh stub_ops.py %{bin:cordis-run} %{bin:cordis-outbox} ../../graph/examples/review.cg)
+ (action
+  (run bash %{dep:milestone.sh} %{bin:cordis-run} %{bin:cordis-outbox} %{dep:../../graph/examples/review.cg} %{dep:stub_ops.py})))

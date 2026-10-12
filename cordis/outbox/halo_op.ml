@@ -128,6 +128,8 @@ let ack cfg db s =
   let rec go n =
     match call cfg s ~meth:"POST" "/ack" with
     | r when r.status = 200 -> mark db "acked" s
+    (* the incarnation the result was held by is gone, and its body with it: nothing is left to release *)
+    | r when r.status = 409 && str (J.Util.member "error" (json r)) "type" = Some "stale_incarnation" -> mark db "acked" s
     | _ | (exception _) -> if n < 20 then (Thread.delay (Float.min 5. (0.2 *. float_of_int (n + 1))); go (n + 1))
   in
   go 0

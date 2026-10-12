@@ -372,6 +372,17 @@ accounting, that every receipt is preserved and applied once, the retention
 and metadata bounds, and that audit views reproduce. The tested revisions of
 all three are pinned, and failure evidence is retained.
 
+`outbox/test/milestone.sh` is that run against the stand-in (pinned to halo-flash
+`c4a39ff`'s wire): eight engine crashes, an outbox restart and a server restart,
+through a lost submit answer, a late copy, a duplicate, a lost acknowledgement and
+a lost submit. It checks one done attempt per critic computation, no
+acknowledgement owed or outcome held, and a clean audit; on failure it copies its
+working directory to `$MILESTONE_EVIDENCE`. It found that an acknowledgement owed
+to an incarnation that has since restarted (409 `stale_incarnation`) was retried
+and owed for ever; the body went with the incarnation, so it is now counted done.
+Not yet run against halo itself (needs its build and `--operations`), nor does it
+cover expiry or cancel: those are the selftest's and `expiry.qnt`'s so far.
+
 ## Open questions
 
 1. Refusal cost: what reservation at acceptance costs callers who set

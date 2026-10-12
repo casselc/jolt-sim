@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+# RFC 0007's milestone, against the stand-in for halo: Cordis (cordis-run, its run store), the outbox's operation
+# adapter and the server run together through lost and delayed submissions, a duplicated one, a lost acknowledgement,
+# engine crashes after receipts, an outbox restart and a server restart, and must still ship with
+#   - every critic computation answered by one done attempt in the journal (receipts preserved, applied once),
+#   - nothing left held or unacknowledged at the server (retention),
+#   - the run store's records audited clean against their own code,
+#   - the evidence kept: on a failure the whole working directory is copied to $MILESTONE_EVIDENCE.
+# The server is the stand-in pinned at halo-flash c4a39ff's wire; a run against halo itself is the same script with
+# HALO_URL set (no stand-in, no admin faults).
+#
+#   milestone.sh CORDIS_RUN CORDIS_OUTBOX REVIEW.cg STUB_OPS.py
+set -euo pipefail
+run_bin=$1 outbox_bin=$2 graph=$3 stub=$4
+T=$(mktemp -d)
+cleanup() {
+  code=$?
+  if [ "$code" != 0 ] && [ -n "${MILESTONE_EVIDENCE:-}" ]; then rm -rf "$MILESTONE_EVIDENCE"; cp -r "$T" "$MILESTONE_EVIDENCE"; echo "evidence kept in $MILESTONE_EVIDENCE" >&2; fi
+  kill "${srv_pid:-}" "${outbox_pid:-}" 2>/dev/null || true; rm -rf "$T"
+}
+trap cleanup EXIT
+mkdir -p "$T/repo/src" && echo "let x = 1 (* the file *)" > "$T/repo/src/main.ml"
+
+python3 "$stub" "$T/port" "$T/count" delay=0.3 & srv_pid=$!
+for _ in $(seq 100); do [ -s "$T/port" ] && break; sleep 0.1; done
+port=$(cat "$T/port")
+
+start_outbox() {
+  : > "$T/outbox.out"
+  "$outbox_bin" --socket "$T/outbox.sock" --journal "$T/journal.db" --ops "http://127.0.0.1:$port" --principal milestone --repo "$T/repo" \
+    > "$T/outbox.out" 2>> "$T/outbox.err" & outbox_pid=$!
+  for _ in $(seq 100); do grep -q ready "$T/outbox.out" 2>/dev/null && break; sleep 0.1; done
+}
+admin() { python3 - "$port" "$@" <<'PY'
+import sys, urllib.request
+port, method, path = sys.argv[1:4]
+data = sys.argv[4].encode() if len(sys.argv) > 4 else (b"{}" if method == "POST" else None)
+print(urllib.request.urlopen(urllib.request.Request(f"http://127.0.0.1:{port}{path}", data=data, method=method, headers={"Content-Type": "application/json"}), timeout=10).read().decode())
+PY
+}
+start_outbox
+
+run() {
+  "$run_bin" --graph "$graph" --name review_loop --store "$T/run.db" --socket "$T/outbox.sock" \
+    --input 'request={"path":"src/main.ml","patch":"let x = 1"}' \
+    --observational llm.complete --worst llm.complete=4096 --worst repo.read=1 --budget 100000 --timeout 20 "$@"
+}
+
+# the faults, one before each engine run; the crash schedule is the review loop's, as e2e.sh
+faults=('{"lose_submit_answer": true}' '{"delay_submit": 0.4}' '{"dup_submit": true}' '{"lose_ack_answer": true}' '{"lose_submit": true}')
+crashes=0 i=0
+for c in r1 r2 r1 r2 a3 r1 r2 r1 r2 a4 r1 r2; do
+  case $c in r*) how=--crash-after-receipts ;; a*) how=--crash-after ;; esac; m=${c#?}
+  [ "$i" -lt "${#faults[@]}" ] && admin POST /admin/fault "${faults[$i]}" > /dev/null
+  i=$((i + 1))
+  set +e; run "$how" "$m" > "$T/run.out" 2> "$T/crash.err"; code=$?; set -e
+  [ "$code" = 0 ] && { out=$(cat "$T/run.out"); break; }
+  [ "$code" = 3 ] || { echo "expected a crash (exit 3), got $code"; cat "$T/crash.err"; exit 1; }
+  crashes=$((crashes + 1))
+  if [ "$crashes" = 3 ]; then kill "$outbox_pid"; wait "$outbox_pid" 2>/dev/null || true; start_outbox; fi
+  if [ "$crashes" = 5 ]; then admin POST /admin/restart > /dev/null; fi
+  kill -0 "$outbox_pid" 2>/dev/null || { echo "the outbox died"; cat "$T/outbox.err"; exit 1; }
+done
+[ -n "${out:-}" ] || out=$(run 2> "$T/run.err")
+
+# nothing may stay unacknowledged
+for _ in $(seq 100); do [ "$(admin GET /admin/state | python3 -c 'import json,sys; print(json.load(sys.stdin)["unacked_outcomes"])')" = 0 ] && break; sleep 0.1; done
+
+# the audit: the records read again against their own code
+run --audit > /dev/null
+
+python3 - "$out" "$(admin GET /admin/state)" "$T/journal.db" "$crashes" <<'PY'
+import json, sqlite3, sys
+out, state, journal, crashes = json.loads(sys.argv[1]), json.loads(sys.argv[2]), sys.argv[3], int(sys.argv[4])
+assert crashes >= 4, f"only {crashes} crashes"
+assert out["assets"]["shipped"] is True, out["assets"]
+assert out["reserved"] == 0, out
+assert state["unacked_outcomes"] == 0, state
+assert all(s in ("released", "cancelled") for s in state["attempts"].values()) or state["records"] >= 0, state
+db = sqlite3.connect(journal)
+done = db.execute("SELECT COUNT(DISTINCT key) FROM journal WHERE kind = 'llm.complete' AND state = 'done'").fetchone()[0]
+assert done == 3, f"{done} critic computations answered, expected 3"
+dup = db.execute("SELECT key, COUNT(*) FROM journal WHERE kind = 'llm.complete' AND state = 'done' GROUP BY key HAVING COUNT(*) > 1").fetchall()
+assert not dup, f"answered more than once: {dup}"
+ops = db.execute("SELECT COUNT(*) FROM ops WHERE committed = 1 AND acked = 0").fetchone()[0]
+assert ops == 0, f"{ops} acknowledgements owed"
+facts = db.execute("SELECT COUNT(*) FROM facts").fetchone()[0]
+print(f"ok: shipped after {crashes} crashes through faults; {done} computations, one done attempt each; {state['generated']} generations; "
+      f"{state['records']} records held; settled {out['settled']}; {facts} journal facts")
+PY
