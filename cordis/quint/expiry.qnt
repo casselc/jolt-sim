@@ -39,6 +39,12 @@
  *  - CLOSED_EARLY (`closedEarly`): an attempt with no record is closed
  *    without waiting for the deadline or cancelling (a refusal read as the
  *    end of the attempt) -> accounted;
+ *  - GUESS_DEADLINE (`guessDeadline`): a status query carries no
+ *    deadline, so for an attempt whose submit never arrived the executor
+ *    has none to compare its clock with, and guesses the earliest the
+ *    platform could have named -> accounted (it answers `closed` while a
+ *    copy with a later deadline can still be accepted). The verbs carry
+ *    the immutable `not_after`, as submit does;
  *  - PRUNE_EARLY (`pruneEarly`): a tombstone is dropped before its
  *    deadline -> runsOnce (a duplicate is accepted again);
  *  - LATE_ACCEPT (`lateAccept`): the executor ignores not_after on
@@ -52,6 +58,7 @@
 module expiry {
   const DROP_OUTCOME: bool
   const CLOSED_EARLY: bool
+  const GUESS_DEADLINE: bool
   const PRUNE_EARLY: bool
   const LATE_ACCEPT: bool
   const CLOCK_BACK: bool
@@ -155,7 +162,9 @@ module expiry {
   // closed: past the window with no record, so no copy can be accepted any more. Settled at nothing, no message
   // (CLOSED_EARLY: without waiting for the window, and without a cancel)
   action closed: bool = all {
-    s.st == Sent, s.ex == Absent, hc > s.notAfter or CLOSED_EARLY,
+    s.st == Sent, s.ex == Absent,
+    // the deadline the executor compares with: the one the verb carries (GUESS_DEADLINE: the earliest it could be)
+    hc > (if (GUESS_DEADLINE) W - SK else s.notAfter) or CLOSED_EARLY,
     s' = { ...s, st: Abandoned, reserved: 0, closed: s.closed + 1 },
   }
 

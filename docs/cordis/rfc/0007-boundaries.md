@@ -1,308 +1,316 @@
-# RFC 0007: Boundaries, and the operation contract
+# RFC 0007: Boundaries, and the inference operation contract
 
-Status: proposed. Revision 3 answers a third agent's review of revision 2
-and halo-flash's proposal: the durable handoff and time are modelled
-(`capture.qnt`, `expiry.qnt`), and the wire contract gains requirements
-(identity bound to the incarnation and owner on every verb, refusal is not
-closure, cancellation races, retention reserved at admission, usage
-semantics). Revision 2 adds halo-flash's half (its branch
-`rfc/operation-api`, 58e60d3, `docs/OPERATIONS.md`, `spec/operation/`) and
-the network to the model. Records the review of the architecture's division of
-responsibility (two agents, against RFC 0006 and what was built through
-round 5 of the halo-flash runs) and the one change it supports: an
-**operation contract** between the platform and an inference executor. It
-does not move any code. Each change below needs this RFC accepted first,
-and the contract needs halo-flash's agreement.
+Status: proposed, in its fourth revision. This is the normative text: it
+states the contract as it now stands and keeps no superseded description.
+The path to it is in "History". halo-flash's half is its
+`docs/OPERATIONS.md` (branch `rfc/operation-api`, e2d5030 at the time of
+writing), which this RFC adopts; where the two differ, this RFC says so.
 
 ## Purpose
 
-Every question of who decides whether an external operation happened, and
-what it cost, has so far been settled one header at a time
-(`Halo-Answer`, `Halo-Discarded-Tokens`, `Halo-Admitted-Sends`): Cordis
-reconstructs an operation's history through a connection-oriented
-interface whose server remembers for a bounded time. Each header is
-correct; together they are the symptom. This RFC names the owners, states
-what an operation is, and orders the work.
+Who decides whether an external operation happened, and what it cost, was
+settled one header at a time (`Halo-Answer`, `Halo-Discarded-Tokens`,
+`Halo-Admitted-Sends`): Cordis reconstructed an operation's history through a
+connection-oriented interface whose server remembers for a bounded time.
+This RFC names the owners, states what an inference operation is, and
+orders the work. It is a contract for **inference only**; see "Scope".
+
+## Scope
+
+- **One executor, one contract.** The contract is written for inference
+  against halo-flash and implemented **inside the existing per-agent
+  outbox**. Nothing moves into yard, and no shared operation service is
+  built. The contract is stated per operation type so that a second type
+  (repository, tool or sandbox execution) can adopt it; when one does, it
+  decides what to extract: a library, a ledger interface, or a service.
+  Until then the outbox is the operation service, now named so.
+- **Trusted policy stays out of agent-editable graphs.** A graph states what
+  it may request (effects, types, bounds); the runner's configuration grants
+  an intent's class and authority, and the outbox enforces cost policy. A
+  graph cannot make itself authoritative by declaring a permissive class
+  (`observe.qnt`'s `misclassify`).
+- **Not adopted:** XTDB or general bitemporal workflow execution; decoupling
+  the run store from workspace snapshots (see "Workspace").
 
 ## Owners
 
-Three domains, which need not be three services, and a fourth that is
-today part of yard:
-
 | Owner | Authoritative facts | Does not own |
 | --- | --- | --- |
-| **Workflow runtime** (Cordis) | What the workflow committed, its revision and workspace basis, which receipts it applied | Credentials, provider retry rules, physical resource lifecycle |
-| **Platform operation service** (yard's domain; today Cordis's outbox, per agent) | What it accepted and authorized, execution attempts, retained receipts, budget reservations and settlement | Workflow semantics, model internals |
-| **Inference service** (halo-flash) | What inference executed within its advertised observation window, its result, measured usage | Workflow retries, the spending ledger, sandbox identity |
-| **Workspace manager** (yard) | Which workspace versions exist, and which checkpoint references each | |
+| **Cordis** (the workflow runtime) | Committed logical intents, workflow state, revision and workspace basis, which receipts it applied | Credentials, provider retry rules, physical resources |
+| **The outbox** (per agent; the platform operation service for inference) | Inference execution attempts, reconciliation, authorization, reservations, settlement: the authoritative accounting | Workflow semantics, model internals |
+| **halo-flash** | Execution evidence: what it accepted and ran within its advertised window, its result, measured usage | Workflow retries, the spending ledger, identity issuance |
+| **Workspace manager** (yard) | Which workspace versions exist and which checkpoint references each | |
 
-What stays as RFC 0006 decided: the outbox is outside every dataset a
-step snapshot rolls back (3B, `outbox.qnt`'s `journalInSnapshot`);
-recovery is the run store's checkpoint plus log, with a replay audit
-(5C), not VM snapshots; the checker bounds what a graph may request and
-the runner's configuration grants what it may do (an intent's class is
-never the cell's choice, `observe.qnt`'s `misclassify`); unikernels and
-the custom tender (8C) come last.
+Halo-specific protocol details stay inside the outbox's adapter. What RFC
+0006 decided stands: the outbox is outside every dataset a step snapshot
+rolls back (3B, `outbox.qnt`'s `journalInSnapshot`); recovery is the run
+store's checkpoint plus log with a replay audit (5C); unikernels and the
+custom tender (8C) come last.
 
-## The operation contract
+## Identity, binding and clock
 
-An external operation is not an HTTP connection. Its parts:
+- **An attempt is `(owner, operation id, attempt)`.** The owner is the
+  authenticated principal; the operation id and attempt are issued by the
+  outbox, unique per owner, and never reused. The attempt is the unit of
+  execution and accounting. A new execution is a new attempt the outbox has
+  authorized; halo never starts one.
+- **Binding.** A submit binds the attempt to a digest of its immutable parts:
+  `api`, `request`, `not_after` and `mode`. Any later message for the attempt
+  naming another digest gets 409 `conflict` and changes nothing.
+- **Incarnation.** 128 random bits chosen at process start, per process and
+  not a durable epoch (halo persists nothing an operation depends on). **Every
+  verb names the incarnation it is meant for.** Another incarnation answers
+  `unknown` (status) or 409 (submit, cancel, ack) and acts on nothing, so an
+  old query after a restart never gets the new process's `never_accepted`,
+  and a delayed cancel or ack reaches only the attempt and incarnation it
+  names.
+- **Clock.** Every answer carries `Halo-Time`, milliseconds on halo's
+  monotonic clock since the incarnation started. Deadlines are in that
+  clock and only halo compares them, so no two hosts' clocks are compared. A
+  restart is a new incarnation with a new clock. The outbox computes
+  `not_after` from its latest `Halo-Time` plus its own monotonic time
+  elapsed since that reading plus the window; an underestimate only shortens
+  the window. Halo rejects a `not_after` more than `max_submit_age_s`
+  (proposed 600 s) ahead.
+- **Every verb carries the deadline.** Status and cancel carry `not_after`
+  and the digest as submit does. This is what lets halo answer for an
+  attempt whose submit never arrived: with no record, it compares its clock
+  with the carried `not_after`. Without it halo has no deadline for that
+  attempt and must guess one, and a guess earlier than the true deadline
+  answers `closed` while a copy can still be accepted (`expiry.qnt`'s
+  `guessDeadline`). A cancel records the carried `not_after` and digest in
+  its tombstone, so a later submit naming another is a conflict.
 
-- **Identity.** An operation id and an attempt number, issued by the
-  platform. An attempt is the unit of execution and accounting; a new
-  attempt is a new execution the platform has authorized.
-- **Incarnation.** The executor names the incarnation it is (a
-  fencing token that changes whenever it may have lost state). Every
-  answer carries it. A query for an attempt the executor does not hold
-  gets **unknown**, never a silent new submission: *never accepted* and
-  *I no longer know* are different answers, and only the first lets the
-  platform resubmit under the same identity.
-- **Verbs.** Submit or attach (by operation id and attempt), status and
-  result, explicit cancel, an observation stream. A disconnect is the
-  observer leaving; whether execution continues is a policy named in the
-  submit, not a socket behaviour. Partial tokens are observations, not
-  receipts.
-- **Retention is a promise or it is not.** "Ten minutes, unless capacity
-  evicts sooner" describes a cache. The executor either holds a finished
-  result until the platform has captured it (and refuses admission when
-  it would have to break that), or it advertises that it does not, and
-  the platform accounts for it.
-- **Guarantees are declared by the operation type**, not implied by its
-  name: external effects, deduplication scope and lifetime, whether it can
-  be reconciled, cancellation semantics, how cost is reported. Inference
-  is safe to repeat for external effects, but repeating it spends again and
-  may answer differently; those are properties of the type.
-- **Unknown outcomes.** If the executor completes work and is lost before
-  the platform captures the result, the outcome is unknown, and no ledger
-  can make it known: the platform preserves the uncertainty and settles at
-  the attempt's worst case. Removing it needs additional durability or a
-  completion handoff, a separate design choice. Accounting therefore
-  reduces to "settle what the operation reports" only when an
-  authoritative report exists; otherwise the reservation is the charge.
+## Verbs
 
-`quint/operation.qnt` states this (`operation_modes.qnt`, checked in
-`check.sh`), over a network that loses, delays and duplicates a submit and
-an executor that restarts, holds an attempt until it is acked, and (without
-a promise) may evict a finished result, leaving a forgotten marker. The
-platform's three answers to a query are *done / running*, *unknown or
-forgotten* (settled at the worst case R; going on needs a new attempt),
-and *never accepted*, which is safe to act on at no cost, by resending the
-same identity or abandoning it, **given three rules**, each with a mutant:
+All requests carry `Halo-Incarnation`, the attempt's `not_after` and digest,
+and are authenticated. All answers carry `Halo-Incarnation` and `Halo-Time`.
 
-| Rule | Broken by | Breaks |
+| Verb | Request | Answers |
 | --- | --- | --- |
-| Incarnation fencing: a submit names the incarnation it is sent to, and any other refuses it | `noFence` | `runsOnce`: a copy delayed past a restart reruns an attempt already settled as unknown |
-| Tombstones: an accepted, acked or cancelled id is refused until its submit's `not_after` has passed | `noTomb`, `cacheNoTomb` (a tombstone evicted under load) | `runsOnce`: a duplicate reruns a captured attempt |
-| Abandon only through a cancel that tombstones the id | `abandonUntombed` | `accounted`: the late copy runs after the attempt was settled at 0 |
+| contract | `GET /v1/halo/contract` | incarnation, time, the guarantees per operation type |
+| submit | `POST /v1/operations` `{operation_id, attempt, not_after, api, request, mode}` | 202 `accepted`; a duplicate gets the current status; 409 stale incarnation or `conflict`; 410 past `not_after`; 429 or 503 with Retry-After |
+| status | `GET /v1/operations/{op}/{attempt}` | see "Status answers" |
+| fetch | `GET /v1/operations/{op}/{attempt}/result` | the body and usage, while held |
+| observe | `GET /v1/operations/{op}/{attempt}/stream?from=<event>` | SSE from an event offset while the body is held; 410 with the status afterwards. Leaving is an observer departing, never a cancel. Partial tokens are observations, never receipts |
+| cancel | `POST /v1/operations/{op}/{attempt}/cancel` | `cancelled_before_accept` (the id is tombstoned: a later submit is a no-op); `stopping` (finishes at the next unit boundary as `done`, finish `cancelled`, with its actual usage); or the current terminal status |
+| ack | `POST /v1/operations/{op}/{attempt}/ack` | the outbox has durably committed the result: halo releases the body and keeps the outcome until the tombstone is pruned |
 
-and one prohibition: `resubmitSame`, sending an unknown attempt again as it
-was (a submit is never re-aimed at a new incarnation), breaks `accounted`:
-**an idempotency key is a starting point and not an operation contract**.
-The design holds at 20,000 samples of 60 steps and is verified by
-Apalache to 8 steps (6 in the gate; 8 takes fifteen minutes); the value of a promise is
-measurable: `promised` (no restart, a promise) never overcharges and a lost
-submit abandoned costs 0, where `cacheLike` (eviction under load) pays the
-worst case for a result evicted before it was acked. halo-flash's model is
-the mirror from the executor's side, and agrees on every instance (its
-`cacheNoTomb` breaks `neverAcceptedTrue`, mine `runsOnce`: an invariant
-about attempts still awaiting an answer, against one about every attempt).
+**Disconnect never cancels.** There is no detach policy: an operation is
+cancelled only by an explicit cancel, and observers never own execution.
 
-## halo-flash's surface (revision 2)
+### Status answers, and what the outbox does
 
-Agreed, from `docs/OPERATIONS.md`; the implementation order is theirs:
+| Status | Meaning | The outbox |
+| --- | --- | --- |
+| `running` | accepted, executing | waits |
+| `done` | finished (finish reason, usage, `expires_at` in halo time); the body can be fetched | fetch, commit, ack (below) |
+| `released` | acknowledged and released | nothing; it committed before acking |
+| `expired` | finished, but the capture window passed without an ack: the body is gone, the outcome and usage are not | settle at that usage, no receipt; a new attempt if the operation still needs one; ack the outcome |
+| `cancelled_before_accept` | cancelled before any copy was accepted | settle at 0 (terminal) |
+| `closed` | never accepted, and `Halo-Time` is past the carried `not_after`: no copy can be accepted any more | settle at 0 (terminal) |
+| `never_accepted` | not accepted *yet*: a delayed copy may still arrive | keep the reservation; resend as first sent, cancel, or wait for `closed` |
+| `unknown` | another incarnation | settle at the worst case R; a new attempt to run again |
 
-- `Halo-Incarnation` (128 random bits, per process: a durable epoch would
-  distinguish nothing, as halo persists nothing an operation depends on) on
-  every answer, and `GET /v1/halo/contract` (retention, deduplication,
-  cancellation, cost reporting, what repeating spends);
-- `POST /v1/operations {operation_id, attempt, incarnation, not_after, api,
-  request, on_detach}`: 202; the current status for a duplicate; 409 for a
-  stale incarnation; 410 past `not_after`; 429 or 503 with Retry-After,
-  both definitely not accepted;
-- `GET /v1/operations/{op}/{attempt}`: running, done (usage with
-  `discarded`, and the result), unknown, forgotten, never_accepted; a
-  stream from an offset; `cancel`; `ack`;
-- retention until ack (24 h backstop, advertised as part of the promise);
-  halo refuses new submits (503) rather than release an unacked result;
-- `on_detach` (continue or cancel) replaces keyed grace for operations.
+`forgotten` (evicted before capture) does not exist under the retention
+promise; a server without the promise would answer it, settled at R.
 
-Assumptions we state and do not model: the platform's and halo's clocks
-agree to within a stated skew (today they share a host), which bounds how
-long a tombstone must live; and cancel is a request the platform repeats
-until answered. Open question 2 is answered (per process); question 3 is
-the implementation's measurement (refusal and held bytes under the
-8-agent pool; with ack-based release a refusal should mean the platform
-stopped acking, a fault it can see).
+### Rules the outbox keeps
 
-On our side: record `Halo-Incarnation` and the contract as soon as halo
-ships them (the outbox journals them beside `source`); the header rules
-(`observe_report.qnt`, `observe_forget.qnt`, `Halo-Admitted-Sends`) retire
-for an operation once the adapter moves to the verbs, and stay for
-ordinary clients and for a server run with `--operations off`.
+1. **Commit before ack** (below).
+2. **A refusal closes the copy, not the attempt.** A 429 or 503 shows that
+   *this copy* was not accepted; another may still be. The reservation stays
+   until a terminal answer: `done`, `expired`, `cancelled_before_accept`,
+   `closed` or `unknown`.
+3. **Settle `never_accepted` only through a terminal answer.** That is
+   `cancelled_before_accept` (from the cancel, or a later status) or
+   `closed`.
+4. **Resend a submit exactly as first sent**: same identity, incarnation,
+   deadline and digest. It is never re-aimed at a new incarnation; an unknown
+   attempt is never sent again into another one.
+5. **Repeat a cancel until it is answered.** It can be lost, its answer can
+   be lost, and it can race acceptance and completion. A cancelled attempt
+   that ran has a retained terminal result with its actual usage:
+   cancellation is not proof that nothing was spent.
 
-## The durable handoff (revision 3)
+## The durable handoff
 
-Capture is four steps, and the order is the protocol: **fetch** the result;
-**commit** it durably in the platform (receipt, settlement and a pending
-delivery, one record); **acknowledge** the executor, which then releases
-it; **deliver** the receipt to the workflow, which applies it by its key and
-confirms, and only then is the delivery no longer pending. A lost
-acknowledgement only retains the result longer; it never loses the receipt.
-`quint/capture.qnt` models the platform crashing between any two steps,
-lost and duplicated acknowledgements and deliveries, and the executor
-restarting, and states four properties: the executor never releases a
-result the platform has not committed (`resultNotLost`); a committed
-receipt is applied or still pending (`receiptNotLost`); the workflow
-applies one (`appliedOnce`); and the accounting holds. Each mutant breaks
-one: `ackFirst` (acknowledging on fetch, before the commit),
-`clearEarly` (pending cleared on send, not on the workflow's
-confirmation), `noKey` (the workflow applies every delivery).
+The outbox's capture is five steps, and the order is the protocol:
 
-## Time (revision 3)
+1. **Commit the intent and its reservation** before submitting.
+2. **Fetch** the result (volatile).
+3. **Commit** receipt, settlement and a pending workflow delivery, durably, as
+   one record.
+4. **Acknowledge** halo, which then releases the body.
+5. **Deliver** the receipt to the workflow, which applies it once by the
+   attempt, and confirms; the delivery stops being pending only on that
+   durable confirmation.
 
-The API's deadlines change what `operation.qnt` could assume. A submit
-carries a deadline, `not_after`; the executor refuses one that arrives
-past it (410) and so remembers an id only until then; and it stops holding
-a finished result's body after a capture window. `quint/expiry.qnt` adds
-time. Its findings, and how halo-flash's revision 2 (e2d5030) answers them:
+The outbox may crash between any two steps; an acknowledgement or a delivery
+may be lost or duplicated. A lost acknowledgement only keeps the body longer
+(until its window ends and it becomes `expired`); it never loses the receipt.
+`capture.qnt` states this: `resultNotLost`, `receiptNotLost`, `appliedOnce`,
+and the accounting, with mutants `ackFirst`, `clearEarly` and `noKey`.
 
-- **The executor decides by its own monotonic clock; the platform only
-  names the deadline.** Skew changes how long the window is, never whether
-  the rules hold; a clock that goes back does break them (`clockBack`).
-  Halo's `Halo-Time` is on every answer, only halo compares deadlines, and a
-  restart is a new incarnation with a new clock, so no cross-host skew
-  assumption remains.
-- **What the executor keeps decides what its answers mean.** Revision 1
-  pruned a tombstone at `not_after` (about 10 minutes) while the backstop
-  that released a result was 24 hours later; an id with no record then read
-  "never accepted" when it might have run (`dropOutcome`: the platform
-  abandons at no cost an attempt that ran). Revision 2 keeps the **outcome**
-  (status and usage) of an unacknowledged expired result until it is
-  acknowledged. Then an accepted attempt always leaves a record until the
-  platform acks it, and "no record, past the window" is **`closed`**:
-  provably never accepted, settled at nothing with no further message. This
-  is cheaper than the alternative this RFC first proposed (answer
-  `expired` there and settle the worst case), and the model confirms it
-  sound.
-- **Inside the window, no record is `never_accepted`, not yet closed.** A
-  delayed copy may arrive, so the attempt is closed by a cancel that
-  tombstones the id, or by waiting for `closed`. Closing it without either
-  (`closedEarly`, a refusal read as the end of the attempt) lets a late
-  copy run uncounted.
-- **A tombstone dropped before its deadline** (`pruneEarly`), **a submit
-  accepted past it** (`lateAccept`) and **a clock set back** (`clockBack`)
-  each rerun an attempt.
-- **What each answer costs** (halo's table, the accounting this RFC
-  adopts): `closed` and `cancelled_before_accept` settle at 0; an `expired`
-  result settles at its actual usage with no receipt; only `unknown`
-  (another incarnation) and `forgotten` (a server without the promise)
-  settle at the worst case R. A submit lost before it arrives costs 0.
+## Retention
 
-The retention is a bounded capture window, stated and advertised
-(`capture_s`, `expires_at` on `done`), not "until captured": that needed
-unbounded memory.
+- **The capture window is the promise.** Halo holds a body until it is
+  acknowledged or its window (`capture_s`, advertised; `expires_at` on every
+  `done`) ends, and never evicts under load. After the window the outcome
+  (status and usage) is kept until it is acknowledged, then pruned with its
+  tombstone. This is a bounded promise; "until captured" needs unbounded
+  memory.
+- **An accepted attempt always leaves a record until the outbox
+  acknowledges it.** That is what makes `closed` sound: with no record past
+  the window, the attempt was never accepted. Pruning an unacknowledged
+  outcome turns "it ran" into "closed" (`dropOutcome`).
+- **Space is reserved at acceptance**, for the most the result can need:
+  `max_tokens` times the bytes-per-token bound, tool-call arguments and
+  reasoning text, and the stream's event history. If reservations would
+  exceed the budget, halo refuses with 503 and Retry-After. **Metadata is
+  bounded too**: the tombstones and unacknowledged outcomes have a stated
+  ceiling, and halo refuses admission when it is reached; it never erases
+  history to make room.
+- **Tombstones** keep an attempt id until its `not_after` has passed and, if
+  it ran, its outcome has been acknowledged (about 50 bytes per id seen in a
+  window).
+- The stream answers 410 with the status once the body is gone.
 
-## The wire contract's requirements (revision 3)
+## Usage and modes
 
-Not all modelled; halo-flash's revision 2 takes each of them, and the
-status in brackets is where it stands:
+- **Usage is `{prompt, cached, completion}`, disjoint.** `completion` counts
+  every token the attempt decoded, delivered or not, a cancelled attempt
+  included. There is no `discarded`: an attempt executes at most once.
+  Token counts are the accounting unit; `engine_ms` is a measurement, not a
+  cost.
+- **`mode`** is `relaxed` (the default) or `exact`, and is part of the
+  binding. Under `relaxed`, batch participation can change a greedy
+  session's output (about 0.8% of token positions on halo's fixtures); under
+  `exact` greedy output is identical on the same build and weights. The
+  contract advertises it.
 
-1. **[taken; modelled by halo as the fence] Every verb is bound to the
-   identity and the incarnation.** Status,
-   cancel and ack carry the expected incarnation as submit does (an old
-   query after a restart answers `unknown`, never the new process's
-   `never_accepted`; a delayed cancel or ack cannot touch another
-   execution). Identity is authenticated owner, operation id, attempt and
-   incarnation, bound to the submit's immutable content: reusing it with a
-   different request, deadline or `on_detach` is a conflict (409).
-2. **[taken; halo's `refusalCloses` mutant] A refusal is not closure.** A 429 or 503 shows that *this copy* was not
-   accepted; another copy of the same submit may still arrive. The platform
-   keeps the reservation until an acknowledged cancel or an `expired` or
-   `never_accepted` answer inside the rules above closes the attempt.
-3. **[taken; `on_detach` removed; halo's `cancelUntombed`] Cancellation
-   races.** A cancel can be lost, its answer can be lost, and
-   it can race acceptance and completion; the platform repeats it until
-   answered. A cancelled attempt that ran has a retained terminal result
-   with its actual usage: cancellation is not proof that nothing was spent.
-   `on_detach: cancel` is only for a single observer; platform operations
-   cancel explicitly, and any detach-triggered cancel needs a stated
-   ownership rule first.
-4. **[taken; reserved at acceptance, halo's `noReserve`] Retention is
-   reserved at admission.** Admitting an operation reserves
-   the space for its eventual result (output, reasoning, tool arguments and
-   the stream buffer, each bounded), not only the results currently held;
-   otherwise many running operations finishing together exceed the promise.
-   The replayable stream states what a reader gets once its history has
-   expired. The retention is a bounded capture window (backstop `max_hold_s`),
-   and the answer after it is `forgotten`, with an explicit expiry returned
-   on the result.
-5. **[taken; usage is `{prompt, cached, completion}`, disjoint, and
-   `discarded` is gone: an attempt executes at most once] Usage is defined.** `completion` and `discarded` are disjoint (a
-   cancelled attempt's decoded work is `discarded` and not also
-   `completion`), and token counts are not claimed to be the resource cost.
-6. **[taken; `mode` relaxed or exact, part of the binding] The repeat
-   guarantee is qualified.** "Identical text under greedy
-   decoding on the same build" is true only of an execution mode without
-   batch-dependent numerics; the contract advertises the mode, or says the
-   text may differ.
+## Accounting
 
-## Streams and the ledger
+| Outcome | Settled at |
+| --- | --- |
+| `done`, captured | the actual usage; receipt applied |
+| `expired` | the actual usage; no receipt |
+| `closed`, `cancelled_before_accept` | 0 |
+| `unknown` (another incarnation) | the worst case R; a new attempt |
+| `forgotten` (a server without the promise) | R |
 
-Token streaming can stay outside the platform's data path, provided
-access stays authorized and bound to the operation, partial tokens are
-never committed as workflow receipts, and completion and usage reach the
-ledger by a recoverable path (the platform pulls the result by id, rather
-than being notified once).
+A submit lost before it arrives costs 0. When the executor completes work
+and is lost before the result is captured, the outcome is unknown and no
+ledger can make it known: the outbox preserves the uncertainty and settles
+at R. Removing it would need a completion handoff, a separate design choice
+and not needed until restarts prove frequent.
 
-## Workspace and run store
+## History: decisions and evidence are append-only
 
-The invariant is: **a resumed workflow observes the workspace version on
-which its retained state and receipts depend.** Rolling the run store and
-the workspace back together is one implementation (what is built, and what
-`rollback-fidelity.sh` checks); an explicit checkpoint-to-artifact
-reference is another, and the right end state for branching and for
-workflows whose progress should not require a whole-environment snapshot.
-It is a change to the run store's design, not a deployment change, and
-waits until a replacement proves the invariant including branching and
-garbage collection. A model cache is disposable acceleration: losing it
-changes latency, never workflow truth.
+The outbox's journal records what was known when a decision was made. This
+borrows the discipline of casselc/observability (STPA requirement R-L6 and
+its near miss 49, R-L3):
 
-## What round 5 already is
+- **Facts are appended, never rewritten.** Each has a stable id, a custody
+  time, a source (the halo answer, with its incarnation and `Halo-Time`, or
+  the outbox's own decision), and the fact it **supersedes**, if any.
+  Precedence is stated by the writer through `supersedes`, never inferred
+  from arrival order: at-least-once retries reorder arrivals, and "latest
+  wins" would let a retried older fact override a newer one.
+- **Later evidence does not overwrite an earlier decision's basis.** The
+  attempt's current state is a resolution of the chain; the chain is kept.
+- **Any accounting adjustment is an explicit, authorized, exactly-once
+  ledger event** that names what it adjusts, with a stable id so a retry
+  cannot apply it twice. Cost is computed from price facts that carry
+  valid time, and every cost result names its price facts' as-of.
+- **Audits query a durable basis**: a store identity and a commit position.
+  A basis that has expired (compacted past, or from another store) is
+  refused, never answered with incomplete history.
+- **Valid-time history is added selectively**, where pricing or lifecycle
+  facts need retroactive correction, not as general bitemporal execution.
+  **Historical authorization explains a past action; it never grants current
+  authority.**
 
-The headers are the contract's first approximation over an interface
-that has no verbs: `Halo-Answer` is the answer's source, `Discarded-Tokens`
-the usage of work no answer carries, `Admitted-Sends` an incarnation
-substitute (a count since the key was last forgotten). They stay until the
-operation API exists; the runtime's rules for them
-(`observe_report.qnt`, `observe_forget.qnt`) are the interim, and the
-operation model replaces them rather than adding to them.
+The current journal updates rows in place (`journal.ml`); moving it to this
+shape is a build step, not a property it has.
+
+## Workspace
+
+The invariant: **a resumed workflow observes the workspace version on which
+its retained state and receipts depend.** Rolling the run store and the
+workspace back together is the implementation (what is built, and what
+`rollback-fidelity.sh` checks); an explicit checkpoint-to-artifact reference
+is another, right for branching, and waits until a replacement proves the
+invariant including branching and garbage collection. It is revisited
+separately. A model cache is disposable acceleration.
+
+## The models
+
+| Model | States | Mutants (each breaks one property) |
+| --- | --- | --- |
+| `operation.qnt` | Identity, a lossy network, incarnation fencing, tombstones, never-accepted abandoned only through a cancel, unknown settled at R | `noFence`, `noTomb`, `abandonUntombed`, `cacheNoTomb`, `resubmitSame` |
+| `capture.qnt` | The durable handoff across crashes and lost or duplicated messages | `ackFirst`, `clearEarly`, `noKey` |
+| `expiry.qnt` | The deadline, the capture window, the outcome kept until acknowledged, the monotonic clock, the verb carrying the deadline | `dropOutcome`, `closedEarly`, `guessDeadline`, `pruneEarly`, `lateAccept`, `clockBack` |
+
+halo-flash's `spec/operation/` is the mirror from the executor's side (it
+reports 10 mutants, all caught, and the design at 100,000 samples of 80
+steps); I have not rerun it. The two scopes differ: ours is the outbox's
+accounting and handoff, theirs the executor's identity, delivery, time and
+retention. Their correspondence table is in `OPERATIONS.md` section 7. The
+operation model is also proved by Apalache to 8 steps (6 in the gate).
 
 ## Order of work
 
-1. Specify identity, guarantees, retention and unknown outcomes (this
-   RFC, `operation.qnt`).
-2. Halo: status and result by operation id, explicit cancel, an
-   incarnation on every answer, a retention promise or an advertised
-   absence of one. Observation separate from execution.
-3. A durable platform adapter around the existing Cordis/Halo protocol,
-   which can be the per-agent outbox, now named as the platform's
-   operation service.
-4. Move execution policy and accounting ownership there: the limiter, the
-   grant of an intent's class, credentials.
-5. Retire Cordis's external-operation journal once equivalent recovery
-   evidence exists in the platform's.
-6. Revisit workspace coupling independently.
+1. **Consolidate** (this revision).
+2. **halo-flash implements its API**: `Halo-Incarnation`, `Halo-Time` and the
+   contract first; then operation keys in the scheduler (binding digests,
+   incarnation and deadline checks, tombstones, reservation, the capture
+   window, ack release); then the endpoints and the stream. Disconnect never
+   cancels; metadata is bounded; `exact` and `relaxed` are advertised.
+3. **The outbox's durable halo adapter**, in the order of "The durable
+   handoff". The adapter is built against a stand-in server that speaks the
+   verbs, as the header rules were; the header rules stay for ordinary
+   clients and for a server run with `--operations off`, and retire for
+   operations once the adapter moves.
+4. **The journal's history**: append-only facts with `supersedes`, ledger
+   events, and an audit basis.
+5. **One end-to-end milestone** (below).
+6. **Only then** ask whether a second executor calls for extraction.
+
+### The milestone
+
+Cordis, the outbox adapter and halo run together through: lost and delayed
+submissions, cancellation races, outbox and executor crashes, lost
+acknowledgements, duplicate receipt delivery, and expiry. It verifies the
+accounting, that every receipt is preserved and applied once, the retention
+and metadata bounds, and that audit views reproduce. The tested revisions of
+all three are pinned, and failure evidence is retained.
 
 ## Open questions
 
-1. Where the platform's ledger lives for an agent that is itself
-   suspended: in the agent's service jail (today's outbox) or beside
-   yard's broker.
-2. Whether the incarnation is a per-process token or a durable epoch the
-   executor persists, which decides whether a restart is distinguishable
-   from a lost disk.
-3. What admission refusal under a retention promise costs a workflow in
-   practice (a 429 where a cache would have evicted), measured on
-   halo-flash's pool.
-4. A completion handoff for inference, if unknown outcomes after crashes
-   turn out to cost enough to pay for one.
+1. Refusal cost: what reservation at acceptance costs callers who set
+   `max_tokens` far above what they use, measured on halo's 8-agent pool.
+2. How the outbox obtains its `Halo-Time` reading before its first submit
+   (the contract call returns it).
+3. The ceiling on retained metadata, and what a platform that stops
+   acknowledging should see before halo refuses admission.
+4. A completion handoff for inference, if restarts make `unknown` common.
+
+## History
+
+- Revision 1: the review of the architecture's division of responsibility
+  (two agents) and the first model, `operation.qnt`: owners, an operation
+  contract, unknown outcomes charged at R.
+- Revision 2: halo-flash's proposal (58e60d3) and the network added to the
+  model: incarnation fencing, tombstones, abandon only through a cancel.
+- Revision 3: a third agent's review. `capture.qnt` and `expiry.qnt`; the
+  finding that revision 1 of halo's proposal pruned a tombstone at
+  `not_after` while the backstop that releases a result was much later, so a
+  released result read as never accepted. halo's revision 2 (e2d5030) took all
+  six requirements and answered that finding by keeping an expired outcome
+  until it is acknowledged, which makes `closed` sound at no cost and which
+  this RFC adopted in place of its own proposal (answer `expired`, settle R).
+- Revision 4: the fourth review. One normative text; inference-only,
+  implemented in the outbox, extraction deferred; the verbs carry the
+  deadline (`guessDeadline`); metadata bounded; history append-only;
+  temporal scope narrow; one milestone.

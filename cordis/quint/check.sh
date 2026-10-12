@@ -302,6 +302,7 @@ for w in done outcomeSettledW closedW abandonedW lateRefusedW; do STEPS=60 SAMPL
 STEPS=60 SAMPLES=30000 sim expiry_modes.qnt dropOutcome accounted VIOLATED
 STEPS=60 SAMPLES=30000 sim expiry_modes.qnt dropOutcome neverAcceptedTrue VIOLATED
 STEPS=60 SAMPLES=30000 sim expiry_modes.qnt closedEarly accounted VIOLATED
+STEPS=60 SAMPLES=30000 sim expiry_modes.qnt guessDeadline accounted VIOLATED
 STEPS=60 SAMPLES=30000 sim expiry_modes.qnt pruneEarly runsOnce VIOLATED
 STEPS=60 SAMPLES=30000 sim expiry_modes.qnt lateAccept runsOnce VIOLATED
 STEPS=60 SAMPLES=30000 sim expiry_modes.qnt clockBack runsOnce VIOLATED
