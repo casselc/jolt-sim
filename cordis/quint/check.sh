@@ -288,6 +288,22 @@ STEPS=80 SAMPLES=30000 sim operation_modes.qnt abandonUntombed accounted VIOLATE
 STEPS=80 SAMPLES=30000 sim operation_modes.qnt cacheNoTomb runsOnce VIOLATED
 STEPS=80 SAMPLES=30000 sim operation_modes.qnt resubmitSame accounted VIOLATED
 
+# ---- capture.qnt (RFC 0007, "The durable handoff"): fetch, commit, acknowledge, deliver; crashes, lost acks ------
+for inv in resultNotLost receiptNotLost appliedOnce accounted; do STEPS=60 SAMPLES=20000 sim capture_modes.qnt design "$inv" ok; done
+for w in done ackLostThenAcked crashedUnackedW duplicateDelivered executorForgot; do STEPS=80 SAMPLES=20000 sim capture_modes.qnt design "not($w)" VIOLATED; done
+STEPS=60 SAMPLES=20000 sim capture_modes.qnt ackFirst resultNotLost VIOLATED
+STEPS=60 SAMPLES=20000 sim capture_modes.qnt clearEarly receiptNotLost VIOLATED
+STEPS=60 SAMPLES=20000 sim capture_modes.qnt noKey appliedOnce VIOLATED
+
+# ---- expiry.qnt (RFC 0007, "Time"): a submit's deadline, tombstone pruning, the backstop, the executor's clock ----
+for inv in runsOnce accounted neverAcceptedTrue; do STEPS=60 SAMPLES=20000 sim expiry_modes.qnt design "$inv" ok; done
+for w in done expiredW forgottenW abandonedW lateRefusedW; do STEPS=60 SAMPLES=20000 sim expiry_modes.qnt design "not($w)" VIOLATED; done
+STEPS=60 SAMPLES=30000 sim expiry_modes.qnt absentAlways accounted VIOLATED
+STEPS=60 SAMPLES=30000 sim expiry_modes.qnt absentAlways neverAcceptedTrue VIOLATED
+STEPS=60 SAMPLES=30000 sim expiry_modes.qnt pruneEarly runsOnce VIOLATED
+STEPS=60 SAMPLES=30000 sim expiry_modes.qnt lateAccept runsOnce VIOLATED
+STEPS=60 SAMPLES=30000 sim expiry_modes.qnt clockBack runsOnce VIOLATED
+
 # conformance: simulator runs replayed in the model
 conform() { # label scenario mutant expect(pass|fail) extra-args...
   local label=$1 scenario=$2 mutant=$3 expect=$4; shift 4

@@ -1,6 +1,11 @@
 # RFC 0007: Boundaries, and the operation contract
 
-Status: proposed. Revision 2 adds halo-flash's half (its branch
+Status: proposed. Revision 3 answers a third agent's review of revision 2
+and halo-flash's proposal: the durable handoff and time are modelled
+(`capture.qnt`, `expiry.qnt`), and the wire contract gains requirements
+(identity bound to the incarnation and owner on every verb, refusal is not
+closure, cancellation races, retention reserved at admission, usage
+semantics). Revision 2 adds halo-flash's half (its branch
 `rfc/operation-api`, 58e60d3, `docs/OPERATIONS.md`, `spec/operation/`) and
 the network to the model. Records the review of the architecture's division of
 responsibility (two agents, against RFC 0006 and what was built through
@@ -94,7 +99,7 @@ and one prohibition: `resubmitSame`, sending an unknown attempt again as it
 was (a submit is never re-aimed at a new incarnation), breaks `accounted`:
 **an idempotency key is a starting point and not an operation contract**.
 The design holds at 20,000 samples of 60 steps and is verified by
-Apalache to 6 steps; the value of a promise is
+Apalache to 8 steps (6 in the gate; 8 takes fifteen minutes); the value of a promise is
 measurable: `promised` (no restart, a promise) never overcharges and a lost
 submit abandoned costs 0, where `cacheLike` (eviction under load) pays the
 worst case for a result evicted before it was acked. halo-flash's model is
@@ -134,6 +139,91 @@ ships them (the outbox journals them beside `source`); the header rules
 (`observe_report.qnt`, `observe_forget.qnt`, `Halo-Admitted-Sends`) retire
 for an operation once the adapter moves to the verbs, and stay for
 ordinary clients and for a server run with `--operations off`.
+
+## The durable handoff (revision 3)
+
+Capture is four steps, and the order is the protocol: **fetch** the result;
+**commit** it durably in the platform (receipt, settlement and a pending
+delivery, one record); **acknowledge** the executor, which then releases
+it; **deliver** the receipt to the workflow, which applies it by its key and
+confirms, and only then is the delivery no longer pending. A lost
+acknowledgement only retains the result longer; it never loses the receipt.
+`quint/capture.qnt` models the platform crashing between any two steps,
+lost and duplicated acknowledgements and deliveries, and the executor
+restarting, and states four properties: the executor never releases a
+result the platform has not committed (`resultNotLost`); a committed
+receipt is applied or still pending (`receiptNotLost`); the workflow
+applies one (`appliedOnce`); and the accounting holds. Each mutant breaks
+one: `ackFirst` (acknowledging on fetch, before the commit),
+`clearEarly` (pending cleared on send, not on the workflow's
+confirmation), `noKey` (the workflow applies every delivery).
+
+## Time (revision 3)
+
+The API's deadlines change what `operation.qnt` could assume. A submit
+carries a deadline, `not_after`; the executor refuses one that arrives past
+it (410) and so remembers an id only until then; and it releases an
+unacknowledged result after a backstop. `quint/expiry.qnt` adds time, and
+its findings are requirements:
+
+- **The executor decides by its own clock; the platform only names the
+  deadline.** Skew then changes how long the window is, never whether the
+  rules hold. A clock that goes back does break them (`clockBack`): the
+  executor needs a monotonic clock, or a tombstone horizon that does not
+  depend on it.
+- **Past the window, an id with no record is `expired`, not
+  `never_accepted`.** After `not_after` the executor has pruned what it
+  knew, so it cannot tell a submit it never saw from one it accepted, ran
+  and released at the backstop (24 h, long after the tombstone's 10
+  minutes). Answering `never_accepted` there (`absentAlways`) lets the
+  platform abandon at no cost an attempt that ran. `expired` is settled at
+  the worst case, as `forgotten` is. Abandoning at no cost therefore needs a
+  query inside the window and a cancel that tombstones the id.
+- **A tombstone dropped before its deadline** (`pruneEarly`), **a submit
+  accepted past it** (`lateAccept`) and **a clock set back** (`clockBack`)
+  each rerun an attempt.
+
+The clock assumption is stated, not removed: platform and executor may
+share a host today and not under yard; the design above needs only the
+executor's own clock to be monotonic.
+
+## The wire contract's requirements (revision 3)
+
+Not modelled, and to be agreed with halo-flash before implementation:
+
+1. **Every verb is bound to the identity and the incarnation.** Status,
+   cancel and ack carry the expected incarnation as submit does (an old
+   query after a restart answers `unknown`, never the new process's
+   `never_accepted`; a delayed cancel or ack cannot touch another
+   execution). Identity is authenticated owner, operation id, attempt and
+   incarnation, bound to the submit's immutable content: reusing it with a
+   different request, deadline or `on_detach` is a conflict (409).
+2. **A refusal is not closure.** A 429 or 503 shows that *this copy* was not
+   accepted; another copy of the same submit may still arrive. The platform
+   keeps the reservation until an acknowledged cancel or an `expired` or
+   `never_accepted` answer inside the rules above closes the attempt.
+3. **Cancellation races.** A cancel can be lost, its answer can be lost, and
+   it can race acceptance and completion; the platform repeats it until
+   answered. A cancelled attempt that ran has a retained terminal result
+   with its actual usage: cancellation is not proof that nothing was spent.
+   `on_detach: cancel` is only for a single observer; platform operations
+   cancel explicitly, and any detach-triggered cancel needs a stated
+   ownership rule first.
+4. **Retention is reserved at admission.** Admitting an operation reserves
+   the space for its eventual result (output, reasoning, tool arguments and
+   the stream buffer, each bounded), not only the results currently held;
+   otherwise many running operations finishing together exceed the promise.
+   The replayable stream states what a reader gets once its history has
+   expired. The retention is a bounded capture window (backstop `max_hold_s`),
+   and the answer after it is `forgotten`, with an explicit expiry returned
+   on the result.
+5. **Usage is defined.** `completion` and `discarded` are disjoint (a
+   cancelled attempt's decoded work is `discarded` and not also
+   `completion`), and token counts are not claimed to be the resource cost.
+6. **The repeat guarantee is qualified.** "Identical text under greedy
+   decoding on the same build" is true only of an execution mode without
+   batch-dependent numerics; the contract advertises the mode, or says the
+   text may differ.
 
 ## Streams and the ledger
 
