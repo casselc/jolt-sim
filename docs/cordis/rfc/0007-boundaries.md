@@ -136,6 +136,42 @@ promise; a server without the promise would answer it, settled at R.
    that ran has a retained terminal result with its actual usage:
    cancellation is not proof that nothing was spent.
 
+## The wire as served
+
+halo-flash's stages 2 and 3 (operation records, then the verbs; main `c4a39ff`)
+are on its main, and `outbox/test/stub_ops.py` follows them (read from
+`src/server/operation_service.cpp` and `operations.cpp`, not only from
+`OPERATIONS.md`). What the adapter must do, because of it:
+
+- **The digest is the SHA-256 of the submit's body bytes.** The outbox
+  journals the exact bytes it sent and resends them byte for byte; the
+  digest is then the attempt's identity for every other verb
+  (`Halo-Digest`, with `Halo-Incarnation` and `Halo-Not-After`). A submit may
+  carry `Halo-Digest` and then it must match (400 otherwise).
+- **The owner is `X-Halo-Principal`.** Two owners' identical operation and
+  attempt are two attempts.
+- **A mode the server does not run is 422 `mode_unavailable`:** the outbox
+  reads `inference.mode` from the contract before it submits.
+- **Answers:** 202 accepted; 200 a duplicate's view; 409 `stale_incarnation`
+  (the body names the current one) or `conflict`; 410 `late`; 400 for a
+  malformed submit or a `not_after` too far ahead; 503 `records` or
+  `retention`, and a scheduler 429 or 503, all with Retry-After and all
+  meaning *this copy was not accepted*. A status for another incarnation is
+  200 `unknown`. `result` on an attempt not done is 409 with its status; the
+  stream is 410 once the body is gone, replays from `?from=N`, and ends with
+  an `event: status` frame.
+- **A view** is `{operation_id, attempt, status, digest}` with
+  `cancel_requested` while running, `finish` and `usage` once finished, and
+  `expires_at` while `done`; usage is `{prompt_tokens, cached_tokens,
+  completion_tokens, engine_ms}`, `engine_ms` 0 for now.
+- **A cancel of a running attempt answers `running` with
+  `cancel_requested: true`;** it finishes `done` with finish `cancelled`.
+  (`OPERATIONS.md` calls the answer `stopping`; the server has no such status.)
+  A cancel with no record and a carried `not_after` already past answers
+  `closed` and records nothing: there is no copy left to fence.
+- **`operations` in the contract is null only on a server run with
+  `--operations 0`;** the top-level fields are always there.
+
 ## The durable handoff
 
 The outbox's capture is five steps, and the order is the protocol:

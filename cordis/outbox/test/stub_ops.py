@@ -1,25 +1,31 @@
 """A stand-in for halo-flash's operation API (docs/cordis/rfc/0007-boundaries.md;
-halo-flash's docs/OPERATIONS.md, revision 3): the verbs, the incarnation, the
-monotonic clock, tombstones, a capture window, a records ceiling, and faults a
-test can switch on. It answers the review loop's completions as stub_llm.py does.
+halo-flash main c4a39ff, src/server/operation_service.cpp and operations.cpp):
+the verbs, the incarnation, the monotonic clock, tombstones, a capture window,
+a records ceiling, and faults a test can switch on. It answers the review loop's
+completions as stub_llm.py does.
 
     python3 stub_ops.py PORT_FILE COUNT_FILE [MODE...]
 
-Verbs (all requests carry Halo-Incarnation, Halo-Not-After and Halo-Digest; all
-answers carry Halo-Incarnation and Halo-Time):
+The wire is the one halo serves:
   GET  /v1/halo/contract
-  POST /v1/operations                       {operation_id, attempt, not_after, api, request, mode}
-  GET  /v1/operations/{op}/{attempt}        status
-  GET  /v1/operations/{op}/{attempt}/result the body and usage, while held
-  POST /v1/operations/{op}/{attempt}/cancel
-  POST /v1/operations/{op}/{attempt}/ack
+  POST /v1/operations   {operation_id, attempt, not_after, api, request, mode}
+                        needs Halo-Incarnation; Halo-Digest, if given, must be the SHA-256 (hex) of the body
+                        bytes, which is the attempt's digest; the owner is X-Halo-Principal
+  GET  /v1/operations/{op}/{attempt}[/result|/stream?from=N]
+  POST /v1/operations/{op}/{attempt}/cancel | /ack
+                        every other verb carries Halo-Incarnation, Halo-Not-After and Halo-Digest
+All answers carry Halo-Incarnation and Halo-Time. A status is a view:
+  {operation_id, attempt, status, digest, [cancel_requested], [finish, usage], [expires_at]}
+with usage {prompt_tokens, cached_tokens, completion_tokens, engine_ms}. Errors are {"error": {message, type}}.
 
 Modes (startup):
   delay=S          a submit runs for S seconds before it finishes
   capture=S        the capture window (default 3600)
   records=N        the records ceiling (default 100000)
+  budget=N         the retention budget, bytes (default 256 MiB); a submit reserves 1000 + max_tokens x 4
+  inference=exact  the server runs exact inference (default relaxed)
   approve          approve every patch
-  no-usage         no usage reported (the worst case is charged)
+  no-usage         no usage reported (zero tokens)
 
 Faults (POST /admin/fault, JSON; each applies once, to the next matching request):
   {"lose_submit": true}          the next submit is lost: nothing is recorded, nothing is answered
@@ -33,6 +39,7 @@ Faults (POST /admin/fault, JSON; each applies once, to the next matching request
 """
 import hashlib
 import json
+import re
 import sys
 import threading
 import time
@@ -51,25 +58,25 @@ def mode(name, default):
 
 
 DELAY = mode("delay", 0.0)
-CAPTURE_S = mode("capture", 3600.0)
+CAPTURE_MS = int(mode("capture", 3600.0) * 1000)
 MAX_RECORDS = int(mode("records", 100000))
-MAX_SUBMIT_AGE_S = 600.0
+BUDGET = int(mode("budget", 256 * 1024 * 1024))
+MAX_SUBMIT_AGE_MS = 600 * 1000
+RETRY_AFTER_S = 1
+OURS = "exact" if "inference=exact" in modes else "relaxed"
+OP_ID = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 
 lock = threading.RLock()
 faults = {}
-state = {}  # reset by restart()
+state = {}
 requests = 0
 
 
 def restart():
-    global state
     with lock:
-        state = {
-            "incarnation": hashlib.sha256(str(time.time_ns()).encode()).hexdigest()[:32],
-            "t0": time.monotonic(),
-            "attempts": {},  # (owner, op, attempt) -> record
-            "generated": 0,
-        }
+        state.clear()
+        state.update(incarnation=hashlib.sha256(str(time.time_ns()).encode()).hexdigest()[:32], t0=time.monotonic(),
+                     recs={}, generated=0, reserved=0)
 
 
 restart()
@@ -77,10 +84,6 @@ restart()
 
 def now_ms():
     return int((time.monotonic() - state["t0"]) * 1000)
-
-
-def digest_of(api, request, not_after, mode_):
-    return hashlib.sha256(json.dumps([api, request, not_after, mode_], sort_keys=True).encode()).hexdigest()
 
 
 def generate(req):
@@ -92,78 +95,70 @@ def generate(req):
     approve = prompt.count("\n// ") >= 2 or "(fixed)" in prompt or "approve" in modes
     if writer:
         _, patch, notes = (prompt.split("\n\n", 2) + ["", ""])[:3]
-        text = patch if not notes.strip() else patch + "\n(fixed)"
-    elif approve:
-        text = "LGTM"
-    else:
-        text = "needs work (" + context + ")"
-    return text, "stop"
+        return (patch if not notes.strip() else patch + "\n(fixed)"), "stop"
+    return ("LGTM" if approve else "needs work (" + context + ")"), "stop"
 
 
-def usage_for(req, text):
-    if "no-usage" in modes:
-        return None
-    prompt = req["messages"][-1]["content"]
-    return {"prompt": max(1, len(prompt) // 4), "cached": 0, "completion": 10}
-
-
-def start_run(rec):
+def start_run(key, rec):
     """Execute the attempt: it finishes after DELAY, unless cancelled first."""
 
     def run():
         end = time.monotonic() + DELAY
-        while time.monotonic() < end:
-            if rec["cancel_requested"]:
-                break
+        while time.monotonic() < end and not rec["cancel_requested"]:
             time.sleep(0.01)
         with lock:
-            if rec["phase"] != "running":
+            if state["recs"].get(key) is not rec or rec["st"] != "running":
                 return
             text, finish = generate(rec["request"])
-            usage = usage_for(rec["request"], text)
+            prompt_tokens = max(1, len(rec["request"]["messages"][-1]["content"]) // 4)
+            completion = 0 if "no-usage" in modes else 10
             if rec["cancel_requested"]:
-                finish, text = "cancelled", text[:2]
-                usage = {"prompt": usage["prompt"], "cached": 0, "completion": 1} if usage else None
-            rec.update(phase="done", body=text, finish=finish, usage=usage, done_ms=now_ms(),
-                       expires_at=now_ms() + int(CAPTURE_S * 1000))
+                finish, text, completion = "cancelled", text[:2], min(completion, 1)
+            rec.update(st="done", finish=finish, done_at=now_ms(),
+                       usage={"prompt_tokens": prompt_tokens, "cached_tokens": 0, "completion_tokens": completion, "engine_ms": 0.0},
+                       body=json.dumps({"choices": [{"index": 0, "message": {"role": "assistant", "content": text}, "finish_reason": finish}],
+                                        "usage": {"prompt_tokens": prompt_tokens, "completion_tokens": completion}}))
 
     threading.Thread(target=run, daemon=True).start()
 
 
-def expire_bodies():
-    """The capture window ends: the body goes, the outcome stays until it is acknowledged."""
-    t = now_ms()
-    for rec in state["attempts"].values():
-        if rec["phase"] == "done" and t > rec["expires_at"]:
-            rec.update(phase="expired", body=None)
+def sweep(now):
+    """The capture window ends: the body goes, the outcome stays until it is acknowledged. A record goes once its
+    not_after has passed and, if it ran, its outcome was acknowledged."""
+    for key, r in list(state["recs"].items()):
+        if r["st"] == "done" and now > r["done_at"] + CAPTURE_MS:
+            release(r)
+            r.update(st="expired", acked=False)
+        settled = r["st"] in ("released", "cancelled") or (r["st"] == "expired" and r["acked"])
+        if settled and now > r["not_after"]:
+            state["recs"].pop(key)
 
 
-def records_in_use():
-    return len(state["attempts"])
+def release(r):
+    state["reserved"] -= r["reserve"]
+    r["reserve"] = 0
+    r["body"] = None
 
 
-def status_of(owner, op, attempt, not_after, digest):
-    """The answer to a status query, against the deadline and digest it carries."""
-    expire_bodies()
-    rec = state["attempts"].get((owner, op, attempt))
-    t = now_ms()
-    if rec is None:
-        # no record: not accepted yet, or no copy can be accepted any more
-        return ({"status": "closed"} if t > not_after else {"status": "never_accepted"}), 200
-    if digest and rec["digest"] != digest:
-        return {"error": "conflict"}, 409
-    ph = rec["phase"]
-    if ph == "running":
-        return {"status": "running"}, 200
-    if ph == "done":
-        return {"status": "done", "finish": rec["finish"], "usage": rec["usage"], "expires_at": rec["expires_at"]}, 200
-    if ph == "expired":
-        return {"status": "expired", "finish": rec["finish"], "usage": rec["usage"]}, 200
-    if ph == "released":
-        return {"status": "released"}, 200
-    if ph == "cancelled_before_accept":
-        return {"status": "cancelled_before_accept"}, 200
-    return {"status": "unknown"}, 200
+def view(op, attempt, digest, r, now, absent_not_after=None):
+    v = {"operation_id": op, "attempt": attempt, "digest": digest}
+    if r is None:
+        v["status"] = "closed" if now > absent_not_after else "never_accepted"
+        return v
+    st = r["st"]
+    v["status"] = {"running": "running", "done": "done", "released": "released", "expired": "expired",
+                   "cancelled": "cancelled_before_accept"}[st]
+    if st == "running":
+        v["cancel_requested"] = r["cancel_requested"]
+    if st in ("done", "released", "expired"):
+        v["finish"], v["usage"] = r["finish"], r["usage"]
+    if st == "done":
+        v["expires_at"] = r["done_at"] + CAPTURE_MS
+    return v
+
+
+def error(status, type_, message):
+    return status, {"error": {"message": message, "type": type_}}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -172,8 +167,8 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
 
-    def reply(self, code, obj, extra=()):
-        out = json.dumps(obj).encode()
+    def reply(self, code, obj, extra=(), raw=None):
+        out = raw if raw is not None else json.dumps(obj).encode()
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(out)))
@@ -185,88 +180,75 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(out)
 
+    def reply_pair(self, pair, extra=()):
+        return self.reply(pair[0], pair[1], extra)
+
     def drop(self):
         self.close_connection = True
         self.connection.shutdown(2)
 
-    def owner(self):
-        return self.headers.get("Authorization", "anon")
+    def principal(self):
+        return self.headers.get("X-Halo-Principal", "")
 
-    def carried(self):
-        """The incarnation, deadline and digest a request carries."""
-        inc = self.headers.get("Halo-Incarnation")
-        na = self.headers.get("Halo-Not-After")
-        return inc, (int(na) if na else None), self.headers.get("Halo-Digest")
-
-    def body(self):
+    def raw_body(self):
         n = int(self.headers.get("Content-Length") or 0)
-        return json.loads(self.rfile.read(n)) if n else {}
+        return self.rfile.read(n) if n else b""
 
     # ---- GET ----
     def do_GET(self):
-        global requests
         with lock:
-            requests += 1
+            now = now_ms()
+            sweep(now)
             path = self.path.split("?")[0]
             if path == "/admin/state":
-                expire_bodies()
-                return self.reply(200, {"incarnation": state["incarnation"], "records": records_in_use(),
-                                        "generated": state["generated"],
-                                        "unacked_outcomes": sum(1 for r in state["attempts"].values() if r["phase"] in ("done", "expired")),
-                                        "attempts": {"/".join(map(str, k)): v["phase"] for k, v in state["attempts"].items()}})
+                return self.reply(200, {"incarnation": state["incarnation"], "records": len(state["recs"]),
+                                        "generated": state["generated"], "reserved": state["reserved"],
+                                        "unacked_outcomes": sum(1 for r in state["recs"].values() if r["st"] in ("done", "expired") and not r.get("acked")),
+                                        "attempts": {"/".join(map(str, k)): v["st"] for k, v in state["recs"].items()}})
             if path == "/v1/halo/contract":
-                expire_bodies()
-                unacked = [r for r in state["attempts"].values() if r["phase"] in ("done", "expired")]
-                oldest = max([now_ms() - r["done_ms"] for r in unacked], default=0)
-                # the shape halo-flash serves (stage 1): the inference part, and the operations part, null until the verbs
-                # are served; here the verbs are served
-                return self.reply(200, {
-                    "incarnation": state["incarnation"], "time_ms": now_ms(),
-                    "inference": {"mode": "relaxed", "cost": "tokens: prompt, cached, completion",
-                                  "repeat": {"external_effects": "none", "spend": "a new generation spends again"}},
-                    "operations": {
-                        "retention": {"capture_s": CAPTURE_S, "until": "ack or capture window"},
-                        "records": {"max": MAX_RECORDS, "in_use": records_in_use(), "unacked_outcomes": len(unacked), "oldest_unacked_ms": oldest},
-                        "dedup": {"scope": "owner, incarnation", "max_submit_age_s": MAX_SUBMIT_AGE_S},
-                        "cancel": "next unit boundary; usage reported"}})
-            parts = path.strip("/").split("/")
-            if len(parts) >= 4 and parts[:2] == ["v1", "operations"]:
-                inc, na, dg = self.carried()
-                if inc != state["incarnation"]:
-                    return self.reply(200, {"status": "unknown"})
-                op, attempt = parts[2], parts[3]
-                if len(parts) == 4:
-                    obj, code = status_of(self.owner(), op, int(attempt), na if na is not None else 0, dg)
-                    return self.reply(code, obj)
-                if parts[4] == "result":
-                    expire_bodies()
-                    rec = state["attempts"].get((self.owner(), op, int(attempt)))
-                    if rec is None or rec["phase"] != "done":
-                        return self.reply(410, {"status": rec["phase"] if rec else "never_accepted"})
-                    return self.reply(200, {"body": rec["body"], "finish": rec["finish"], "usage": rec["usage"]})
-            return self.reply(404, {"error": "not found"})
+                return self.reply(200, self.contract(now))
+            if path.startswith("/v1/operations/"):
+                return self.verb("GET", path)
+            return self.reply_pair(error(404, "invalid_request_error", "not found"))
+
+    def contract(self, now):
+        unacked = [r for r in state["recs"].values() if r["st"] in ("done", "expired") and not r.get("acked")]
+        oldest = max([now - r["done_at"] for r in unacked], default=0)
+        return {"incarnation": state["incarnation"], "time_ms": now,
+                "inference": {"mode": OURS, "cost": "tokens: prompt, cached, completion",
+                              "repeat": {"external_effects": "none", "spend": "a new generation spends again"}},
+                "operations": {
+                    "apis": ["completions", "chat"], "owner": "X-Halo-Principal", "digest": "sha256 (hex) of the submit body",
+                    "retention": {"capture_s": CAPTURE_MS // 1000, "until": "ack or capture window", "budget_bytes": BUDGET,
+                                  "reserve": "at acceptance: 1000 + max_tokens x 4 bytes", "reserved_bytes": state["reserved"]},
+                    "records": {"max": MAX_RECORDS, "in_use": len(state["recs"]), "unacked_outcomes": len(unacked), "oldest_unacked_ms": oldest},
+                    "dedup": {"scope": "owner, incarnation", "max_submit_age_s": MAX_SUBMIT_AGE_MS // 1000},
+                    "cancel": "next unit boundary (<= one decode unit or one prefill slice); usage reported",
+                    "disconnect": "never cancels"}}
 
     # ---- POST ----
     def do_POST(self):
-        global requests
         path = self.path.split("?")[0]
         if path == "/admin/restart":
             restart()
             return self.reply(200, {"incarnation": state["incarnation"]})
         if path == "/admin/fault":
+            body = json.loads(self.raw_body() or b"{}")
             with lock:
-                faults.update(self.body())
+                faults.update(body)
             return self.reply(200, faults)
         if path == "/v1/operations":
             return self.submit()
-        parts = path.strip("/").split("/")
-        if len(parts) == 5 and parts[:2] == ["v1", "operations"] and parts[4] in ("cancel", "ack"):
-            return self.cancel_or_ack(parts[2], int(parts[3]), parts[4])
-        return self.reply(404, {"error": "not found"})
+        if path.startswith("/v1/operations/"):
+            with lock:
+                self.raw_body()
+                sweep(now_ms())
+                return self.verb("POST", path)
+        return self.reply_pair(error(404, "invalid_request_error", "not found"))
 
     def submit(self):
         global requests
-        body = self.body()
+        raw = self.raw_body()
         with lock:
             requests += 1
             with open(count_file, "w") as f:
@@ -279,72 +261,126 @@ class Handler(BaseHTTPRequestHandler):
         if late:
             time.sleep(float(late))
         with lock:
-            code, obj = self.process_submit(body)
+            sweep(now_ms())
+            pair, extra = self.process_submit(raw)
             if dup:
-                self.process_submit(body)
+                self.process_submit(raw)
             if lose_answer:
                 return self.drop()
-            return self.reply(code, obj)
+            return self.reply_pair(pair, extra)
 
-    def process_submit(self, body):
-        inc, _, _ = self.carried()
-        owner, op, attempt = self.owner(), body["operation_id"], body["attempt"]
-        if inc != state["incarnation"]:
-            return 409, {"error": "stale_incarnation", "incarnation": state["incarnation"]}
-        not_after = body["not_after"]
-        digest = digest_of(body["api"], body["request"], not_after, body.get("mode", "relaxed"))
+    def process_submit(self, raw):
+        inc = self.headers.get("Halo-Incarnation")
+        if not inc:
+            return error(400, "invalid_request_error", "a submit names its incarnation (Halo-Incarnation)"), ()
+        try:
+            body = json.loads(raw)
+        except ValueError:
+            body = None
+        if not isinstance(body, dict):
+            return error(400, "invalid_request_error", "the body is not a JSON object"), ()
+        op, attempt, not_after = body.get("operation_id"), body.get("attempt"), body.get("not_after")
+        if not isinstance(op, str) or not OP_ID.match(op):
+            return error(400, "invalid_request_error", "operation_id: 1-128 of [A-Za-z0-9._:-]"), ()
+        if not isinstance(attempt, int) or isinstance(attempt, bool) or attempt < 0:
+            return error(400, "invalid_request_error", "attempt: a non-negative integer"), ()
+        if not isinstance(not_after, int) or isinstance(not_after, bool):
+            return error(400, "invalid_request_error", "not_after: an integer (ms on the incarnation's clock)"), ()
+        if body.get("api") not in ("completions", "chat"):
+            return error(400, "invalid_request_error", 'api: "completions" or "chat"'), ()
+        if not isinstance(body.get("request"), dict):
+            return error(400, "invalid_request_error", "request: an object"), ()
+        if body.get("mode") not in ("relaxed", "exact"):
+            return error(400, "invalid_request_error", 'mode: "relaxed" or "exact"'), ()
+        if body["mode"] != OURS:
+            return error(422, "mode_unavailable", f"this server runs {OURS} inference (see GET /v1/halo/contract)"), ()
+        digest = hashlib.sha256(raw).hexdigest()
         if self.headers.get("Halo-Digest") not in (None, digest):
-            return 409, {"error": "conflict"}
-        if not_after > now_ms() + MAX_SUBMIT_AGE_S * 1000:
-            return 400, {"error": "not_after too far ahead"}
-        key = (owner, op, attempt)
-        rec = state["attempts"].get(key)
+            return error(400, "invalid_request_error", "Halo-Digest is not the SHA-256 of the body"), ()
+        key, now = (self.principal(), op, attempt), now_ms()
+        if inc != state["incarnation"]:
+            return (409, {"error": {"message": f"meant for incarnation {inc}, this is {state['incarnation']}", "type": "stale_incarnation"},
+                          "incarnation": state["incarnation"]}), ()
+        rec = state["recs"].get(key)
         if rec is not None:
             if rec["digest"] != digest:
-                return 409, {"error": "conflict"}
-            return 200, status_of(owner, op, attempt, not_after, digest)[0]  # a duplicate: the current status
-        if now_ms() > not_after:
-            return 410, {"error": "past not_after"}
-        if records_in_use() >= MAX_RECORDS:
-            return 503, {"error": "retention", "reason": "records"}
-        rec = {"digest": digest, "not_after": not_after, "request": body["request"], "phase": "running",
-               "cancel_requested": False, "body": None, "finish": None, "usage": None, "done_ms": 0, "expires_at": 0}
-        state["attempts"][key] = rec
+                return error(409, "conflict", "the attempt is bound to another request (digest)"), ()
+            return (200, view(op, attempt, digest, rec, now)), ()
+        if now > not_after:
+            return error(410, "late", "past its not_after"), ()
+        if not_after > now + MAX_SUBMIT_AGE_MS:
+            return error(400, "invalid_request_error", "not_after is too far ahead"), ()
+        retry = (("Retry-After", str(RETRY_AFTER_S)),)
+        if len(state["recs"]) >= MAX_RECORDS:
+            return error(503, "records", "at the record ceiling (unacknowledged outcomes and tombstones); not accepted"), retry
+        reserve = 1000 + int(body["request"].get("max_tokens", 16)) * 4
+        if state["reserved"] + reserve > BUDGET:
+            return error(503, "retention", "the retention budget is full; not accepted"), retry
+        rec = {"st": "running", "digest": digest, "not_after": not_after, "request": body["request"], "cancel_requested": False,
+               "reserve": reserve, "body": None, "finish": None, "usage": None, "done_at": 0, "acked": False}
+        state["recs"][key] = rec
+        state["reserved"] += reserve
         state["generated"] += 1
-        start_run(rec)
-        return 202, {"status": "accepted"}
+        start_run(key, rec)
+        return (202, view(op, attempt, digest, rec, now)), ()
 
-    def cancel_or_ack(self, op, attempt, verb):
-        with lock:
-            inc, na, dg = self.carried()
-            if faults.pop("lose_cancel", None) and verb == "cancel":
+    def verb(self, method, path):
+        parts = path[len("/v1/operations/"):].split("/")
+        if len(parts) < 2 or len(parts) > 3 or not OP_ID.match(parts[0]) or not parts[1].isdigit():
+            return self.reply_pair(error(404, "invalid_request_error", f"no operation route for {path}"))
+        op, attempt, what = parts[0], int(parts[1]), (parts[2] if len(parts) == 3 else "")
+        if (method == "POST" and what not in ("cancel", "ack")) or (method == "GET" and what not in ("", "result", "stream")):
+            return self.reply_pair(error(405, "invalid_request_error", "method not allowed"))
+        inc, nb, digest = (self.headers.get(h) for h in ("Halo-Incarnation", "Halo-Not-After", "Halo-Digest"))
+        if not inc or not nb or not digest or not re.match(r"^-?\d+$", nb):
+            return self.reply_pair(error(400, "invalid_request_error", "every verb carries Halo-Incarnation, Halo-Not-After and Halo-Digest"))
+        not_after, now = int(nb), now_ms()
+        key = (self.principal(), op, attempt)
+        if what == "cancel" and faults.pop("lose_cancel", None):
+            return self.drop()
+        if inc != state["incarnation"]:
+            if what == "":
+                return self.reply(200, {"operation_id": op, "attempt": attempt, "digest": digest, "status": "unknown"})
+            return self.reply(409, {"error": {"message": f"meant for incarnation {inc}, this is {state['incarnation']}", "type": "stale_incarnation"},
+                                    "incarnation": state["incarnation"]})
+        rec = state["recs"].get(key)
+        if rec is not None and rec["digest"] != digest:
+            return self.reply_pair(error(409, "conflict", "the attempt is bound to another request (digest)"))
+        if what == "result":
+            if rec is not None and rec["st"] == "done":
+                return self.reply(200, None, raw=rec["body"].encode())
+            return self.reply(409, view(op, attempt, digest, rec, now, not_after))
+        if what == "stream":
+            if rec is None or rec["st"] not in ("running", "done"):
+                return self.reply(410, view(op, attempt, digest, rec, now, not_after))
+            return self.reply(200, None, raw=(": events\n\nevent: status\ndata: " + json.dumps(view(op, attempt, digest, rec, now)) + "\n\n").encode())
+        if what == "cancel":
+            if rec is not None:
+                if rec["st"] == "running":
+                    rec["cancel_requested"] = True  # finishes at the next unit boundary, with its actual usage
+                return self.reply(200, view(op, attempt, digest, rec, now))
+            if now > not_after:
+                return self.reply(200, view(op, attempt, digest, None, now, not_after))  # already closed: nothing to fence
+            if not_after > now + MAX_SUBMIT_AGE_MS:
+                return self.reply_pair(error(400, "invalid_request_error", "not_after is too far ahead"))
+            if len(state["recs"]) >= MAX_RECORDS:
+                return self.reply_pair(error(503, "records", "at the record ceiling; not accepted"), (("Retry-After", str(RETRY_AFTER_S)),))
+            rec = {"st": "cancelled", "digest": digest, "not_after": not_after, "request": None, "cancel_requested": True, "reserve": 0,
+                   "body": None, "finish": None, "usage": None, "done_at": 0, "acked": False}
+            state["recs"][key] = rec
+            return self.reply(200, view(op, attempt, digest, rec, now))
+        if what == "ack":
+            lose = faults.pop("lose_ack_answer", None)
+            if rec is not None:
+                if rec["st"] == "done":
+                    release(rec)
+                    rec.update(st="released", acked=True)
+                elif rec["st"] == "expired":
+                    rec["acked"] = True
+            if lose:
                 return self.drop()
-            if inc != state["incarnation"]:
-                return self.reply(409, {"error": "stale_incarnation", "incarnation": state["incarnation"]})
-            key = (self.owner(), op, attempt)
-            rec = state["attempts"].get(key)
-            lose_answer = verb == "ack" and faults.pop("lose_ack_answer", None)
-            if verb == "cancel":
-                if rec is None:
-                    # never accepted: the id is tombstoned with the carried deadline and digest
-                    state["attempts"][key] = {"digest": dg, "not_after": na or 0, "request": None, "phase": "cancelled_before_accept",
-                                              "cancel_requested": True, "body": None, "finish": None, "usage": None,
-                                              "done_ms": 0, "expires_at": 0}
-                    return self.reply(200, {"status": "cancelled_before_accept"})
-                if dg and rec["digest"] and rec["digest"] != dg:
-                    return self.reply(409, {"error": "conflict"})
-                if rec["phase"] == "running":
-                    rec["cancel_requested"] = True
-                    return self.reply(200, {"status": "stopping"})
-                return self.reply(200, status_of(*key, rec["not_after"], rec["digest"])[0])
-            # ack: the outbox has committed the result: the body is released, the outcome kept until pruned
-            if rec is None:
-                return self.reply(404, {"error": "no such attempt"})
-            if rec["phase"] in ("done", "expired"):
-                rec.update(phase="released", body=None)
-            if lose_answer:
-                return self.drop()
-            return self.reply(200, {"status": "released"})
+            return self.reply(200, view(op, attempt, digest, rec, now, not_after))
+        return self.reply(200, view(op, attempt, digest, rec, now, not_after))
 
 
 class Server(ThreadingMixIn, HTTPServer):

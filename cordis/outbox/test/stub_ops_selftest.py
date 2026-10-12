@@ -1,6 +1,7 @@
 """Self-test of stub_ops.py: every status answer and fault of the operation
-contract (docs/cordis/rfc/0007-boundaries.md), so the adapter is tested
-against a server that behaves as the contract says.
+contract (docs/cordis/rfc/0007-boundaries.md), on the wire halo-flash serves
+(main c4a39ff), so the adapter is tested against a server that behaves as that
+contract says.
 
     python3 stub_ops_selftest.py
 """
@@ -11,6 +12,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 here = os.path.dirname(os.path.abspath(__file__))
@@ -23,13 +25,13 @@ class Server:
         self.inc = ""
         self.proc = subprocess.Popen([sys.executable, os.path.join(here, "stub_ops.py"), port_file, os.path.join(self.dir, "count"), *modes],
                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        for _ in range(200):
-            if os.path.exists(port_file):
-                break
-            time.sleep(0.02)
         try:
+            for _ in range(200):
+                if os.path.exists(port_file):
+                    break
+                time.sleep(0.02)
             self.port = int(open(port_file).read())
-            self.inc = self.get("/v1/halo/contract")[1]["incarnation"]
+            self.inc = self.call("GET", "/v1/halo/contract")[1]["incarnation"]
         except Exception:
             self.close()
             raise
@@ -38,62 +40,71 @@ class Server:
         self.proc.kill()
         self.proc.wait()
 
-    def call(self, method, path, body=None, inc="current", not_after=None, digest=None):
+    def call(self, method, path, body=None, headers=None):
+        """body: bytes, sent as they are. Returns (status, json, headers); None for a lost connection."""
         c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
-        h = {"Content-Type": "application/json", "Halo-Incarnation": self.inc if inc == "current" else inc}
-        if not_after is not None:
-            h["Halo-Not-After"] = str(not_after)
-        if digest is not None:
-            h["Halo-Digest"] = digest
+        h = {"Content-Type": "application/json", "Halo-Incarnation": self.inc}
+        h.update(headers or {})
         try:
-            c.request(method, path, json.dumps(body) if body is not None else None, h)
+            c.request(method, path, body, h)
             r = c.getresponse()
             data = r.read()
-            return r.status, (json.loads(data) if data else {}), dict(r.getheaders())
+            try:
+                obj = json.loads(data) if data else {}
+            except ValueError:
+                obj = data.decode()
+            return r.status, obj, dict(r.getheaders())
         except (ConnectionError, http.client.RemoteDisconnected):
             return None, None, None
         finally:
             c.close()
 
-    def get(self, path, **kw):
-        s, o, h = self.call("GET", path, **kw)
-        return s, o
-
     def fault(self, **kw):
-        self.call("POST", "/admin/fault", kw)
+        self.call("POST", "/admin/fault", json.dumps(kw).encode())
 
     def state(self):
-        return self.get("/admin/state")[1]
+        return self.call("GET", "/admin/state")[1]
 
     def now(self):
         return int(self.call("GET", "/v1/halo/contract")[2]["Halo-Time"])
 
 
-REQ = {"messages": [{"role": "user", "content": "review this patch\n\ncontext\n\npatch"}]}
+REQ = {"messages": [{"role": "user", "content": "review this patch\n\ncontext\n\npatch"}], "max_tokens": 16}
 
 
-def digest(not_after, mode="relaxed", api="chat"):
-    return hashlib.sha256(json.dumps([api, REQ, not_after, mode], sort_keys=True).encode()).hexdigest()
+class Attempt:
+    """An attempt as the outbox holds it: the exact bytes of its submit, and so its digest."""
 
+    def __init__(self, s, op, attempt=1, ahead=60000, mode="relaxed", request=REQ, principal="p1", not_after=None):
+        self.s, self.op, self.attempt, self.principal = s, op, attempt, principal
+        self.na = s.now() + ahead if not_after is None else not_after
+        self.body = json.dumps({"operation_id": op, "attempt": attempt, "not_after": self.na, "api": "chat", "request": request, "mode": mode}).encode()
+        self.digest = hashlib.sha256(self.body).hexdigest()
 
-def submit(s, op, attempt=1, ahead=60000, **kw):
-    na = s.now() + ahead
-    body = {"operation_id": op, "attempt": attempt, "not_after": na, "api": "chat", "request": REQ, "mode": "relaxed"}
-    code, obj, _ = s.call("POST", "/v1/operations", body, not_after=na, digest=digest(na), **kw)
-    return code, obj, na
+    def carried(self, inc=None):
+        return {"Halo-Incarnation": inc or self.s.inc, "Halo-Not-After": str(self.na), "Halo-Digest": self.digest, "X-Halo-Principal": self.principal}
 
+    def submit(self, headers=None, inc=None):
+        h = {"Halo-Incarnation": inc or self.s.inc, "X-Halo-Principal": self.principal}
+        h.update(headers or {})
+        return self.s.call("POST", "/v1/operations", self.body, h)
 
-def status(s, op, na, attempt=1, **kw):
-    return s.get(f"/v1/operations/{op}/{attempt}", not_after=na, digest=digest(na), **kw)
+    def path(self, what=""):
+        return f"/v1/operations/{self.op}/{self.attempt}" + (f"/{what}" if what else "")
 
+    def status(self, inc=None):
+        return self.s.call("GET", self.path(), None, self.carried(inc))
 
-def wait_done(s, op, na, attempt=1, want="done"):
-    for _ in range(300):
-        st = status(s, op, na, attempt)[1]
-        if st.get("status") == want:
-            return st
-        time.sleep(0.02)
-    raise AssertionError(f"{op} never reached {want}: {st}")
+    def verb(self, what, method="POST", inc=None):
+        return self.s.call(method, self.path(what), b"" if method == "POST" else None, self.carried(inc))
+
+    def wait(self, want="done"):
+        for _ in range(300):
+            st = self.status()[1]
+            if st.get("status") == want:
+                return st
+            time.sleep(0.02)
+        raise AssertionError(f"{self.op} never reached {want}: {st}")
 
 
 def check(cond, msg):
@@ -102,170 +113,205 @@ def check(cond, msg):
 
 
 def t_contract(s):
-    code, c = s.get("/v1/halo/contract")
-    check(code == 200 and len(c["incarnation"]) == 32 and c["time_ms"] >= 0 and c["operations"]["records"]["max"] > 0, c)
-    check(c["inference"]["mode"] in ("relaxed", "exact"), c)
+    code, c, _ = s.call("GET", "/v1/halo/contract")
+    check(code == 200 and len(c["incarnation"]) == 32 and c["time_ms"] >= 0, c)
+    check(c["inference"]["mode"] in ("relaxed", "exact") and c["operations"]["records"]["max"] > 0, c)
+    check(c["operations"]["owner"] == "X-Halo-Principal" and c["operations"]["disconnect"] == "never cancels", c)
     # every answer names the incarnation and the clock, an error answer too
-    s_, _, h = s.call("GET", "/nowhere")
-    check(s_ == 404 and h["Halo-Incarnation"] == c["incarnation"] and int(h["Halo-Time"]) >= c["time_ms"], (s_, h))
+    code, _, h = s.call("GET", "/nowhere")
+    check(code == 404 and h["Halo-Incarnation"] == c["incarnation"] and int(h["Halo-Time"]) >= c["time_ms"], (code, h))
 
 
 def t_lifecycle(s):
-    code, obj, na = submit(s, "life")
-    check(code == 202 and obj["status"] == "accepted", (code, obj))
-    st = wait_done(s, "life", na)
-    check(st["usage"]["completion"] == 10 and st["finish"] == "stop" and st["expires_at"] > 0, st)
-    code, body = s.get("/v1/operations/life/1/result", not_after=na, digest=digest(na))
-    check(code == 200 and body["body"], body)
-    code, obj = s.call("POST", "/v1/operations/life/1/ack", not_after=na, digest=digest(na))[:2]
-    check(code == 200 and obj["status"] == "released", (code, obj))
-    check(status(s, "life", na)[1]["status"] == "released", "released after ack")
-    check(s.get("/v1/operations/life/1/result", not_after=na, digest=digest(na))[0] == 410, "no body after ack")
+    a = Attempt(s, "life")
+    code, v, _ = a.submit()
+    check(code == 202 and v["status"] == "running" and v["digest"] == a.digest and v["operation_id"] == "life" and v["attempt"] == 1, (code, v))
+    st = a.wait()
+    check(st["usage"]["completion_tokens"] == 10 and set(st["usage"]) == {"prompt_tokens", "cached_tokens", "completion_tokens", "engine_ms"}, st)
+    check(st["finish"] == "stop" and st["expires_at"] > 0, st)
+    code, body, _ = a.verb("result", "GET")
+    check(code == 200 and body["choices"][0]["message"]["content"], (code, body))
+    code, v, _ = a.verb("ack")
+    check(code == 200 and v["status"] == "released", (code, v))
+    check(a.status()[1]["status"] == "released", "released after ack")
+    code, v, _ = a.verb("result", "GET")
+    check(code == 409 and v["status"] == "released", ("no body after ack: the status, with a 409", code, v))
 
 
 def t_never_accepted_and_closed(s):
-    now = s.now()
-    check(status(s, "ghost", now + 60000)[1]["status"] == "never_accepted", "inside the window")
+    a = Attempt(s, "ghost")
+    check(a.status()[1]["status"] == "never_accepted", "inside the window")
+    b = Attempt(s, "ghost2", not_after=s.now() + 1)
     time.sleep(0.05)
-    check(status(s, "ghost", now)[1]["status"] == "closed", "past the carried deadline, no record: closed")
+    check(b.status()[1]["status"] == "closed", "past the carried deadline, no record: closed")
 
 
-def t_duplicate_and_conflict(s):
-    code, _, na = submit(s, "dup")
-    wait_done(s, "dup", na)
-    body = {"operation_id": "dup", "attempt": 1, "not_after": na, "api": "chat", "request": REQ, "mode": "relaxed"}
-    code, obj, _ = s.call("POST", "/v1/operations", body, not_after=na, digest=digest(na))
-    check(code == 200 and obj["status"] == "done", ("a duplicate gets the current status", code, obj))
+def t_duplicate_conflict_digest(s):
+    a = Attempt(s, "dup")
+    a.submit()
+    a.wait()
+    code, v, _ = a.submit()
+    check(code == 200 and v["status"] == "done", ("a duplicate gets the current status", code, v))
     check(s.state()["generated"] == 1, "a duplicate runs nothing")
-    other = dict(body, mode="exact")
-    code, obj, _ = s.call("POST", "/v1/operations", other, not_after=na, digest=digest(na, "exact"))
-    check(code == 409 and obj["error"] == "conflict", ("another digest is a conflict", code, obj))
+    other = Attempt(s, "dup", not_after=a.na, request=dict(REQ, max_tokens=17))
+    code, v, _ = other.submit()
+    check(code == 409 and v["error"]["type"] == "conflict", ("another body for the same attempt is a conflict", code, v))
+    code, v, _ = a.submit(headers={"Halo-Digest": "0" * 64})
+    check(code == 400 and "Halo-Digest" in v["error"]["message"], ("a digest that is not the body's", code, v))
+    check(a.submit(headers={"Halo-Digest": a.digest})[0] == 200, "a matching digest header is allowed")
+    check(other.verb("cancel")[0] == 409, "a verb naming another digest than the attempt's is a conflict")
+
+
+def t_mode_unavailable(s):
+    code, v, _ = Attempt(s, "mode", mode="exact").submit()
+    check(code == 422 and v["error"]["type"] == "mode_unavailable", (code, v))
 
 
 def t_incarnation(s):
-    code, _, na = submit(s, "inc")
-    wait_done(s, "inc", na)
-    check(status(s, "inc", na, inc="0" * 32)[1]["status"] == "unknown", "another incarnation: unknown")
-    body = {"operation_id": "inc2", "attempt": 1, "not_after": na, "api": "chat", "request": REQ, "mode": "relaxed"}
-    code, obj, _ = s.call("POST", "/v1/operations", body, inc="0" * 32, not_after=na, digest=digest(na))
-    check(code == 409 and obj["error"] == "stale_incarnation", (code, obj))
-    check(s.call("POST", "/v1/operations/inc/1/cancel", inc="0" * 32, not_after=na, digest=digest(na))[0] == 409, "stale cancel")
-    check(s.call("POST", "/v1/operations/inc/1/ack", inc="0" * 32, not_after=na, digest=digest(na))[0] == 409, "stale ack")
+    a = Attempt(s, "inc")
+    a.submit()
+    a.wait()
+    stale = "0" * 32
+    check(a.status(stale)[1]["status"] == "unknown", "another incarnation: unknown, never never_accepted")
+    code, v, _ = Attempt(s, "inc2").submit(inc=stale)
+    check(code == 409 and v["error"]["type"] == "stale_incarnation" and v["incarnation"] == s.inc, (code, v))
+    check(a.verb("cancel", inc=stale)[0] == 409, "stale cancel")
+    check(a.verb("ack", inc=stale)[0] == 409, "stale ack")
+    check(a.verb("result", "GET", inc=stale)[0] == 409, "stale fetch")
+    code, v, _ = s.call("GET", a.path(), None, {"Halo-Incarnation": s.inc})
+    check(code == 400, "every verb carries the deadline and the digest")
 
 
 def t_restart(s):
-    code, _, na = submit(s, "rs")
-    wait_done(s, "rs", na)
+    a = Attempt(s, "rs")
+    a.submit()
+    a.wait()
     old = s.inc
     s.call("POST", "/admin/restart")
-    new = s.get("/v1/halo/contract")[1]["incarnation"]
+    new = s.call("GET", "/v1/halo/contract")[1]["incarnation"]
     check(new != old, "a new incarnation")
-    check(status(s, "rs", na, inc=old)[1]["status"] == "unknown", "an old query after a restart is unknown, never never_accepted")
+    check(a.status(old)[1]["status"] == "unknown", "an old query after a restart is unknown")
     s.inc = new
     check(s.state()["records"] == 0, "everything held is gone")
 
 
 def t_cancel_before_accept(s):
-    na = s.now() + 60000
-    code, obj = s.call("POST", "/v1/operations/c1/1/cancel", not_after=na, digest=digest(na))[:2]
-    check(code == 200 and obj["status"] == "cancelled_before_accept", (code, obj))
-    # a late copy of the submit is a no-op: the id is tombstoned
-    body = {"operation_id": "c1", "attempt": 1, "not_after": na, "api": "chat", "request": REQ, "mode": "relaxed"}
-    code, obj, _ = s.call("POST", "/v1/operations", body, not_after=na, digest=digest(na))
-    check(obj["status"] == "cancelled_before_accept" and s.state()["generated"] == 0, ("the late copy runs nothing", code, obj))
+    a = Attempt(s, "c1")
+    code, v, _ = a.verb("cancel")
+    check(code == 200 and v["status"] == "cancelled_before_accept", (code, v))
+    # a late copy of the submit finds the tombstone: the current status, and nothing runs
+    code, v, _ = a.submit()
+    check(code == 200 and v["status"] == "cancelled_before_accept" and s.state()["generated"] == 0, ("the late copy runs nothing", code, v))
+    other = Attempt(s, "c1", not_after=a.na, request=dict(REQ, max_tokens=17))
+    check(other.submit()[0] == 409, "a copy naming another body is a conflict")
 
 
 def t_cancel_running(s):
-    code, _, na = submit(s, "c2")
-    code, obj = s.call("POST", "/v1/operations/c2/1/cancel", not_after=na, digest=digest(na))[:2]
-    check(obj["status"] == "stopping", obj)
-    st = wait_done(s, "c2", na)
-    check(st["finish"] == "cancelled" and st["usage"]["completion"] >= 1, ("a cancelled attempt reports its usage", st))
+    a = Attempt(s, "c2")
+    a.submit()
+    code, v, _ = a.verb("cancel")
+    check(code == 200 and v["status"] == "running" and v["cancel_requested"] is True, ("a cancel is requested, the status stays running", code, v))
+    st = a.wait()
+    check(st["finish"] == "cancelled" and st["usage"]["completion_tokens"] >= 1, ("a cancelled attempt reports its usage", st))
 
 
 def t_past_not_after(s):
-    na = s.now() - 1
-    body = {"operation_id": "late", "attempt": 1, "not_after": na, "api": "chat", "request": REQ, "mode": "relaxed"}
-    code, obj, _ = s.call("POST", "/v1/operations", body, not_after=na, digest=digest(na))
-    check(code == 410, (code, obj))
+    code, v, _ = Attempt(s, "late", not_after=s.now() - 1).submit()
+    check(code == 410 and v["error"]["type"] == "late", (code, v))
+    code, v, _ = Attempt(s, "far", ahead=700000).submit()
+    check(code == 400, ("not_after too far ahead", code, v))
 
 
 def t_lost_submit(s):
     s.fault(lose_submit=True)
-    code, _, na = submit(s, "lost")
-    check(code is None, "the submit was lost")
-    check(status(s, "lost", na)[1]["status"] == "never_accepted", "nothing recorded: not accepted yet")
-    code, obj, _ = (lambda: submit(s, "lost"))()  # a resend is a new submit with its own deadline; the platform sends it as first sent
-    check(code in (202, 200), (code, obj))
+    a = Attempt(s, "lost")
+    check(a.submit()[0] is None, "the submit was lost")
+    check(a.status()[1]["status"] == "never_accepted", "nothing recorded: not accepted yet")
+    code, v, _ = a.submit()
+    check(code == 202, ("resent exactly as first sent", code, v))
 
 
 def t_lost_submit_answer(s):
     s.fault(lose_submit_answer=True)
-    code, _, na = submit(s, "lsa")
-    check(code is None, "the answer was lost")
-    st = wait_done(s, "lsa", na)
-    check(st["status"] == "done", "the attempt was accepted and ran")
+    a = Attempt(s, "lsa")
+    check(a.submit()[0] is None, "the answer was lost")
+    check(a.wait()["status"] == "done", "the attempt was accepted and ran")
 
 
 def t_dup_submit(s):
     s.fault(dup_submit=True)
-    code, _, na = submit(s, "dp")
-    wait_done(s, "dp", na)
+    a = Attempt(s, "dp")
+    a.submit()
+    a.wait()
     check(s.state()["generated"] == 1, "a duplicated submit runs once")
 
 
 def t_late_copy_after_cancel(s):
     s.fault(delay_submit=0.3)
-    import threading
-
+    a = Attempt(s, "lc")
     result = {}
-    na = s.now() + 60000
-
-    def go():
-        body = {"operation_id": "lc", "attempt": 1, "not_after": na, "api": "chat", "request": REQ, "mode": "relaxed"}
-        result["r"] = s.call("POST", "/v1/operations", body, not_after=na, digest=digest(na))
-
-    th = threading.Thread(target=go)
+    th = threading.Thread(target=lambda: result.update(r=a.submit()))
     th.start()
     time.sleep(0.05)
-    check(status(s, "lc", na)[1]["status"] == "never_accepted", "the copy has not arrived")
-    check(s.call("POST", "/v1/operations/lc/1/cancel", not_after=na, digest=digest(na))[1]["status"] == "cancelled_before_accept", "cancelled")
+    check(a.status()[1]["status"] == "never_accepted", "the copy has not arrived")
+    check(a.verb("cancel")[1]["status"] == "cancelled_before_accept", "cancelled")
     th.join()
     check(result["r"][1]["status"] == "cancelled_before_accept" and s.state()["generated"] == 0, ("the delayed copy found the tombstone", result))
 
 
 def t_expiry(s):
-    code, _, na = submit(s, "ex")
-    wait_done(s, "ex", na)
+    a = Attempt(s, "ex")
+    a.submit()
+    a.wait()
     time.sleep(1.2)
-    st = status(s, "ex", na)[1]
-    check(st["status"] == "expired" and st["usage"]["completion"] == 10, ("the body went, the outcome and usage stay", st))
-    check(s.get("/v1/operations/ex/1/result", not_after=na, digest=digest(na))[0] == 410, "no body")
-    code, obj = s.call("POST", "/v1/operations/ex/1/ack", not_after=na, digest=digest(na))[:2]
-    check(obj["status"] == "released", "an expired outcome is acknowledged")
+    st = a.status()[1]
+    check(st["status"] == "expired" and st["usage"]["completion_tokens"] == 10, ("the body went, the outcome and usage stay", st))
+    check(a.verb("result", "GET")[0] == 409, "no body")
+    code, v, _ = a.verb("ack")
+    check(code == 200 and v["status"] == "expired", ("an expired outcome is acknowledged, and stays until not_after", code, v))
 
 
 def t_records_ceiling(s):
-    check(submit(s, "r1")[0] == 202 and submit(s, "r2")[0] == 202, "within the ceiling")
-    code, obj, _ = submit(s, "r3")
-    check(code == 503 and obj["reason"] == "records", ("refused at the ceiling, never erasing", code, obj))
+    check(Attempt(s, "r1").submit()[0] == 202 and Attempt(s, "r2").submit()[0] == 202, "within the ceiling")
+    code, v, h = Attempt(s, "r3").submit()
+    check(code == 503 and v["error"]["type"] == "records" and int(h["Retry-After"]) >= 1, ("refused at the ceiling, never erasing", code, v))
     check(s.state()["records"] == 2, "nothing was erased to make room")
+    # a cancel is a record too: refused at the ceiling, leaving the outbox to wait for closed
+    code, v, _ = Attempt(s, "r4").verb("cancel")
+    check(code == 503, ("a cancel at the ceiling is refused", code, v))
+
+
+def t_retention_budget(s):
+    first = Attempt(s, "b1")
+    check(first.submit()[0] == 202, "within the budget")
+    code, v, h = Attempt(s, "b2").submit()
+    check(code == 503 and v["error"]["type"] == "retention" and "Retry-After" in h, ("refused when the reservation would not fit", code, v))
+    first.wait()
+    first.verb("ack")
+    check(Attempt(s, "b3").submit()[0] == 202, "the ack released its reservation")
 
 
 def t_lost_ack_answer(s):
-    code, _, na = submit(s, "la")
-    wait_done(s, "la", na)
+    a = Attempt(s, "la")
+    a.submit()
+    a.wait()
     s.fault(lose_ack_answer=True)
-    check(s.call("POST", "/v1/operations/la/1/ack", not_after=na, digest=digest(na))[0] is None, "the ack's answer was lost")
-    check(status(s, "la", na)[1]["status"] == "released", "but it was applied")
-    check(s.call("POST", "/v1/operations/la/1/ack", not_after=na, digest=digest(na))[1]["status"] == "released", "a repeated ack is harmless")
+    check(a.verb("ack")[0] is None, "the ack's answer was lost")
+    check(a.status()[1]["status"] == "released", "but it was applied")
+    check(a.verb("ack")[1]["status"] == "released", "a repeated ack is harmless")
+
+
+def t_owner(s):
+    a, b = Attempt(s, "own", principal="p1"), Attempt(s, "own", principal="p2")
+    check(a.submit()[0] == 202 and b.submit()[0] == 202, "the same operation and attempt under two owners are two attempts")
+    check(s.state()["generated"] == 2, "each ran")
 
 
 TESTS = [
-    (t_contract, []), (t_lifecycle, []), (t_never_accepted_and_closed, []), (t_duplicate_and_conflict, []), (t_incarnation, []),
-    (t_restart, []), (t_cancel_before_accept, []), (t_cancel_running, ["delay=0.3"]), (t_past_not_after, []), (t_lost_submit, []),
-    (t_lost_submit_answer, []), (t_dup_submit, []), (t_late_copy_after_cancel, []), (t_expiry, ["capture=1"]),
-    (t_records_ceiling, ["records=2"]), (t_lost_ack_answer, []),
+    (t_contract, []), (t_lifecycle, []), (t_never_accepted_and_closed, []), (t_duplicate_conflict_digest, []), (t_mode_unavailable, []),
+    (t_incarnation, []), (t_restart, []), (t_cancel_before_accept, []), (t_cancel_running, ["delay=0.3"]), (t_past_not_after, []),
+    (t_lost_submit, []), (t_lost_submit_answer, []), (t_dup_submit, []), (t_late_copy_after_cancel, []), (t_expiry, ["capture=1"]),
+    (t_records_ceiling, ["records=2"]), (t_retention_budget, ["budget=1500"]), (t_lost_ack_answer, []), (t_owner, []),
 ]
 
 failed = 0
