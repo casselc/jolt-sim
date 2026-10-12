@@ -1167,6 +1167,24 @@ importers wait for the slice.
    sampled at 100 steps and verified to 8); reporting only the latest
    stopped generation's breaks it (`underReport`).
 
+   halo-flash 87cc596 sends the count so (the key's total, on every
+   admitted keyed answer), and the 1 s-grace run confirmed it end to end:
+   the resend `generated` with `Halo-Discarded-Tokens: 25`, the lost send
+   `charged`, settled 2572 = journal 2547 + 25. Its answer to when a key is
+   forgotten (after `replay_ttl_s`, 600 s, unused, or evicted past 4096
+   keys) opens the next hole: the world then forgets the generations, the
+   discarded count and the sends of that key, and a later send starts it
+   afresh, so neither header covers a send admitted before it forgot: a
+   later replay reporting 0 releases it (`observe_forget.qnt`,
+   `forgetDiscarded` breaks `accounted`). A time rule on our side cannot
+   close it, eviction being by load. What does (`forgetAttempts`, sampled
+   at 100 steps and verified to 8, witnesses `exactCharged` and
+   `forgotThenDone`): every answer also says how many sends the world has
+   admitted under the key since it last forgot it, and each send of ours
+   it does not count is charged its worst case on top of the discarded
+   count, the total capped at the sends' worst cases. Asked of halo-flash;
+   until it is sent, the runtime keeps the round-5 rule, with this hole.
+
    `outbox/test/latency.sh` replays the run's conditions against a
    stand-in: calls slower than the runner's timeout with long multi-line
    answers (one completion per computation, none charged as lost, notes

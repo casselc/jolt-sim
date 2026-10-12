@@ -82,6 +82,13 @@
  * (underReport). The instances are in observe_modes.qnt and
  * observe_report.qnt, apart from this module, so each file stays under
  * Apalache's request limit.
+ * A world: FORGET (`observe_forget.qnt`) forgets a key, its kept generations, discarded count and
+ * admitted sends (halo-flash: replay_ttl_s unused, or evicted past 4096 keys); a later send starts
+ * the key afresh, so neither Halo-Answer nor the discarded count covers what came before: a replay
+ * reporting 0 releases sends whose tokens the world forgot (forgetDiscarded breaks `accounted`).
+ * ATTEMPTS: every answer also says how many sends the world admitted under the key since it last
+ * forgot it, and each send it does not count is charged its worst case: `accounted` holds
+ * (forgetAttempts; witnesses exactCharged, forgotThenDone).
  * Witnesses (checked as not(w), expected VIOLATED): retriedThenDone,
  * lateSettled, exhausted, effectfulUncertain, reconciled, keyedResent (a
  * keyed intent sent again completed), keyedDeduplicated (a resend found the
@@ -102,6 +109,8 @@ module observe {
   const RELEASE_UNREPORTED: bool
   const DISCARDED: bool
   const UNDER_REPORT: bool
+  const FORGET: bool
+  const ATTEMPTS: bool
 
   type Kind = Obs | Eff | Key
   type Phase = Ready | Sent | Lost | Uncertain | Failed | Done
@@ -136,6 +145,8 @@ module observe {
     lates: int, retries: int, reconciles: int,
     resent: int, deduped: int, keyedUncertain: bool, released: int, charged: int, exact: int,
     stopped: List[int], lastStop: List[int],  // per intent: tokens of generations the world stopped; the latest's
+    admitted: List[int],     // per intent: the sends the world has admitted under the key since it last forgot it
+    forgot: int,
   }
 
   var s: S
@@ -145,6 +156,7 @@ module observe {
     reserved: 0, settled: 0, real: 0, effects: [0, 0, 0], applied: [0, 0, 0],
     lates: 0, retries: 0, reconciles: 0,
     resent: 0, deduped: 0, keyedUncertain: false, released: 0, charged: 0, exact: 0, stopped: [0, 0, 0], lastStop: [0, 0, 0],
+    admitted: [0, 0, 0], forgot: 0,
   }
 
   pure def inc(l: List[int], i: int): List[int] = l.replaceAt(i, l[i] + 1)
@@ -180,6 +192,7 @@ module observe {
         real: if (dedup) s.real else s.real + cost,
         effects: if (KIND[at.intent] != Obs and not(dedup)) inc(s.effects, at.intent) else s.effects,
         deduped: if (dedup) s.deduped + 1 else s.deduped,
+        admitted: if (KIND[at.intent] == Key) inc(s.admitted, at.intent) else s.admitted,
       },
     }
   }
@@ -219,7 +232,14 @@ module observe {
       else if (REPORTED) at.fresh
       else not(RELEASE_UNREPORTED)
     val release = if (charge) Set() else closed
-    val amount = if (closed.size() == 0) 0 else if (reportsDiscard) discarded else R * closed.size()
+    // ATTEMPTS: the answer also says how many sends the world admitted under the key since it last
+    // forgot it (FORGET); a send it does not count was never received, or was admitted before the world
+    // forgot the key, its tokens in no count, and is charged its worst case
+    val sends = s.attempts.indices().filter(b => s.attempts[b].intent == at.intent).size()
+    val unknown = if (ATTEMPTS and sends > s.admitted[at.intent]) sends - s.admitted[at.intent] else 0
+    val worst = R * closed.size()
+    val reported = discarded + R * unknown
+    val amount = if (closed.size() == 0) 0 else if (reportsDiscard) (if (reported < worst) reported else worst) else worst
     all {
       at.live, at.ran,
       s' = { ...s,
@@ -310,7 +330,24 @@ module observe {
     }
   }
 
-  action step = any { send, worldRuns, answer, lose, expire, reconcile, worldStops, idle }
+  // FORGET: the world forgets a key (halo-flash: unused for replay_ttl_s, or evicted past 4096 keys): the
+  // generations it kept, the tokens it discarded under it, and the sends it admitted. A later send
+  // under the key starts it afresh
+  action worldForgets: bool = {
+    nondet i = 0.to(N - 1).oneOf()
+    all {
+      FORGET, KIND[i] == Key,
+      s' = { ...s,
+        attempts: s.attempts.indices().fold(s.attempts, (l, b) =>
+          if (l[b].intent == i) l.replaceAt(b, { ...l[b], kept: false }) else l),
+        stopped: s.stopped.replaceAt(i, 0), lastStop: s.lastStop.replaceAt(i, 0),
+        admitted: s.admitted.replaceAt(i, 0),
+        forgot: s.forgot + 1,
+      },
+    }
+  }
+
+  action step = any { send, worldRuns, answer, lose, expire, reconcile, worldStops, worldForgets, idle }
 
   // ---- properties -------------------------------------------------------------------------
   val effectOnce: bool = 0.to(N - 1).forall(i => KIND[i] != Obs implies s.effects[i] <= 1)
@@ -332,4 +369,5 @@ module observe {
   val supersededReleased: bool = s.released > 0
   val freshCharged: bool = s.charged > 0
   val exactCharged: bool = s.exact > 0
+  val forgotThenDone: bool = s.forgot > 0 and s.pc == N
 }

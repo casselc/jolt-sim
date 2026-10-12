@@ -239,6 +239,13 @@ STEPS=100 SAMPLES=30000 sim observe_report.qnt graceExpiryDiscarded accounted ok
 verify observe_report.qnt graceExpiryDiscarded accounted ok
 STEPS=60 SAMPLES=5000 sim observe_report.qnt graceExpiryDiscarded "not(exactCharged)" VIOLATED
 STEPS=100 SAMPLES=30000 sim observe_report.qnt underReport accounted VIOLATED
+# a world that forgets keys (observe_forget.qnt): the round-5 headers miss sends admitted before it forgot;
+# a count of the sends it admitted since closes it
+STEPS=100 SAMPLES=30000 sim observe_forget.qnt forgetDiscarded accounted VIOLATED
+STEPS=100 SAMPLES=30000 sim observe_forget.qnt forgetAttempts accounted ok
+verify observe_forget.qnt forgetAttempts accounted ok
+STEPS=60 SAMPLES=5000 sim observe_forget.qnt forgetAttempts "not(exactCharged)" VIOLATED
+STEPS=60 SAMPLES=5000 sim observe_forget.qnt forgetAttempts "not(forgotThenDone)" VIOLATED
 # ---- engine.qnt (RFC 0006: the turn commit protocol) -------------------------------------
 for inv in releasedOnlyDurable effectMatchesCommit commitAtomic receiptOnce uncertainSurvives; do sim engine.qnt design "$inv" ok; done
 # Apalache: depth 6 in about 75 s, 7 in about 400 s (checked once), 8 over 30 minutes

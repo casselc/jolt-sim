@@ -17,17 +17,17 @@
  *    accounted.
  */
 module releaseUnreported {
-  import observe(MISCLASSIFY = false, REFUND_LOST = false, NO_RESERVE = false, APPLY_LATE = false, ONE_CLASS = false, KEY_IGNORED = false, RELEASE_OBS = false, GRACE_EXPIRY = false, REPORTED = false, RELEASE_UNREPORTED = true, DISCARDED = false, UNDER_REPORT = false).* from "./observe"
+  import observe(MISCLASSIFY = false, REFUND_LOST = false, NO_RESERVE = false, APPLY_LATE = false, ONE_CLASS = false, KEY_IGNORED = false, RELEASE_OBS = false, GRACE_EXPIRY = false, REPORTED = false, RELEASE_UNREPORTED = true, DISCARDED = false, UNDER_REPORT = false, FORGET = false, ATTEMPTS = false).* from "./observe"
 }
 module keyIgnoredRelease {
-  import observe(MISCLASSIFY = false, REFUND_LOST = false, NO_RESERVE = false, APPLY_LATE = false, ONE_CLASS = false, KEY_IGNORED = true, RELEASE_OBS = false, GRACE_EXPIRY = false, REPORTED = false, RELEASE_UNREPORTED = true, DISCARDED = false, UNDER_REPORT = false).* from "./observe"
+  import observe(MISCLASSIFY = false, REFUND_LOST = false, NO_RESERVE = false, APPLY_LATE = false, ONE_CLASS = false, KEY_IGNORED = true, RELEASE_OBS = false, GRACE_EXPIRY = false, REPORTED = false, RELEASE_UNREPORTED = true, DISCARDED = false, UNDER_REPORT = false, FORGET = false, ATTEMPTS = false).* from "./observe"
 }
 module graceExpiryRelease {
-  import observe(MISCLASSIFY = false, REFUND_LOST = false, NO_RESERVE = false, APPLY_LATE = false, ONE_CLASS = false, KEY_IGNORED = false, RELEASE_OBS = false, GRACE_EXPIRY = true, REPORTED = false, RELEASE_UNREPORTED = true, DISCARDED = false, UNDER_REPORT = false).* from "./observe"
+  import observe(MISCLASSIFY = false, REFUND_LOST = false, NO_RESERVE = false, APPLY_LATE = false, ONE_CLASS = false, KEY_IGNORED = false, RELEASE_OBS = false, GRACE_EXPIRY = true, REPORTED = false, RELEASE_UNREPORTED = true, DISCARDED = false, UNDER_REPORT = false, FORGET = false, ATTEMPTS = false).* from "./observe"
 }
 module graceExpiryDiscarded {
-  import observe(MISCLASSIFY = false, REFUND_LOST = false, NO_RESERVE = false, APPLY_LATE = false, ONE_CLASS = false, KEY_IGNORED = false, RELEASE_OBS = false, GRACE_EXPIRY = true, REPORTED = true, RELEASE_UNREPORTED = false, DISCARDED = true, UNDER_REPORT = false).* from "./observe"
+  import observe(MISCLASSIFY = false, REFUND_LOST = false, NO_RESERVE = false, APPLY_LATE = false, ONE_CLASS = false, KEY_IGNORED = false, RELEASE_OBS = false, GRACE_EXPIRY = true, REPORTED = true, RELEASE_UNREPORTED = false, DISCARDED = true, UNDER_REPORT = false, FORGET = false, ATTEMPTS = false).* from "./observe"
 }
 module underReport {
-  import observe(MISCLASSIFY = false, REFUND_LOST = false, NO_RESERVE = false, APPLY_LATE = false, ONE_CLASS = false, KEY_IGNORED = false, RELEASE_OBS = false, GRACE_EXPIRY = true, REPORTED = true, RELEASE_UNREPORTED = false, DISCARDED = true, UNDER_REPORT = true).* from "./observe"
+  import observe(MISCLASSIFY = false, REFUND_LOST = false, NO_RESERVE = false, APPLY_LATE = false, ONE_CLASS = false, KEY_IGNORED = false, RELEASE_OBS = false, GRACE_EXPIRY = true, REPORTED = true, RELEASE_UNREPORTED = false, DISCARDED = true, UNDER_REPORT = true, FORGET = false, ATTEMPTS = false).* from "./observe"
 }
