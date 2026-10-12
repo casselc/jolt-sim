@@ -270,6 +270,19 @@ sim handoff.qnt relayUncommitted onlyCommittedReleased VIOLATED
 sim handoff.qnt ackBeforeJournal noOrphan VIOLATED
 sim handoff.qnt receiptAny receiptToIssuer VIOLATED
 
+# ---- operation.qnt (RFC 0007): an external operation across the ledger and an ephemeral executor -----
+for inv in appliedOnce accounted reservationsHeld; do sim operation_modes.qnt design "$inv" ok; done
+verify operation_modes.qnt design safety ok
+for w in done restartedThenDone lostAfterRunW lostBeforeRunW; do STEPS=60 sim operation_modes.qnt design "not($w)" VIOLATED; done
+# a retention promise and no restart: nothing is ever unknown, so nothing is overcharged; without the promise
+# (a cache evicting under load) the ledger pays the worst case for a result evicted before capture
+sim operation_modes.qnt promised noOvercharge ok
+sim operation_modes.qnt cacheLike accounted ok
+STEPS=60 sim operation_modes.qnt cacheLike noOvercharge VIOLATED
+# an unknown attempt sent again under the same identity: the key alone is not an operation contract
+STEPS=60 sim operation_modes.qnt resubmitSame accounted VIOLATED
+STEPS=60 sim operation_modes.qnt resubmitSameEvict accounted VIOLATED
+
 # conformance: simulator runs replayed in the model
 conform() { # label scenario mutant expect(pass|fail) extra-args...
   local label=$1 scenario=$2 mutant=$3 expect=$4; shift 4

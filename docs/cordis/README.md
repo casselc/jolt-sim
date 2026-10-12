@@ -11,7 +11,8 @@
 - [rfc/](rfc/): 0001 CEL for cells, 0002 the graph language, 0003 the type
   IR, importers and scaffolds, 0004 descriptor-native protobuf types (phase
   2, built); 0005 XML and XSD, CSV and typed data frames (proposed); 0006
-  the turn runtime (phase 3, revision 2 accepted).
+  the turn runtime (phase 3, revision 2 accepted); 0007 boundaries and the
+  operation contract (proposed).
 - [research/STREAMING-PRIOR-ART.md](research/STREAMING-PRIOR-ART.md): batch
   and streaming systems (Rama, Flink, Beam, Kafka Streams, Materialize,
   Temporal and others), behind RFC 0005's frames and RFC 0006.

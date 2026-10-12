@@ -1194,6 +1194,10 @@ importers wait for the slice.
    forgotten send, 10 tokens generated, is charged 0) shows it, and phase
    M (the same, saying 1 admitted of our 2 sends: charged 4096) closes it.
 
+   (RFC 0007 proposes the operation contract that replaces these header
+   rules: identity with an incarnation, explicit cancel, a retention
+   promise. They stand until it exists.)
+
    halo-flash d3d8d89 sends `Halo-Admitted-Sends` on every admitted keyed
    answer, and keeps it with the discarded count in one per-key history
    that is erased in the step that forgets the key's answer (replay_ttl_s,
