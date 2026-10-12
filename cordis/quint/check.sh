@@ -295,11 +295,13 @@ STEPS=60 SAMPLES=20000 sim capture_modes.qnt ackFirst resultNotLost VIOLATED
 STEPS=60 SAMPLES=20000 sim capture_modes.qnt clearEarly receiptNotLost VIOLATED
 STEPS=60 SAMPLES=20000 sim capture_modes.qnt noKey appliedOnce VIOLATED
 
-# ---- expiry.qnt (RFC 0007, "Time"): a submit's deadline, tombstone pruning, the backstop, the executor's clock ----
+# ---- expiry.qnt (RFC 0007, "Time"): a submit's deadline, tombstone pruning, the capture window, an outcome kept
+# until acknowledged, the executor's monotonic clock ----------------------------------------------------------
 for inv in runsOnce accounted neverAcceptedTrue; do STEPS=60 SAMPLES=20000 sim expiry_modes.qnt design "$inv" ok; done
-for w in done expiredW forgottenW abandonedW lateRefusedW; do STEPS=60 SAMPLES=20000 sim expiry_modes.qnt design "not($w)" VIOLATED; done
-STEPS=60 SAMPLES=30000 sim expiry_modes.qnt absentAlways accounted VIOLATED
-STEPS=60 SAMPLES=30000 sim expiry_modes.qnt absentAlways neverAcceptedTrue VIOLATED
+for w in done outcomeSettledW closedW abandonedW lateRefusedW; do STEPS=60 SAMPLES=20000 sim expiry_modes.qnt design "not($w)" VIOLATED; done
+STEPS=60 SAMPLES=30000 sim expiry_modes.qnt dropOutcome accounted VIOLATED
+STEPS=60 SAMPLES=30000 sim expiry_modes.qnt dropOutcome neverAcceptedTrue VIOLATED
+STEPS=60 SAMPLES=30000 sim expiry_modes.qnt closedEarly accounted VIOLATED
 STEPS=60 SAMPLES=30000 sim expiry_modes.qnt pruneEarly runsOnce VIOLATED
 STEPS=60 SAMPLES=30000 sim expiry_modes.qnt lateAccept runsOnce VIOLATED
 STEPS=60 SAMPLES=30000 sim expiry_modes.qnt clockBack runsOnce VIOLATED

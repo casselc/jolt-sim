@@ -161,55 +161,74 @@ confirmation), `noKey` (the workflow applies every delivery).
 ## Time (revision 3)
 
 The API's deadlines change what `operation.qnt` could assume. A submit
-carries a deadline, `not_after`; the executor refuses one that arrives past
-it (410) and so remembers an id only until then; and it releases an
-unacknowledged result after a backstop. `quint/expiry.qnt` adds time, and
-its findings are requirements:
+carries a deadline, `not_after`; the executor refuses one that arrives
+past it (410) and so remembers an id only until then; and it stops holding
+a finished result's body after a capture window. `quint/expiry.qnt` adds
+time. Its findings, and how halo-flash's revision 2 (e2d5030) answers them:
 
-- **The executor decides by its own clock; the platform only names the
-  deadline.** Skew then changes how long the window is, never whether the
-  rules hold. A clock that goes back does break them (`clockBack`): the
-  executor needs a monotonic clock, or a tombstone horizon that does not
-  depend on it.
-- **Past the window, an id with no record is `expired`, not
-  `never_accepted`.** After `not_after` the executor has pruned what it
-  knew, so it cannot tell a submit it never saw from one it accepted, ran
-  and released at the backstop (24 h, long after the tombstone's 10
-  minutes). Answering `never_accepted` there (`absentAlways`) lets the
-  platform abandon at no cost an attempt that ran. `expired` is settled at
-  the worst case, as `forgotten` is. Abandoning at no cost therefore needs a
-  query inside the window and a cancel that tombstones the id.
+- **The executor decides by its own monotonic clock; the platform only
+  names the deadline.** Skew changes how long the window is, never whether
+  the rules hold; a clock that goes back does break them (`clockBack`).
+  Halo's `Halo-Time` is on every answer, only halo compares deadlines, and a
+  restart is a new incarnation with a new clock, so no cross-host skew
+  assumption remains.
+- **What the executor keeps decides what its answers mean.** Revision 1
+  pruned a tombstone at `not_after` (about 10 minutes) while the backstop
+  that released a result was 24 hours later; an id with no record then read
+  "never accepted" when it might have run (`dropOutcome`: the platform
+  abandons at no cost an attempt that ran). Revision 2 keeps the **outcome**
+  (status and usage) of an unacknowledged expired result until it is
+  acknowledged. Then an accepted attempt always leaves a record until the
+  platform acks it, and "no record, past the window" is **`closed`**:
+  provably never accepted, settled at nothing with no further message. This
+  is cheaper than the alternative this RFC first proposed (answer
+  `expired` there and settle the worst case), and the model confirms it
+  sound.
+- **Inside the window, no record is `never_accepted`, not yet closed.** A
+  delayed copy may arrive, so the attempt is closed by a cancel that
+  tombstones the id, or by waiting for `closed`. Closing it without either
+  (`closedEarly`, a refusal read as the end of the attempt) lets a late
+  copy run uncounted.
 - **A tombstone dropped before its deadline** (`pruneEarly`), **a submit
   accepted past it** (`lateAccept`) and **a clock set back** (`clockBack`)
   each rerun an attempt.
+- **What each answer costs** (halo's table, the accounting this RFC
+  adopts): `closed` and `cancelled_before_accept` settle at 0; an `expired`
+  result settles at its actual usage with no receipt; only `unknown`
+  (another incarnation) and `forgotten` (a server without the promise)
+  settle at the worst case R. A submit lost before it arrives costs 0.
 
-The clock assumption is stated, not removed: platform and executor may
-share a host today and not under yard; the design above needs only the
-executor's own clock to be monotonic.
+The retention is a bounded capture window, stated and advertised
+(`capture_s`, `expires_at` on `done`), not "until captured": that needed
+unbounded memory.
 
 ## The wire contract's requirements (revision 3)
 
-Not modelled, and to be agreed with halo-flash before implementation:
+Not all modelled; halo-flash's revision 2 takes each of them, and the
+status in brackets is where it stands:
 
-1. **Every verb is bound to the identity and the incarnation.** Status,
+1. **[taken; modelled by halo as the fence] Every verb is bound to the
+   identity and the incarnation.** Status,
    cancel and ack carry the expected incarnation as submit does (an old
    query after a restart answers `unknown`, never the new process's
    `never_accepted`; a delayed cancel or ack cannot touch another
    execution). Identity is authenticated owner, operation id, attempt and
    incarnation, bound to the submit's immutable content: reusing it with a
    different request, deadline or `on_detach` is a conflict (409).
-2. **A refusal is not closure.** A 429 or 503 shows that *this copy* was not
+2. **[taken; halo's `refusalCloses` mutant] A refusal is not closure.** A 429 or 503 shows that *this copy* was not
    accepted; another copy of the same submit may still arrive. The platform
    keeps the reservation until an acknowledged cancel or an `expired` or
    `never_accepted` answer inside the rules above closes the attempt.
-3. **Cancellation races.** A cancel can be lost, its answer can be lost, and
+3. **[taken; `on_detach` removed; halo's `cancelUntombed`] Cancellation
+   races.** A cancel can be lost, its answer can be lost, and
    it can race acceptance and completion; the platform repeats it until
    answered. A cancelled attempt that ran has a retained terminal result
    with its actual usage: cancellation is not proof that nothing was spent.
    `on_detach: cancel` is only for a single observer; platform operations
    cancel explicitly, and any detach-triggered cancel needs a stated
    ownership rule first.
-4. **Retention is reserved at admission.** Admitting an operation reserves
+4. **[taken; reserved at acceptance, halo's `noReserve`] Retention is
+   reserved at admission.** Admitting an operation reserves
    the space for its eventual result (output, reasoning, tool arguments and
    the stream buffer, each bounded), not only the results currently held;
    otherwise many running operations finishing together exceed the promise.
@@ -217,10 +236,12 @@ Not modelled, and to be agreed with halo-flash before implementation:
    expired. The retention is a bounded capture window (backstop `max_hold_s`),
    and the answer after it is `forgotten`, with an explicit expiry returned
    on the result.
-5. **Usage is defined.** `completion` and `discarded` are disjoint (a
+5. **[taken; usage is `{prompt, cached, completion}`, disjoint, and
+   `discarded` is gone: an attempt executes at most once] Usage is defined.** `completion` and `discarded` are disjoint (a
    cancelled attempt's decoded work is `discarded` and not also
    `completion`), and token counts are not claimed to be the resource cost.
-6. **The repeat guarantee is qualified.** "Identical text under greedy
+6. **[taken; `mode` relaxed or exact, part of the binding] The repeat
+   guarantee is qualified.** "Identical text under greedy
    decoding on the same build" is true only of an execution mode without
    batch-dependent numerics; the contract advertises the mode, or says the
    text may differ.
