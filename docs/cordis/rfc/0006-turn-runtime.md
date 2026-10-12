@@ -1194,6 +1194,22 @@ importers wait for the slice.
    forgotten send, 10 tokens generated, is charged 0) shows it, and phase
    M (the same, saying 1 admitted of our 2 sends: charged 4096) closes it.
 
+   halo-flash d3d8d89 sends `Halo-Admitted-Sends` on every admitted keyed
+   answer, and keeps it with the discarded count in one per-key history
+   that is erased in the step that forgets the key's answer (replay_ttl_s,
+   or past max_keys, oldest first), so the two cannot come apart (before,
+   the discarded count outlived the scheduler's key, the unsafe way). A
+   request is counted once attached to the key (generated, adopted,
+   replayed, later fenced, or a late duplicate whose sender has gone); a
+   refusal (429, with Retry-After) touches no key state and is not, which
+   matches the runtime: a deferred send is the same attempt, run later, so
+   it is not one of the sends counted against `n`. The counterexample now
+   reads: send 1 (n = 1), the key forgotten, send 2 generated (n = 1), send
+   3 replayed with n = 2, 0 discarded: three sends, two counted, send 1
+   charged its worst case. Confirmation against a live server is the next
+   halo run: phase M's sequence, with a real forget (a short
+   replay_ttl_s).
+
    `outbox/test/latency.sh` replays the run's conditions against a
    stand-in: calls slower than the runner's timeout with long multi-line
    answers (one completion per computation, none charged as lost, notes
