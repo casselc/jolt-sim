@@ -1,6 +1,8 @@
 # RFC 0007: Boundaries, and the operation contract
 
-Status: proposed. Records the review of the architecture's division of
+Status: proposed. Revision 2 adds halo-flash's half (its branch
+`rfc/operation-api`, 58e60d3, `docs/OPERATIONS.md`, `spec/operation/`) and
+the network to the model. Records the review of the architecture's division of
 responsibility (two agents, against RFC 0006 and what was built through
 round 5 of the halo-flash runs) and the one change it supports: an
 **operation contract** between the platform and an inference executor. It
@@ -74,15 +76,64 @@ An external operation is not an HTTP connection. Its parts:
   authoritative report exists; otherwise the reservation is the charge.
 
 `quint/operation.qnt` states this (`operation_modes.qnt`, checked in
-`check.sh`): `accounted` and `appliedOnce` hold with executor restarts and
-a retention promise (sampled, and verified to 8 steps); a restart or an
-eviction makes an attempt unknown, charged R; `resubmitSame` and
-`resubmitSameEvict`, which treat an unknown attempt as never accepted and
-send it again under the same identity, break `accounted`: **an
-idempotency key is a starting point and not an operation contract**; and
-the value of a promise is measurable, `promised` (no restart, a promise)
-never overcharges, `cacheLike` (eviction under load) does, by the
-worst-case difference.
+`check.sh`), over a network that loses, delays and duplicates a submit and
+an executor that restarts, holds an attempt until it is acked, and (without
+a promise) may evict a finished result, leaving a forgotten marker. The
+platform's three answers to a query are *done / running*, *unknown or
+forgotten* (settled at the worst case R; going on needs a new attempt),
+and *never accepted*, which is safe to act on at no cost, by resending the
+same identity or abandoning it, **given three rules**, each with a mutant:
+
+| Rule | Broken by | Breaks |
+| --- | --- | --- |
+| Incarnation fencing: a submit names the incarnation it is sent to, and any other refuses it | `noFence` | `runsOnce`: a copy delayed past a restart reruns an attempt already settled as unknown |
+| Tombstones: an accepted, acked or cancelled id is refused until its submit's `not_after` has passed | `noTomb`, `cacheNoTomb` (a tombstone evicted under load) | `runsOnce`: a duplicate reruns a captured attempt |
+| Abandon only through a cancel that tombstones the id | `abandonUntombed` | `accounted`: the late copy runs after the attempt was settled at 0 |
+
+and one prohibition: `resubmitSame`, sending an unknown attempt again as it
+was (a submit is never re-aimed at a new incarnation), breaks `accounted`:
+**an idempotency key is a starting point and not an operation contract**.
+The design holds at 20,000 samples of 60 steps and is verified by
+Apalache to 6 steps; the value of a promise is
+measurable: `promised` (no restart, a promise) never overcharges and a lost
+submit abandoned costs 0, where `cacheLike` (eviction under load) pays the
+worst case for a result evicted before it was acked. halo-flash's model is
+the mirror from the executor's side, and agrees on every instance (its
+`cacheNoTomb` breaks `neverAcceptedTrue`, mine `runsOnce`: an invariant
+about attempts still awaiting an answer, against one about every attempt).
+
+## halo-flash's surface (revision 2)
+
+Agreed, from `docs/OPERATIONS.md`; the implementation order is theirs:
+
+- `Halo-Incarnation` (128 random bits, per process: a durable epoch would
+  distinguish nothing, as halo persists nothing an operation depends on) on
+  every answer, and `GET /v1/halo/contract` (retention, deduplication,
+  cancellation, cost reporting, what repeating spends);
+- `POST /v1/operations {operation_id, attempt, incarnation, not_after, api,
+  request, on_detach}`: 202; the current status for a duplicate; 409 for a
+  stale incarnation; 410 past `not_after`; 429 or 503 with Retry-After,
+  both definitely not accepted;
+- `GET /v1/operations/{op}/{attempt}`: running, done (usage with
+  `discarded`, and the result), unknown, forgotten, never_accepted; a
+  stream from an offset; `cancel`; `ack`;
+- retention until ack (24 h backstop, advertised as part of the promise);
+  halo refuses new submits (503) rather than release an unacked result;
+- `on_detach` (continue or cancel) replaces keyed grace for operations.
+
+Assumptions we state and do not model: the platform's and halo's clocks
+agree to within a stated skew (today they share a host), which bounds how
+long a tombstone must live; and cancel is a request the platform repeats
+until answered. Open question 2 is answered (per process); question 3 is
+the implementation's measurement (refusal and held bytes under the
+8-agent pool; with ack-based release a refusal should mean the platform
+stopped acking, a fault it can see).
+
+On our side: record `Halo-Incarnation` and the contract as soon as halo
+ships them (the outbox journals them beside `source`); the header rules
+(`observe_report.qnt`, `observe_forget.qnt`, `Halo-Admitted-Sends`) retire
+for an operation once the adapter moves to the verbs, and stay for
+ordinary clients and for a server run with `--operations off`.
 
 ## Streams and the ledger
 

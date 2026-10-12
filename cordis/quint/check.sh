@@ -270,18 +270,23 @@ sim handoff.qnt relayUncommitted onlyCommittedReleased VIOLATED
 sim handoff.qnt ackBeforeJournal noOrphan VIOLATED
 sim handoff.qnt receiptAny receiptToIssuer VIOLATED
 
-# ---- operation.qnt (RFC 0007): an external operation across the ledger and an ephemeral executor -----
-for inv in appliedOnce accounted reservationsHeld; do sim operation_modes.qnt design "$inv" ok; done
-verify operation_modes.qnt design safety ok
-for w in done restartedThenDone lostAfterRunW lostBeforeRunW; do STEPS=60 sim operation_modes.qnt design "not($w)" VIOLATED; done
-# a retention promise and no restart: nothing is ever unknown, so nothing is overcharged; without the promise
-# (a cache evicting under load) the ledger pays the worst case for a result evicted before capture
-sim operation_modes.qnt promised noOvercharge ok
-sim operation_modes.qnt cacheLike accounted ok
-STEPS=60 sim operation_modes.qnt cacheLike noOvercharge VIOLATED
-# an unknown attempt sent again under the same identity: the key alone is not an operation contract
-STEPS=60 sim operation_modes.qnt resubmitSame accounted VIOLATED
-STEPS=60 sim operation_modes.qnt resubmitSameEvict accounted VIOLATED
+# ---- operation.qnt (RFC 0007): an external operation across the ledger and an ephemeral executor, over a
+# lossy network; halo-flash's operation.qnt (spec/operation) is its mirror -----------------------------
+for inv in runsOnce appliedOnce accounted reservationsHeld neverAcceptedTrue; do STEPS=60 SAMPLES=20000 sim operation_modes.qnt design "$inv" ok; done
+VERIFY_STEPS=6 verify operation_modes.qnt design safety ok
+for w in done restartedThenDone lostAfterRunW abandonedW fencedW duplicateW; do STEPS=80 SAMPLES=20000 sim operation_modes.qnt design "not($w)" VIOLATED; done
+# a retention promise and no restart: nothing is ever unknown, a lost submit abandoned costs nothing; without the
+# promise (eviction under load) the ledger pays the worst case for a result evicted before it was acked
+STEPS=60 SAMPLES=20000 sim operation_modes.qnt promised noOvercharge ok
+STEPS=60 SAMPLES=20000 sim operation_modes.qnt promised "not(abandonedW)" VIOLATED
+STEPS=60 SAMPLES=20000 sim operation_modes.qnt cacheLike accounted ok
+STEPS=60 SAMPLES=20000 sim operation_modes.qnt cacheLike noOvercharge VIOLATED
+# each rule broken, and the prohibition: the key alone is not an operation contract
+STEPS=80 SAMPLES=30000 sim operation_modes.qnt noFence runsOnce VIOLATED
+STEPS=80 SAMPLES=30000 sim operation_modes.qnt noTomb runsOnce VIOLATED
+STEPS=80 SAMPLES=30000 sim operation_modes.qnt abandonUntombed accounted VIOLATED
+STEPS=80 SAMPLES=30000 sim operation_modes.qnt cacheNoTomb runsOnce VIOLATED
+STEPS=80 SAMPLES=30000 sim operation_modes.qnt resubmitSame accounted VIOLATED
 
 # conformance: simulator runs replayed in the model
 conform() { # label scenario mutant expect(pass|fail) extra-args...
