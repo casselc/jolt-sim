@@ -58,3 +58,9 @@
  (deps stub_ops.py stub_ops_selftest.py)
  (action
   (run python3 %{dep:stub_ops_selftest.py})))
+
+; The journal as appended facts: resolution, bases, compaction, the ledger, migration (quint/journal.qnt)
+(test
+ (name journal_test)
+ (modules journal_test)
+ (libraries cordis_outbox sqlite3 hegel alcotest))

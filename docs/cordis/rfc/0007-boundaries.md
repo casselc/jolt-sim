@@ -279,8 +279,16 @@ its near miss 49, R-L3):
   **Historical authorization explains a past action; it never grants current
   authority.**
 
-The current journal updates rows in place (`journal.ml`); moving it to this
-shape is a build step, not a property it has.
+The journal is built to this shape (`outbox/journal.ml`, tested in
+`outbox/test/journal_test.ml`, each model mutant mirrored by a unit case that
+fails when the code is mutated). `intents` is written once; `facts` carries a
+stable id (`<jkey>@<rev>`), the writer's revision, a custody position,
+`supersedes` and a reason; `heads` and the `journal` view resolve (the
+unsuperseded fact of the highest revision), so readers see the row they
+always did; `ledger` events apply once by id; `basis`, `view_at` and `compact`
+implement the audit basis. A journal from before facts migrates in place: each
+row becomes an intent and a first fact marked `migrated`. A restore from a
+backup must call `new_store_id`.
 
 ## Workspace
 
@@ -327,8 +335,8 @@ operation model is also proved by Apalache to 8 steps (6 in the gate).
    verbs, as the header rules were; the header rules stay for ordinary
    clients and for a server run with `--operations off`, and retire for
    operations once the adapter moves.
-4. **The journal's history**: append-only facts with `supersedes`, ledger
-   events, and an audit basis.
+4. **The journal's history** (done): append-only facts with `supersedes`,
+   ledger events, and an audit basis.
 5. **One end-to-end milestone** (below).
 6. **Only then** ask whether a second executor calls for extraction.
 
@@ -352,97 +360,6 @@ contract call (`time_ms`); the ceiling on retained records is `max_records`,
 and a platform that stops acknowledging sees records in use, unacknowledged
 outcomes and the oldest one's age in the contract and `/metrics`, and a 503
 naming `records`; a refused cancel leaves the outbox waiting for `closed`.
-
-## History: decisions and evidence are append-only
-
-The outbox's journal records what was known when a decision was made. This
-borrows the discipline of casselc/observability (STPA requirement R-L6 and
-its near miss 49, R-L3):
-
-- **Facts are appended, never rewritten.** Each has a stable id, a custody
-  time, a source (the halo answer, with its incarnation and `Halo-Time`, or
-  the outbox's own decision), and the fact it **supersedes**, if any.
-  Precedence is stated by the writer through `supersedes`, never inferred
-  from arrival order: at-least-once retries reorder arrivals, and "latest
-  wins" would let a retried older fact override a newer one.
-- **Later evidence does not overwrite an earlier decision's basis.** The
-  attempt's current state is a resolution of the chain; the chain is kept.
-- **Any accounting adjustment is an explicit, authorized, exactly-once
-  ledger event** that names what it adjusts, with a stable id so a retry
-  cannot apply it twice. Cost is computed from price facts that carry
-  valid time, and every cost result names its price facts' as-of.
-- **Audits query a durable basis**: a store identity and a commit position.
-  A basis that has expired (compacted past, or from another store) is
-  refused, never answered with incomplete history.
-- **Valid-time history is added selectively**, where pricing or lifecycle
-  facts need retroactive correction, not as general bitemporal execution.
-  **Historical authorization explains a past action; it never grants current
-  authority.**
-
-The current journal updates rows in place (`journal.ml`); moving it to this
-shape is a build step, not a property it has.
-
-## Workspace
-
-The invariant: **a resumed workflow observes the workspace version on which
-its retained state and receipts depend.** Rolling the run store and the
-workspace back together is the implementation (what is built, and what
-`rollback-fidelity.sh` checks); an explicit checkpoint-to-artifact reference
-is another, right for branching, and waits until a replacement proves the
-invariant including branching and garbage collection. It is revisited
-separately. A model cache is disposable acceleration.
-
-## The models
-
-| Model | States | Mutants (each breaks one property) |
-| --- | --- | --- |
-| `operation.qnt` | Identity, a lossy network, incarnation fencing, tombstones, never-accepted abandoned only through a cancel, unknown settled at R | `noFence`, `noTomb`, `abandonUntombed`, `cacheNoTomb`, `resubmitSame` |
-| `capture.qnt` | The durable handoff across crashes and lost or duplicated messages | `ackFirst`, `clearEarly`, `noKey` |
-| `expiry.qnt` | The deadline, the capture window, the outcome kept until acknowledged, the monotonic clock, the verb carrying the deadline | `dropOutcome`, `closedEarly`, `guessDeadline`, `pruneEarly`, `lateAccept`, `clockBack` |
-
-halo-flash's `spec/operation/` is the mirror from the executor's side (it
-reports 10 mutants, all caught, and the design at 100,000 samples of 80
-steps); I have not rerun it. The two scopes differ: ours is the outbox's
-accounting and handoff, theirs the executor's identity, delivery, time and
-retention. Their correspondence table is in `OPERATIONS.md` section 7. The
-operation model is also proved by Apalache to 8 steps (6 in the gate).
-
-## Order of work
-
-1. **Consolidate** (this revision).
-2. **halo-flash implements its API**: `Halo-Incarnation`, `Halo-Time` and the
-   contract first; then operation keys in the scheduler (binding digests,
-   incarnation and deadline checks, tombstones, reservation, the capture
-   window, ack release); then the endpoints and the stream. Disconnect never
-   cancels; metadata is bounded; `exact` and `relaxed` are advertised.
-3. **The outbox's durable halo adapter**, in the order of "The durable
-   handoff". The adapter is built against a stand-in server that speaks the
-   verbs, as the header rules were; the header rules stay for ordinary
-   clients and for a server run with `--operations off`, and retire for
-   operations once the adapter moves.
-4. **The journal's history**: append-only facts with `supersedes`, ledger
-   events, and an audit basis.
-5. **One end-to-end milestone** (below).
-6. **Only then** ask whether a second executor calls for extraction.
-
-### The milestone
-
-Cordis, the outbox adapter and halo run together through: lost and delayed
-submissions, cancellation races, outbox and executor crashes, lost
-acknowledgements, duplicate receipt delivery, and expiry. It verifies the
-accounting, that every receipt is preserved and applied once, the retention
-and metadata bounds, and that audit views reproduce. The tested revisions of
-all three are pinned, and failure evidence is retained.
-
-## Open questions
-
-1. Refusal cost: what reservation at acceptance costs callers who set
-   `max_tokens` far above what they use, measured on halo's 8-agent pool.
-2. How the outbox obtains its `Halo-Time` reading before its first submit
-   (the contract call returns it).
-3. The ceiling on retained metadata, and what a platform that stops
-   acknowledging should see before halo refuses admission.
-4. A completion handoff for inference, if restarts make `unknown` common.
 
 ## History
 
