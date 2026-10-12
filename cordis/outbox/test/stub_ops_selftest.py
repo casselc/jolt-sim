@@ -103,7 +103,11 @@ def check(cond, msg):
 
 def t_contract(s):
     code, c = s.get("/v1/halo/contract")
-    check(code == 200 and len(c["incarnation"]) == 32 and c["time_ms"] >= 0 and c["records"]["max"] > 0, c)
+    check(code == 200 and len(c["incarnation"]) == 32 and c["time_ms"] >= 0 and c["operations"]["records"]["max"] > 0, c)
+    check(c["inference"]["mode"] in ("relaxed", "exact"), c)
+    # every answer names the incarnation and the clock, an error answer too
+    s_, _, h = s.call("GET", "/nowhere")
+    check(s_ == 404 and h["Halo-Incarnation"] == c["incarnation"] and int(h["Halo-Time"]) >= c["time_ms"], (s_, h))
 
 
 def t_lifecycle(s):

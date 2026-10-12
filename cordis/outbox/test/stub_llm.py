@@ -38,6 +38,9 @@ Modes, for the real-latency test (what the halo-flash run found):
               kept answer, its discarded count and the sends it admitted
   report-admitted  every keyed answer says how many sends the server admitted
               under the key since it last forgot it (Halo-Admitted-Sends)
+  restart-after=N  after N requests the server restarts: a new incarnation and a clock that
+              starts again. Every answer names its incarnation and its clock (Halo-Incarnation, Halo-Time),
+              as halo-flash's does (cordis RFC 0007, stage 1)
   approve     approve every patch
   verdict-last  approve as a model that reasons first does: the reasons,
               then LGTM on the last line
@@ -45,6 +48,7 @@ Modes, for the real-latency test (what the halo-flash run found):
   busy-first=S  answer the first request HTTP 429 with Retry-After: S
               (COUNT_FILE.times holds each request's arrival time)
 """
+import hashlib
 import json
 import sys
 import time
@@ -63,6 +67,13 @@ dropped = False
 forgot = False
 discarded = {}  # idempotency key -> tokens decoded by generations stopped under it
 admitted = {}  # idempotency key -> sends admitted under it since the server last forgot it
+restart_after = next((int(m.split("=", 1)[1]) for m in modes if m.startswith("restart-after=")), None)
+world = {"incarnation": hashlib.sha256(b"0").hexdigest()[:32], "t0": time.monotonic(), "n": 0}
+
+
+def world_headers():
+    """Halo-Incarnation and Halo-Time, on every answer."""
+    return [("Halo-Incarnation", world["incarnation"]), ("Halo-Time", str(int((time.monotonic() - world["t0"]) * 1000)))]
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -75,6 +86,10 @@ class Handler(BaseHTTPRequestHandler):
         global count
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         count += 1
+        if restart_after is not None and count == restart_after + 1:
+            world["n"] += 1
+            world["incarnation"] = hashlib.sha256(str(world["n"]).encode()).hexdigest()[:32]
+            world["t0"] = time.monotonic()
         with open(count_file, "w") as f:
             f.write(str(count))
         with open(count_file + ".times", "a") as f:
@@ -84,6 +99,8 @@ class Handler(BaseHTTPRequestHandler):
             out = b'{"error": "busy"}'
             self.send_response(429)
             self.send_header("Retry-After", busy)
+            for h in world_headers():
+                self.send_header(*h)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(out)))
             self.send_header("Connection", "close")
@@ -98,6 +115,8 @@ class Handler(BaseHTTPRequestHandler):
         if "refuse" in modes:
             out = b'{"error": "bad request"}'
             self.send_response(400)
+            for h in world_headers():
+                self.send_header(*h)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(out)))
             self.send_header("Connection", "close")
@@ -168,7 +187,7 @@ class Handler(BaseHTTPRequestHandler):
         if body.get("stream"):
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
-            for h in answer:
+            for h in answer + world_headers():
                 self.send_header(*h)
             self.send_header("Connection", "close")
             self.end_headers()
@@ -189,7 +208,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(out)))
-        for h in answer:
+        for h in answer + world_headers():
             self.send_header(*h)
         self.send_header("Connection", "close")
         self.end_headers()

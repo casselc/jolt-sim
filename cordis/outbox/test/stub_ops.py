@@ -218,14 +218,17 @@ class Handler(BaseHTTPRequestHandler):
                 expire_bodies()
                 unacked = [r for r in state["attempts"].values() if r["phase"] in ("done", "expired")]
                 oldest = max([now_ms() - r["done_ms"] for r in unacked], default=0)
+                # the shape halo-flash serves (stage 1): the inference part, and the operations part, null until the verbs
+                # are served; here the verbs are served
                 return self.reply(200, {
                     "incarnation": state["incarnation"], "time_ms": now_ms(),
-                    "retention": {"capture_s": CAPTURE_S, "until": "ack or capture window"},
-                    "records": {"max": MAX_RECORDS, "in_use": records_in_use(), "unacked_outcomes": len(unacked), "oldest_unacked_ms": oldest},
-                    "dedup": {"scope": "owner, incarnation", "max_submit_age_s": MAX_SUBMIT_AGE_S},
-                    "cancel": "next unit boundary; usage reported",
-                    "cost": "tokens: prompt, cached, completion (disjoint)",
-                    "repeat": {"external_effects": "none", "spend": "a new attempt spends again"}})
+                    "inference": {"mode": "relaxed", "cost": "tokens: prompt, cached, completion",
+                                  "repeat": {"external_effects": "none", "spend": "a new generation spends again"}},
+                    "operations": {
+                        "retention": {"capture_s": CAPTURE_S, "until": "ack or capture window"},
+                        "records": {"max": MAX_RECORDS, "in_use": records_in_use(), "unacked_outcomes": len(unacked), "oldest_unacked_ms": oldest},
+                        "dedup": {"scope": "owner, incarnation", "max_submit_age_s": MAX_SUBMIT_AGE_S},
+                        "cancel": "next unit boundary; usage reported"}})
             parts = path.strip("/").split("/")
             if len(parts) >= 4 and parts[:2] == ["v1", "operations"]:
                 inc, na, dg = self.carried()

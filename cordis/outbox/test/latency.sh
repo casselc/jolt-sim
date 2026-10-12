@@ -70,6 +70,12 @@ db = sqlite3.connect(journal)
 rows = db.execute("SELECT jkey, state FROM journal WHERE kind = 'llm.complete'").fetchall()
 sources = [s for (s,) in db.execute("SELECT source FROM journal WHERE kind = 'llm.complete' AND state = 'done'")]
 a = out["assets"]
+# every answer names the incarnation of the world that gave it, and its clock (Halo-Incarnation, Halo-Time): journaled
+worlds = [json.loads(w) for (w,) in db.execute("SELECT world FROM journal WHERE kind = 'llm.complete' AND state = 'done' ORDER BY rowid") if w]
+done_rows = len(sources)
+assert len(worlds) == done_rows, f"{done_rows} answers, {len(worlds)} with a world"
+assert all(len(w["incarnation"]) == 32 and w["time_ms"] >= 0 for w in worlds), worlds
+incarnations = sorted({w["incarnation"] for w in worlds})
 if phase == "A":
     assert code == 0 and out["outcome"] == "rest", (code, out, err)
     assert a["shipped"] is True, a
@@ -148,6 +154,13 @@ elif phase in ("L", "M"):
     lost = 0 if phase == "L" else 4096
     assert out["settled"] == lost + 10 * computations + computations and out["reserved"] == 0, out
     print(f"{phase} ok: a send the server forgot, behind a generated answer reporting 0 discarded{' and 1 admitted' if phase == 'M' else ''}: charged {lost}; settled {out['settled']}")
+elif phase == "N":
+    assert code == 0 and a["shipped"] is True, (code, out, err)
+    assert len(incarnations) == 2, f"a restart mid-run is a second incarnation in the journal: {incarnations}"
+    # the incarnation changes once, and never changes back
+    seq = [w["incarnation"] for w in worlds]
+    assert sum(1 for x, y in zip(seq, seq[1:]) if x != y) == 1, seq
+    print(f"N ok: a server restart mid-run shows as a second incarnation in the journal ({len(worlds)} answers, {seq.count(incarnations[0])} and {seq.count(incarnations[1])} per incarnation)")
 elif phase == "F":
     assert code == 0 and a["shipped"] is True and count == 1, (code, count, out)
     assert "//" not in a["draft"]["patch"], a["draft"]
@@ -178,5 +191,6 @@ start drop-first; CLASS=--keyed run; check J $code
 start keys forget-first drop-second report-discarded; CLASS=--keyed run; check K $code
 start keys drop-first forget-key report-discarded report-zero; CLASS=--keyed run; check L $code
 start keys drop-first forget-key report-discarded report-zero report-admitted; CLASS=--keyed run; check M $code
+start restart-after=2; run; check N $code
 start approve verdict-last; run; check F $code
 start busy-first=2; run; check G $code

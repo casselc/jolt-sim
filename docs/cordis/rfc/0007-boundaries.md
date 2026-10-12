@@ -276,7 +276,13 @@ operation model is also proved by Apalache to 8 steps (6 in the gate).
 
 1. **Consolidate** (this revision).
 2. **halo-flash implements its API**: `Halo-Incarnation`, `Halo-Time` and the
-   contract first; then operation keys in the scheduler (binding digests,
+   contract first (**stage 1 is on halo's main**, `b196468`, merged as
+   `6fab168`: a 32-hex-digit incarnation and `Halo-Time` in milliseconds on
+   every answer, errors and connection-limit refusals included, and `GET
+   /v1/halo/contract` naming the incarnation, its clock and the inference
+   mode, with `operations` null until the verbs are served; the outbox
+   records the world on every answer from it, in the journal and on the
+   receipt frame); then operation keys in the scheduler (binding digests,
    incarnation and deadline checks, tombstones, reservation, the capture
    window, ack release); then the endpoints and the stream. Disconnect never
    cancels; metadata is bounded; `exact` and `relaxed` are advertised.
