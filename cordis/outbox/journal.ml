@@ -27,7 +27,15 @@ let state_of = function
   | "superseded" -> Superseded | "charged" -> Charged
   | s -> failwith ("journal state " ^ s)
 
-type row = { jkey : string; state : state; value : string option; cost : int; source : string option  (** where the world said its answer came from *); discarded : int option }
+type row = {
+  jkey : string;
+  state : state;
+  value : string option;
+  cost : int;
+  source : string option;  (** where the world said its answer came from *)
+  discarded : int option;
+  admitted : int option;
+}
 
 type t = Sqlite3.db
 
@@ -44,6 +52,7 @@ let open_ path =
   (* a journal from before the world said where an answer came from *)
   (match Sqlite3.exec db "ALTER TABLE journal ADD COLUMN source TEXT" with _ -> ());
   (match Sqlite3.exec db "ALTER TABLE journal ADD COLUMN discarded INTEGER" with _ -> ());
+  (match Sqlite3.exec db "ALTER TABLE journal ADD COLUMN admitted INTEGER" with _ -> ());
   (* what was running when the last outbox stopped may or may not have happened *)
   check db (Sqlite3.exec db "UPDATE journal SET state = 'unknown' WHERE state = 'sent'") "restart";
   db
@@ -54,13 +63,14 @@ let with_stmt db sql binds f =
   Fun.protect ~finally:(fun () -> ignore (Sqlite3.finalize st)) (fun () -> f st)
 
 let find db jkey =
-  with_stmt db "SELECT state, value, cost, source, discarded FROM journal WHERE jkey = ?" [ `T jkey ] (fun st ->
+  with_stmt db "SELECT state, value, cost, source, discarded, admitted FROM journal WHERE jkey = ?" [ `T jkey ] (fun st ->
       match Sqlite3.step st with
       | Sqlite3.Rc.ROW ->
           let value = match Sqlite3.column st 1 with Sqlite3.Data.TEXT s -> Some s | _ -> None in
           let source = match Sqlite3.column st 3 with Sqlite3.Data.TEXT s -> Some s | _ -> None in
           let discarded = match Sqlite3.column st 4 with Sqlite3.Data.INT n -> Some (Int64.to_int n) | _ -> None in
-          Some { jkey; state = state_of (Sqlite3.column_text st 0); value; cost = Int64.to_int (Sqlite3.column_int64 st 2); source; discarded }
+          let admitted = match Sqlite3.column st 5 with Sqlite3.Data.INT n -> Some (Int64.to_int n) | _ -> None in
+          Some { jkey; state = state_of (Sqlite3.column_text st 0); value; cost = Int64.to_int (Sqlite3.column_int64 st 2); source; discarded; admitted }
       | _ -> None)
 
 (* the journal key that answers for an intent key: the key itself (an effectful intent), else, for an
@@ -90,9 +100,10 @@ let waiting db =
       in
       go [])
 
-let finish ?source ?discarded db ~jkey ~value ~cost =
-  with_stmt db "UPDATE journal SET state = 'done', value = ?, cost = ?, source = ?, discarded = ? WHERE jkey = ?"
-    [ `T value; `I cost; (match source with Some s -> `T s | None -> `N); (match discarded with Some d -> `I d | None -> `N); `T jkey ]
+let finish ?source ?discarded ?admitted db ~jkey ~value ~cost =
+  let opt = function Some n -> `I n | None -> `N in
+  with_stmt db "UPDATE journal SET state = 'done', value = ?, cost = ?, source = ?, discarded = ?, admitted = ? WHERE jkey = ?"
+    [ `T value; `I cost; (match source with Some s -> `T s | None -> `N); opt discarded; opt admitted; `T jkey ]
     (fun st -> step_done db st "finish")
 
 (* the other sends of an intent one of whose sends was answered: under one idempotency key, an answer

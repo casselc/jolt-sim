@@ -1182,8 +1182,17 @@ importers wait for the slice.
    `forgotThenDone`): every answer also says how many sends the world has
    admitted under the key since it last forgot it, and each send of ours
    it does not count is charged its worst case on top of the discarded
-   count, the total capped at the sends' worst cases. Asked of halo-flash;
-   until it is sent, the runtime keeps the round-5 rule, with this hole.
+   count, the total capped at the sends' worst cases. Asked of halo-flash
+   as `Halo-Admitted-Sends`, and built against it: the llm executor reads
+   it, the outbox journals it (an `admitted` column) and puts it on the
+   receipt frame, a lost row is `superseded` only when the answer covers
+   it and the count reaches every send, and the engine's `Generated`
+   receipt carries `{discarded; admitted}`, charging each send not
+   counted its worst case. Without the header the round-5 rule stands,
+   with the hole: `latency.sh` phase L (the stand-in forgets the key after
+   dropping the first answer, and the resend reports 0 discarded: the
+   forgotten send, 10 tokens generated, is charged 0) shows it, and phase
+   M (the same, saying 1 admitted of our 2 sends: charged 4096) closes it.
 
    `outbox/test/latency.sh` replays the run's conditions against a
    stand-in: calls slower than the runner's timeout with long multi-line

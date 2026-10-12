@@ -13,7 +13,13 @@
 module V = Cordis_cel.Value
 module J = Yojson.Safe
 
-type answer = { value : V.t; cost : int; source : string option; discarded : int option }
+type answer = {
+  value : V.t;
+  cost : int;
+  source : string option;
+  discarded : int option;
+  admitted : int option;  (** the sends the world admitted under the key since it last forgot it (Halo-Admitted-Sends) *)
+}
 
 type t = { run : key:string -> V.t -> answer; reconcile : key:string -> V.t -> answer option }
 
@@ -119,7 +125,8 @@ let llm_complete ?(idle = 120.) ~url () =
     { value = V.make_map [ (V.String "text", V.String content); (V.String "finish", V.String finish); (V.String "reasoning", V.Int (Int64.of_int reasoning)) ];
       cost = (match tokens with Some n -> n | None -> -1);
       source = List.assoc_opt "halo-answer" r.headers;
-      discarded = Option.bind (List.assoc_opt "halo-discarded-tokens" r.headers) int_of_string_opt }
+      discarded = Option.bind (List.assoc_opt "halo-discarded-tokens" r.headers) int_of_string_opt;
+      admitted = Option.bind (List.assoc_opt "halo-admitted-sends" r.headers) int_of_string_opt }
   in
   (* a send again with the same key is answered by a server that keeps keys from what it kept (a finished
      answer replayed, one still running adopted), so reconciling is sending again *)
@@ -133,7 +140,7 @@ let repo_read ~root =
     if String.length path = 0 || path.[0] = '/' || List.mem ".." (String.split_on_char '/' path) then failwith ("repo.read: outside the repository: " ^ path);
     let file = Filename.concat root path in
     let content = if Sys.file_exists file then In_channel.with_open_bin file In_channel.input_all else "" in
-    { value = text content; cost = 1; source = None; discarded = None }
+    { value = text content; cost = 1; source = None; discarded = None; admitted = None }
   in
   { run = (fun ~key:_ req -> run req); reconcile = (fun ~key:_ req -> Some (run req)) }
 
@@ -169,7 +176,7 @@ let openapi ~(api : Cordis_import.Openapi.t) ~base ~(credential : string -> stri
         let body = match r.body with Some b -> Some (Option.value r.media ~default:"application/json", b) | None -> None in
         let resp = Http.request ~timeout:30. ~headers:r.headers ~meth:r.meth (base ^ r.target) body in
         match H.decode api ~kind:op.kind ~status:resp.status ~body:resp.body with
-        | Ok v -> { value = v; cost = 1; source = None; discarded = None }
+        | Ok v -> { value = v; cost = 1; source = None; discarded = None; admitted = None }
         | Error m -> failwith (Printf.sprintf "%s: HTTP %d, unreadable: %s" op.kind resp.status m)
       in
       let reconcile ~key req =

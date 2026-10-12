@@ -134,6 +134,20 @@ elif phase == "K":
     computations = generated - 1
     assert out["settled"] == 4 + 10 * computations + computations and out["reserved"] == 0, out
     print(f"K ok: a replay that says 4 tokens were discarded under its key charged the lost sends 4; settled {out['settled']}")
+elif phase in ("L", "M"):
+    assert code == 0 and a["shipped"] is True, (code, out, err)
+    generated = int(open(sys.argv[4] + ".generated").read())
+    assert count == generated, f"requests {count}, generated {generated}: the server forgot the key, so the resend generates"
+    states = [s for _, s in rows]
+    assert states.count("charged") == 1 and states.count("unknown") == 0 and states.count("superseded") == 0, rows
+    computations = generated - 1
+    # L: the round-5 headers alone: the resend is generated and reports 0 discarded under the key it
+    # started afresh, so the forgotten send is charged nothing (the hole observe_forget.qnt's
+    # forgetDiscarded finds). M: it also says it admitted 1 send of our 2, and the other is charged
+    # its worst case (forgetAttempts)
+    lost = 0 if phase == "L" else 4096
+    assert out["settled"] == lost + 10 * computations + computations and out["reserved"] == 0, out
+    print(f"{phase} ok: a send the server forgot, behind a generated answer reporting 0 discarded{' and 1 admitted' if phase == 'M' else ''}: charged {lost}; settled {out['settled']}")
 elif phase == "F":
     assert code == 0 and a["shipped"] is True and count == 1, (code, count, out)
     assert "//" not in a["draft"]["patch"], a["draft"]
@@ -162,5 +176,7 @@ start keys forget-first; CLASS=--keyed run; check H $code
 start keys forget-first report-discarded; CLASS=--keyed run; check I $code
 start drop-first; CLASS=--keyed run; check J $code
 start keys forget-first drop-second report-discarded; CLASS=--keyed run; check K $code
+start keys drop-first forget-key report-discarded report-zero; CLASS=--keyed run; check L $code
+start keys drop-first forget-key report-discarded report-zero report-admitted; CLASS=--keyed run; check M $code
 start approve verdict-last; run; check F $code
 start busy-first=2; run; check G $code

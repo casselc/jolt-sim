@@ -31,6 +31,13 @@ Modes, for the real-latency test (what the halo-flash run found):
   drop-second  generate the second answer, keep it under its key, and close
               the connection without sending it (with forget-first: the
               third send is a replay of the second generation)
+  report-zero  with report-discarded, the count goes on every keyed answer, 0
+              too (as halo-flash 87cc596 sends it)
+  forget-key  with drop-first: once the first answer is dropped, the server
+              forgets the key (halo-flash past replay_ttl_s, or evicted): its
+              kept answer, its discarded count and the sends it admitted
+  report-admitted  every keyed answer says how many sends the server admitted
+              under the key since it last forgot it (Halo-Admitted-Sends)
   approve     approve every patch
   verdict-last  approve as a model that reasons first does: the reasons,
               then LGTM on the last line
@@ -55,6 +62,7 @@ kept = {}  # idempotency key -> the answer (text, finish, usage)
 dropped = False
 forgot = False
 discarded = {}  # idempotency key -> tokens decoded by generations stopped under it
+admitted = {}  # idempotency key -> sends admitted under it since the server last forgot it
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -122,6 +130,8 @@ class Handler(BaseHTTPRequestHandler):
         global generated, dropped, forgot
         key = self.headers.get("Idempotency-Key")
         answer = None
+        if "keys" in modes and key is not None:
+            admitted[key] = admitted.get(key, 0) + 1
         if "keys" in modes and key in kept:
             text, finish, usage = kept[key]
             answer = "replayed"
@@ -142,10 +152,16 @@ class Handler(BaseHTTPRequestHandler):
             self.connection.shutdown(2)
             return
         answer = [("Halo-Answer", answer)] if "keys" in modes else []
-        if "report-discarded" in modes and answer and discarded.get(key):
-            answer.append(("Halo-Discarded-Tokens", str(discarded[key])))
+        if "report-discarded" in modes and answer and (discarded.get(key) or "report-zero" in modes):
+            answer.append(("Halo-Discarded-Tokens", str(discarded.get(key, 0))))
+        if "report-admitted" in modes and answer:
+            answer.append(("Halo-Admitted-Sends", str(admitted.get(key, 0))))
         if ("drop-first" in modes and not dropped) or ("drop-second" in modes and count == 2):
             dropped = True
+            if "forget-key" in modes and key is not None:
+                kept.pop(key, None)
+                discarded.pop(key, None)
+                admitted.pop(key, None)
             self.close_connection = True
             self.connection.shutdown(2)
             return

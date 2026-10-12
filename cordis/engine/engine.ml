@@ -62,17 +62,28 @@ type cls = Observational | Keyed | Effectful
 
 type intent = { key : string; kind : string; request : V.t; cls : cls; attempt : int }
 
+(* what a keyed answer says of the key beyond its own generation (halo-flash's headers) *)
+type report = {
+  discarded : int option;  (** the tokens the world discarded under the key (Halo-Discarded-Tokens) *)
+  admitted : int option;
+      (** the sends it admitted under the key since it last forgot it (Halo-Admitted-Sends): a send of ours
+          it does not count was never received, or admitted before it forgot, and is in no count *)
+}
+
+let no_report = { discarded = None; admitted = None }
+
 type receipt =
   | Done of V.t * int
       (** the receipt, and what it actually cost (negative: unknown, charged its worst case); for a keyed
           intent, the world says this answer covers every send of it (halo-flash's [Halo-Answer: replayed]
           or [adopted]), so the other sends are released *)
-  | Generated of V.t * int * int option
+  | Generated of V.t * int * report
       (** as [Done], but the answer does not cover the other sends: the world generated it afresh, did
           not say (a world that keeps no keys says nothing), or said it discarded work under the key. For
           a keyed intent the other sends are charged: what the world says it discarded under the key, if
-          it says (halo-flash's [Halo-Discarded-Tokens], on any answer), else their worst case
-          (observe.qnt's REPORTED and DISCARDED) *)
+          it says (halo-flash's [Halo-Discarded-Tokens], on any answer), plus the worst case of each send it
+          does not count as admitted, if it says ([Halo-Admitted-Sends]), else their worst case
+          (observe.qnt's REPORTED, DISCARDED and ATTEMPTS) *)
   | Lost  (** no answer: the outcome is unknown *)
   | Refused of string  (** a definite failure (the world refused it, and it did not run): the computation fails *)
 
@@ -525,9 +536,16 @@ let resume ?fresh t a (s : slot) v cost =
          cases (observe_report.qnt's graceExpiryDiscarded, observe_modes.qnt's graceExpiryReported) *)
       let others =
         match intent.cls, fresh with
-        | Keyed, Some discarded ->
+        | Keyed, Some { discarded; admitted } -> (
             let worst = (intent.attempt - 1) * t.worst intent.kind in
-            (match discarded with Some d -> min worst (max 0 d) | None -> worst)
+            match discarded, admitted with
+            | Some d, None -> min worst (max 0 d)
+            (* a send of ours the world does not count is charged its worst case, beside what it discarded
+               (observe_forget.qnt's forgetAttempts) *)
+            | d, Some n ->
+                let unknown = max 0 (intent.attempt - n) in
+                min worst (max 0 (Option.value d ~default:0) + (unknown * t.worst intent.kind))
+            | None, None -> worst)
         | _ -> 0
       in
       let t = { (with_slot t a s) with reserved = t.reserved - held t intent; settled = t.settled + cost + others } in
@@ -553,8 +571,8 @@ let handle t ev =
           (t, [ Persist r ]))
   | Durable seq -> release_durable { t with durable = max t.durable seq }
   | Receipt (key, n, Done (v, cost)) -> (match awaiting t key n with Some (a, s) -> resume t a s v cost | None -> (t, []))
-  | Receipt (key, n, Generated (v, cost, discarded)) -> (
-      match awaiting t key n with Some (a, s) -> resume ~fresh:discarded t a s v cost | None -> (t, []))
+  | Receipt (key, n, Generated (v, cost, report)) -> (
+      match awaiting t key n with Some (a, s) -> resume ~fresh:report t a s v cost | None -> (t, []))
   | Receipt (key, n, Refused why) -> (
       (* it did not run: the reservation is released, and the computation fails *)
       match awaiting t key n with

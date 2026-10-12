@@ -278,9 +278,12 @@ let () =
   let generated j = match J.Util.member "answer" j with `String ("replayed" | "adopted") -> false | _ -> true in
   let done_ j =
     let v = Codec.of_value (J.Util.member "value" j) and c = cost_of j in
-    let discarded = match J.Util.member "discarded" j with `Int d -> Some d | _ -> None in
-    (* a discarded count, on any answer, is the other sends' exact charge *)
-    if generated j || discarded <> None then Engine.Generated (v, c, discarded) else Engine.Done (v, c)
+    let count k = match J.Util.member k j with `Int d -> Some d | _ -> None in
+    let discarded = count "discarded" and admitted = count "admitted" in
+    (* a discarded count, on any answer, is the other sends' exact charge, with the worst case of each
+       send the world says it did not admit *)
+    if generated j || discarded <> None || admitted <> None then Engine.Generated (v, c, { discarded; admitted })
+    else Engine.Done (v, c)
   in
   let sync () =
     let d = Store.Sqlite.sync st in
