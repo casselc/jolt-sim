@@ -244,3 +244,15 @@
 (rule (alias runtest) (action (diff golden/xsd-tree.report.txt xsd-tree.report.out)))
 (rule (with-stdout-to xsd-tree.names.out (run %{exe:../bin/cimport.exe} xsd %{dep:xsd/tree.xsd} --print names)))
 (rule (alias runtest) (action (diff golden/xsd-tree.names.txt xsd-tree.names.out)))
+
+; Schemaless XML (RFC 0005 revision 5): the node type, read and written; against lxml in @xml-agreement
+(test
+ (name xml_node_test)
+ (modules xml_node_test)
+ (libraries cordis_import cordis_graph cordis_cel cel_testgen hegel alcotest yojson unix))
+
+(rule
+ (alias xml-agreement)
+ (deps xmlnode.py)
+ (action
+  (run %{exe:xml_node_test.exe} xmlnode.py)))

@@ -4,7 +4,9 @@ Status: proposed. Revision 2 settles the frames design (below) and its
 model. Revision 3 (proposed) settles CSV's first stage, typed by a
 Table Schema, and records it as built ("CSV", "Revision 3"). Revision 4
 (proposed) does the same for XSD and XML without recursion ("XML and
-XSD", "Revision 4"). Records the design so that later work
+XSD", "Revision 4"). Revision 5 (proposed) adds schemaless XML, a
+library node type now that RFC 0002 has recursive types, and records it
+as built ("Schemaless XML"). Records the design so that later work
 starts from it. Extends RFC 0003 (translating importers) and follows the
 pattern RFC 0004 set for protobuf. Each part needs a revision of this RFC,
 accepted, before it is built, and the frames part needs a Quint model
@@ -81,10 +83,39 @@ The work these share with what exists:
 own name. The name map keeps the namespace URIs, and qualified and
 unqualified forms follow `elementFormDefault`.
 
-**Schemaless XML** has no type to translate. The proposal is a library
-type for an XML node: element (name, namespace, attributes, children),
-text, comment and processing instruction. It is recursive, so it waits for
-RFC 0002's references. Until then a schemaless read gives `dyn`.
+**Schemaless XML** has no type to translate. Revision 5 gives it a library
+type for an XML node (`Xml_node.types`), recursive (RFC 0002 revision 3):
+```
+type XmlNode = Element(XmlElement) | Text(string) | Comment(string) | Pi(XmlPi) <nodes 65536>;
+type XmlElement = { ns : string; name : string; attrs : list(XmlAttr); kids : list(XmlNode); } <nodes 65536>;
+type XmlAttr = { ns : string; name : string; value : string; };
+type XmlPi = { target : string; data : string; };
+```
+Reading keeps everything a document says inside its root element but its
+namespace declarations: elements, attributes in document order, text
+(adjacent text, CDATA and references one node; white space between
+elements kept), comments and processing instructions; a DTD is refused,
+as for every read. Writing is canonical (a namespace declared where it
+changes, an attribute's namespace by a generated prefix) and refuses what
+XML cannot hold: a name that is not one, `--` in a comment, `?>` in or
+white space before a processing instruction's data, a CR in either (no
+reference can carry it there), and a character XML 1.0 has no form for. A
+value read is canonical: no empty text, no two texts side by side.
+
+Built (`import/lib/xml_node.ml`; the parser keeps comments and processing
+instructions when asked, and checks `--` in comments and a processing
+instruction's target always). Tests (`xml_node_test.ml`): read cases
+(mixed content, CDATA and references as one text, namespaces and
+`xml:lang`, white space kept), refusals, values the writer refuses, the
+types checked by the graph checker with cells walking them and the node
+bound enforced (a 20,000-element document refused), a Hegel round trip
+(1,000 drawn, about one part in twelve one XML cannot hold: 499 written
+and read back as themselves, 501 refused), and against lxml
+(`xmlnode.py`, in `@xml-agreement`): the written documents and a set of
+hand-written ones read as lxml reads them, a DTD aside (refused by
+design). The round trip found that the writer's check for characters XML
+cannot hold looked at bytes, letting U+FFFE and U+FFFF through, in the
+XSD-typed codec's writer too; it now checks code points.
 
 ### The codec
 
@@ -487,8 +518,8 @@ from the imported type:
 2. **Calendar types** without a CEL form (dates, times, intervals,
    durations with months): `string` plus residue, or a small library of
    functions over a record form.
-3. **Schemaless XML:** a generic node type (which waits for references),
-   or refuse.
+3. ~~**Schemaless XML**~~: answered in revision 5: the node type, now that
+   RFC 0002 has recursive types.
 4. ~~**The batch size `B`**~~: answered in revision 2: a policy ceiling,
    with the runtime choosing each batch below it ("Frames", rule 4).
 5. **Which first?** Each costs more than the one before: CSV (smallest),

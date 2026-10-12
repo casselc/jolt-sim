@@ -15,6 +15,8 @@
 type node =
   | El of el
   | Text of string
+  | Comment of string  (** kept only when asked ([parse ~misc:true]): a schemaless read *)
+  | Pi of string * string  (** a processing instruction: target, data; likewise *)
 
 and el = {
   ns : string;
@@ -34,7 +36,8 @@ let bad fmt = Printf.ksprintf (fun m -> raise (Bad m)) fmt
 let ns_xml = "http://www.w3.org/XML/1998/namespace"
 let ns_xmlns = "http://www.w3.org/2000/xmlns/"
 
-let parse ?(limits = default_limits) (src : string) : el =
+let parse ?(limits = default_limits) ?(misc = false) (src : string) : el =
+  let keep = misc in
   if String.length src > limits.max_bytes then bad "the document is over %d bytes" limits.max_bytes;
   (* line ends: CR LF and CR are LF *)
   let s =
@@ -205,9 +208,24 @@ let parse ?(limits = default_limits) (src : string) : el =
           skip_ws ();
           expect ">";
           closed := true)
-        else if at "<!--" then (i := !i + 4; ignore (until "-->" "a comment"))
+        else if at "<!--" then (
+          i := !i + 4;
+          let c = until "-->" "a comment" in
+          (* XML forbids -- in a comment, and one ending in - *)
+          let rec dashes k = k + 1 < String.length c && ((c.[k] = '-' && c.[k + 1] = '-') || dashes (k + 1)) in
+          if dashes 0 || (c <> "" && c.[String.length c - 1] = '-') then fail "-- in a comment";
+          if keep then (flush (); kids := Comment c :: !kids))
         else if at "<![CDATA[" then (i := !i + 9; Buffer.add_string text (until "]]>" "a CDATA section"))
-        else if at "<?" then (i := !i + 2; ignore (until "?>" "a processing instruction"))
+        else if at "<?" then (
+          i := !i + 2;
+          let p = until "?>" "a processing instruction" in
+          let k = ref 0 in
+          while !k < String.length p && not (p.[!k] = ' ' || p.[!k] = '\t' || p.[!k] = '\n') do incr k done;
+          let target = String.sub p 0 !k in
+          if target = "" || String.lowercase_ascii target = "xml" then fail "a processing instruction's target %S" target;
+          let j = ref !k in
+          while !j < String.length p && (p.[!j] = ' ' || p.[!j] = '\t' || p.[!j] = '\n') do incr j done;
+          if keep then (flush (); kids := Pi (target, String.sub p !j (String.length p - !j)) :: !kids))
         else if at "<!" then fail "a declaration inside the document"
         else if at "<" then (flush (); kids := El (element (depth + 1) scope) :: !kids)
         else if at "]]>" then fail "]]> in character data"
@@ -233,8 +251,8 @@ let parse ?(limits = default_limits) (src : string) : el =
   root
 
 (* the element children, and whether there is text that is not white space between them *)
-let elements (e : el) = List.filter_map (function El x -> Some x | Text _ -> None) e.kids
-let text (e : el) = String.concat "" (List.filter_map (function Text t -> Some t | El _ -> None) e.kids)
+let elements (e : el) = List.filter_map (function El x -> Some x | _ -> None) e.kids
+let text (e : el) = String.concat "" (List.filter_map (function Text t -> Some t | _ -> None) e.kids)
 let blank s = String.for_all (fun c -> c = ' ' || c = '\t' || c = '\n' || c = '\r') s
 let attr (e : el) name = List.assoc_opt ("", name) e.attrs
 
@@ -249,7 +267,19 @@ let qname (e : el) q =
 (* ---- writing ----------------------------------------------------------------------------------------- *)
 
 (* XML 1.0's characters: a value holding another (a control character) cannot be written *)
-let writable s = String.for_all (fun c -> Char.code c >= 0x20 || c = '\t' || c = '\n' || c = '\r') s
+(* every code point one XML 1.0 has a form for (its Char production): not the C0 controls but tab, LF and
+   CR, not U+FFFE or U+FFFF; and valid UTF-8 *)
+let writable s =
+  String.is_valid_utf_8 s
+  &&
+  let rec go i =
+    i >= String.length s
+    ||
+    let d = String.get_utf_8_uchar s i in
+    let cp = Uchar.to_int (Uchar.utf_decode_uchar d) in
+    (cp = 0x9 || cp = 0xA || cp = 0xD || (cp >= 0x20 && cp <> 0xFFFE && cp <> 0xFFFF)) && go (i + Uchar.utf_decode_length d)
+  in
+  go 0
 
 let escape ~attr s =
   let b = Buffer.create (String.length s) in
