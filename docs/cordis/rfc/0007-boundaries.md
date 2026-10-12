@@ -220,6 +220,11 @@ its near miss 49, R-L3):
   Precedence is stated by the writer through `supersedes`, never inferred
   from arrival order: at-least-once retries reorder arrivals, and "latest
   wins" would let a retried older fact override a newer one.
+- **Each fact carries the writer's revision**, and the state is the
+  unsuperseded fact of the highest revision. A supersedes link alone cannot
+  order facts across a gap (`journal.qnt` found it): with fact 1 not yet
+  arrived, fact 2 (superseding 1) and a late fact 0 both look current among
+  the facts present, and the one appended last would win.
 - **Later evidence does not overwrite an earlier decision's basis.** The
   attempt's current state is a resolution of the chain; the chain is kept.
 - **Any accounting adjustment is an explicit, authorized, exactly-once
@@ -227,8 +232,12 @@ its near miss 49, R-L3):
   cannot apply it twice. Cost is computed from price facts that carry
   valid time, and every cost result names its price facts' as-of.
 - **Audits query a durable basis**: a store identity and a commit position.
-  A basis that has expired (compacted past, or from another store) is
-  refused, never answered with incomplete history.
+  A basis that has expired (at or below the history horizon, after which a
+  checkpoint stands for the compacted facts) or is from another store (a
+  restore reuses positions for other facts) is refused, never answered with
+  incomplete or different history. What a basis shows is the resolved value
+  at its position, which a checkpoint preserves; the list of facts above the
+  horizon may legitimately shrink as compaction proceeds.
 - **Valid-time history is added selectively**, where pricing or lifecycle
   facts need retroactive correction, not as general bitemporal execution.
   **Historical authorization explains a past action; it never grants current
@@ -253,6 +262,7 @@ separately. A model cache is disposable acceleration.
 | --- | --- | --- |
 | `operation.qnt` | Identity, a lossy network, incarnation fencing, tombstones, never-accepted abandoned only through a cancel, unknown settled at R | `noFence`, `noTomb`, `abandonUntombed`, `cacheNoTomb`, `resubmitSame` |
 | `capture.qnt` | The durable handoff across crashes and lost or duplicated messages | `ackFirst`, `clearEarly`, `noKey` |
+| `journal.qnt` | The journal as appended facts: revisions and supersedes, exactly-once ledger events, the audit basis | `latestWins`, `adjustAgain`, `answerExpired`, `ignoreStore` |
 | `expiry.qnt` | The deadline, the capture window, the outcome kept until acknowledged, the monotonic clock, the verb carrying the deadline | `dropOutcome`, `closedEarly`, `guessDeadline`, `pruneEarly`, `lateAccept`, `clockBack` |
 
 halo-flash's `spec/operation/` is the mirror from the executor's side (it

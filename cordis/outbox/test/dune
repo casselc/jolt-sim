@@ -51,3 +51,10 @@
  (deps fanout.sh stub_llm.py %{bin:cordis-run} %{bin:cordis-outbox} ../../graph/examples/review.cg)
  (action
   (run bash %{dep:fanout.sh} %{bin:cordis-run} %{bin:cordis-outbox} %{dep:../../graph/examples/review.cg} review_loop stub:busy-first=1 4)))
+
+; The stand-in for halo-flash's operation API (RFC 0007) against its own contract: every status answer and fault
+(rule
+ (alias e2e)
+ (deps stub_ops.py stub_ops_selftest.py)
+ (action
+  (run python3 %{dep:stub_ops_selftest.py})))

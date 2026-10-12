@@ -307,6 +307,14 @@ STEPS=60 SAMPLES=30000 sim expiry_modes.qnt pruneEarly runsOnce VIOLATED
 STEPS=60 SAMPLES=30000 sim expiry_modes.qnt lateAccept runsOnce VIOLATED
 STEPS=60 SAMPLES=30000 sim expiry_modes.qnt clockBack runsOnce VIOLATED
 
+# ---- journal.qnt (RFC 0007, "History"): the journal as appended facts, ledger events, an audit basis --------------
+for inv in resolutionIntended settledMatches viewStable viewNeverPartial; do STEPS=60 SAMPLES=20000 sim journal_modes.qnt design "$inv" ok; done
+for w in reorderedW retriedW adjustmentRetriedW refusedExpiredW refusedForeignW answeredW; do STEPS=60 SAMPLES=20000 sim journal_modes.qnt design "not($w)" VIOLATED; done
+STEPS=60 SAMPLES=30000 sim journal_modes.qnt latestWins resolutionIntended VIOLATED
+STEPS=60 SAMPLES=30000 sim journal_modes.qnt adjustAgain settledMatches VIOLATED
+STEPS=60 SAMPLES=30000 sim journal_modes.qnt answerExpired viewNeverPartial VIOLATED
+STEPS=60 SAMPLES=30000 sim journal_modes.qnt ignoreStore viewStable VIOLATED
+
 # conformance: simulator runs replayed in the model
 conform() { # label scenario mutant expect(pass|fail) extra-args...
   local label=$1 scenario=$2 mutant=$3 expect=$4; shift 4
