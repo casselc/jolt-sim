@@ -170,6 +170,8 @@ let set_meta db k v = with_stmt db "INSERT OR REPLACE INTO meta (k, v) VALUES (?
 
 let open_ path =
   let db = Sqlite3.db_open path in
+  (* the adapter keeps its own records in the same file, on a connection of its own: wait for its writes, not fail *)
+  Sqlite3.busy_timeout db 10_000;
   exec db "PRAGMA journal_mode=WAL" "journal_mode";
   exec db "PRAGMA synchronous=FULL" "synchronous";
   migrate db;

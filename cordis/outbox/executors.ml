@@ -23,6 +23,9 @@ type answer = {
   discarded : int option;
   admitted : int option;  (** the sends the world admitted under the key since it last forgot it (Halo-Admitted-Sends) *)
   world : world option;  (** Halo-Incarnation and Halo-Time: which incarnation of the world gave this answer, and when by its clock *)
+  committed : (unit -> unit) option;
+      (** run by the outbox once the answer is durably journaled and not before: a world that holds the answer until told
+          (halo's operations: ack) is told then (RFC 0007, "The durable handoff") *)
 }
 
 type t = { run : key:string -> V.t -> answer; reconcile : key:string -> V.t -> answer option }
@@ -88,6 +91,30 @@ let read_completion body =
   else (let j = J.from_string body in choice j; usage j);
   (Buffer.contents content, !finish, !tokens, !reasoning)
 
+(* the chat-completions request an llm.complete intent makes: its prompt, the tokens it may spend, whether the model
+   may think first (chat_template_kwargs' enable_thinking: halo-flash reasons by default, and its reasoning counts
+   against max_tokens), and how freely it samples. [stream] asks for server-sent events (with usage) *)
+let chat_fields req =
+  let prompt =
+    match field req "prompt" with
+    | Some (V.List xs) -> String.concat "\n\n" (Array.to_list (Array.map (function V.String s -> s | v -> V.to_string v) xs))
+    | _ -> failwith "llm.complete: no prompt"
+  in
+  let max_tokens = match field req "max_tokens" with Some (V.Int n) -> Int64.to_int n | _ -> 1024 in
+  let thinking = match field req "thinking" with Some (V.Bool b) -> [ ("chat_template_kwargs", `Assoc [ ("enable_thinking", `Bool b) ]) ] | _ -> [] in
+  let thinking = thinking @ match field req "temperature" with Some (V.Double t) -> [ ("temperature", `Float t) ] | _ -> [] in
+  [ ("model", `String "default"); ("max_tokens", `Int max_tokens); ("messages", `List [ `Assoc [ ("role", `String "user"); ("content", `String prompt) ] ]) ] @ thinking
+
+let chat_body ~stream req =
+  J.to_string
+    (`Assoc
+      (chat_fields req
+      @ if stream then [ ("stream", `Bool true); ("stream_options", `Assoc [ ("include_usage", `Bool true) ]) ] else []))
+
+(* the receipt of a completion: the text, why it stopped, and the reasoning tokens *)
+let completion_value content finish reasoning =
+  V.make_map [ (V.String "text", V.String content); (V.String "finish", V.String finish); (V.String "reasoning", V.Int (Int64.of_int reasoning)) ]
+
 (* llm.complete against an OpenAI-compatible chat-completions endpoint
    (halo-flash serves one), streamed, so the client's timeout is a limit on
    silence, not on a long answer. A request's thinking field, if it has
@@ -105,28 +132,11 @@ let read_completion body =
    outside effect but its cost. *)
 let llm_complete ?(idle = 120.) ~url () =
   let run ~key req =
-    let prompt =
-      match field req "prompt" with
-      | Some (V.List xs) -> String.concat "\n\n" (Array.to_list (Array.map (function V.String s -> s | v -> V.to_string v) xs))
-      | _ -> failwith "llm.complete: no prompt"
-    in
-    let max_tokens = match field req "max_tokens" with Some (V.Int n) -> Int64.to_int n | _ -> 1024 in
-    (* a model that thinks by default spends max_tokens on it: the request says whether it may *)
-    let thinking = match field req "thinking" with Some (V.Bool b) -> [ ("chat_template_kwargs", `Assoc [ ("enable_thinking", `Bool b) ]) ] | _ -> [] in
-    (* and how freely it samples, if the request says *)
-    let thinking = thinking @ match field req "temperature" with Some (V.Double t) -> [ ("temperature", `Float t) ] | _ -> [] in
-    let body =
-      J.to_string
-        (`Assoc
-          ([ ("model", `String "default"); ("max_tokens", `Int max_tokens); ("stream", `Bool true);
-             ("stream_options", `Assoc [ ("include_usage", `Bool true) ]);
-             ("messages", `List [ `Assoc [ ("role", `String "user"); ("content", `String prompt) ] ]) ]
-          @ thinking))
-    in
+    let body = chat_body ~stream:true req in
     let r = Http.post ~timeout:idle ~headers:[ ("Idempotency-Key", key) ] (url ^ "/v1/chat/completions") body in
     classify_status ~headers:r.headers "llm.complete" r.status;
     let content, finish, tokens, reasoning = read_completion r.body in
-    { value = V.make_map [ (V.String "text", V.String content); (V.String "finish", V.String finish); (V.String "reasoning", V.Int (Int64.of_int reasoning)) ];
+    { value = completion_value content finish reasoning;
       cost = (match tokens with Some n -> n | None -> -1);
       source = List.assoc_opt "halo-answer" r.headers;
       discarded = Option.bind (List.assoc_opt "halo-discarded-tokens" r.headers) int_of_string_opt;
@@ -134,7 +144,8 @@ let llm_complete ?(idle = 120.) ~url () =
       world =
         (match List.assoc_opt "halo-incarnation" r.headers, Option.bind (List.assoc_opt "halo-time" r.headers) int_of_string_opt with
          | Some incarnation, Some time_ms -> Some { incarnation; time_ms }
-         | _ -> None) }
+         | _ -> None);
+      committed = None }
   in
   (* a send again with the same key is answered by a server that keeps keys from what it kept (a finished
      answer replayed, one still running adopted), so reconciling is sending again *)
@@ -148,7 +159,7 @@ let repo_read ~root =
     if String.length path = 0 || path.[0] = '/' || List.mem ".." (String.split_on_char '/' path) then failwith ("repo.read: outside the repository: " ^ path);
     let file = Filename.concat root path in
     let content = if Sys.file_exists file then In_channel.with_open_bin file In_channel.input_all else "" in
-    { value = text content; cost = 1; source = None; discarded = None; admitted = None; world = None }
+    { value = text content; cost = 1; source = None; discarded = None; admitted = None; world = None; committed = None }
   in
   { run = (fun ~key:_ req -> run req); reconcile = (fun ~key:_ req -> Some (run req)) }
 
@@ -184,7 +195,7 @@ let openapi ~(api : Cordis_import.Openapi.t) ~base ~(credential : string -> stri
         let body = match r.body with Some b -> Some (Option.value r.media ~default:"application/json", b) | None -> None in
         let resp = Http.request ~timeout:30. ~headers:r.headers ~meth:r.meth (base ^ r.target) body in
         match H.decode api ~kind:op.kind ~status:resp.status ~body:resp.body with
-        | Ok v -> { value = v; cost = 1; source = None; discarded = None; admitted = None; world = None }
+        | Ok v -> { value = v; cost = 1; source = None; discarded = None; admitted = None; world = None; committed = None }
         | Error m -> failwith (Printf.sprintf "%s: HTTP %d, unreadable: %s" op.kind resp.status m)
       in
       let reconcile ~key req =

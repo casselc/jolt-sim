@@ -118,6 +118,9 @@ let run_now ctx ~jkey ~key ~attempt ~kind ~request =
       let ikey = Executors.idempotency_key ~agent:ctx.agent ~key ~request in
       start ctx ~jkey ~key ~attempt ~kind ~job:Run (fun () -> Some (x.run ~key:ikey request))
 
+(* the answer is durable: tell the world that holds it (halo's operations release the body on the ack), off the loop *)
+let committed (a : Executors.answer) = Option.iter (fun f -> ignore (Thread.create (fun () -> try f () with e -> prerr_endline ("outbox: after commit: " ^ Printexc.to_string e)) ())) a.committed
+
 (* the loop journals each call that ended and answers the engine *)
 let drain ctx send =
   let ended = Mutex.protect ctx.lock (fun () -> let l = List.of_seq (Queue.to_seq ctx.finished) in Queue.clear ctx.finished; l) in
@@ -128,6 +131,7 @@ let drain ctx send =
       | Run, Ran a ->
           Journal.finish ctx.journal ~jkey ~value:(J.to_string (Codec.value a.value)) ~cost:a.cost ?source:a.source ?discarded:a.discarded ?admitted:a.admitted
             ?world:(world_text a.world);
+          committed a;
           (* a keyed intent's earlier sends, lost, are answered by this one when the world says it covers them
              (replayed, adopted: one key, one generation), discarded nothing under it, and, if it says, admitted
              every send of ours (one it forgot the key since is in no answer: observe_forget.qnt); else no
@@ -161,6 +165,7 @@ let drain ctx send =
       | Reconcile, Ran a ->
           Journal.finish ctx.journal ~jkey ~value:(J.to_string (Codec.value a.value)) ~cost:a.cost ?source:a.source ?discarded:a.discarded
             ?admitted:a.admitted ?world:(world_text a.world);
+          committed a;
           send (frame "reconciled" (ka key attempt @ [ ("receipt", `Assoc (answer_fields a)) ]))
       | Reconcile, Not_applied ->
           Journal.set_state ctx.journal ~jkey Journal.Fenced;
@@ -180,7 +185,7 @@ let handle_intent ctx (i : E.intent) send =
   match Journal.find ctx.journal k with
   | Some { state = Journal.Done; value = Some v; cost; source; discarded; admitted; world; _ } ->
       ack ();
-      send (receipt_frame i.key i.attempt { value = Codec.of_value (J.from_string v); cost; source; discarded; admitted; world = world_of_text world })
+      send (receipt_frame i.key i.attempt { value = Codec.of_value (J.from_string v); cost; source; discarded; admitted; world = world_of_text world; committed = None })
   | Some { state = Journal.Waiting; _ } -> ack (); send (frame "deferred" (ka i.key i.attempt))
   | Some { state = Journal.Refused; value; _ } ->
       ack ();
@@ -213,7 +218,7 @@ let handle_reconcile ctx key attempt send =
   let jk = Option.value (Journal.answering journal key) ~default:key in
   match Journal.find journal jk with
   | Some { state = Journal.Done; value = Some v; cost; source; discarded; admitted; world; _ } ->
-      reply (`Assoc (answer_fields { value = Codec.of_value (J.from_string v); cost; source; discarded; admitted; world = world_of_text world }))
+      reply (`Assoc (answer_fields { value = Codec.of_value (J.from_string v); cost; source; discarded; admitted; world = world_of_text world; committed = None }))
   | Some { state = Journal.Unknown | Journal.Sent; _ } when not (Hashtbl.mem ctx.inflight jk) -> (
       let req = Option.map (fun s -> Codec.of_value (J.from_string s)) (Journal.request journal jk) in
       let kind =

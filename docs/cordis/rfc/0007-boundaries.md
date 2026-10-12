@@ -191,6 +191,28 @@ may be lost or duplicated. A lost acknowledgement only keeps the body longer
 `capture.qnt` states this: `resultNotLost`, `receiptNotLost`, `appliedOnce`,
 and the accounting, with mutants `ackFirst`, `clearEarly` and `noKey`.
 
+### The adapter as built
+
+`llm.complete` through `--ops` is a journaled submit, then status polling, fetch, journal, and
+only then the acknowledgement. The operation id is the intent's idempotency key; the attempt is
+the adapter's own count, so a call after a settled attempt is a new one and a call after an open
+one resumes it. The adapter keeps one row per attempt beside the journal (`ops`: incarnation,
+`not_after`, the exact submit bytes, the digest, and whether it is settled, committed, acked); the
+bytes are what every send of the attempt carries. A call that fails in transit is repeated within
+its patience (`wait_s`), since a repeat of the attempt's one submit is harmless. The
+acknowledgement is the answer's `committed` hook, which the outbox runs only after
+`Journal.finish` returns; a crash between the two keeps the body longer, and at start the adapter
+repeats the acknowledgements it still owes. `e2e` phase `ops.sh` runs the review loop through
+lost and duplicated submits, a lost acknowledgement, a halo restart and the recovery, against
+`stub_ops.py`.
+
+Not yet built: the engine's confirmation that a receipt was applied (step 5 of the handoff). Today
+a Done row answers the same receipt again whenever the intent is released, which is safe because
+the engine applies a receipt once by its attempt; the row is simply never cleared. The usage an
+`expired` status reports is not carried into the settlement: the attempt is charged the worst
+case like an unknown one (a bounded overcharge). The attempt is never cancelled by the adapter
+yet: the cancel verb and the closing of a submit that raced a restart wait for the milestone.
+
 ## Retention
 
 - **The capture window is the promise.** Halo holds a body until it is
@@ -330,7 +352,8 @@ operation model is also proved by Apalache to 8 steps (6 in the gate).
    incarnation and deadline checks, tombstones, reservation, the capture
    window, ack release); then the endpoints and the stream. Disconnect never
    cancels; metadata is bounded; `exact` and `relaxed` are advertised.
-3. **The outbox's durable halo adapter**, in the order of "The durable
+3. **The outbox's durable halo adapter** (built, `outbox/halo_op.ml`, run by
+   `cordis-outbox --ops URL`; see "The adapter as built"), in the order of "The durable
    handoff". The adapter is built against a stand-in server that speaks the
    verbs, as the header rules were; the header rules stay for ordinary
    clients and for a server run with `--operations off`, and retire for

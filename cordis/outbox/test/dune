@@ -64,3 +64,11 @@
  (name journal_test)
  (modules journal_test)
  (libraries cordis_outbox sqlite3 hegel alcotest))
+
+; The review loop through the halo operation adapter against the stand-in: lost submits and acknowledgements, a
+; duplicate, a server restart (RFC 0007)
+(rule
+ (alias e2e)
+ (deps ops.sh stub_ops.py %{bin:cordis-run} %{bin:cordis-outbox} ../../graph/examples/review.cg)
+ (action
+  (run bash %{dep:ops.sh} %{bin:cordis-run} %{bin:cordis-outbox} %{dep:../../graph/examples/review.cg} %{dep:stub_ops.py})))
