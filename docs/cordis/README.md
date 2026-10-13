@@ -12,7 +12,7 @@
   IR, importers and scaffolds, 0004 descriptor-native protobuf types (phase
   2, built); 0005 XML and XSD, CSV and typed data frames (accepted through revision 5); 0006
   the turn runtime (phase 3, revision 2 accepted); 0007 boundaries and the
-  operation contract (accepted, built); 0008 coding-agent runs as operations (proposed).
+  operation contract (accepted, built); 0008 coding-agent runs as operations, Cordis's half (proposed; yard's half is its `design/AGENT-OPERATIONS.md`).
 - [research/STREAMING-PRIOR-ART.md](research/STREAMING-PRIOR-ART.md): batch
   and streaming systems (Rama, Flink, Beam, Kafka Streams, Materialize,
   Temporal and others), behind RFC 0005's frames and RFC 0006.
