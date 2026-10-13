@@ -66,6 +66,11 @@ done
 # nothing may stay unacknowledged
 for _ in $(seq 100); do [ "$(admin GET /admin/state | python3 -c 'import json,sys; print(json.load(sys.stdin)["unacked_outcomes"])')" = 0 ] && break; sleep 0.1; done
 
+# the engine confirms what it applied (its run store synced): no delivery stays pending
+for _ in $(seq 100); do
+  [ "$(python3 -c "import sqlite3,sys; print(sqlite3.connect(sys.argv[1]).execute(\"SELECT COUNT(*) FROM journal j WHERE j.state IN ('done','refused') AND NOT EXISTS (SELECT 1 FROM facts f WHERE f.jkey = j.jkey AND f.why = 'applied')\").fetchone()[0])" "$T/journal.db")" = 0 ] && break; sleep 0.1
+done
+
 # the audit: the records read again against their own code
 run --audit > /dev/null
 
@@ -84,6 +89,8 @@ dup = db.execute("SELECT key, COUNT(*) FROM journal WHERE kind = 'llm.complete' 
 assert not dup, f"answered more than once: {dup}"
 ops = db.execute("SELECT COUNT(*) FROM ops WHERE committed = 1 AND acked = 0").fetchone()[0]
 assert ops == 0, f"{ops} acknowledgements owed"
+owed = db.execute("SELECT j.jkey FROM journal j WHERE j.state IN ('done','refused') AND NOT EXISTS (SELECT 1 FROM facts f WHERE f.jkey = j.jkey AND f.why = 'applied')").fetchall()
+assert not owed, f"deliveries still pending: {owed}"
 facts = db.execute("SELECT COUNT(*) FROM facts").fetchone()[0]
 print(f"ok: shipped after {crashes} crashes through faults; {done} computations, one done attempt each; {state['generated']} generations; "
       f"{state['records']} records held; settled {out['settled']}; {facts} journal facts")

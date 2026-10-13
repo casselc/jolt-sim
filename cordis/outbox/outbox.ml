@@ -4,6 +4,9 @@
 
      engine -> outbox   {"op":"intent","intent":I}          journal, ack, run once, answer
                         {"op":"reconcile","key":K,"attempt":N}
+                        {"op":"applied","key":K,"attempt":N}   the engine has durably applied the answer
+                                                               (its run store synced): the delivery is
+                                                               no longer pending (Journal.pending)
      outbox -> engine   {"op":"ack","key":K,"attempt":N}     the intent is journaled
                         {"op":"receipt","key":K,"attempt":N,"value":V,"cost":C,"answer":A}
                                                                A, if the world said: generated, replayed
@@ -264,6 +267,11 @@ let serve ?limiter ?(agent = "agent") ~socket ~journal ~executors () =
         let open J.Util in
         match j |> member "op" |> to_string with
         | "intent" -> handle_intent ctx (Codec.of_intent (j |> member "intent")) send
+        | "applied" ->
+            (* the engine has durably applied this answer: the delivery is no longer pending. An intent is journaled
+               by its key (effectful) or by key and attempt (the others): the engine does not say which *)
+            let key = j |> member "key" |> to_string and attempt = j |> member "attempt" |> to_int in
+            ignore (Journal.applied ctx.journal ~jkey:key || Journal.applied ctx.journal ~jkey:(Printf.sprintf "%s#%d" key attempt))
         | "reconcile" -> handle_reconcile ctx (j |> member "key" |> to_string) (j |> member "attempt" |> to_int) send
         | op -> prerr_endline ("outbox: unknown op " ^ op))
     | exception _ -> prerr_endline "outbox: a frame that is not JSON"

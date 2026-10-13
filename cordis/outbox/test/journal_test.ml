@@ -122,6 +122,23 @@ let restart () =
   let s = J.basis db in
   Alcotest.(check bool) "same store across a restart" true ((J.basis (J.open_ path)).store = s.store)
 
+(* the engine's confirmation ends a pending delivery, once, and the row still answers *)
+let delivery () =
+  let _, db = fresh () in
+  begin_ db "a";
+  begin_ db "b";
+  J.finish db ~jkey:"a" ~value:"v" ~cost:1;
+  J.refuse db ~jkey:"b" ~why:"no";
+  Alcotest.(check (list string)) "both owed" [ "a"; "b" ] (J.pending db);
+  Alcotest.(check bool) "recorded" true (J.applied db ~jkey:"a");
+  Alcotest.(check bool) "once" false (J.applied db ~jkey:"a");
+  Alcotest.(check bool) "an unknown row is not applied" false (J.applied db ~jkey:"nope");
+  Alcotest.(check (list string)) "b is owed" [ "b" ] (J.pending db);
+  check_state "a still answers" db "a" (Some "done");
+  (* a sent row has nothing to confirm *)
+  begin_ db "c";
+  Alcotest.(check bool) "sent" false (J.applied db ~jkey:"c")
+
 (* the journal from before facts: one mutable row each *)
 let migration () =
   let path = Filename.temp_file "journal" ".db" in
@@ -205,5 +222,6 @@ let () =
           Alcotest.test_case "a foreign basis is refused" `Quick foreign;
           Alcotest.test_case "adjustments apply once" `Quick ledger;
           Alcotest.test_case "restart" `Quick restart;
+          Alcotest.test_case "delivery is pending until the engine confirms" `Quick delivery;
           Alcotest.test_case "migration from the in-place journal" `Quick migration;
           Alcotest.test_case "resolves as the mutable row would" `Quick equivalence ] ) ]

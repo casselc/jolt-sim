@@ -285,9 +285,13 @@ let () =
     if generated j || discarded <> None || admitted <> None then Engine.Generated (v, c, { discarded; admitted })
     else Engine.Done (v, c)
   in
+  (* answers fed to the engine and not yet synced: once the run store holds them, the outbox is told (applied) *)
+  let unconfirmed = ref [] in
   let sync () =
     let d = Store.Sqlite.sync st in
-    feed (Engine.Durable d)
+    feed (Engine.Durable d);
+    List.iter (fun (k, n) -> try send (`Assoc [ ("op", `String "applied"); ("key", `String k); ("attempt", `Int n) ]) with Sys_error _ | Unix.Unix_error _ -> ()) (List.rev !unconfirmed);
+    unconfirmed := []
   in
   let awaited () =
     Engine.Smap.fold
@@ -373,15 +377,15 @@ let () =
             if op = "deferred" then Hashtbl.replace deferred (key, attempt) () else if op <> "ack" then Hashtbl.remove deferred (key, attempt);
             if op <> "deferred" && op <> "ack" then waited := 0.;
             (match op with
-             | "receipt" -> incr receipts; feed (Engine.Receipt (key, attempt, done_ j))
+             | "receipt" -> incr receipts; unconfirmed := (key, attempt) :: !unconfirmed; feed (Engine.Receipt (key, attempt, done_ j))
              | "lost" -> feed (Engine.Receipt (key, attempt, Engine.Lost))
-             | "refused" -> incr receipts; feed (Engine.Receipt (key, attempt, Engine.Refused (j |> member "why" |> to_string)))
+             | "refused" -> incr receipts; unconfirmed := (key, attempt) :: !unconfirmed; feed (Engine.Receipt (key, attempt, Engine.Refused (j |> member "why" |> to_string)))
              | "reconciled" -> (
                  match j |> member "receipt" with
                  | `Null -> feed (Engine.Reconciled (key, attempt, None))
                  (* a reconcile of a keyed intent is a send again, and may be generated afresh too *)
-                 | r when generated r -> feed (Engine.Receipt (key, attempt, done_ r))
-                 | r -> feed (Engine.Reconciled (key, attempt, Some (Codec.of_value (r |> member "value"), cost_of r))))
+                 | r when generated r -> unconfirmed := (key, attempt) :: !unconfirmed; feed (Engine.Receipt (key, attempt, done_ r))
+                 | r -> unconfirmed := (key, attempt) :: !unconfirmed; feed (Engine.Reconciled (key, attempt, Some (Codec.of_value (r |> member "value"), cost_of r))))
              | _ -> ());
             if !crash_receipts > 0 && !receipts > receipts_before && !receipts >= !crash_receipts then begin
               prerr_endline (Printf.sprintf "cordis-run: crashing after %d receipts, before syncing" !receipts);

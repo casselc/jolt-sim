@@ -206,9 +206,15 @@ repeats the acknowledgements it still owes. `e2e` phase `ops.sh` runs the review
 lost and duplicated submits, a lost acknowledgement, a halo restart and the recovery, against
 `stub_ops.py`.
 
-Not yet built: the engine's confirmation that a receipt was applied (step 5 of the handoff). Today
-a Done row answers the same receipt again whenever the intent is released, which is safe because
-the engine applies a receipt once by its attempt; the row is simply never cleared. The usage an
+The engine confirms application (step 5): after its run store syncs, `cordis-run` sends
+`{"op":"applied","key","attempt"}` for each receipt fed since the last sync, and the journal
+appends an `applied` fact (`Journal.applied`; `Journal.pending` lists answers not yet
+confirmed). A Done row still answers the same receipt when its intent is released again, since a
+rollback of the run store rewinds the engine and not the journal: the confirmation ends the
+delivery's being pending, it does not retire the row. A confirmation lost to a crash leaves the
+delivery pending until the engine, restarted, applies the receipt again. The outbox does not yet
+push pending deliveries to a reconnecting engine; the engine asks by releasing its intents.
+The usage an
 `expired` status reports is not carried into the settlement: the attempt is charged the worst
 case like an unknown one (a bounded overcharge). The attempt is never cancelled by the adapter
 yet: the cancel verb and the closing of a submit that raced a restart wait for the milestone.

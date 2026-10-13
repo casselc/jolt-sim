@@ -314,3 +314,21 @@ let adjust db ~id ~jkey ~delta ~why =
 let ledger_total ?jkey db =
   let sql, binds = match jkey with Some j -> ("SELECT COALESCE(SUM(delta), 0) FROM ledger WHERE jkey = ?", [ `T j ]) | None -> ("SELECT COALESCE(SUM(delta), 0) FROM ledger", []) in
   with_stmt db sql binds (fun st -> match Sqlite3.step st with Sqlite3.Rc.ROW -> int st 0 | _ -> 0)
+
+(* ---- delivery: the engine's confirmation that it applied an answer ----------------------------- *)
+
+(* the engine has durably applied the answer of [jkey] (RFC 0007, "The durable handoff", step 5): a fact says so, once.
+   The row keeps answering if the intent is released again, since a rollback of the run store rewinds the engine, not
+   this journal; what the fact ends is the delivery's being pending. Whether this call recorded it *)
+let applied db ~jkey =
+  tx db (fun () ->
+      match head db jkey with
+      | Some (_, _, ({ state = Done | Refused; _ } as r)) when not (List.exists (fun (_, _, w, _) -> w = "applied") (facts_of db jkey)) ->
+          append_next db ~jkey ~why:"applied" (fun _ -> r);
+          true
+      | _ -> false)
+
+(* answers journaled whose application the engine has not confirmed: the deliveries still owed *)
+let pending db =
+  with_stmt db "SELECT j.jkey FROM journal j WHERE j.state IN ('done', 'refused') AND NOT EXISTS (SELECT 1 FROM facts f WHERE f.jkey = j.jkey AND f.why = 'applied') ORDER BY j.rowid" []
+    (fun st -> let rec go acc = match Sqlite3.step st with Sqlite3.Rc.ROW -> go (Sqlite3.column_text st 0 :: acc) | _ -> List.rev acc in go [])
