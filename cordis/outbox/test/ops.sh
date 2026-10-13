@@ -16,7 +16,11 @@
 #   J. an attempt bound to another request (409 conflict, forced by changing the stored submit under halo's record):
 #      not a refusal, which costs nothing; charged as unknown (the worst case), and loud;
 #   G. an outbox that stopped after journaling a result and before acknowledging it owes the acknowledgement: the next
-#      one makes it (the ops table's committed-but-unacked rows are sent again at start).
+#      one makes it (the journal's obligations, committed with the answers, are paid again at start);
+#   K. the outbox is killed exactly between journaling a result and acknowledging it (CORDIS_OUTBOX_CRASH=after-journal):
+#      halo still holds the body, the journal holds the answer and the obligation, and the next outbox pays it;
+#   L. the same for an expired outcome (after-expired-journal): its usage is durable in the journal before halo is
+#      told, and the next outbox acknowledges it.
 #
 #   ops.sh CORDIS_RUN CORDIS_OUTBOX REVIEW.cg STUB_OPS.py
 set -euo pipefail
@@ -95,20 +99,20 @@ start delay=1
 ( sleep 0.5; admin POST /admin/restart > /dev/null ) & bg=$!
 run; wait "$bg"; settle; check F 3 33 atleast
 
-# G: after a clean run, make the record say the acknowledgement was never made, and restart the outbox
+# G: after a clean run, make the journal say the acknowledgements were never made, and restart the outbox
 start
 run; settle; check G 3 33 exact
 kill "$outbox_pid"; wait "$outbox_pid" 2>/dev/null || true
 python3 - "$T/journal.db" <<'PY'
 import sqlite3, sys
-db = sqlite3.connect(sys.argv[1]); db.execute("UPDATE ops SET acked = 0"); db.commit()
-assert db.execute("SELECT COUNT(*) FROM ops WHERE committed = 1 AND acked = 0").fetchone()[0] == 3
+db = sqlite3.connect(sys.argv[1]); db.execute("UPDATE obligations SET done = 0"); db.execute("UPDATE ops SET acked = 0"); db.commit()
+assert db.execute("SELECT COUNT(*) FROM obligations WHERE done = 0").fetchone()[0] == 3
 PY
 start_outbox
-for _ in $(seq 50); do
-  [ "$(python3 -c "import sqlite3,sys; print(sqlite3.connect(sys.argv[1]).execute('SELECT COUNT(*) FROM ops WHERE acked = 0').fetchone()[0])" "$T/journal.db")" = 0 ] && break; sleep 0.1
-done
-python3 -c "import sqlite3,sys; n=sqlite3.connect(sys.argv[1]).execute('SELECT COUNT(*) FROM ops WHERE acked = 0').fetchone()[0]; assert n == 0, n; print('G ok: the owed acknowledgements were made again at start')" "$T/journal.db"
+owed() { python3 -c "import sqlite3,sys; print(sqlite3.connect(sys.argv[1]).execute('SELECT COUNT(*) FROM obligations WHERE done = 0').fetchone()[0])" "$T/journal.db"; }
+for _ in $(seq 50); do [ "$(owed)" = 0 ] && break; sleep 0.1; done
+[ "$(owed)" = 0 ] || { echo "G: obligations still owed"; exit 1; }
+echo "G ok: the owed acknowledgements were made again at start"
 
 # H: expiry
 OUTBOX_ARGS="--ops-poll 1.6" start delay=0.2 capture=1
@@ -166,3 +170,45 @@ assert "CONFLICT" in err, "a conflict was not reported"
 assert not any(r[0] == "refused" for r in rows), rows
 print(f"J ok: a conflicting attempt was charged as unknown, not refused (settled {out['settled']}, journal {sorted(set(rows))}, exit {code})")
 PY
+
+unacked() { admin GET /admin/state | python3 -c 'import json,sys; print(json.load(sys.stdin)["unacked_outcomes"])'; }
+owed() { python3 -c "import sqlite3,sys; print(sqlite3.connect(sys.argv[1]).execute('SELECT COUNT(*) FROM obligations WHERE done = 0').fetchone()[0])" "$T/journal.db"; }
+wait_for() { for _ in $(seq 100); do [ "$("$1")" = 0 ] && return 0; sleep 0.1; done; return 1; }
+
+# K: killed between the journal's commit and the acknowledgement
+start
+kill "$outbox_pid"; wait "$outbox_pid" 2>/dev/null || true
+CORDIS_OUTBOX_CRASH=after-journal start_outbox
+TIMEOUT=5 run
+sleep 0.5
+kill -0 "$outbox_pid" 2>/dev/null && { echo "K: the outbox did not crash"; exit 1; }
+[ "$(unacked)" -ge 1 ] || { echo "K: halo holds nothing unacknowledged; the crash did not land in the window"; exit 1; }
+[ "$(owed)" -ge 1 ] || { echo "K: the journal did not record the obligation with the answer"; exit 1; }
+start_outbox
+wait_for unacked || { echo "K: halo's outcome was never acknowledged"; exit 1; }
+wait_for owed || { echo "K: the obligation was never discharged"; exit 1; }
+run; settle
+python3 - "$T/run.out" "$code" <<'PY'
+import json, sys
+out, code = json.load(open(sys.argv[1])), int(sys.argv[2])
+assert code == 0 and out["assets"]["shipped"] is True, (code, out)
+print("K ok: killed between journal and acknowledgement; the next outbox acknowledged it, and the run shipped")
+PY
+
+# L: an expired outcome, killed after its usage is journaled
+OUTBOX_ARGS="--ops-poll 1.6" start delay=0.2 capture=1
+kill "$outbox_pid"; wait "$outbox_pid" 2>/dev/null || true
+OUTBOX_ARGS="--ops-poll 1.6" CORDIS_OUTBOX_CRASH=after-expired-journal start_outbox
+TIMEOUT=5 run
+sleep 0.5
+kill -0 "$outbox_pid" 2>/dev/null && { echo "L: the outbox did not crash"; exit 1; }
+python3 - "$T/journal.db" <<'PY'
+import sqlite3, sys
+rows = sqlite3.connect(sys.argv[1]).execute("SELECT state, source, cost FROM journal WHERE kind = 'llm.complete'").fetchall()
+assert rows and rows[0][0] == "unknown" and rows[0][1] == "expired" and 0 < rows[0][2] < 4096, rows
+PY
+[ "$(unacked)" -ge 1 ] || { echo "L: halo's expired outcome was already acknowledged before the journal held its usage"; exit 1; }
+OUTBOX_ARGS="--ops-poll 1.6" start_outbox
+wait_for unacked || { echo "L: the expired outcome was never acknowledged"; exit 1; }
+wait_for owed || { echo "L: the obligation was never discharged"; exit 1; }
+echo "L ok: killed after the expired usage was journaled; it was durable before halo was told, and the next outbox acknowledged it"

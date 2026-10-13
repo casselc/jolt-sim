@@ -55,6 +55,7 @@ let open_store path =
     (Sqlite3.exec db
        "CREATE TABLE IF NOT EXISTS ops (op TEXT NOT NULL, attempt INTEGER NOT NULL, incarnation TEXT NOT NULL, not_after INTEGER NOT NULL, body TEXT NOT NULL, digest TEXT NOT NULL, settled INTEGER NOT NULL DEFAULT 0, committed INTEGER NOT NULL DEFAULT 0, acked INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (op, attempt))")
     "create";
+  check db (Sqlite3.exec db Journal.obligations_sql) "obligations";
   db
 
 let sub_of st =
@@ -123,22 +124,26 @@ let submit cfg s =
   Http.request ~timeout:30. ~headers:[ ("X-Halo-Principal", cfg.principal); ("Halo-Incarnation", s.incarnation); ("Halo-Digest", s.digest) ] ~meth:"POST"
     (cfg.url ^ "/v1/operations") (Some ("application/json", s.body))
 
-(* acknowledge until answered: the outcome is committed, so halo may release the body *)
+(* acknowledge until answered: the outcome is committed, so halo may release the body. Whether it was (a stale
+   incarnation's is as good: its body went with it) *)
 let ack cfg db s =
   let rec go n =
     match call cfg s ~meth:"POST" "/ack" with
-    | r when r.status = 200 -> mark db "acked" s
-    (* the incarnation the result was held by is gone, and its body with it: nothing is left to release *)
-    | r when r.status = 409 && str (J.Util.member "error" (json r)) "type" = Some "stale_incarnation" -> mark db "acked" s
-    | _ | (exception _) -> if n < 20 then (Thread.delay (Float.min 5. (0.2 *. float_of_int (n + 1))); go (n + 1))
+    | r when r.status = 200 -> mark db "acked" s; true
+    | r when r.status = 409 && str (J.Util.member "error" (json r)) "type" = Some "stale_incarnation" -> mark db "acked" s; true
+    | _ | (exception _) -> if n < 20 then (Thread.delay (Float.min 5. (0.2 *. float_of_int (n + 1))); go (n + 1)) else false
   in
   go 0
 
-(* [committed]: the answer is durable in the outbox's journal. Record that, then acknowledge *)
-let committed cfg db s () =
+(* what halo is owed for an attempt, as the journal records it with the answer *)
+let owes_id s = Printf.sprintf "%s/%d" s.op s.attempt
+
+(* pay it: the answer (or the expired usage) is durable in the journal together with the obligation, so settle the
+   attempt, acknowledge, and discharge the obligation once halo has been told *)
+let pay cfg db s () =
   mark db "committed" s;
   mark db "settled" s;
-  ack cfg db s
+  if ack cfg db s then Journal.discharge db (owes_id s)
 
 let tokens_of v =
   match J.Util.member "usage" v with
@@ -208,10 +213,9 @@ let run cfg db ~key req =
       | Some "done" -> fetch v r
       | Some ("closed" | "cancelled_before_accept") -> refuse "closed: no copy was accepted"
       | Some "expired" ->
-          (* the body is gone, the usage is not: settled at that. The outcome is acknowledged like any other *)
-          settle db s;
-          ignore (Thread.create (fun () -> ack cfg db s) ());
-          raise (Expired ("expired: the capture window passed before the result was taken", tokens_of v))
+          (* the body is gone, the usage is not: settled at that. As for a result, the usage is durable in the outbox's
+             journal before the outcome is acknowledged: the outbox pays the obligation after journaling it *)
+          raise (Expired ("expired: the capture window passed before the result was taken", tokens_of v, owes_id s, pay cfg db s))
       | Some "released" -> lost "released: acknowledged earlier, the result is no longer held"
       | Some "unknown" -> lost "unknown: another incarnation"
       | st -> failwith ("status: " ^ Option.value st ~default:"none")
@@ -226,19 +230,27 @@ let run cfg db ~key req =
       cost = (if tokens > 0 then tokens else -1);
       source = Some "operation"; discarded = None; admitted = None;
       world = world_of status;
-      committed = Some (committed cfg db s) }
+      owes = Some (owes_id s); committed = Some (pay cfg db s) }
   in
   accept ();
   wait ()
 
-(* acknowledgements an earlier outbox committed but did not finish: send them again *)
+(* acknowledgements an earlier outbox owed: the journal's obligations, committed with the answers they belong to,
+   are paid again (halo answers a repeat of an acknowledgement with the attempt's status) *)
 let recover cfg db =
-  let owed =
-    Journal.with_stmt db ("SELECT " ^ cols ^ " FROM ops WHERE committed = 1 AND acked = 0") [] (fun st ->
-        let rec go acc = match Sqlite3.step st with Sqlite3.Rc.ROW -> go (sub_of st :: acc) | _ -> List.rev acc in
-        go [])
-  in
-  List.iter (fun s -> ignore (Thread.create (fun () -> ack cfg db s) ())) owed;
+  let owed = Journal.owed db in
+  List.iter
+    (fun id ->
+      match String.rindex_opt id '/' with
+      | None -> Journal.discharge db id
+      | Some i -> (
+          let op = String.sub id 0 i and attempt = int_of_string (String.sub id (i + 1) (String.length id - i - 1)) in
+          let s =
+            Journal.with_stmt db ("SELECT " ^ cols ^ " FROM ops WHERE op = ? AND attempt = ?") [ `T op; `I attempt ] (fun st ->
+                match Sqlite3.step st with Sqlite3.Rc.ROW -> Some (sub_of st) | _ -> None)
+          in
+          match s with None -> Journal.discharge db id | Some s -> ignore (Thread.create (pay cfg db s) ())))
+    owed;
   List.length owed
 
 (* the executor; its records are in [store], a file (the journal's own is fine: another connection) *)

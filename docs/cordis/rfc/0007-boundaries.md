@@ -200,9 +200,15 @@ one resumes it. The adapter keeps one row per attempt beside the journal (`ops`:
 `not_after`, the exact submit bytes, the digest, and whether it is settled, committed, acked); the
 bytes are what every send of the attempt carries. A call that fails in transit is repeated within
 its patience (`wait_s`), since a repeat of the attempt's one submit is harmless. The
-acknowledgement is the answer's `committed` hook, which the outbox runs only after
-`Journal.finish` returns; a crash between the two keeps the body longer, and at start the adapter
-repeats the acknowledgements it still owes. `e2e` phase `ops.sh` runs the review loop through
+acknowledgement is the answer's `committed` hook, which the outbox runs only after `Journal.finish`
+returns, and what halo is owed (`owes`, `<op>/<attempt>`) is written to the journal's `obligations`
+table in the same transaction as the answer: a crash between the commit and the acknowledgement
+cannot strand it, and at start the adapter pays every obligation still open. An `expired` outcome
+follows the same order (reviewer's finding on e6d08a4): the adapter raises `Expired` carrying the
+usage, the obligation and how to pay it; the outbox journals the usage and the obligation, and only
+then pays. `CORDIS_OUTBOX_CRASH=after-journal|after-expired-journal` ends the outbox exactly between
+the two for `ops.sh` phases K and L, which also check that halo still holds the outcome after the
+crash and that the next outbox acknowledges it. `e2e` phase `ops.sh` runs the review loop through
 lost and duplicated submits, a lost acknowledgement, a halo restart and the recovery, against
 `stub_ops.py`.
 

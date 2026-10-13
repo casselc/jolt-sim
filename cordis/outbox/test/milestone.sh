@@ -11,6 +11,10 @@
 # injects are skipped (halo's own tools/op_fault_probe.py injects them), and the server's own contract reports the records
 # and unacknowledged outcomes. What the run proves there is the engine, the adapter and the journal on a real model.
 #
+# Evidence: set MILESTONE_MANIFEST=DIR and a passing run leaves DIR with manifest.json (the cordis revision, the
+# server's contract as answered, HALO_REV and HALO_MODEL as the caller names them, the counts) and the artifacts it
+# checked (journal, run store, outbox log, the run's output); a failing run keeps the same under $MILESTONE_EVIDENCE.
+#
 #   milestone.sh CORDIS_RUN CORDIS_OUTBOX REVIEW.cg STUB_OPS.py
 set -euo pipefail
 run_bin=$1 outbox_bin=$2 graph=$3 stub=$4
@@ -105,9 +109,32 @@ dup = db.execute("SELECT key, COUNT(*) FROM journal WHERE kind = 'llm.complete' 
 assert not dup, f"answered more than once: {dup}"
 ops = db.execute("SELECT COUNT(*) FROM ops WHERE committed = 1 AND acked = 0").fetchone()[0]
 assert ops == 0, f"{ops} acknowledgements owed"
+obl = db.execute("SELECT COUNT(*) FROM obligations WHERE done = 0").fetchone()[0]
+assert obl == 0, f"{obl} obligations to the server still owed"
 owed = db.execute("SELECT j.jkey FROM journal j WHERE j.state IN ('done','refused') AND NOT EXISTS (SELECT 1 FROM facts f WHERE f.jkey = j.jkey AND f.why = 'applied')").fetchall()
 assert not owed, f"deliveries still pending: {owed}"
 facts = db.execute("SELECT COUNT(*) FROM facts").fetchone()[0]
 print(f"ok: shipped after {crashes} crashes through faults; {done} computations, one done attempt each; {state['generated']} generations; "
       f"{state['records']} records held; settled {out['settled']}; {facts} journal facts")
 PY
+
+if [ -n "${MILESTONE_MANIFEST:-}" ]; then
+  rm -rf "$MILESTONE_MANIFEST"; mkdir -p "$MILESTONE_MANIFEST"
+  cp "$T/journal.db" "$T/run.db" "$T/outbox.err" "$T/run.out" "$MILESTONE_MANIFEST/" 2>/dev/null || true
+  python3 - "$MILESTONE_MANIFEST/manifest.json" "$out" "$(admin GET /admin/state)" "$crashes" "${HALO_URL:-stand-in $(basename "$stub")}" <<PY
+import json, subprocess, sys, urllib.request, os
+path, out, state, crashes, server = sys.argv[1], json.loads(sys.argv[2]), json.loads(sys.argv[3]), int(sys.argv[4]), sys.argv[5]
+def sh(*a):
+    try: return subprocess.check_output(a, text=True, cwd=os.path.dirname(os.path.abspath("$0"))).strip()
+    except Exception: return None
+contract = None
+if server.startswith("http"):
+    try: contract = json.load(urllib.request.urlopen(server + "/v1/halo/contract", timeout=10))
+    except Exception: pass
+json.dump({"cordis_revision": sh("git", "rev-parse", "HEAD"), "cordis_dirty": bool(sh("git", "status", "--porcelain")),
+           "server": server, "halo_revision": os.environ.get("HALO_REV"), "model": os.environ.get("HALO_MODEL"),
+           "contract": contract, "crashes": crashes, "settled": out["settled"], "revision_of_graph": out["revision"],
+           "server_state": state, "artifacts": ["journal.db", "run.db", "outbox.err", "run.out"]}, open(path, "w"), indent=1)
+PY
+  echo "evidence in $MILESTONE_MANIFEST"
+fi

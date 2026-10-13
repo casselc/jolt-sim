@@ -23,6 +23,7 @@ type answer = {
   discarded : int option;
   admitted : int option;  (** the sends the world admitted under the key since it last forgot it (Halo-Admitted-Sends) *)
   world : world option;  (** Halo-Incarnation and Halo-Time: which incarnation of the world gave this answer, and when by its clock *)
+  owes : string option;  (** what the world is owed once the answer is durable: committed in the journal with it *)
   committed : (unit -> unit) option;
       (** run by the outbox once the answer is durably journaled and not before: a world that holds the answer until told
           (halo's operations: ack) is told then (RFC 0007, "The durable handoff") *)
@@ -47,8 +48,9 @@ exception Refused of string
    world said (Retry-After, in seconds) *)
 exception Busy of string * float option
 
-(* no result, but the world says what the attempt spent (halo's expired: the body is gone, the usage is not) *)
-exception Expired of string * int
+(* no result, but the world says what the attempt spent (halo's expired: the body is gone, the usage is not); what the
+   world is owed (its id) once that is durable, and how to pay it *)
+exception Expired of string * int * string * (unit -> unit)
 
 (* An HTTP status as one of those; 2xx is the caller's to read *)
 let classify_status ?(headers = []) what status =
@@ -148,7 +150,7 @@ let llm_complete ?(idle = 120.) ~url () =
         (match List.assoc_opt "halo-incarnation" r.headers, Option.bind (List.assoc_opt "halo-time" r.headers) int_of_string_opt with
          | Some incarnation, Some time_ms -> Some { incarnation; time_ms }
          | _ -> None);
-      committed = None }
+      owes = None; committed = None }
   in
   (* a send again with the same key is answered by a server that keeps keys from what it kept (a finished
      answer replayed, one still running adopted), so reconciling is sending again *)
@@ -162,7 +164,7 @@ let repo_read ~root =
     if String.length path = 0 || path.[0] = '/' || List.mem ".." (String.split_on_char '/' path) then failwith ("repo.read: outside the repository: " ^ path);
     let file = Filename.concat root path in
     let content = if Sys.file_exists file then In_channel.with_open_bin file In_channel.input_all else "" in
-    { value = text content; cost = 1; source = None; discarded = None; admitted = None; world = None; committed = None }
+    { value = text content; cost = 1; source = None; discarded = None; admitted = None; world = None; owes = None; committed = None }
   in
   { run = (fun ~key:_ req -> run req); reconcile = (fun ~key:_ req -> Some (run req)) }
 
@@ -198,7 +200,7 @@ let openapi ~(api : Cordis_import.Openapi.t) ~base ~(credential : string -> stri
         let body = match r.body with Some b -> Some (Option.value r.media ~default:"application/json", b) | None -> None in
         let resp = Http.request ~timeout:30. ~headers:r.headers ~meth:r.meth (base ^ r.target) body in
         match H.decode api ~kind:op.kind ~status:resp.status ~body:resp.body with
-        | Ok v -> { value = v; cost = 1; source = None; discarded = None; admitted = None; world = None; committed = None }
+        | Ok v -> { value = v; cost = 1; source = None; discarded = None; admitted = None; world = None; owes = None; committed = None }
         | Error m -> failwith (Printf.sprintf "%s: HTTP %d, unreadable: %s" op.kind resp.status m)
       in
       let reconcile ~key req =

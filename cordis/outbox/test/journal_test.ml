@@ -139,6 +139,21 @@ let delivery () =
   begin_ db "c";
   Alcotest.(check bool) "sent" false (J.applied db ~jkey:"c")
 
+(* an obligation to the world commits with the answer or not at all, and is owed until discharged *)
+let obligations () =
+  let _, db = fresh () in
+  begin_ db "a";
+  J.finish db ~jkey:"a" ~value:"v" ~cost:1 ~owes:"op/0";
+  Alcotest.(check (list string)) "owed with the answer" [ "op/0" ] (J.owed db);
+  (* a failing write rolls the obligation back with it *)
+  (match J.finish db ~jkey:"a" ~value:"w" ~cost:1 ~owes:"op/1" with () -> () | exception _ -> ());
+  begin_ db "b";
+  J.set_state db ~jkey:"b" J.Unknown ~owes:"op/2" ~cost:7 ~source:"expired";
+  Alcotest.(check (list string)) "an expired outcome's too" [ "op/0"; "op/1"; "op/2" ] (J.owed db);
+  J.discharge db "op/0";
+  Alcotest.(check bool) "discharged" true (not (List.mem "op/0" (J.owed db)));
+  Alcotest.(check bool) "owing again is idempotent" true (J.owe db "op/2"; List.length (List.filter (( = ) "op/2") (J.owed db)) = 1)
+
 (* the journal from before facts: one mutable row each *)
 let migration () =
   let path = Filename.temp_file "journal" ".db" in
@@ -223,5 +238,6 @@ let () =
           Alcotest.test_case "adjustments apply once" `Quick ledger;
           Alcotest.test_case "restart" `Quick restart;
           Alcotest.test_case "delivery is pending until the engine confirms" `Quick delivery;
+          Alcotest.test_case "obligations commit with the answer" `Quick obligations;
           Alcotest.test_case "migration from the in-place journal" `Quick migration;
           Alcotest.test_case "resolves as the mutable row would" `Quick equivalence ] ) ]

@@ -91,8 +91,13 @@ let random_id () =
 
 (* ---- the schema ------------------------------------------------------------------------------- *)
 
+(* what the world is still owed once an answer is durable (halo's acknowledgement), written in the same transaction as
+   the answer, so a crash between the two cannot strand it: [owed] lists them, [discharge] ends one *)
+let obligations_sql = "CREATE TABLE IF NOT EXISTS obligations (id TEXT PRIMARY KEY, at_ms INTEGER NOT NULL, done INTEGER NOT NULL DEFAULT 0)"
+
 let schema =
-  [ "CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)";
+  [ obligations_sql;
+    "CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)";
     "CREATE TABLE IF NOT EXISTS intents (jkey TEXT PRIMARY KEY, key TEXT NOT NULL, attempt INTEGER NOT NULL, kind TEXT NOT NULL, request TEXT NOT NULL)";
     "CREATE TABLE IF NOT EXISTS facts (pos INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, jkey TEXT NOT NULL, rev INTEGER NOT NULL, supersedes TEXT, why TEXT NOT NULL, at_ms INTEGER NOT NULL, state TEXT NOT NULL, value TEXT, cost INTEGER NOT NULL DEFAULT 0, source TEXT, discarded INTEGER, admitted INTEGER, world TEXT)";
     "CREATE INDEX IF NOT EXISTS facts_jkey ON facts (jkey, rev)";
@@ -224,8 +229,21 @@ let begin_ ?(state = Sent) db ~jkey ~key ~attempt ~kind ~request =
         [ `T jkey; `T key; `I attempt; `T kind; `T request ] (fun st -> step_done db st "insert");
       append_fact db ~jkey ~rev:1 ~why:"begin" (blank jkey state))
 
-let finish ?source ?discarded ?admitted ?world db ~jkey ~value ~cost =
-  tx db (fun () -> append_next db ~jkey ~why:"finish" (fun r -> { r with state = Done; value = Some value; cost; source; discarded; admitted; world }))
+let owe db id =
+  with_stmt db "INSERT OR IGNORE INTO obligations (id, at_ms) VALUES (?, ?)" [ `T id; `I (now_ms ()) ] (fun st -> step_done db st "owe")
+
+let owed db =
+  with_stmt db "SELECT id FROM obligations WHERE done = 0 ORDER BY at_ms" [] (fun st ->
+      let rec go acc = match Sqlite3.step st with Sqlite3.Rc.ROW -> go (Sqlite3.column_text st 0 :: acc) | _ -> List.rev acc in
+      go [])
+
+let discharge db id = with_stmt db "UPDATE obligations SET done = 1 WHERE id = ?" [ `T id ] (fun st -> step_done db st "discharge")
+
+(* [owes]: what the world is owed for this answer, committed with it *)
+let finish ?source ?discarded ?admitted ?world ?owes db ~jkey ~value ~cost =
+  tx db (fun () ->
+      append_next db ~jkey ~why:"finish" (fun r -> { r with state = Done; value = Some value; cost; source; discarded; admitted; world });
+      Option.iter (owe db) owes)
 
 (* the other sends of an intent one of whose sends was answered: under one idempotency key, an answer
    the world says covers them (replayed, adopted) supersedes them; any other leaves their work, if any,
@@ -243,8 +261,10 @@ let supersede ?(state = Superseded) db ~key ~answered =
 let refuse db ~jkey ~why =
   tx db (fun () -> append_next db ~jkey ~why:"refuse" (fun r -> { r with state = Refused; value = Some why }))
 
-let set_state ?cost ?source db ~jkey s =
-  tx db (fun () -> append_next db ~jkey ~why:"state" (fun r -> { r with state = s; cost = Option.value cost ~default:r.cost; source = (match source with Some _ -> source | None -> r.source) }))
+let set_state ?cost ?source ?owes db ~jkey s =
+  tx db (fun () ->
+      Option.iter (owe db) owes;
+      append_next db ~jkey ~why:"state" (fun r -> { r with state = s; cost = Option.value cost ~default:r.cost; source = (match source with Some _ -> source | None -> r.source) }))
 
 (* ---- history: bases, views, compaction, the ledger -------------------------------------------- *)
 

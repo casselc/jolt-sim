@@ -92,7 +92,7 @@ type ctx = {
 and job = Run | Reconcile
 
 (* how a call ended *)
-and outcome = Ran of Executors.answer | Not_applied | No_answer of string | Refused_by of string | Expired_by of string * int | Busy_by of string * float option
+and outcome = Ran of Executors.answer | Not_applied | No_answer of string | Refused_by of string | Expired_by of string * int * string * (unit -> unit) | Busy_by of string * float option
 
 (* Start a call off the loop (intake.qnt's design: the loop keeps reading its intake while calls run).
    The thread runs the executor and queues how it ended; only the loop touches the journal. *)
@@ -104,7 +104,7 @@ let start ctx ~jkey ~key ~attempt ~kind ~job (run : unit -> Executors.answer opt
       | Some a -> Ran a
       | None -> Not_applied
       | exception Executors.Refused m -> Refused_by m
-      | exception Executors.Expired (m, spent) -> Expired_by (m, spent)
+      | exception Executors.Expired (m, spent, owes, pay) -> Expired_by (m, spent, owes, pay)
       | exception Executors.Busy (m, after) -> Busy_by (m, after)
       | exception e -> No_answer (Printexc.to_string e)
     in
@@ -122,6 +122,9 @@ let run_now ctx ~jkey ~key ~attempt ~kind ~request =
       let ikey = Executors.idempotency_key ~agent:ctx.agent ~key ~request in
       start ctx ~jkey ~key ~attempt ~kind ~job:Run (fun () -> Some (x.run ~key:ikey request))
 
+(* fault injection for the crash tests: CORDIS_OUTBOX_CRASH=<point> ends the process there, once it is reached *)
+let crash_point name = if Sys.getenv_opt "CORDIS_OUTBOX_CRASH" = Some name then (prerr_endline ("outbox: crashing at " ^ name); Unix._exit 3)
+
 (* the answer is durable: tell the world that holds it (halo's operations release the body on the ack), off the loop *)
 let committed (a : Executors.answer) = Option.iter (fun f -> ignore (Thread.create (fun () -> try f () with e -> prerr_endline ("outbox: after commit: " ^ Printexc.to_string e)) ())) a.committed
 
@@ -134,7 +137,8 @@ let drain ctx send =
       match job, outcome with
       | Run, Ran a ->
           Journal.finish ctx.journal ~jkey ~value:(J.to_string (Codec.value a.value)) ~cost:a.cost ?source:a.source ?discarded:a.discarded ?admitted:a.admitted
-            ?world:(world_text a.world);
+            ?world:(world_text a.world) ?owes:a.owes;
+          if a.owes <> None then crash_point "after-journal";
           committed a;
           (* a keyed intent's earlier sends, lost, are answered by this one when the world says it covers them
              (replayed, adopted: one key, one generation), discarded nothing under it, and, if it says, admitted
@@ -152,10 +156,13 @@ let drain ctx send =
           prerr_endline ("outbox: " ^ kind ^ ": " ^ (match outcome with No_answer m -> m | _ -> "no answer"));
           Journal.set_state ctx.journal ~jkey Journal.Unknown;
           send (frame "lost" (ka key attempt))
-      | Run, Expired_by (why, spent) ->
-          (* no result, but a known spend: the engine charges that, and the attempt is lost like any other *)
+      | Run, Expired_by (why, spent, owes, pay) ->
+          (* no result, but a known spend: the engine charges that, and the attempt is lost like any other. The
+             spend is durable, with what the world is owed, before the world is paid (it releases its record) *)
           prerr_endline ("outbox: " ^ kind ^ ": " ^ why);
-          Journal.set_state ctx.journal ~jkey Journal.Unknown ~cost:spent ~source:"expired";
+          Journal.set_state ctx.journal ~jkey Journal.Unknown ~cost:spent ~source:"expired" ~owes;
+          crash_point "after-expired-journal";
+          committed { value = V.Null; cost = spent; source = None; discarded = None; admitted = None; world = None; owes = None; committed = Some pay };
           send (frame "lost" (ka key attempt @ [ ("cost", `Int spent) ]))
       | Run, Refused_by why ->
           Journal.refuse ctx.journal ~jkey ~why;
@@ -173,13 +180,14 @@ let drain ctx send =
           send (frame "deferred" (ka key attempt))
       | Reconcile, Ran a ->
           Journal.finish ctx.journal ~jkey ~value:(J.to_string (Codec.value a.value)) ~cost:a.cost ?source:a.source ?discarded:a.discarded
-            ?admitted:a.admitted ?world:(world_text a.world);
+            ?admitted:a.admitted ?world:(world_text a.world) ?owes:a.owes;
+          if a.owes <> None then crash_point "after-journal";
           committed a;
           send (frame "reconciled" (ka key attempt @ [ ("receipt", `Assoc (answer_fields a)) ]))
       | Reconcile, Not_applied ->
           Journal.set_state ctx.journal ~jkey Journal.Fenced;
           send (frame "reconciled" (ka key attempt @ [ ("receipt", `Null) ]))
-      | Reconcile, (No_answer m | Refused_by m | Expired_by (m, _) | Busy_by (m, _)) ->
+      | Reconcile, (No_answer m | Refused_by m | Expired_by (m, _, _, _) | Busy_by (m, _)) ->
           (* the world cannot be asked now: no answer, so the engine keeps the intent Uncertain and asks again *)
           prerr_endline ("outbox: reconcile " ^ key ^ ": " ^ m))
     ended
@@ -194,7 +202,7 @@ let handle_intent ctx (i : E.intent) send =
   match Journal.find ctx.journal k with
   | Some { state = Journal.Done; value = Some v; cost; source; discarded; admitted; world; _ } ->
       ack ();
-      send (receipt_frame i.key i.attempt { value = Codec.of_value (J.from_string v); cost; source; discarded; admitted; world = world_of_text world; committed = None })
+      send (receipt_frame i.key i.attempt { value = Codec.of_value (J.from_string v); cost; source; discarded; admitted; world = world_of_text world; owes = None; committed = None })
   | Some { state = Journal.Waiting; _ } -> ack (); send (frame "deferred" (ka i.key i.attempt))
   | Some { state = Journal.Refused; value; _ } ->
       ack ();
@@ -228,7 +236,7 @@ let handle_reconcile ctx key attempt send =
   let jk = Option.value (Journal.answering journal key) ~default:key in
   match Journal.find journal jk with
   | Some { state = Journal.Done; value = Some v; cost; source; discarded; admitted; world; _ } ->
-      reply (`Assoc (answer_fields { value = Codec.of_value (J.from_string v); cost; source; discarded; admitted; world = world_of_text world; committed = None }))
+      reply (`Assoc (answer_fields { value = Codec.of_value (J.from_string v); cost; source; discarded; admitted; world = world_of_text world; owes = None; committed = None }))
   | Some { state = Journal.Unknown | Journal.Sent; _ } when not (Hashtbl.mem ctx.inflight jk) -> (
       let req = Option.map (fun s -> Codec.of_value (J.from_string s)) (Journal.request journal jk) in
       let kind =
