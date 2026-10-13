@@ -14,6 +14,12 @@
 # and quintgo (casselc/observability/quintgo; set QUINTGO to its binary).
 # Without QUINTGO the conformance rows report ERROR and the gate fails: a
 # skipped check is not a pass.
+#
+# The gate is long and a session can end under it. Every sim and verify row is appended to $OUT the moment it
+# finishes (the file is the progress), and RESUME=<an earlier report> reuses its rows that finished with a result
+# (never an ERROR row), so a rerun redoes only what was not done:
+#   OUT=report.txt quint/check.sh            # killed part way
+#   RESUME=report.txt OUT=report2.txt quint/check.sh
 set -uo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/.." && pwd)
@@ -26,6 +32,17 @@ QUINTGO=${QUINTGO:-quintgo}
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 : > "$OUT"
+RESUME=${RESUME:-}
+
+# a row an earlier report finished with a result is reused as it was (a prefix match on the row's key)
+cached() {
+  [ -n "$RESUME" ] && [ -f "$RESUME" ] || return 1
+  local line
+  line=$(awk -v p="$1" 'index($0, p) == 1 { print; exit }' "$RESUME")
+  [ -n "$line" ] || return 1
+  case "$line" in *ERROR*) return 1 ;; esac
+  echo "$line (resumed)" | sed 's/ (resumed) (resumed)$/ (resumed)/' | tee -a "$OUT"
+}
 
 VERIFY_STEPS=${VERIFY_STEPS:-8}
 
@@ -39,6 +56,7 @@ result() { # quint output -> ok | VIOLATED | ERROR (a deadlock is a broken model
 
 sim() { # file main invariant expect
   local file=$1 main=$2 inv=$3 expect=$4 out
+  cached "sim $file $main $inv $SAMPLES x $STEPS " && return 0
   out=$(cd "$here" && quint run --backend "$BACKEND" --main "$main" --invariant "$inv" \
           --max-samples "$SAMPLES" --max-steps "$STEPS" "$file" 2>&1)
   echo "sim $file $main $inv $SAMPLES x $STEPS $(result "$out") (expect $expect)" | tee -a "$OUT"
@@ -46,6 +64,7 @@ sim() { # file main invariant expect
 
 verify() { # file main invariant expect: Apalache, bounded (an :exhausted grade to that depth)
   local file=$1 main=$2 inv=$3 expect=$4 out
+  cached "verify $file $main $inv $VERIFY_STEPS " && return 0
   out=$(cd "$here" && quint verify --main "$main" --invariant "$inv" --max-steps "$VERIFY_STEPS" "$file" 2>&1)
   echo "verify $file $main $inv $VERIFY_STEPS $(result "$out") (expect $expect)" | tee -a "$OUT"
 }
