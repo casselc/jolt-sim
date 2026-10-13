@@ -1,10 +1,10 @@
 # RFC 0005: XML and XSD, CSV, and typed data frames
 
-Status: proposed. Revision 2 settles the frames design (below) and its
-model. Revision 3 (proposed) settles CSV's first stage, typed by a
-Table Schema, and records it as built ("CSV", "Revision 3"). Revision 4
-(proposed) does the same for XSD and XML without recursion ("XML and
-XSD", "Revision 4"). Revision 5 (proposed) adds schemaless XML, a
+Status: accepted through revision 5 (revision 5 accepted 2026-10-13; revisions 3 and 4,
+built earlier, accepted with it). Revision 2 settles the frames design (below) and its
+model. Revision 3 settles CSV's first stage, typed by a
+Table Schema, and records it as built ("CSV", "Revision 3"). Revision 4 does the same for XSD and XML without recursion ("XML and
+XSD", "Revision 4"). Revision 5 adds schemaless XML, a
 library node type now that RFC 0002 has recursive types, and records it
 as built ("Schemaless XML"). Records the design so that later work
 starts from it. Extends RFC 0003 (translating importers) and follows the
