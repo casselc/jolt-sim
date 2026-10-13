@@ -1,8 +1,9 @@
 # RFC 0008: Coding-agent runs as operations (Cordis's half)
 
-Status: **proposed** (revision 3). Nothing here is built. Yard's half is **casselc/yard
-`design/AGENT-OPERATIONS.md`, revision 2** (branch `design/agent-operations-r2`; its model is `spec/agentop/`). The
-two were revised together after review; where they differ, "Relation to yard's draft" says which rules.
+Status: **proposed** (revision 4). Nothing here is built. Yard's half is **casselc/yard
+`design/AGENT-OPERATIONS.md`, revision 2 on yard main** (dddf7e5; its models are `spec/agentop/`). The two were
+revised together after review, and revision 4 takes yard's wording where the two had drifted (outcome and field
+names, refusal reasons, the pinned valuation); where they differ, "Relation to yard's draft" says which rules.
 
 ## Purpose
 
@@ -47,7 +48,7 @@ Cordis.
 Noninteractive; a task states its inputs and gets one outcome. Yard's draft has the same text:
 
 ```
-type Workspace   = { repo: str, version: str }                    // immutable
+type Workspace   = { repo: str, commit: str }                     // a git commit; yard builds a read-only image of it
 type AgentBudget = { tokens: int, micro_usd: int, seconds: int }  // three independent limits
 type AgentTask<T> = {
   agent: Agent, model: ModelRoute,                                // a permitted route, never a key
@@ -55,61 +56,77 @@ type AgentTask<T> = {
   instructions: [str], output: Type<T>,
   budget: AgentBudget,                                            // at or below the operator's ceiling
 }
+type Usage = { tokens: Dim, micro_usd: Dim, seconds: Dim }       // Dim = { confirmed: int, unresolved_max: int }
 type AgentOutcome<T> = {
   result:    Completed{ value: T }
-           | Incomplete{ reason: Timeout | BudgetExhausted | Cancelled | InvalidOutput | WorkerFailed | Insufficient },
-  usage:     Usage,
-  spend:     { certainty: Exact | Bounded, charge: int },          // micro-dollars
-  execution: Stopped | Unconfirmed,
-  artifacts: [Artifact],                                           // transcript, findings, invalid output, partial work
+           | Incomplete{ reason: InsufficientInformation | InvalidOutput | BudgetExhausted | TimedOut
+                               | Cancelled | WorkerLost | ExecutorError },
+  usage:      Usage,                                              // the charge is confirmed + unresolved_max, per dimension
+  accounting: Exact | Bounded,
+  execution:  Stopped | Fenced,
+  valuation:  Digest,                                             // the pinned price table
+  artifacts:  [Artifact],                                         // transcript, raw output, evidence bundle
 }
 effect agent.run<T>(AgentTask<T>) : AgentOutcome<T>
 ```
 
-The valuation the outbox priced its reservation with is part of the submit, not of the graph: the cell never names
-it. `Insufficient` is how a noninteractive agent says it cannot proceed without more information.
+The input is a **git commit**, not a bare snapshot: yard builds the immutable image from it, and a later apply needs a
+git base to compare-and-set against.
+
+The valuation id is part of the submit, **not of the graph**: the outbox reads it from yard's contract and sends it,
+and the cell never names it. `InsufficientInformation` is how a noninteractive agent says it cannot proceed with what
+it has; its questions are data and nothing resumes.
 
 ## Outcomes, refusals and settlement
 
-**Status is separate from accounting certainty.** A terminal answer carries three facts (yard's draft, section 4):
-the task's **outcome**, whether its **execution** was proved stopped, and whether its **spend** is exact or
-bounded. A failed VM does not prove every model call's cost is known, and an unreachable worker is not necessarily
-stopped. Cordis therefore does not collapse them into one "lost" or "done":
+**Status is separate from accounting certainty.** A terminal answer carries yard's three facts (its section 4): the
+**outcome**, whether the **execution** was proved stopped (`stopped`) or only **fenced** (broker access revoked, the
+worker not confirmed stopped, its result not captured), and whether the **accounting** is `exact` or `bounded`. A
+failed VM does not prove every model call's cost is known, and an unreachable worker is not necessarily stopped.
+Cordis therefore does not collapse them into one "lost" or "done". Yard reports `done` only after the worker is
+stopped or fenced, the broker has confirmed the scope revoked, and the local route's unresolved calls are resolved.
 
 | What yard reports | Receipt to the cell | Settlement |
 | --- | --- | --- |
-| `completed`, spend exact | a **Done** receipt, `Completed` | `spend.charge` |
-| `completed`, spend bounded | Done, `Completed` | `spend.charge` (confirmed plus the unanswered calls at their reserved maxima) |
-| `invalid_output`, `insufficient`, `budget_exhausted`, `timeout`, `cancelled`, `worker_failed` | a **Done** receipt, `Incomplete{reason}`, with the usage and the partial artifacts | `spend.charge` |
-| `execution: unconfirmed` | as above, with the field visible to the cell | the same: once yard has revoked the broker scope the worker can spend nothing more |
-| `refused`, `closed`, `never_accepted`, `cancelled_before_accept` (not executed) | a **Refused** receipt | 0 |
-| `unknown` (a lost store at yard), or still `running` at the deadline | a lost receipt | the whole reservation (R) |
+| `completed` | a **Done** receipt, `Completed` | the money charge (`confirmed + unresolved_max`) |
+| `insufficient_information`, `invalid_output`, `budget_exhausted`, `timed_out`, `cancelled`, `worker_lost`, `executor_error` | a **Done** receipt, `Incomplete{reason}`, with the usage and the partial artifacts | the money charge |
+| `accounting: bounded` | as above; the field is visible to the cell | the same charge: unanswered provider calls at their reserved maxima, so the true cost is at most the charge |
+| `execution: fenced` | as above, the field visible | the same: once the broker scope is revoked the worker can spend nothing more |
+| `capacity`, `not_permitted`, `invalid_task`, `unknown_valuation`, `limits_missing`, `input_unavailable`; `closed`, `never_accepted`, `cancelled_before_accept` (not executed) | a **Refused** receipt | 0 |
+| `unknown` (a lost store at yard), or `running` marked `degraded` (a revocation yard cannot confirm) at the deadline | a lost receipt | the whole reservation (R) |
 
 - **A refusal is reserved for a submission that was not executed.** Timeout, cancellation, budget exhaustion and
   invalid output incur cost, so they are results with usage, never refusals. (Revision 2 of this RFC made a cut-off
   run a refused receipt; that is withdrawn.)
 - The engine already charges "the world reports what the attempt spent, with no usable result" (`Lost_at`, at most
-  the worst case; `observe.qnt`'s `EXPIRE_REPORTED`). A `Done` receipt with `Incomplete` is charged the same
-  `charge`, which yard guarantees is at most the reservation.
+  the worst case; `observe.qnt`'s `EXPIRE_REPORTED`). A `Done` receipt with `Incomplete` is charged the same money
+  charge, which yard guarantees is at most the reservation.
 - The earlier claim that uncertainty occurs only after yard's store is lost is wrong, and the adapter does not
-  assume it: unanswered calls make spend **bounded**, an unreachable worker makes execution **unconfirmed**, and
-  only a lost store (or an unrevokable scope at the deadline) is `unknown`.
+  assume it: unanswered calls make spend **bounded**, an unreachable worker makes execution **fenced** rather than stopped, and
+  only a lost store (or a scope yard cannot confirm revoked by the deadline) is `unknown`.
 
-**The reservation R** is the task's `micro_usd` limit. A task with any of its three limits missing is refused.
+**The reservation R** is the task's `micro_usd` limit, in millionths of a dollar. A task with any of its three limits
+missing is refused (`limits_missing`).
 
 ## Valuation is the operator's
 
 Agents may choose permitted routes, smaller budgets and retry strategies. They **cannot change the prices used to
 enforce their budgets.**
 
-- Cordis's budget unit for agent runs is the **micro-dollar**, an integer. Yard converts tokens, engine time and
-  route prices into micro-dollars with the operator's price table, once, rounding up.
-- The price table's digest (the **valuation**) is in yard's contract. The outbox reads it and sends it with the
-  submit; yard pins it to the attempt and refuses (`409 valuation_changed`, not executed) a submit made with a
-  stale one. Reservation, enforcement and settlement use the pinned table.
-- Accordingly **no price lives in `gates.edn` or any file the agent can edit.** The earlier proposal of a unit
-  mapping in `gates.edn` is withdrawn. `gates.edn` holds a cell's budget (at or below the operator's ceiling) and
-  retry counts, as before.
+- Cordis's budget unit for agent runs is the **micro-dollar**, an integer. Yard converts tokens and route prices into
+  micro-dollars with the operator's price table, rounding up.
+- The price table's id (the **valuation**) is in yard's contract. The outbox reads it and sends it with the submit;
+  yard refuses an unknown one (`unknown_valuation`, not executed) and **pins** the named one to the attempt.
+  Reservation, enforcement and settlement use the pinned table however long the task runs; a price change applies
+  to later attempts only. The cell never names a valuation.
+- Accordingly **no price lives in `gates.edn` or any file the agent can edit.** `gates.edn` holds a cell's budget (at
+  or below the operator's ceiling) and retry counts.
+- **Requirement: every route an agent task may use has a nonzero price.** The reservation is the money limit, and
+  the money limit counts only priced tokens. A local model priced at zero reserves nothing: a local review would never
+  touch Cordis's budget, and only yard's token limit would bound it. The operator therefore sets a **nominal price for
+  local inference** (per token class, or per engine second where halo reports it), and yard refuses a task on a route
+  priced zero. The outbox checks the price table in the contract and refuses such a task **before it journals the
+  submit**, as a second guard.
 
 ## Authority
 
@@ -175,7 +192,7 @@ Each needs its own state, budget and cancellation semantics, in yard's draft (se
   which yard validates for authority, expiry, digest and head. A workflow never holds an operation open waiting for
   a person.
 - **Interactive continuation (`needs_input`)** and **native delegation (A2A child agents)**: until their state,
-  budget and cancellation are specified, a task returns `Insufficient` and **Cordis coordinates top-level fan-out**.
+  budget and cancellation are specified, a task returns `InsufficientInformation` and **Cordis coordinates top-level fan-out**.
 - The Anthropic route, other harnesses, the approval harness.
 
 ## Coordination, first
@@ -186,43 +203,62 @@ the manifest. Reviewers run against the same immutable workspace.
 
 ## Models
 
-**What exists is evidence under its assumptions.** `observe.qnt`'s `EXPIRE_REPORTED` models one attempt whose world
-reports what it spent: a single known report, no uncertainty marker, no concurrency. Yard's `spec/agentop` assumes
-atomic, known-cost calls, a reliable worker stop and instantaneous revocation (its section 15 lists them). Neither
-covers the failure modes of this revision.
+**What exists is evidence under its assumptions**, not proof. Yard's three models are on yard main
+(`spec/agentop/`, `quint run`, never model-checked; the assumptions are in its section 15):
 
-To model before the code (gate rows, mutants, witnesses):
+| Yard model | Covers | Mutants relevant here |
+| --- | --- | --- |
+| `broker.qnt` | one attempt's accounting: concurrent calls, token and money limits independently, local and provider routes, lost answers, two broker crashes, local calls resolved from Halo's operation record | `checkConfirmedOnly`, `volatileReserve`, `dropUnanswered`, `valuationFromGraph`, `moneyOnly`, `claimExact` |
+| `executor.qnt` | yard-ctl's recovery: delayed starts, partitions with VMs still running, delayed revocation, workers that write after they finish, every VM on CID 3 | `restartStartsAgain`, `bindByCid`, `unreachableIsStopped`, `endBeforeRevoke`, `captureFromUnstopped` |
+| `apply.qnt` | candidates, leases, approvals, apply (later milestones) | `ackReleasesArtifacts`, `approvalByName`, `applyStaleBase`, and others |
+
+They assume that a call's real cost never exceeds its reserved maximum (the input bound's correctness), and that
+yard's store survives. They supersede the models revision 3 listed as "to write" on yard's side; the mutants that
+revision proposed map onto theirs (`startWithoutIncarnation` is `restartStartsAgain`, `activateWithoutAttestation` is
+`bindByCid`, and `substituteEmpty` is now added).
+
+**Cordis's side still has to model:**
 
 | Where | Extension |
 | --- | --- |
-| Yard (`accounting.qnt`, `stages.qnt`) | concurrent reservations, lost usage answers, broker crashes, ambiguous worker start and stop, delayed revocation, stale-incarnation admission, artifact retention (yard's section 15) |
-| Cordis `observe.qnt` family | a world that reports a **bounded** charge, with unanswered work inside it (`spendBounded`); the engine never charges below the reported charge and never above R; `unknown` still charges R |
-| Cordis `authority.qnt` | a request against an operator ceiling; a price fixed per attempt: mutants `ceilingInGraph` (the ceiling read from the graph), `priceFromGraph`, `priceUnpinned` (the table changes under a running attempt) |
+| `observe.qnt` family | a world that reports a **bounded** charge with unanswered work inside it (`spendBounded`): the engine never charges below the reported charge, never above R, and charges R for `unknown`. `EXPIRE_REPORTED` models one known report only |
+| `authority.qnt` (small) | a request against an operator ceiling, checked where it is accepted: mutant `ceilingInGraph`. Prices are yard's (`valuationFromGraph`) and are not repeated here |
+| the same | a route priced zero reserves nothing: mutant `freeRoute` (the money limit stops binding), witness for the requirement above |
 
 ## Order of work
 
-1. **This RFC and yard's draft accepted**, with the open questions below answered.
-2. **Models** (above), with their gate rows, before the code they describe.
-3. **The envelope split** (`Op_client`, `Halo_adapter`): a refactor, tested by the existing suite.
-4. **A stand-in for yard's agent API**, beside `stub_ops.py`: outcomes, execution, bounded spend, partial artifacts,
-   unavailable artifacts, a stale valuation. `Yard_adapter` against it, and `ops.sh`-style phases for each row of
-   the settlement table.
-5. **`authority.qnt`** and the operator-configuration check (refusing before the submit is journaled).
+Yard's milestones are AG0 to AG9 (its section 16). The Cordis side is AG3, and most of it can be built before yard
+serves the envelope, against a stand-in.
+
+1. **This RFC accepted with yard's draft** (AG0), and the open questions below answered.
+2. **Cordis's models** (above), with gate rows, before the code they describe.
+3. **The envelope split** (`Op_client`, `Halo_adapter`): a refactor with no behaviour change, tested by the existing
+   suite.
+4. **A stand-in for yard's agent API**, beside `stub_ops.py`: every outcome, `stopped` and `fenced`, `exact` and
+   `bounded`, partial and unavailable artifacts, refusal reasons, an unknown valuation, a zero-priced route, a
+   `degraded` operation. `Yard_adapter` against it, with an `ops.sh`-style phase for each row of the settlement
+   table.
+5. **`authority.qnt`** and the operator-configuration check (refuse before the submit is journaled).
 6. **The `agent.run` kind**: codec for `AgentOutcome`, manifest wiring, `manual.edn`, review prompts, and a
    `claude_review` cell and graph with acceptance guards.
-7. **Y1a (yard alone) passes** its fault set; then **Y1b**: the milestone script with `YARD_URL`, through the same
-   faults, with the evidence manifest pinning both revisions, the model and the build settings.
-8. Only then the deferred list, one item at a time.
+7. **AG3**: yard's AG1 and AG2 pass first (the review alone, then its fault probe); then the milestone script with
+   `YARD_URL`, through the same faults, with the evidence manifest pinning both revisions, the model and the build
+   settings.
+8. Only then the deferred list, one item at a time, in yard's order (writers, approval and apply, the Anthropic
+   route, other harnesses, the approval harness).
 
 ## Open questions
 
-1. Confirm the micro-dollar as Cordis's unit for agent runs, and how a **local** route is valued (a nominal price
-   per token or per engine second, the operator's).
+1. How a local route is priced, now a requirement (above): per token class or per engine second, and the value. The
+   operator's choice; needed before the first local review has a budget that binds.
 2. The **lease length** the receipt's artifact references carry, and whether Cordis renews them for an audit.
-3. Whether halo's operation records let the broker **resolve** an unanswered call exactly (yard's open question 3),
-   which turns some `bounded` spend into `exact`.
-4. Whether the findings value has a size ceiling the receipt enforces (larger goes to an artifact).
-5. Measurements Cordis contributes to the evidence manifest: recovery time, refusal rate, cost per review.
+3. Whether the findings value has a size ceiling the receipt enforces (larger goes to an artifact).
+4. Measurements Cordis contributes to the evidence manifest: recovery time, refusal rate, cost per review.
+5. Reconciling a `bounded` provider charge against the provider's later usage report (yard's open question 2). Not
+   needed for the first milestone, where the route is local and calls end `exact`.
+
+Answered: halo keeps an operation's usage until it is acknowledged, even after it expires, so the broker can always
+settle a lost local call exactly. Local review spend is therefore `exact`; `bounded` arises for provider routes.
 
 ## History
 
@@ -235,3 +271,8 @@ To model before the code (gate rows, mutants, witnesses):
   from apply (a durable record, then a short operation); interactive continuation and native delegation deferred;
   envelope shared, executor semantics not; models restated as evidence under assumptions with extensions named; one
   read-only review operation first.
+- Revision 4: aligned with yard main's revision 2 after the yard agent's review. Outcome, execution and accounting
+  names are yard's (`stopped | fenced`, `exact | bounded`, per-dimension `confirmed` and `unresolved_max`); refusal
+  reasons are yard's; the valuation id is sent by the outbox and pinned (`unknown_valuation`, not a stale-digest
+  conflict); the input is a git commit; a nonzero price for local routes is a requirement; yard's three models
+  replace the list of models "to write"; the open question on resolving lost local calls is answered.
