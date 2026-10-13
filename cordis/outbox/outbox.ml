@@ -92,7 +92,7 @@ type ctx = {
 and job = Run | Reconcile
 
 (* how a call ended *)
-and outcome = Ran of Executors.answer | Not_applied | No_answer of string | Refused_by of string | Busy_by of string * float option
+and outcome = Ran of Executors.answer | Not_applied | No_answer of string | Refused_by of string | Expired_by of string * int | Busy_by of string * float option
 
 (* Start a call off the loop (intake.qnt's design: the loop keeps reading its intake while calls run).
    The thread runs the executor and queues how it ended; only the loop touches the journal. *)
@@ -104,6 +104,7 @@ let start ctx ~jkey ~key ~attempt ~kind ~job (run : unit -> Executors.answer opt
       | Some a -> Ran a
       | None -> Not_applied
       | exception Executors.Refused m -> Refused_by m
+      | exception Executors.Expired (m, spent) -> Expired_by (m, spent)
       | exception Executors.Busy (m, after) -> Busy_by (m, after)
       | exception e -> No_answer (Printexc.to_string e)
     in
@@ -151,6 +152,11 @@ let drain ctx send =
           prerr_endline ("outbox: " ^ kind ^ ": " ^ (match outcome with No_answer m -> m | _ -> "no answer"));
           Journal.set_state ctx.journal ~jkey Journal.Unknown;
           send (frame "lost" (ka key attempt))
+      | Run, Expired_by (why, spent) ->
+          (* no result, but a known spend: the engine charges that, and the attempt is lost like any other *)
+          prerr_endline ("outbox: " ^ kind ^ ": " ^ why);
+          Journal.set_state ctx.journal ~jkey Journal.Unknown ~cost:spent ~source:"expired";
+          send (frame "lost" (ka key attempt @ [ ("cost", `Int spent) ]))
       | Run, Refused_by why ->
           Journal.refuse ctx.journal ~jkey ~why;
           send (frame "refused" (ka key attempt @ [ ("why", `String why) ]))
@@ -173,7 +179,7 @@ let drain ctx send =
       | Reconcile, Not_applied ->
           Journal.set_state ctx.journal ~jkey Journal.Fenced;
           send (frame "reconciled" (ka key attempt @ [ ("receipt", `Null) ]))
-      | Reconcile, (No_answer m | Refused_by m | Busy_by (m, _)) ->
+      | Reconcile, (No_answer m | Refused_by m | Expired_by (m, _) | Busy_by (m, _)) ->
           (* the world cannot be asked now: no answer, so the engine keeps the intent Uncertain and asks again *)
           prerr_endline ("outbox: reconcile " ^ key ^ ": " ^ m))
     ended
@@ -195,6 +201,7 @@ let handle_intent ctx (i : E.intent) send =
       send (frame "refused" (ka i.key i.attempt @ [ ("why", `String (Option.value value ~default:"refused")) ]))
   (* running now: its answer comes when its call ends *)
   | Some { state = Journal.Sent; _ } when Hashtbl.mem ctx.inflight k -> ack ()
+  | Some { state = Journal.Unknown; source = Some "expired"; cost; _ } -> ack (); send (frame "lost" (ka i.key i.attempt @ [ ("cost", `Int cost) ]))
   | Some _ -> ack (); send (frame "lost" (ka i.key i.attempt))
   | None ->
       Journal.begin_ ~state:Journal.Waiting ctx.journal ~jkey:k ~key:i.key ~attempt:i.attempt ~kind:i.kind

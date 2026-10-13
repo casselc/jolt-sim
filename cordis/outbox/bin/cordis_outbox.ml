@@ -18,7 +18,7 @@
 let () =
   let socket = ref "" and journal = ref "" and llm = ref "" and repo = ref "." and limiter = ref "" and agent = ref "agent" in
   let api = ref "" and api_base = ref "" and llm_idle = ref 120. in
-  let ops = ref "" and principal = ref "" and ops_mode = ref "relaxed" and ops_window = ref 120. in
+  let ops = ref "" and principal = ref "" and ops_mode = ref "relaxed" and ops_window = ref 120. and ops_poll = ref 0.1 in
   Arg.parse
     [ ("--socket", Arg.Set_string socket, "PATH the Unix socket the engine connects to");
       ("--journal", Arg.Set_string journal, "FILE the SQLite journal, outside the agent's snapshots");
@@ -28,6 +28,7 @@ let () =
       ("--principal", Arg.Set_string principal, "NAME the owner of the operation attempts (default: --agent)");
       ("--ops-mode", Arg.Set_string ops_mode, "MODE relaxed or exact: the inference the intent needs (default relaxed)");
       ("--ops-window", Arg.Set_float ops_window, "SECONDS by halo's clock a submit may still be accepted (default 120)");
+      ("--ops-poll", Arg.Set_float ops_poll, "SECONDS between status polls of an operation (default 0.1)");
       ("--repo", Arg.Set_string repo, "DIR the repository repo.read reads");
       ("--limiter", Arg.Set_string limiter, "PATH the central limiter's socket (none: no shared limit)");
       ("--agent", Arg.Set_string agent, "NAME this agent, in the limiter's emission keys");
@@ -37,7 +38,7 @@ let () =
   if !socket = "" || !journal = "" then (prerr_endline "cordis-outbox: --socket and --journal are required"; exit 2);
   let executors =
     (if !ops <> "" then
-       let cfg = { (Cordis_outbox.Halo_op.default_cfg ~url:!ops ~principal:(if !principal = "" then !agent else !principal)) with mode = !ops_mode; window_ms = int_of_float (!ops_window *. 1000.) } in
+       let cfg = { (Cordis_outbox.Halo_op.default_cfg ~url:!ops ~principal:(if !principal = "" then !agent else !principal)) with mode = !ops_mode; poll_s = !ops_poll; window_ms = int_of_float (!ops_window *. 1000.) } in
        [ ("llm.complete", Cordis_outbox.Halo_op.llm_complete ~store:!journal cfg) ]
      else if !llm <> "" then [ ("llm.complete", Cordis_outbox.Executors.llm_complete ~idle:!llm_idle ~url:!llm ()) ]
      else [])

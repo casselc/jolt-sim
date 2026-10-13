@@ -85,6 +85,9 @@ type receipt =
           does not count as admitted, if it says ([Halo-Admitted-Sends]), else their worst case
           (observe.qnt's REPORTED, DISCARDED and ATTEMPTS) *)
   | Lost  (** no answer: the outcome is unknown *)
+  | Lost_at of int
+      (** no answer, but the world says what the attempt spent (halo's [expired]: the result is gone, the usage is
+          not): charged that, at most its worst case, in place of the worst case *)
   | Refused of string  (** a definite failure (the world refused it, and it did not run): the computation fails *)
 
 type fiber =
@@ -582,12 +585,14 @@ let handle t ev =
           let t, r = record t [ Slot (a, s); Budget (t.reserved, t.settled) ] in
           (t, [ Persist r ])
       | _ -> (t, []))
-  | Receipt (key, n, Lost) -> (
+  | Receipt (key, n, ((Lost | Lost_at _) as lost)) -> (
       match awaiting t key n with
       | Some (a, ({ fiber = Awaiting ({ intent; _ } as w); _ } as s)) -> (
-          (* the abandoned attempt is charged at its worst case: its late answer is never applied *)
+          (* the abandoned attempt is charged at its worst case (or what the world says it spent): its late answer is
+             never applied *)
           let wc = t.worst intent.kind in
-          let charged = { t with reserved = t.reserved - wc; settled = t.settled + wc } in
+          let spent = match lost with Lost_at c -> max 0 (min c wc) | _ -> wc in
+          let charged = { t with reserved = t.reserved - wc; settled = t.settled + spent } in
           match intent.cls with
           | Keyed when intent.attempt < t.max_attempts && fits t wc ->
               (* sent again with the same key, under a reservation of its own; the lost send's is held, not

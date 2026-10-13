@@ -140,6 +140,11 @@ let committed cfg db s () =
   mark db "settled" s;
   ack cfg db s
 
+let tokens_of v =
+  match J.Util.member "usage" v with
+  | `Assoc _ as u -> Option.value (int_ u "prompt_tokens") ~default:0 + Option.value (int_ u "completion_tokens") ~default:0
+  | _ -> 0
+
 (* ---- one call --------------------------------------------------------------------------------- *)
 
 let settle db s = mark db "settled" s; s.settled <- true
@@ -189,7 +194,11 @@ let run cfg db ~key req =
       | Some "never_accepted" -> accept (); Thread.delay cfg.poll_s; wait ()
       | Some "done" -> fetch v r
       | Some ("closed" | "cancelled_before_accept") -> refuse "closed: no copy was accepted"
-      | Some "expired" -> lost "expired: the capture window passed before the result was taken"
+      | Some "expired" ->
+          (* the body is gone, the usage is not: settled at that. The outcome is acknowledged like any other *)
+          settle db s;
+          ignore (Thread.create (fun () -> ack cfg db s) ());
+          raise (Expired ("expired: the capture window passed before the result was taken", tokens_of v))
       | Some "released" -> lost "released: acknowledged earlier, the result is no longer held"
       | Some "unknown" -> lost "unknown: another incarnation"
       | st -> failwith ("status: " ^ Option.value st ~default:"none")
@@ -199,11 +208,7 @@ let run cfg db ~key req =
     if r.status <> 200 then failwith (Printf.sprintf "result: HTTP %d" r.status);
     let content, _, _, reasoning = read_completion r.body in
     let finish = Option.value (str v "finish") ~default:"" in
-    let tokens =
-      match J.Util.member "usage" v with
-      | `Assoc _ as u -> Option.value (int_ u "prompt_tokens") ~default:0 + Option.value (int_ u "completion_tokens") ~default:0
-      | _ -> 0
-    in
+    let tokens = tokens_of v in
     { value = completion_value content finish reasoning;
       cost = (if tokens > 0 then tokens else -1);
       source = Some "operation"; discarded = None; admitted = None;

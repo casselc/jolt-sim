@@ -6,8 +6,10 @@
 #   - nothing left held or unacknowledged at the server (retention),
 #   - the run store's records audited clean against their own code,
 #   - the evidence kept: on a failure the whole working directory is copied to $MILESTONE_EVIDENCE.
-# The server is the stand-in pinned at halo-flash c4a39ff's wire; a run against halo itself is the same script with
-# HALO_URL set (no stand-in, no admin faults).
+# The server is the stand-in pinned at halo-flash c4a39ff's wire. Against halo itself, set HALO_URL (http://host:port of
+# a halo_serve with operations on, under its GPU lock): no stand-in is started, the faults and restarts the stand-in
+# injects are skipped (halo's own tools/op_fault_probe.py injects them), and the server's own contract reports the records
+# and unacknowledged outcomes. What the run proves there is the engine, the adapter and the journal on a real model.
 #
 #   milestone.sh CORDIS_RUN CORDIS_OUTBOX REVIEW.cg STUB_OPS.py
 set -euo pipefail
@@ -21,21 +23,33 @@ cleanup() {
 trap cleanup EXIT
 mkdir -p "$T/repo/src" && echo "let x = 1 (* the file *)" > "$T/repo/src/main.ml"
 
-python3 "$stub" "$T/port" "$T/count" delay=0.3 & srv_pid=$!
-for _ in $(seq 100); do [ -s "$T/port" ] && break; sleep 0.1; done
-port=$(cat "$T/port")
+if [ -n "${HALO_URL:-}" ]; then
+  url=$HALO_URL
+else
+  python3 "$stub" "$T/port" "$T/count" delay=0.3 & srv_pid=$!
+  for _ in $(seq 100); do [ -s "$T/port" ] && break; sleep 0.1; done
+  url="http://127.0.0.1:$(cat "$T/port")"
+fi
 
 start_outbox() {
   : > "$T/outbox.out"
-  "$outbox_bin" --socket "$T/outbox.sock" --journal "$T/journal.db" --ops "http://127.0.0.1:$port" --principal milestone --repo "$T/repo" \
+  "$outbox_bin" --socket "$T/outbox.sock" --journal "$T/journal.db" --ops "$url" --principal milestone --repo "$T/repo" \
     > "$T/outbox.out" 2>> "$T/outbox.err" & outbox_pid=$!
   for _ in $(seq 100); do grep -q ready "$T/outbox.out" 2>/dev/null && break; sleep 0.1; done
 }
-admin() { python3 - "$port" "$@" <<'PY'
-import sys, urllib.request
-port, method, path = sys.argv[1:4]
-data = sys.argv[4].encode() if len(sys.argv) > 4 else (b"{}" if method == "POST" else None)
-print(urllib.request.urlopen(urllib.request.Request(f"http://127.0.0.1:{port}{path}", data=data, method=method, headers={"Content-Type": "application/json"}), timeout=10).read().decode())
+admin() { python3 - "$url" "${HALO_URL:+real}" "$@" <<'PY'
+import json, sys, urllib.request
+url, real, method, path = sys.argv[1:5]
+if real:
+    # halo has no admin faults; its state is its contract
+    if method == "POST":
+        print("{}")
+    else:
+        c = json.load(urllib.request.urlopen(url + "/v1/halo/contract", timeout=10))["operations"]["records"]
+        print(json.dumps({"unacked_outcomes": c["unacked_outcomes"], "records": c["in_use"], "generated": -1, "attempts": {}}))
+    sys.exit(0)
+data = sys.argv[5].encode() if len(sys.argv) > 5 else (b"{}" if method == "POST" else None)
+print(urllib.request.urlopen(urllib.request.Request(url + path, data=data, method=method, headers={"Content-Type": "application/json"}), timeout=10).read().decode())
 PY
 }
 start_outbox

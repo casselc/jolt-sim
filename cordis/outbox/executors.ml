@@ -47,6 +47,9 @@ exception Refused of string
    world said (Retry-After, in seconds) *)
 exception Busy of string * float option
 
+(* no result, but the world says what the attempt spent (halo's expired: the body is gone, the usage is not) *)
+exception Expired of string * int
+
 (* An HTTP status as one of those; 2xx is the caller's to read *)
 let classify_status ?(headers = []) what status =
   if status = 429 || status = 503 then

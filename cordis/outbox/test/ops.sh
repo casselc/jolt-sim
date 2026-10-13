@@ -8,6 +8,9 @@
 #   E. a submit delivered twice: one generation;
 #   F. halo restarts while a result is pending: the old incarnation's work is beyond reach (charged the worst case),
 #      a new attempt runs in the new incarnation, and the loop still ships;
+#   H. the capture window passes before the result is taken (a slow poll): halo answers expired, which carries the
+#      usage; the attempt is charged that, not the worst case, and the engine tries again (the loop does not ship here:
+#      every attempt expires);
 #   G. an outbox that stopped after journaling a result and before acknowledging it owes the acknowledgement: the next
 #      one makes it (the ops table's committed-but-unacked rows are sent again at start).
 #
@@ -29,7 +32,7 @@ start() {
 }
 start_outbox() {
   : > "$T/outbox.out"
-  "$outbox_bin" --socket "$T/outbox.sock" --journal "$T/journal.db" --ops "http://127.0.0.1:$(cat "$T/port")" --principal ops-test --repo "$T/repo" \
+  "$outbox_bin" --socket "$T/outbox.sock" --journal "$T/journal.db" --ops "http://127.0.0.1:$(cat "$T/port")" --principal ops-test --repo "$T/repo" ${OUTBOX_ARGS:-} \
     > "$T/outbox.out" 2> "$T/outbox.err" & outbox_pid=$!
   for _ in $(seq 100); do grep -q ready "$T/outbox.out" 2>/dev/null && break; sleep 0.1; done
 }
@@ -102,3 +105,16 @@ for _ in $(seq 50); do
   [ "$(python3 -c "import sqlite3,sys; print(sqlite3.connect(sys.argv[1]).execute('SELECT COUNT(*) FROM ops WHERE acked = 0').fetchone()[0])" "$T/journal.db")" = 0 ] && break; sleep 0.1
 done
 python3 -c "import sqlite3,sys; n=sqlite3.connect(sys.argv[1]).execute('SELECT COUNT(*) FROM ops WHERE acked = 0').fetchone()[0]; assert n == 0, n; print('G ok: the owed acknowledgements were made again at start')" "$T/journal.db"
+
+# H: expiry
+OUTBOX_ARGS="--ops-poll 1.6" start delay=0.2 capture=1
+TIMEOUT=10 run
+python3 - "$T/run.out" "$code" "$T/journal.db" <<'PY'
+import json, sqlite3, sys
+out, code, journal = json.load(open(sys.argv[1])), int(sys.argv[2]), sys.argv[3]
+rows = sqlite3.connect(journal).execute("SELECT state, source, cost FROM journal WHERE kind = 'llm.complete'").fetchall()
+assert rows and all(r[0] == "unknown" and r[1] == "expired" and 0 < r[2] < 4096 for r in rows), rows
+assert out["settled"] < 4096, f"charged the worst case: {out['settled']}"
+assert out["settled"] >= sum(r[2] for r in rows) - 0, (out["settled"], rows)
+print(f"H ok: {len(rows)} attempts expired, each charged its actual usage {[r[2] for r in rows]}; settled {out['settled']}, exit {code}")
+PY

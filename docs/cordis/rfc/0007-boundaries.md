@@ -214,10 +214,12 @@ rollback of the run store rewinds the engine and not the journal: the confirmati
 delivery's being pending, it does not retire the row. A confirmation lost to a crash leaves the
 delivery pending until the engine, restarted, applies the receipt again. The outbox does not yet
 push pending deliveries to a reconnecting engine; the engine asks by releasing its intents.
-The usage an
-`expired` status reports is not carried into the settlement: the attempt is charged the worst
-case like an unknown one (a bounded overcharge). The attempt is never cancelled by the adapter
-yet: the cancel verb and the closing of a submit that raced a restart wait for the milestone.
+An `expired` status (halo df4b6e8 carries the attempt's actual usage on it) is settled at that
+usage, not the worst case: the adapter raises `Executors.Expired`, the journal row is unknown with
+source `expired` and the cost, the `lost` frame carries `cost`, and the engine's `Lost_at` charges
+it (at most the worst case) and tries again as for any lost attempt; `ops.sh` phase H runs it. The
+adapter never sends a cancel yet: when to give up on a running attempt is policy, and belongs in a
+gate and a cell, not in `src/`.
 
 ## Retention
 

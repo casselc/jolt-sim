@@ -378,7 +378,7 @@ let () =
             if op <> "deferred" && op <> "ack" then waited := 0.;
             (match op with
              | "receipt" -> incr receipts; unconfirmed := (key, attempt) :: !unconfirmed; feed (Engine.Receipt (key, attempt, done_ j))
-             | "lost" -> feed (Engine.Receipt (key, attempt, Engine.Lost))
+             | "lost" -> feed (Engine.Receipt (key, attempt, match j |> member "cost" with `Int c -> Engine.Lost_at c | _ -> Engine.Lost))
              | "refused" -> incr receipts; unconfirmed := (key, attempt) :: !unconfirmed; feed (Engine.Receipt (key, attempt, Engine.Refused (j |> member "why" |> to_string)))
              | "reconciled" -> (
                  match j |> member "receipt" with

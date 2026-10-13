@@ -243,7 +243,8 @@ let supersede ?(state = Superseded) db ~key ~answered =
 let refuse db ~jkey ~why =
   tx db (fun () -> append_next db ~jkey ~why:"refuse" (fun r -> { r with state = Refused; value = Some why }))
 
-let set_state db ~jkey s = tx db (fun () -> append_next db ~jkey ~why:"state" (fun r -> { r with state = s }))
+let set_state ?cost ?source db ~jkey s =
+  tx db (fun () -> append_next db ~jkey ~why:"state" (fun r -> { r with state = s; cost = Option.value cost ~default:r.cost; source = (match source with Some _ -> source | None -> r.source) }))
 
 (* ---- history: bases, views, compaction, the ledger -------------------------------------------- *)
 
