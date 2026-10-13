@@ -11,6 +11,8 @@
 #   H. the capture window passes before the result is taken (a slow poll): halo answers expired, which carries the
 #      usage; the attempt is charged that, not the worst case, and the engine tries again (the loop does not ship here:
 #      every attempt expires);
+#   I. a second run in a fresh journal against the same server: the operation ids are salted with the journal's store
+#      identity, so none rebinds an attempt halo still holds under another deadline (409 conflict);
 #   G. an outbox that stopped after journaling a result and before acknowledging it owes the acknowledgement: the next
 #      one makes it (the ops table's committed-but-unacked rows are sent again at start).
 #
@@ -117,4 +119,20 @@ assert rows and all(r[0] == "unknown" and r[1] == "expired" and 0 < r[2] < 4096 
 assert out["settled"] < 4096, f"charged the worst case: {out['settled']}"
 assert out["settled"] >= sum(r[2] for r in rows) - 0, (out["settled"], rows)
 print(f"H ok: {len(rows)} attempts expired, each charged its actual usage {[r[2] for r in rows]}; settled {out['settled']}, exit {code}")
+PY
+
+# I: the same computations in a fresh journal, the server unchanged
+start
+run; settle; check I1 3 33 exact
+kill "$outbox_pid"; wait "$outbox_pid" 2>/dev/null || true
+rm -f "$T/journal.db" "$T/journal.db-wal" "$T/journal.db-shm" "$T/run.db" "$T/run.db-wal" "$T/run.db-shm"
+start_outbox
+run; settle
+python3 - "$T/run.out" "$code" "$(admin GET /admin/state)" <<'PY'
+import json, sys
+out, code, state = json.load(open(sys.argv[1])), int(sys.argv[2]), json.loads(sys.argv[3])
+assert code == 0 and out["assets"]["shipped"] is True, (code, out)
+ops = {k.split("/")[1] for k in state["attempts"]}
+assert len(ops) == 6, f"expected six distinct operations across two journals, got {len(ops)}"
+print(f"I ok: a fresh journal's run shipped beside the first's records: {len(ops)} operations, none rebound")
 PY

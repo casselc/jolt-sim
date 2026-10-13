@@ -194,7 +194,7 @@ and the accounting, with mutants `ackFirst`, `clearEarly` and `noKey`.
 ### The adapter as built
 
 `llm.complete` through `--ops` is a journaled submit, then status polling, fetch, journal, and
-only then the acknowledgement. The operation id is the intent's idempotency key; the attempt is
+only then the acknowledgement. The operation id is the intent's idempotency key salted with the journal's store identity (never reused: a fresh journal's run is other operations, not a rebinding of ones halo still holds under another deadline, which halo would answer 409 `conflict`; found by the run against real halo); the attempt is
 the adapter's own count, so a call after a settled attempt is a new one and a call after an open
 one resumes it. The adapter keeps one row per attempt beside the journal (`ops`: incarnation,
 `not_after`, the exact submit bytes, the digest, and whether it is settled, committed, acked); the
@@ -217,7 +217,9 @@ push pending deliveries to a reconnecting engine; the engine asks by releasing i
 An `expired` status (halo df4b6e8 carries the attempt's actual usage on it) is settled at that
 usage, not the worst case: the adapter raises `Executors.Expired`, the journal row is unknown with
 source `expired` and the cost, the `lost` frame carries `cost`, and the engine's `Lost_at` charges
-it (at most the worst case) and tries again as for any lost attempt; `ops.sh` phase H runs it. The
+it (at most the worst case) and tries again as for any lost attempt; `ops.sh` phase H runs it, and
+`observe_report.qnt`'s `expireReported` models it (`accounted` holds; `expireUnder`, a world that reports
+one token too few, breaks it). The
 adapter never sends a cancel yet: when to give up on a running attempt is policy, and belongs in a
 gate and a cell, not in `src/`.
 

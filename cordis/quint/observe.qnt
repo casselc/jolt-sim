@@ -89,6 +89,9 @@
  * ATTEMPTS: every answer also says how many sends the world admitted under the key since it last
  * forgot it, and each send it does not count is charged its worst case: `accounted` holds
  * (forgetAttempts; witnesses exactCharged, forgotThenDone).
+ * EXPIRE_REPORTED (`expireReported`, observe_report.qnt): an expired attempt is settled at the usage the world says
+ * it spent (halo's `expired` status; the engine's Lost_at), at most R: `accounted` holds (witness expiredSaved);
+ * EXPIRE_UNDER (`expireUnder`): the world reports a token too few -> accounted.
  * Witnesses (checked as not(w), expected VIOLATED): retriedThenDone,
  * lateSettled, exhausted, effectfulUncertain, reconciled, keyedResent (a
  * keyed intent sent again completed), keyedDeduplicated (a resend found the
@@ -111,6 +114,8 @@ module observe {
   const UNDER_REPORT: bool
   const FORGET: bool
   const ATTEMPTS: bool
+  const EXPIRE_REPORTED: bool
+  const EXPIRE_UNDER: bool
 
   type Kind = Obs | Eff | Key
   type Phase = Ready | Sent | Lost | Uncertain | Failed | Done
@@ -147,6 +152,7 @@ module observe {
     stopped: List[int], lastStop: List[int],  // per intent: tokens of generations the world stopped; the latest's
     admitted: List[int],     // per intent: the sends the world has admitted under the key since it last forgot it
     forgot: int,
+    saved: int,              // expired attempts charged below the worst case
   }
 
   var s: S
@@ -156,7 +162,7 @@ module observe {
     reserved: 0, settled: 0, real: 0, effects: [0, 0, 0], applied: [0, 0, 0],
     lates: 0, retries: 0, reconciles: 0,
     resent: 0, deduped: 0, keyedUncertain: false, released: 0, charged: 0, exact: 0, stopped: [0, 0, 0], lastStop: [0, 0, 0],
-    admitted: [0, 0, 0], forgot: 0,
+    admitted: [0, 0, 0], forgot: 0, saved: 0,
   }
 
   pure def inc(l: List[int], i: int): List[int] = l.replaceAt(i, l[i] + 1)
@@ -273,6 +279,14 @@ module observe {
     },
   }
 
+  // what an expired attempt is charged. Its answer is gone, but with EXPIRE_REPORTED the world still says what it
+  // spent (halo's `expired` carries the attempt's usage; one it never ran spent nothing): that, at most R, else R.
+  // EXPIRE_UNDER: the world reports one token too few
+  pure def expiredCharge(at: Attempt): int = {
+    val reported = if (at.ran) at.cost - (if (EXPIRE_UNDER and at.cost > 0) 1 else 0) else 0
+    if (EXPIRE_REPORTED) (if (reported > R) R else reported) else R
+  }
+
   // an abandoned attempt will never answer: charge it at the worst case (a keyed intent's sends are
   // held until the intent is answered, which releases them, or given up)
   action expire: bool = {
@@ -284,7 +298,8 @@ module observe {
       s' = { ...s,
         attempts: s.attempts.replaceAt(a, { ...at, live: false }),
         reserved: if (NO_RESERVE) s.reserved else s.reserved - R,
-        settled: if (REFUND_LOST) s.settled else s.settled + R,
+        settled: if (REFUND_LOST) s.settled else s.settled + expiredCharge(at),
+        saved: if (expiredCharge(at) < R) s.saved + 1 else s.saved,
       },
     }
   }
@@ -366,6 +381,7 @@ module observe {
   val keyedResent: bool = s.resent > 0 and s.pc == N
   val keyedDeduplicated: bool = s.deduped > 0
   val keyedUncertainW: bool = s.keyedUncertain
+  val expiredSavedW: bool = s.saved > 0
   val supersededReleased: bool = s.released > 0
   val freshCharged: bool = s.charged > 0
   val exactCharged: bool = s.exact > 0

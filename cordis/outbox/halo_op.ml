@@ -149,7 +149,15 @@ let tokens_of v =
 
 let settle db s = mark db "settled" s; s.settled <- true
 
+(* The operation id is the intent's idempotency key salted with the journal's store identity: ids are never reused
+   (RFC 0007), and the same computation key in a fresh journal (another run, a restore from a backup: [new_store_id])
+   is another operation, not a rebinding of one halo still holds under another deadline (409 conflict) *)
+let operation_id db key =
+  let store = match Journal.meta db "store" with Some s -> s | None -> failwith "halo_op: the journal has no store identity yet" in
+  "cordis-" ^ String.sub (sha256_hex (store ^ "\n" ^ key)) 0 32
+
 let run cfg db ~key req =
+  let key = operation_id db key in
   let s =
     match latest db key with
     | Some s when not s.settled -> s

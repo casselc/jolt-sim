@@ -88,17 +88,19 @@ done
 # the audit: the records read again against their own code
 run --audit > /dev/null
 
-python3 - "$out" "$(admin GET /admin/state)" "$T/journal.db" "$crashes" <<'PY'
+python3 - "$out" "$(admin GET /admin/state)" "$T/journal.db" "$crashes" "${HALO_URL:+real}" <<'PY'
 import json, sqlite3, sys
-out, state, journal, crashes = json.loads(sys.argv[1]), json.loads(sys.argv[2]), sys.argv[3], int(sys.argv[4])
-assert crashes >= 4, f"only {crashes} crashes"
+out, state, journal, crashes, real = json.loads(sys.argv[1]), json.loads(sys.argv[2]), sys.argv[3], int(sys.argv[4]), sys.argv[5]
+# the stand-in's critic rejects the patch twice, so three computations and eight crashes; a real model may approve at once
+want_crashes, want_done = (1, 1) if real else (4, 3)
+assert crashes >= want_crashes, f"only {crashes} crashes"
 assert out["assets"]["shipped"] is True, out["assets"]
 assert out["reserved"] == 0, out
 assert state["unacked_outcomes"] == 0, state
 assert all(s in ("released", "cancelled") for s in state["attempts"].values()) or state["records"] >= 0, state
 db = sqlite3.connect(journal)
 done = db.execute("SELECT COUNT(DISTINCT key) FROM journal WHERE kind = 'llm.complete' AND state = 'done'").fetchone()[0]
-assert done == 3, f"{done} critic computations answered, expected 3"
+assert done >= want_done and (real or done == 3), f"{done} critic computations answered, expected {want_done}"
 dup = db.execute("SELECT key, COUNT(*) FROM journal WHERE kind = 'llm.complete' AND state = 'done' GROUP BY key HAVING COUNT(*) > 1").fetchall()
 assert not dup, f"answered more than once: {dup}"
 ops = db.execute("SELECT COUNT(*) FROM ops WHERE committed = 1 AND acked = 0").fetchone()[0]
