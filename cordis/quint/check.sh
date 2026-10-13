@@ -20,6 +20,10 @@
 # (never an ERROR row), so a rerun redoes only what was not done:
 #   OUT=report.txt quint/check.sh            # killed part way
 #   RESUME=report.txt OUT=report2.txt quint/check.sh
+#
+# QUINT_BACKEND=rust runs the sim rows several times faster than the default typescript backend (use it with RESUME to
+# finish a long gate in chunks), but quintgo's conformance rows (`runs conformance-*`) fail under it with every trace
+# rejected: run the last pass, which redoes the `runs` rows, with the default backend.
 set -uo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/.." && pwd)
