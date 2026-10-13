@@ -220,6 +220,7 @@ source `expired` and the cost, the `lost` frame carries `cost`, and the engine's
 it (at most the worst case) and tries again as for any lost attempt; `ops.sh` phase H runs it, and
 `observe_report.qnt`'s `expireReported` models it (`accounted` holds; `expireUnder`, a world that reports
 one token too few, breaks it). The
+A 409 `conflict` (the identity already bound to another request in that incarnation, which may have run) is charged as unknown, not refused, and reported loudly; `ops.sh` phase J forces one (halo's suggestion). The
 adapter never sends a cancel yet: when to give up on a running attempt is policy, and belongs in a
 gate and a cell, not in `src/`.
 

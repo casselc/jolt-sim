@@ -186,7 +186,12 @@ let run cfg db ~key req =
     | 409 -> (
         match Option.bind (Some (json r)) (fun j -> str (J.Util.member "error" j) "type") with
         | Some "stale_incarnation" -> lost "unknown: halo restarted; its work is beyond reach"
-        | _ -> refuse "conflict: the attempt is bound to another request")
+        | _ ->
+            (* the identity is already bound to another request in that incarnation, which may have run: not a
+               refusal, whose cost is nothing. Charged like an unknown outcome, and loud: with ids salted by the store
+               identity it means an id bug, or a journal restored without [new_store_id] *)
+            prerr_endline ("halo_op: CONFLICT on " ^ s.op ^ "/" ^ string_of_int s.attempt ^ ": the attempt is bound to another request; charged as unknown");
+            lost "conflict: the attempt is bound to another request")
     | 410 -> refuse "closed: past not_after, nothing accepted"
     | 422 -> refuse "mode_unavailable"
     | 400 -> refuse "bad submit"

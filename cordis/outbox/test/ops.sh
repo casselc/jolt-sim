@@ -13,6 +13,8 @@
 #      every attempt expires);
 #   I. a second run in a fresh journal against the same server: the operation ids are salted with the journal's store
 #      identity, so none rebinds an attempt halo still holds under another deadline (409 conflict);
+#   J. an attempt bound to another request (409 conflict, forced by changing the stored submit under halo's record):
+#      not a refusal, which costs nothing; charged as unknown (the worst case), and loud;
 #   G. an outbox that stopped after journaling a result and before acknowledging it owes the acknowledgement: the next
 #      one makes it (the ops table's committed-but-unacked rows are sent again at start).
 #
@@ -135,4 +137,32 @@ assert code == 0 and out["assets"]["shipped"] is True, (code, out)
 ops = {k.split("/")[1] for k in state["attempts"]}
 assert len(ops) == 6, f"expected six distinct operations across two journals, got {len(ops)}"
 print(f"I ok: a fresh journal's run shipped beside the first's records: {len(ops)} operations, none rebound")
+PY
+
+# J: a conflict is charged, not refused
+start
+run; settle
+kill "$outbox_pid"; wait "$outbox_pid" 2>/dev/null || true
+python3 - "$T/journal.db" <<'PY'
+import hashlib, json, sqlite3, sys
+db = sqlite3.connect(sys.argv[1])
+for op, body in db.execute("SELECT op, body FROM ops").fetchall():
+    b = json.loads(body); b["not_after"] += 1
+    nb = json.dumps(b, separators=(",", ":"))
+    db.execute("UPDATE ops SET body = ?, digest = ?, not_after = ?, settled = 0, committed = 0, acked = 0 WHERE op = ?", (nb, hashlib.sha256(nb.encode()).hexdigest(), b["not_after"], op))
+for t in ("facts", "intents", "ledger"):
+    db.execute(f"DELETE FROM {t}")
+db.commit()
+PY
+rm -f "$T/run.db" "$T/run.db-wal" "$T/run.db-shm"
+start_outbox
+TIMEOUT=10 run
+python3 - "$T/run.out" "$code" "$T/journal.db" "$T/outbox.err" <<'PY'
+import json, sqlite3, sys
+out, code, journal, err = json.load(open(sys.argv[1])), int(sys.argv[2]), sys.argv[3], open(sys.argv[4]).read()
+rows = sqlite3.connect(journal).execute("SELECT state FROM journal WHERE kind = 'llm.complete'").fetchall()
+assert out["settled"] >= 4096, f"a conflict was not charged: {out['settled']}"
+assert "CONFLICT" in err, "a conflict was not reported"
+assert not any(r[0] == "refused" for r in rows), rows
+print(f"J ok: a conflicting attempt was charged as unknown, not refused (settled {out['settled']}, journal {sorted(set(rows))}, exit {code})")
 PY
