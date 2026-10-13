@@ -250,7 +250,7 @@ Executor_adapter  (one per executor: Halo_adapter, Yard_adapter)
 
 `Halo_adapter` is today's `halo_op.ml` after the split (a refactor with no behaviour change, proven by every
 `ops.sh` phase and the milestone passing unchanged). `Yard_adapter` reads the three facts above, builds the
-`AgentTask` body, decodes the findings and the artifact references, and charges `spend.charge`. Status
+`AgentTask` body, decodes the findings and the artifact references, and charges `usage.value`. Status
 interpretation, charging, result decoding and artifact handling are **not** shared.
 
 ## Deferred, until written
