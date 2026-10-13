@@ -30,6 +30,7 @@ Modes (startup):
 Faults (POST /admin/fault, JSON; each applies once, to the next matching request):
   {"lose_submit": true}          the next submit is lost: nothing is recorded, nothing is answered
   {"lose_submit_answer": true}   the next submit is accepted and its answer is lost
+  {"refuse_submit": true}        the next submit is refused (422) and nothing is recorded: a refused copy
   {"delay_submit": S}            the next submit is held S seconds before it is processed (a late copy)
   {"dup_submit": true}           the next submit is processed twice
   {"lose_ack_answer": true}      the next ack is applied and its answer is lost
@@ -255,6 +256,8 @@ class Handler(BaseHTTPRequestHandler):
                 f.write(str(requests))
             if faults.pop("lose_submit", None):
                 return self.drop()
+            if faults.pop("refuse_submit", None):
+                return self.reply_pair(error(422, "mode_unavailable", "refused by a fault: this copy is not accepted"))
             late = faults.pop("delay_submit", None)
             dup = faults.pop("dup_submit", None)
             lose_answer = faults.pop("lose_submit_answer", None)

@@ -49,6 +49,9 @@
  * Worlds: RESTART (the executor may restart); DUP (the network duplicates
  * a submit); PROMISE (a finished result is held until acked; without it
  * the executor may evict one under load, leaving a forgotten marker).
+ * REFUSE (`refuse`) lets the executor refuse a delivered copy: that closes the copy, not the attempt (RFC 0007 rule 2).
+ * REFUSE_EARLY (`refuseEarly`) is the mutant that takes a refusal for the end of the attempt and releases its reservation
+ * (RFC 0008 revision 4's table did, for `never_accepted` and every refusal) -> accounted.
  * Witnesses (checked as not(w), expected VIOLATED): done,
  * restartedThenDone, lostAfterRunW, abandonedW (a lost submit abandoned
  * at no cost), fencedW, duplicateW, evictedW.
@@ -62,6 +65,8 @@ module operation {
   const ABANDON_UNTOMBED: bool
   const CACHE_TOMB: bool
   const RESUBMIT_SAME: bool
+  const REFUSE: bool         // world: the executor may refuse a delivered copy (policy, capacity), closing that copy only
+  const REFUSE_EARLY: bool   // mutant: the platform takes a refused copy as the end of the attempt and releases it
 
   type St = Sent | Settled | Cancelled | Lost
   type Ex = Absent | Held | Tomb | Forgot
@@ -84,6 +89,8 @@ module operation {
     reserved: int, settled: int,
     real: int,             // ghost: what the executor actually spent
     applied: int,
+    refd: List[bool],      // per attempt: the platform saw a copy refused
+    refusals: int, releasedOnRefusal: int,
     restarts: int, evicted: int, lostAfterRun: int, abandoned: int, fenced: int, duplicates: int,
   }
 
@@ -91,7 +98,7 @@ module operation {
 
   action init = s' = {
     attempts: List(), ex: List(), exRan: List(), exCost: List(), runs: List(), msgs: List(),
-    inc: 0, known: 0, reserved: 0, settled: 0, real: 0, applied: 0,
+    inc: 0, known: 0, reserved: 0, settled: 0, real: 0, applied: 0, refd: List(), refusals: 0, releasedOnRefusal: 0,
     restarts: 0, evicted: 0, lostAfterRun: 0, abandoned: 0, fenced: 0, duplicates: 0,
   }
 
@@ -106,7 +113,7 @@ module operation {
       not(s.attempts.indices().exists(b => s.attempts[b].st == Sent)),
       s' = { ...s,
         attempts: s.attempts.append({ st: Sent, tag: s.known }),
-        ex: s.ex.append(Absent), exRan: s.exRan.append(false), exCost: s.exCost.append(0), runs: s.runs.append(0),
+        refd: s.refd.append(false), ex: s.ex.append(Absent), exRan: s.exRan.append(false), exCost: s.exCost.append(0), runs: s.runs.append(0),
         msgs: s.msgs.append({ a: a, tag: s.known }), reserved: s.reserved + R },
     }
   }
@@ -128,12 +135,16 @@ module operation {
     nondet m = s.msgs.indices().oneOf()
     val msg = s.msgs[m]
     val stale = not(NO_FENCE) and msg.tag != s.inc
-    val accept = not(stale) and s.ex[msg.a] == Absent
+    nondet refuse = Set(true, false).oneOf()
+    val refused = REFUSE and refuse and not(stale) and s.ex[msg.a] == Absent
+    val accept = not(stale) and not(refused) and s.ex[msg.a] == Absent
     s' = { ...s,
+      refd: if (refused) s.refd.replaceAt(msg.a, true) else s.refd,
+      refusals: if (refused) s.refusals + 1 else s.refusals,
       msgs: removeAt(s.msgs, m),
       ex: if (accept) s.ex.replaceAt(msg.a, Held) else s.ex,
       fenced: if (stale) s.fenced + 1 else s.fenced,
-      duplicates: if (not(stale) and not(accept)) s.duplicates + 1 else s.duplicates }
+      duplicates: if (not(stale) and not(accept) and not(refused)) s.duplicates + 1 else s.duplicates }
   }
 
   // ---- the executor -----------------------------------------------------------------------------
@@ -235,9 +246,22 @@ module operation {
     }
   }
 
+  // REFUSE_EARLY: a refused copy is taken for the end of the attempt: the reservation is released and the operation
+  // goes on, with no cancel to tombstone the id. A delayed or duplicated copy may still be accepted, and run uncounted.
+  // (The design waits for the tombstoning cancel, `abandon`, whatever the refusals said.)
+  action refusedRelease: bool = {
+    nondet a = s.attempts.indices().oneOf()
+    val at = s.attempts[a]
+    all {
+      REFUSE_EARLY, at.st == Sent, at.tag == s.inc, s.refd[a],
+      s' = { ...s, attempts: s.attempts.replaceAt(a, { ...at, st: Cancelled }), reserved: s.reserved - R,
+             abandoned: s.abandoned + 1, releasedOnRefusal: s.releasedOnRefusal + 1 },
+    }
+  }
+
   action idle: bool = s' = s
 
-  action step = any { send, dup, lose, deliver, worldRuns, restart, evict, evictTomb, learn, capture, unknown, resend, abandon, idle }
+  action step = any { send, dup, lose, deliver, worldRuns, restart, evict, evictTomb, learn, capture, unknown, resend, abandon, refusedRelease, idle }
 
   // ---- properties -------------------------------------------------------------------------
   val runsOnce: bool = s.runs.foldl(true, (ok, n) => ok and n <= 1)
@@ -257,4 +281,5 @@ module operation {
   val fencedW: bool = s.fenced > 0
   val duplicateW: bool = s.duplicates > 0
   val evictedW: bool = s.evicted > 0
+  val refusedW: bool = s.refusals > 0
 }

@@ -91,6 +91,9 @@
  * (forgetAttempts; witnesses exactCharged, forgotThenDone).
  * EXPIRE_REPORTED (`expireReported`, observe_report.qnt): an expired attempt is settled at the usage the world says
  * it spent (halo's `expired` status; the engine's Lost_at), at most R: `accounted` holds (witness expiredSaved);
+ * BOUNDED (`expireBounded`, RFC 0008 revision 6): the report may say `bounded`, with unanswered work inside it charged at
+ * its reserved maximum R: `accounted` holds (witness boundedW); DROP_UNRESOLVED (`dropUnresolved`) settles only the
+ * confirmed part -> accounted.
  * EXPIRE_UNDER (`expireUnder`): the world reports a token too few -> accounted.
  * Witnesses (checked as not(w), expected VIOLATED): retriedThenDone,
  * lateSettled, exhausted, effectfulUncertain, reconciled, keyedResent (a
@@ -116,6 +119,8 @@ module observe {
   const ATTEMPTS: bool
   const EXPIRE_REPORTED: bool
   const EXPIRE_UNDER: bool
+  const BOUNDED: bool           // the world's report may be bounded: unanswered work inside it, charged at its maximum R
+  const DROP_UNRESOLVED: bool   // mutant: a bounded report is settled at its confirmed part only
 
   type Kind = Obs | Eff | Key
   type Phase = Ready | Sent | Lost | Uncertain | Failed | Done
@@ -153,6 +158,7 @@ module observe {
     admitted: List[int],     // per intent: the sends the world has admitted under the key since it last forgot it
     forgot: int,
     saved: int,              // expired attempts charged below the worst case
+    boundedN: int,           // expired attempts reported bounded
   }
 
   var s: S
@@ -162,7 +168,7 @@ module observe {
     reserved: 0, settled: 0, real: 0, effects: [0, 0, 0], applied: [0, 0, 0],
     lates: 0, retries: 0, reconciles: 0,
     resent: 0, deduped: 0, keyedUncertain: false, released: 0, charged: 0, exact: 0, stopped: [0, 0, 0], lastStop: [0, 0, 0],
-    admitted: [0, 0, 0], forgot: 0, saved: 0,
+    admitted: [0, 0, 0], forgot: 0, saved: 0, boundedN: 0,
   }
 
   pure def inc(l: List[int], i: int): List[int] = l.replaceAt(i, l[i] + 1)
@@ -282,8 +288,11 @@ module observe {
   // what an expired attempt is charged. Its answer is gone, but with EXPIRE_REPORTED the world still says what it
   // spent (halo's `expired` carries the attempt's usage; one it never ran spent nothing): that, at most R, else R.
   // EXPIRE_UNDER: the world reports one token too few
-  pure def expiredCharge(at: Attempt): int = {
-    val reported = if (at.ran) at.cost - (if (EXPIRE_UNDER and at.cost > 0) 1 else 0) else 0
+  // BOUNDED: the report may be certainty `bounded` (b): an unanswered part inside it, charged at its reserved maximum R
+  // so the true cost is at most the charge; DROP_UNRESOLVED settles only what was confirmed
+  pure def expiredCharge(at: Attempt, b: bool): int = {
+    val exact = if (at.ran) at.cost - (if (EXPIRE_UNDER and at.cost > 0) 1 else 0) else 0
+    val reported = if (BOUNDED and b and at.ran) (if (DROP_UNRESOLVED) 0 else R) else exact
     if (EXPIRE_REPORTED) (if (reported > R) R else reported) else R
   }
 
@@ -291,6 +300,7 @@ module observe {
   // held until the intent is answered, which releases them, or given up)
   action expire: bool = {
     nondet a = s.attempts.indices().oneOf()
+    nondet b = Set(true, false).oneOf()
     val at = s.attempts[a]
     all {
       at.live, a != s.cur,
@@ -298,8 +308,9 @@ module observe {
       s' = { ...s,
         attempts: s.attempts.replaceAt(a, { ...at, live: false }),
         reserved: if (NO_RESERVE) s.reserved else s.reserved - R,
-        settled: if (REFUND_LOST) s.settled else s.settled + expiredCharge(at),
-        saved: if (expiredCharge(at) < R) s.saved + 1 else s.saved,
+        settled: if (REFUND_LOST) s.settled else s.settled + expiredCharge(at, b),
+        saved: if (expiredCharge(at, b) < R) s.saved + 1 else s.saved,
+        boundedN: if (BOUNDED and b and at.ran) s.boundedN + 1 else s.boundedN,
       },
     }
   }
@@ -382,6 +393,7 @@ module observe {
   val keyedDeduplicated: bool = s.deduped > 0
   val keyedUncertainW: bool = s.keyedUncertain
   val expiredSavedW: bool = s.saved > 0
+  val boundedW: bool = s.boundedN > 0
   val supersededReleased: bool = s.released > 0
   val freshCharged: bool = s.charged > 0
   val exactCharged: bool = s.exact > 0

@@ -38,8 +38,8 @@ let () =
   if !socket = "" || !journal = "" then (prerr_endline "cordis-outbox: --socket and --journal are required"; exit 2);
   let executors =
     (if !ops <> "" then
-       let cfg = { (Cordis_outbox.Halo_op.default_cfg ~url:!ops ~principal:(if !principal = "" then !agent else !principal)) with mode = !ops_mode; poll_s = !ops_poll; window_ms = int_of_float (!ops_window *. 1000.) } in
-       [ ("llm.complete", Cordis_outbox.Halo_op.llm_complete ~store:!journal cfg) ]
+       let cfg = { (Cordis_outbox.Halo_adapter.default_cfg ~url:!ops ~principal:(if !principal = "" then !agent else !principal)) with mode = !ops_mode; poll_s = !ops_poll; window_ms = int_of_float (!ops_window *. 1000.) } in
+       [ ("llm.complete", Cordis_outbox.Halo_adapter.llm_complete ~store:!journal cfg) ]
      else if !llm <> "" then [ ("llm.complete", Cordis_outbox.Executors.llm_complete ~idle:!llm_idle ~url:!llm ()) ]
      else [])
     @ [ ("repo.read", Cordis_outbox.Executors.repo_read ~root:!repo) ]

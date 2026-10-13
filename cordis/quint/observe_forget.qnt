@@ -14,8 +14,8 @@
  *    exactCharged, forgotThenDone).
  */
 module forgetDiscarded {
-  import observe(MISCLASSIFY = false, REFUND_LOST = false, NO_RESERVE = false, APPLY_LATE = false, ONE_CLASS = false, KEY_IGNORED = false, RELEASE_OBS = false, GRACE_EXPIRY = true, REPORTED = true, RELEASE_UNREPORTED = false, DISCARDED = true, UNDER_REPORT = false, FORGET = true, ATTEMPTS = false, EXPIRE_REPORTED = false, EXPIRE_UNDER = false).* from "./observe"
+  import observe(MISCLASSIFY = false, REFUND_LOST = false, NO_RESERVE = false, APPLY_LATE = false, ONE_CLASS = false, KEY_IGNORED = false, RELEASE_OBS = false, GRACE_EXPIRY = true, REPORTED = true, RELEASE_UNREPORTED = false, DISCARDED = true, UNDER_REPORT = false, FORGET = true, ATTEMPTS = false, EXPIRE_REPORTED = false, EXPIRE_UNDER = false, BOUNDED = false, DROP_UNRESOLVED = false).* from "./observe"
 }
 module forgetAttempts {
-  import observe(MISCLASSIFY = false, REFUND_LOST = false, NO_RESERVE = false, APPLY_LATE = false, ONE_CLASS = false, KEY_IGNORED = false, RELEASE_OBS = false, GRACE_EXPIRY = true, REPORTED = true, RELEASE_UNREPORTED = false, DISCARDED = true, UNDER_REPORT = false, FORGET = true, ATTEMPTS = true, EXPIRE_REPORTED = false, EXPIRE_UNDER = false).* from "./observe"
+  import observe(MISCLASSIFY = false, REFUND_LOST = false, NO_RESERVE = false, APPLY_LATE = false, ONE_CLASS = false, KEY_IGNORED = false, RELEASE_OBS = false, GRACE_EXPIRY = true, REPORTED = true, RELEASE_UNREPORTED = false, DISCARDED = true, UNDER_REPORT = false, FORGET = true, ATTEMPTS = true, EXPIRE_REPORTED = false, EXPIRE_UNDER = false, BOUNDED = false, DROP_UNRESOLVED = false).* from "./observe"
 }

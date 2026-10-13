@@ -369,7 +369,7 @@ operation model is also proved by Apalache to 8 steps (6 in the gate).
    incarnation and deadline checks, tombstones, reservation, the capture
    window, ack release); then the endpoints and the stream. Disconnect never
    cancels; metadata is bounded; `exact` and `relaxed` are advertised.
-3. **The outbox's durable halo adapter** (built, `outbox/halo_op.ml`, run by
+3. **The outbox's durable halo adapter** (built, `outbox/op_client.ml` and `outbox/halo_adapter.ml`, run by
    `cordis-outbox --ops URL`; see "The adapter as built"), in the order of "The durable
    handoff". The adapter is built against a stand-in server that speaks the
    verbs, as the header rules were; the header rules stay for ordinary

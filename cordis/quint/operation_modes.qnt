@@ -13,28 +13,33 @@
  *    (runsOnce, accounted, runsOnce, accounted-or-runsOnce);
  *  - resubmitSame: an unknown attempt sent again under the same identity
  *    breaks accounted.
+ *  - the design also lets the executor refuse a delivered copy (REFUSE); refuseEarly takes such a refusal for the
+ *    end of the attempt and breaks accounted.
  */
 module design {
-  import operation(RESTART = true, PROMISE = true, DUP = true, NO_FENCE = false, NO_TOMB = false, ABANDON_UNTOMBED = false, CACHE_TOMB = false, RESUBMIT_SAME = false).* from "./operation"
+  import operation(RESTART = true, PROMISE = true, DUP = true, NO_FENCE = false, NO_TOMB = false, ABANDON_UNTOMBED = false, CACHE_TOMB = false, RESUBMIT_SAME = false, REFUSE = true, REFUSE_EARLY = false).* from "./operation"
 }
 module promised {
-  import operation(RESTART = false, PROMISE = true, DUP = true, NO_FENCE = false, NO_TOMB = false, ABANDON_UNTOMBED = false, CACHE_TOMB = false, RESUBMIT_SAME = false).* from "./operation"
+  import operation(RESTART = false, PROMISE = true, DUP = true, NO_FENCE = false, NO_TOMB = false, ABANDON_UNTOMBED = false, CACHE_TOMB = false, RESUBMIT_SAME = false, REFUSE = false, REFUSE_EARLY = false).* from "./operation"
 }
 module cacheLike {
-  import operation(RESTART = false, PROMISE = false, DUP = true, NO_FENCE = false, NO_TOMB = false, ABANDON_UNTOMBED = false, CACHE_TOMB = false, RESUBMIT_SAME = false).* from "./operation"
+  import operation(RESTART = false, PROMISE = false, DUP = true, NO_FENCE = false, NO_TOMB = false, ABANDON_UNTOMBED = false, CACHE_TOMB = false, RESUBMIT_SAME = false, REFUSE = false, REFUSE_EARLY = false).* from "./operation"
 }
 module noFence {
-  import operation(RESTART = true, PROMISE = true, DUP = true, NO_FENCE = true, NO_TOMB = false, ABANDON_UNTOMBED = false, CACHE_TOMB = false, RESUBMIT_SAME = false).* from "./operation"
+  import operation(RESTART = true, PROMISE = true, DUP = true, NO_FENCE = true, NO_TOMB = false, ABANDON_UNTOMBED = false, CACHE_TOMB = false, RESUBMIT_SAME = false, REFUSE = false, REFUSE_EARLY = false).* from "./operation"
 }
 module noTomb {
-  import operation(RESTART = false, PROMISE = true, DUP = true, NO_FENCE = false, NO_TOMB = true, ABANDON_UNTOMBED = false, CACHE_TOMB = false, RESUBMIT_SAME = false).* from "./operation"
+  import operation(RESTART = false, PROMISE = true, DUP = true, NO_FENCE = false, NO_TOMB = true, ABANDON_UNTOMBED = false, CACHE_TOMB = false, RESUBMIT_SAME = false, REFUSE = false, REFUSE_EARLY = false).* from "./operation"
 }
 module abandonUntombed {
-  import operation(RESTART = false, PROMISE = true, DUP = true, NO_FENCE = false, NO_TOMB = false, ABANDON_UNTOMBED = true, CACHE_TOMB = false, RESUBMIT_SAME = false).* from "./operation"
+  import operation(RESTART = false, PROMISE = true, DUP = true, NO_FENCE = false, NO_TOMB = false, ABANDON_UNTOMBED = true, CACHE_TOMB = false, RESUBMIT_SAME = false, REFUSE = false, REFUSE_EARLY = false).* from "./operation"
 }
 module cacheNoTomb {
-  import operation(RESTART = false, PROMISE = true, DUP = true, NO_FENCE = false, NO_TOMB = false, ABANDON_UNTOMBED = false, CACHE_TOMB = true, RESUBMIT_SAME = false).* from "./operation"
+  import operation(RESTART = false, PROMISE = true, DUP = true, NO_FENCE = false, NO_TOMB = false, ABANDON_UNTOMBED = false, CACHE_TOMB = true, RESUBMIT_SAME = false, REFUSE = false, REFUSE_EARLY = false).* from "./operation"
 }
 module resubmitSame {
-  import operation(RESTART = true, PROMISE = true, DUP = true, NO_FENCE = false, NO_TOMB = false, ABANDON_UNTOMBED = false, CACHE_TOMB = false, RESUBMIT_SAME = true).* from "./operation"
+  import operation(RESTART = true, PROMISE = true, DUP = true, NO_FENCE = false, NO_TOMB = false, ABANDON_UNTOMBED = false, CACHE_TOMB = false, RESUBMIT_SAME = true, REFUSE = false, REFUSE_EARLY = false).* from "./operation"
+}
+module refuseEarly {
+  import operation(RESTART = true, PROMISE = true, DUP = true, NO_FENCE = false, NO_TOMB = false, ABANDON_UNTOMBED = false, CACHE_TOMB = false, RESUBMIT_SAME = false, REFUSE = true, REFUSE_EARLY = true).* from "./operation"
 }

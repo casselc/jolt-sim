@@ -15,6 +15,8 @@
 #      identity, so none rebinds an attempt halo still holds under another deadline (409 conflict);
 #   J. an attempt bound to another request (409 conflict, forced by changing the stored submit under halo's record):
 #      not a refusal, which costs nothing; charged as unknown (the worst case), and loud;
+#   M. a refused copy (422) closes the copy, not the attempt: the adapter fences it with a cancel and releases the
+#      reservation only on cancelled_before_accept (RFC 0008); nothing was generated, a tombstone stands;
 #   G. an outbox that stopped after journaling a result and before acknowledging it owes the acknowledgement: the next
 #      one makes it (the journal's obligations, committed with the answers, are paid again at start);
 #   K. the outbox is killed exactly between journaling a result and acknowledging it (CORDIS_OUTBOX_CRASH=after-journal):
@@ -212,3 +214,18 @@ OUTBOX_ARGS="--ops-poll 1.6" start_outbox
 wait_for unacked || { echo "L: the expired outcome was never acknowledged"; exit 1; }
 wait_for owed || { echo "L: the obligation was never discharged"; exit 1; }
 echo "L ok: killed after the expired usage was journaled; it was durable before halo was told, and the next outbox acknowledged it"
+
+# M: a refused copy is fenced by a cancel before the cell sees the refusal
+start; admin POST /admin/fault '{"refuse_submit": true}' > /dev/null
+TIMEOUT=10 run
+python3 - "$T/run.out" "$code" "$(admin GET /admin/state)" "$T/journal.db" <<'PY'
+import json, sqlite3, sys
+out, code, state, journal = json.load(open(sys.argv[1])), int(sys.argv[2]), json.loads(sys.argv[3]), sys.argv[4]
+assert code == 2, f"a refused task fails the run: exit {code}"
+tombs = [k for k, v in state["attempts"].items() if v == "cancelled"]
+assert len(tombs) == 1 and state["generated"] == 0, (state["attempts"], state["generated"])
+rows = sqlite3.connect(journal).execute("SELECT state FROM journal WHERE kind = 'llm.complete'").fetchall()
+assert rows == [("refused",)], rows
+assert out["settled"] <= 1 and out["reserved"] == 0, out
+print(f"M ok: a refused copy was fenced by a cancel (tombstone {tombs[0].split('/')[1][:12]}…), nothing generated, then refused; reservation released")
+PY

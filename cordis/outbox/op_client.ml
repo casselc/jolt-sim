@@ -1,36 +1,47 @@
-(* llm.complete through halo's operation API (docs/cordis/rfc/0007-boundaries.md, "Verbs" and "The durable
-   handoff"; quint/operation.qnt, capture.qnt, expiry.qnt). The attempt is the unit: (owner, operation id,
-   attempt), and the operation id is the intent's idempotency key. A submit is journaled before it is sent, as the
-   exact bytes, with the incarnation it names and its deadline, and every send of it is those bytes (rule 4): its
-   SHA-256 is the attempt's digest, carried by every other verb. The call returns once the result is fetched; the
-   outbox journals it, and only then runs [committed], which acknowledges halo, which releases the body (commit
-   before ack). A lost acknowledgement only keeps the body longer; [recover] repeats those it still owes.
+(* The operation envelope (docs/cordis/rfc/0007-boundaries.md; RFC 0008, "The outbox: one envelope, two adapters").
+   What every operation executor shares, and nothing about what one means:
 
-   What each answer does (RFC 0007, "Status answers"):
-   - 202/200 accepted or a duplicate's view: wait for done;
-   - 429/503: this copy was not accepted: Busy, the attempt is kept and sent again as first sent;
-   - 410, closed, cancelled_before_accept: terminal, nothing spent: Refused, the attempt settled;
-   - unknown, stale incarnation: the old incarnation's work is beyond reach: a lost receipt (charged the worst case),
-     the attempt settled, never sent into another incarnation;
-   - never_accepted: sent again as first sent;
-   - expired: the body is gone; settled like a lost receipt (the actual usage it reports is not yet carried: RFC 0007,
-     open questions).
-   The attempt's records live in the adapter's own table, beside the journal, in the same file. *)
+   - identity: (owner, operation id, attempt), the id the intent's idempotency key salted with the journal's store
+     identity, so ids are never reused;
+   - the exact submission: journaled before it is sent, with the incarnation it names and its deadline, and every send of
+     it is those bytes (rule 4); its SHA-256 is the digest every other verb carries;
+   - polling, with the deadline carried on every verb, and the patience to repeat a call that failed in transit;
+   - durable capture: the answer and what the executor is owed (the acknowledgement) commit in one transaction, the
+     obligation is paid after, and an obligation still open at start is paid again (commit before ack);
+   - the refusal rule: a refused copy closes the copy, not the attempt. The attempt is fenced by a cancel and the
+     reservation is released only on an authoritative terminal answer (`cancelled_before_accept`, `closed`).
 
-module V = Cordis_cel.Value
+   What a status means, what a result is, what is charged and which artifacts are kept belong to an [adapter]: Halo's
+   (Halo_adapter) and, to come, yard's. The attempt's records are in this module's own table, beside the journal. *)
+
 module J = Yojson.Safe
 open Executors
 
 type cfg = {
   url : string;
   principal : string;  (** X-Halo-Principal: the owner of the attempts *)
-  mode : string;  (** "relaxed" or "exact": what the intent needs, which the server must run *)
-  window_ms : int;  (** how long, by halo's clock, a submit may still be accepted *)
+  window_ms : int;  (** how long, by the executor's clock, a submit may still be accepted *)
   poll_s : float;
   wait_s : float;  (** how long one call waits for a result before it gives up with no answer (it resumes the same attempt) *)
 }
 
-let default_cfg ~url ~principal = { url; principal; mode = "relaxed"; window_ms = 120_000; poll_s = 0.1; wait_s = 300. }
+(* what a status view means to an executor *)
+type step =
+  | Wait  (** running *)
+  | Resend  (** not accepted yet: the same submission is sent again *)
+  | Take  (** finished: fetch the result *)
+  | Refuse of string  (** an authoritative terminal answer, not executed: nothing spent, the attempt settled *)
+  | Lose of string  (** the outcome is beyond reach: charged the worst case, the attempt settled *)
+  | Unusable of string * int  (** no result, but the executor says what the attempt spent *)
+  | Fail of string  (** an answer this adapter does not understand *)
+
+type adapter = {
+  contract_path : string;
+  check_contract : J.t -> unit;  (** raise [Refused] if the executor cannot serve the task as it is configured *)
+  request : op:string -> attempt:int -> not_after:int -> V.t -> string;  (** the exact bytes of the submit *)
+  interpret : J.t -> step;
+  decode : view:J.t -> status:Http.response -> result:string -> answer;  (** a fetched result, before the envelope's hooks *)
+}
 
 type submit = {
   op : string;
@@ -42,9 +53,9 @@ type submit = {
   mutable settled : bool;
 }
 
-(* ---- the adapter's own records ---------------------------------------------------------------- *)
+(* ---- the envelope's own records ---------------------------------------------------------------- *)
 
-let check db rc what = if not (Sqlite3.Rc.is_success rc) then failwith (Printf.sprintf "halo_op %s: %s (%s)" what (Sqlite3.Rc.to_string rc) (Sqlite3.errmsg db))
+let check db rc what = if not (Sqlite3.Rc.is_success rc) then failwith (Printf.sprintf "op_client %s: %s (%s)" what (Sqlite3.Rc.to_string rc) (Sqlite3.errmsg db))
 
 let open_store path =
   let db = Sqlite3.db_open path in
@@ -99,22 +110,15 @@ let call cfg s ~meth what =
   Http.request ~timeout:30. ~headers:(verb_headers cfg s) ~meth (cfg.url ^ path s what) (if meth = "POST" then Some ("application/json", "") else None)
 
 (* a new attempt: the contract names the incarnation and its clock; the deadline is that clock plus the window *)
-let new_attempt cfg db ~op ~attempt req =
-  let r = Http.request ~timeout:30. ~headers:[ ("X-Halo-Principal", cfg.principal) ] ~meth:"GET" (cfg.url ^ "/v1/halo/contract") None in
+let new_attempt cfg (ad : adapter) db ~op ~attempt req =
+  let r = Http.request ~timeout:30. ~headers:[ ("X-Halo-Principal", cfg.principal) ] ~meth:"GET" (cfg.url ^ ad.contract_path) None in
   if r.status <> 200 then failwith (Printf.sprintf "contract: HTTP %d" r.status);
   let c = json r in
-  (match J.Util.member "inference" c with
-   | `Assoc _ as i -> (match str i "mode" with Some m when m <> cfg.mode -> raise (Refused (Printf.sprintf "mode_unavailable: the server runs %s, the intent needs %s" m cfg.mode)) | _ -> ())
-   | _ -> ());
+  ad.check_contract c;
   let incarnation = match str c "incarnation" with Some i -> i | None -> failwith "contract: no incarnation"
   and now = match int_ c "time_ms" with Some t -> t | None -> failwith "contract: no time_ms" in
   let not_after = now + cfg.window_ms in
-  let fields = List.filter (fun (k, _) -> k <> "model") (chat_fields req) in
-  let body =
-    J.to_string
-      (`Assoc [ ("operation_id", `String op); ("attempt", `Int attempt); ("not_after", `Int not_after); ("api", `String "chat");
-                ("request", `Assoc fields); ("mode", `String cfg.mode) ])
-  in
+  let body = ad.request ~op ~attempt ~not_after req in
   let s = { op; attempt; incarnation; not_after; body; digest = sha256_hex body; settled = false } in
   record db s;
   (* what the store holds is what is sent, a competing writer's included *)
@@ -124,7 +128,7 @@ let submit cfg s =
   Http.request ~timeout:30. ~headers:[ ("X-Halo-Principal", cfg.principal); ("Halo-Incarnation", s.incarnation); ("Halo-Digest", s.digest) ] ~meth:"POST"
     (cfg.url ^ "/v1/operations") (Some ("application/json", s.body))
 
-(* acknowledge until answered: the outcome is committed, so halo may release the body. Whether it was (a stale
+(* acknowledge until answered: the outcome is committed, so the executor may release the body. Whether it was (a stale
    incarnation's is as good: its body went with it) *)
 let ack cfg db s =
   let rec go n =
@@ -135,20 +139,15 @@ let ack cfg db s =
   in
   go 0
 
-(* what halo is owed for an attempt, as the journal records it with the answer *)
+(* what the executor is owed for an attempt, as the journal records it with the answer *)
 let owes_id s = Printf.sprintf "%s/%d" s.op s.attempt
 
-(* pay it: the answer (or the expired usage) is durable in the journal together with the obligation, so settle the
-   attempt, acknowledge, and discharge the obligation once halo has been told *)
+(* pay it: the answer (or the unusable outcome's spend) is durable in the journal together with the obligation, so
+   settle the attempt, acknowledge, and discharge the obligation once the executor has been told *)
 let pay cfg db s () =
   mark db "committed" s;
   mark db "settled" s;
   if ack cfg db s then Journal.discharge db (owes_id s)
-
-let tokens_of v =
-  match J.Util.member "usage" v with
-  | `Assoc _ as u -> Option.value (int_ u "prompt_tokens") ~default:0 + Option.value (int_ u "completion_tokens") ~default:0
-  | _ -> 0
 
 (* ---- one call --------------------------------------------------------------------------------- *)
 
@@ -156,18 +155,18 @@ let settle db s = mark db "settled" s; s.settled <- true
 
 (* The operation id is the intent's idempotency key salted with the journal's store identity: ids are never reused
    (RFC 0007), and the same computation key in a fresh journal (another run, a restore from a backup: [new_store_id])
-   is another operation, not a rebinding of one halo still holds under another deadline (409 conflict) *)
+   is another operation, not a rebinding of one the executor still holds under another deadline (409 conflict) *)
 let operation_id db key =
-  let store = match Journal.meta db "store" with Some s -> s | None -> failwith "halo_op: the journal has no store identity yet" in
+  let store = match Journal.meta db "store" with Some s -> s | None -> failwith "op_client: the journal has no store identity yet" in
   "cordis-" ^ String.sub (sha256_hex (store ^ "\n" ^ key)) 0 32
 
-let run cfg db ~key req =
+let run cfg (ad : adapter) db ~key req =
   let key = operation_id db key in
   let s =
     match latest db key with
     | Some s when not s.settled -> s
-    | Some s -> new_attempt cfg db ~op:key ~attempt:(s.attempt + 1) req
-    | None -> new_attempt cfg db ~op:key ~attempt:0 req
+    | Some s -> new_attempt cfg ad db ~op:key ~attempt:(s.attempt + 1) req
+    | None -> new_attempt cfg ad db ~op:key ~attempt:0 req
   in
   let lost why = settle db s; failwith why in
   let refuse why = settle db s; raise (Refused why) in
@@ -190,53 +189,55 @@ let run cfg db ~key req =
     | 429 | 503 -> raise (Busy (Printf.sprintf "submit: HTTP %d" r.status, retry_after r))
     | 409 -> (
         match Option.bind (Some (json r)) (fun j -> str (J.Util.member "error" j) "type") with
-        | Some "stale_incarnation" -> lost "unknown: halo restarted; its work is beyond reach"
+        | Some "stale_incarnation" -> lost "unknown: the executor restarted; its work is beyond reach"
         | _ ->
             (* the identity is already bound to another request in that incarnation, which may have run: not a
                refusal, whose cost is nothing. Charged like an unknown outcome, and loud: with ids salted by the store
                identity it means an id bug, or a journal restored without [new_store_id] *)
-            prerr_endline ("halo_op: CONFLICT on " ^ s.op ^ "/" ^ string_of_int s.attempt ^ ": the attempt is bound to another request; charged as unknown");
+            prerr_endline ("op_client: CONFLICT on " ^ s.op ^ "/" ^ string_of_int s.attempt ^ ": the attempt is bound to another request; charged as unknown");
             lost "conflict: the attempt is bound to another request")
     | 410 -> refuse "closed: past not_after, nothing accepted"
-    | 422 -> refuse "mode_unavailable"
-    | 400 -> refuse "bad submit"
+    | 422 -> fenced_refusal "mode_unavailable"
+    | 400 -> fenced_refusal "bad submit"
     | n -> failwith (Printf.sprintf "submit: HTTP %d" n)
+  (* A refused copy closes the copy, not the attempt (RFC 0007 rule 2): a delayed copy of the same submission, or an
+     earlier one, may yet be accepted and run. Fence the attempt with a cancel and release the reservation only on
+     the terminal answer it gets; if a copy was accepted after all, the attempt goes on to its own end *)
+  and fenced_refusal why =
+    let r = patient (fun () -> call cfg s ~meth:"POST" "/cancel") in
+    if r.status <> 200 then failwith (Printf.sprintf "cancel after a refused copy (%s): HTTP %d" why r.status);
+    match str (json r) "status" with
+    | Some ("cancelled_before_accept" | "closed") -> refuse why
+    | _ -> ()  (* a copy was accepted after all: the status that follows tells how it ends *)
   and wait () =
     if Unix.gettimeofday () > deadline then failwith "no result yet; the attempt stays open"
     else begin
       let r = patient (fun () -> call cfg s ~meth:"GET" "") in
       if r.status <> 200 then failwith (Printf.sprintf "status: HTTP %d" r.status);
       let v = json r in
-      match str v "status" with
-      | Some "running" -> Thread.delay cfg.poll_s; wait ()
-      | Some "never_accepted" -> accept (); Thread.delay cfg.poll_s; wait ()
-      | Some "done" -> fetch v r
-      | Some ("closed" | "cancelled_before_accept") -> refuse "closed: no copy was accepted"
-      | Some "expired" ->
+      match ad.interpret v with
+      | Wait -> Thread.delay cfg.poll_s; wait ()
+      | Resend -> accept (); Thread.delay cfg.poll_s; wait ()
+      | Take -> fetch v r
+      | Refuse why -> refuse why
+      | Lose why -> lost why
+      | Unusable (why, spent) ->
           (* the body is gone, the usage is not: settled at that. As for a result, the usage is durable in the outbox's
              journal before the outcome is acknowledged: the outbox pays the obligation after journaling it *)
-          raise (Expired ("expired: the capture window passed before the result was taken", tokens_of v, owes_id s, pay cfg db s))
-      | Some "released" -> lost "released: acknowledged earlier, the result is no longer held"
-      | Some "unknown" -> lost "unknown: another incarnation"
-      | st -> failwith ("status: " ^ Option.value st ~default:"none")
+          raise (Expired (why, spent, owes_id s, pay cfg db s))
+      | Fail why -> failwith why
     end
   and fetch v (status : Http.response) =
     let r = patient (fun () -> call cfg s ~meth:"GET" "/result") in
     if r.status <> 200 then failwith (Printf.sprintf "result: HTTP %d" r.status);
-    let content, _, _, reasoning = read_completion r.body in
-    let finish = Option.value (str v "finish") ~default:"" in
-    let tokens = tokens_of v in
-    { value = completion_value content finish reasoning;
-      cost = (if tokens > 0 then tokens else -1);
-      source = Some "operation"; discarded = None; admitted = None;
-      world = world_of status;
-      owes = Some (owes_id s); committed = Some (pay cfg db s) }
+    let a = ad.decode ~view:v ~status ~result:r.body in
+    { a with owes = Some (owes_id s); committed = Some (pay cfg db s) }
   in
   accept ();
   wait ()
 
-(* acknowledgements an earlier outbox owed: the journal's obligations, committed with the answers they belong to,
-   are paid again (halo answers a repeat of an acknowledgement with the attempt's status) *)
+(* obligations an earlier outbox owed: the journal's, committed with the answers they belong to, are paid again (the
+   executor answers a repeat of an acknowledgement with the attempt's status) *)
 let recover cfg db =
   let owed = Journal.owed db in
   List.iter
@@ -253,11 +254,10 @@ let recover cfg db =
     owed;
   List.length owed
 
-(* the executor; its records are in [store], a file (the journal's own is fine: another connection) *)
-let llm_complete ~store cfg =
+(* an executor over an adapter; its records are in [store], a file (the journal's own is fine: another connection) *)
+let executor ~store cfg (ad : adapter) =
   let db = open_store store in
-  (* one connection serves the calls running at once: sqlite serialises it; each statement is its own transaction *)
   ignore (recover cfg db);
   (* a send again after no answer resumes the attempt it left open; it is not a new one *)
-  let go ~key req = run cfg db ~key req in
+  let go ~key req = run cfg ad db ~key req in
   { run = go; reconcile = (fun ~key req -> Some (go ~key req)) }

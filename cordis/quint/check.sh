@@ -209,7 +209,7 @@ sim frames.qnt keepAcc accConsistent VIOLATED
 
 # ---- observe.qnt (RFC 0006 rev 2: observational emissions retry under reservations) --
 for inv in effectOnce receiptOnce withinBudget accounted obsNeverUncertain; do sim observe_modes.qnt design "$inv" ok; done
-verify observe_modes.qnt design safety ok
+verify observe_design.qnt design safety ok
 for w in retriedThenDone lateSettled exhausted effectfulUncertain reconciled keyedResent keyedDeduplicated keyedUncertainW; do sim observe_modes.qnt design "not($w)" VIOLATED; done
 # rare: a keyed send lost, resent, and answered while the lost one is still live
 STEPS=60 SAMPLES=5000 sim observe_modes.qnt reported "not(supersededReleased)" VIOLATED
@@ -251,6 +251,11 @@ STEPS=100 SAMPLES=30000 sim observe_report.qnt expireReported accounted ok
 verify observe_report.qnt expireReported accounted ok
 STEPS=60 SAMPLES=5000 sim observe_report.qnt expireReported "not(expiredSavedW)" VIOLATED
 STEPS=100 SAMPLES=30000 sim observe_report.qnt expireUnder accounted VIOLATED
+# a bounded report: unanswered work inside it charged at its maximum (RFC 0008 revision 6)
+STEPS=100 SAMPLES=30000 sim observe_bounded.qnt expireBounded accounted ok
+verify observe_bounded.qnt expireBounded accounted ok
+STEPS=60 SAMPLES=5000 sim observe_bounded.qnt expireBounded "not(boundedW)" VIOLATED
+STEPS=100 SAMPLES=30000 sim observe_bounded.qnt dropUnresolved accounted VIOLATED
 # ---- engine.qnt (RFC 0006: the turn commit protocol) -------------------------------------
 for inv in releasedOnlyDurable effectMatchesCommit commitAtomic receiptOnce uncertainSurvives; do sim engine.qnt design "$inv" ok; done
 # Apalache: depth 6 in about 75 s, 7 in about 400 s (checked once), 8 over 30 minutes
@@ -292,6 +297,9 @@ STEPS=80 SAMPLES=30000 sim operation_modes.qnt noTomb runsOnce VIOLATED
 STEPS=80 SAMPLES=30000 sim operation_modes.qnt abandonUntombed accounted VIOLATED
 STEPS=80 SAMPLES=30000 sim operation_modes.qnt cacheNoTomb runsOnce VIOLATED
 STEPS=80 SAMPLES=30000 sim operation_modes.qnt resubmitSame accounted VIOLATED
+# a refusal closes the copy, not the attempt (RFC 0008 revision 5)
+STEPS=80 SAMPLES=20000 sim operation_modes.qnt design "not(refusedW)" VIOLATED
+STEPS=80 SAMPLES=30000 sim operation_modes.qnt refuseEarly accounted VIOLATED
 
 # ---- capture.qnt (RFC 0007, "The durable handoff"): fetch, commit, acknowledge, deliver; crashes, lost acks ------
 for inv in resultNotLost receiptNotLost appliedOnce accounted; do STEPS=60 SAMPLES=20000 sim capture_modes.qnt design "$inv" ok; done
@@ -362,5 +370,15 @@ if command -v "$QUINTGO" >/dev/null 2>&1; then
 else
   echo "runs conformance quintgo not found (QUINTGO=$QUINTGO) ERROR" | tee -a "$OUT"
 fi
+
+# ---- authority.qnt (RFC 0008): what the graph may and may not decide about a task's budget and prices ------
+for inv in withinCeiling pricedByOperator withinLimit workCharged; do STEPS=40 SAMPLES=10000 sim authority_modes.qnt design "$inv" ok; done
+verify authority_modes.qnt design safety ok
+for w in acceptedW refusedCeilingW ranW; do STEPS=40 SAMPLES=10000 sim authority_modes.qnt design "not($w)" VIOLATED; done
+STEPS=40 SAMPLES=10000 sim authority_modes.qnt guarded workCharged ok
+STEPS=40 SAMPLES=10000 sim authority_modes.qnt guarded "not(refusedFreeW)" VIOLATED
+STEPS=40 SAMPLES=10000 sim authority_modes.qnt ceilingInGraph withinCeiling VIOLATED
+STEPS=40 SAMPLES=10000 sim authority_modes.qnt priceFromGraph pricedByOperator VIOLATED
+STEPS=40 SAMPLES=10000 sim authority_modes.qnt freeRoute workCharged VIOLATED
 
 exec "$here/model-verdict.sh" "$OUT"
