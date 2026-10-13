@@ -397,8 +397,15 @@ acknowledgement owed or outcome held, and a clean audit; on failure it copies it
 working directory to `$MILESTONE_EVIDENCE`. It found that an acknowledgement owed
 to an incarnation that has since restarted (409 `stale_incarnation`) was retried
 and owed for ever; the body went with the incarnation, so it is now counted done.
-Not yet run against halo itself (needs its build and `--operations`), nor does it
-cover expiry or cancel: those are the selftest's and `expiry.qnt`'s so far.
+Run against halo itself, by the halo agent on the real model (main df4b6e8, then 65eb6d1;
+their `docs/OPERATIONS.md` has the record): 868d14e unmodified, three runs against one process, 3 of 3
+(settled 87, nothing unacknowledged, audit clean); 08e1ff9 with the evidence manifest pinning both
+revisions, 3 of 3; and the **full fault schedule through the actual adapter** with their
+`tools/op_fault_proxy.py` in front of the real server (delayed, duplicated and lost-answer submits, a
+forced expiry settled at its usage with a second attempt shipping, a lost acknowledgement, a real halo
+restart): 3 of 3, each fault recorded as fired. Their own fault probe on the same model: 16 of 16
+operations committed over three incarnations. Not run against halo: the 409 `conflict` charged as
+unknown (`ops.sh` phase J, the stand-in's), which came after those runs.
 
 ## Open questions
 
