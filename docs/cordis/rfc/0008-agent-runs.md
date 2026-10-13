@@ -249,10 +249,17 @@ Executor_adapter  (one per executor: Halo_adapter, Yard_adapter)
                         charge        : how cost is computed from the terminal view
 ```
 
-`Halo_adapter` is today's `halo_op.ml` after the split (a refactor with no behaviour change, proven by every
-`ops.sh` phase and the milestone passing unchanged). `Yard_adapter` reads the three facts above, builds the
-`AgentTask` body, decodes the findings and the artifact references, and charges `spend.charge`. Status
-interpretation, charging, result decoding and artifact handling are **not** shared.
+**Built:** `outbox/op_client.ml` is the envelope and `outbox/halo_adapter.ml` the first adapter (it was `halo_op.ml`).
+The adapter record says which contract to read and check (`contract_path`, `check_contract`), what the submit bytes
+are (`request`), what a status means (`interpret`: `Wait`, `Resend`, `Take`, `Refuse`, `Lose`, `Unusable` with the
+reported spend, `Fail`), and how a fetched result decodes (`decode`); the envelope does identity, the exact journaled
+submission, polling and patience, the obligation committed with the answer, and recovery. The one behaviour change
+in the split is the refusal rule: a refused copy (400, 422) is no longer settled at once but **fenced with a
+cancel**, and the reservation is released only on `cancelled_before_accept` or `closed`; if a copy was accepted
+after all, the attempt goes on to its own end (`ops.sh` phase M, with the stand-in's `refuse_submit` fault).
+`Yard_adapter` reads yard's `spend` object, builds the `AgentTask` body, decodes the findings and the artifact
+references, and charges `spend.charge`. Status interpretation, charging, result decoding and artifact handling are
+**not** shared.
 
 ## Deferred, until written
 
@@ -312,9 +319,10 @@ Yard's milestones are AG0 to AG9 (its section 16). The Cordis side is AG3, and m
 serves the envelope, against a stand-in.
 
 1. **This RFC accepted with yard's draft** (AG0), and the open questions below answered.
-2. **Cordis's models** (above), with gate rows, before the code they describe.
-3. **The envelope split** (`Op_client`, `Halo_adapter`): a refactor tested by the existing suite, **plus the one
-   behaviour change this revision requires**: a refused copy no longer releases the reservation at once. A capacity
+2. **Cordis's models** (above), with gate rows, before the code they describe. *Built:* `operation.qnt` `REFUSE` /
+   `refuseEarly`, `observe_bounded.qnt` `expireBounded` / `dropUnresolved`, `authority.qnt` (with `freeRoute`).
+3. **The envelope split** (`Op_client`, `Halo_adapter`) *(built)*: a refactor tested by the existing suite, **plus the
+   one behaviour change this revision requires**: a refused copy no longer releases the reservation at once. A capacity
    refusal is deferred and resent exactly; any other refusal is followed by a cancel, and the Refused receipt is
    delivered after `cancelled_before_accept` (and `never_accepted` holds). New `ops.sh` phases cover them.
 4. **A stand-in for yard's agent API**, beside `stub_ops.py`: every outcome, `stopped` and `unconfirmed` (with a later
